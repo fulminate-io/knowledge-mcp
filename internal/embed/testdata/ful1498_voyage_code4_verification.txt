@@ -1,0 +1,107 @@
+voyage-code-4 capability verification and batch-cap observation
+==========================================================================
+
+Date issued: 2026-08-25
+Issued by:   the operator holding the Voyage key, from the local environment.
+Spend:       deliberate, once. Call 1 billed 1 token. Call 2 was REJECTED
+             before any embedding work, so it billed nothing.
+
+WHY THIS FILE EXISTS. The Voyage docs embeddings table lists voyage-code-4
+with 256/512/1024/2048 dimensions and float|int8|uint8|binary|ubinary
+dtypes, but the REST reference — the page that enumerates per-model dtype
+support — does not list voyage-code-4 in ANY enumeration. Documentation
+could not settle whether the model actually serves ubinary at 256. One real
+API call settles it. This is that call, recorded verbatim.
+
+The Authorization header is written below EXACTLY as
+"Authorization: Bearer ***REDACTED***". The real key was read from the
+operator's config, passed to curl through a 0600 header file (never through
+argv, never echoed), and the file was deleted at the end of the run.
+
+
+CALL 1 — CAPABILITY
+-------------------
+
+Command as issued:
+
+    curl -sS -o resp1.json -w '%{http_code}\n' \
+      -H "Authorization: Bearer ***REDACTED***" \
+      -H 'Content-Type: application/json' \
+      --data-binary @body1.json \
+      https://api.voyageai.com/v1/embeddings
+
+body1.json:
+
+    {"input":["package main"],"model":"voyage-code-4","input_type":"document","output_dimension":256,"output_dtype":"ubinary"}
+
+Raw status: 200
+
+Raw response body (verbatim):
+
+    {"object":"list","data":[{"object":"embedding","embedding":[11,215,108,15,54,253,19,128,37,66,86,122,72,184,50,147,219,246,79,110,250,248,6,9,22,70,168,24,61,58,198,86],"index":0,"text":null}],"model":"voyage-code-4","usage":{"total_tokens":1}}
+
+Decoded observations:
+
+    len(data[0].embedding) = 32
+    first 8 values          = [11, 215, 108, 15, 54, 253, 19, 128]
+    every element an int    = true
+    every element in 0..255 = true
+    model echoed by the API = voyage-code-4
+    usage.total_tokens      = 1
+
+CONCLUSION, CALL 1: PASS. voyage-code-4 serves output_dtype ubinary at
+output_dimension 256 and returns exactly 32 uint8 values — 256 bits at one
+bit per dimension, the same width and representation the current default
+model produces. The docs table is correct for this combination and the REST
+reference's omission of the model is an incompleteness in that page, not a
+missing capability.
+
+
+CALL 2 — BATCH TOKEN CAP
+------------------------
+
+Command as issued:
+
+    curl -sS -o resp2.json -w '%{http_code}\n' \
+      -H "Authorization: Bearer ***REDACTED***" \
+      -H 'Content-Type: application/json' \
+      --data-binary @body2.json \
+      https://api.voyageai.com/v1/embeddings
+
+body2.json was a deliberately oversized batch: 128 inputs of ~20,000
+characters each (2,562,437 bytes on the wire), same model/input_type/
+output_dimension/output_dtype as call 1. 128 inputs is under any published
+per-request ITEM cap, so a rejection isolates the TOTAL-TOKEN cap.
+
+Raw status: 400
+
+Raw response body (verbatim):
+
+    {"detail":"Request to model 'voyage-code-4' failed. The max allowed tokens per submitted batch is 320000. Your batch has 320914 tokens after truncation. Please lower the number of tokens in the batch.","error_code":"TOO_MANY_TOKENS_IN_BATCH"}
+
+CONCLUSION, CALL 2: the API DID disclose a numeric cap. voyage-code-4's
+maximum total tokens per submitted batch is 320000, counted AFTER per-item
+truncation. The error_code is TOO_MANY_TOKENS_IN_BATCH — the same literal
+the client's overflow detector matches on, so the existing pack-and-bisect
+recovery path recognizes this rejection unchanged.
+
+
+WHAT THIS DOES AND DOES NOT CHANGE
+----------------------------------
+
+batchTokenBudget STAYS AT 100_000 and is NOT re-derived from the number
+above. That is deliberate, not an oversight: the budget bounds packs for
+the model actually in use, and the default model is NOT changing in this
+changeset (the default flip is blocked on the embed cache key — see the
+DefaultModel comment in ../voyage.go). 100_000 is the conservative budget
+derived against the CURRENT default model's 120k cap. Raising it to a
+code-4-derived figure would describe a model the client is not talking to,
+which is the exact error this verification exists to avoid.
+
+The 320000 figure is recorded here as the input a future re-derivation
+needs, at the moment the default model flips. Note it is more than 2.6x the
+current default's cap, so a flip that carries the budget over unchanged is
+merely conservative — under-packing, never over-packing — and the
+bisection path recovers from an under-estimate anyway.
+
+No default model changed as a result of this verification.

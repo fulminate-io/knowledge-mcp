@@ -33,13 +33,77 @@ type parseShape struct {
 	// Copied verbatim into Config — no validation, no normalization; an id
 	// the gateway will reject is a state the client must be able to hold and
 	// report on. Empty = absent = no selection.
-	FulminateAccountID string            `toml:"fulminate_account_id"`
-	Default            parseSection      `toml:"default"`
-	Summarizer         *parseSection     `toml:"summarizer"`
-	Dream              *parseSection     `toml:"dream"`
-	Supervisor         *parseSection     `toml:"supervisor"`
-	Topics             *parseSection     `toml:"topics"`
-	Credentials        *parseCredentials `toml:"credentials"`
+	FulminateAccountID string              `toml:"fulminate_account_id"`
+	Default            parseSection        `toml:"default"`
+	Summarizer         *parseSection       `toml:"summarizer"`
+	Supervisor         *parseSection       `toml:"supervisor"`
+	Topics             *parseSection       `toml:"topics"`
+	Credentials        *parseCredentials   `toml:"credentials"`
+	Embedder           *parseEmbedSection  `toml:"embedder"`
+	Reranker           *parseRerankSection `toml:"reranker"`
+}
+
+// parseEmbedSection mirrors the [embedder] TOML table. dimension and dtype
+// are the quantization knobs; both are parsed and then admitted only at a
+// value in this build's accepted SETS, any other value being an error
+// naming the value and the vocabulary (see translateEmbedSection).
+// The optional key field on both sections is the per-section credential;
+// it takes precedence over the provider-resolved one. See
+// EmbedSection.Key for why it exists and why it is scoped to these two
+// axes only.
+//
+// THE TWO NESTED MAPS ARE THE NAMED-PROFILE SURFACE. [embedder.profile.<name>]
+// tables land in Profile and [embedder.family.<family>] tables in Family. They
+// nest under [embedder] rather than sitting at top level so the whole embed
+// axis stays one block, and because the scalars above ARE a profile — the one
+// named "default" — rather than a separate kind of thing.
+//
+// A CONFIG MAY DEFINE PROFILES WITHOUT SETTING ANY SCALAR. TOML creates the
+// parent table implicitly for [embedder.profile.x], so raw.Embedder is
+// non-nil with every scalar at its zero value; translateEmbedSection then
+// resolves exactly the defaults an ABSENT [embedder] resolves to, which is
+// the intended reading.
+type parseEmbedSection struct {
+	Provider  string `toml:"provider"`
+	Model     string `toml:"model"`
+	BaseURL   string `toml:"base_url"`
+	Dimension int    `toml:"dimension"`
+	Dtype     string `toml:"dtype"`
+	Key       string `toml:"key"`
+
+	Profile map[string]parseEmbedProfile `toml:"profile"`
+	Family  map[string]parseEmbedFamily  `toml:"family"`
+}
+
+// parseEmbedProfile mirrors one [embedder.profile.<name>] table. Its fields
+// are exactly parseEmbedSection's scalars — a profile is a complete embedder
+// config, not a patch over the default one, so nothing here is inherited and
+// each profile is read on its own.
+type parseEmbedProfile struct {
+	Provider  string `toml:"provider"`
+	Model     string `toml:"model"`
+	BaseURL   string `toml:"base_url"`
+	Dimension int    `toml:"dimension"`
+	Dtype     string `toml:"dtype"`
+	Key       string `toml:"key"`
+}
+
+// parseEmbedFamily mirrors one [embedder.family.<family>] table: a reference
+// to a profile BY NAME, used as the creation-time default for graphs of that
+// family. It carries a name and not an inline embedder config deliberately —
+// an inline copy would be a second definition of an embedder that could drift
+// from the profile it duplicates.
+type parseEmbedFamily struct {
+	Profile string `toml:"profile"`
+}
+
+// parseRerankSection mirrors the [reranker] TOML table. No dimension or
+// dtype: a reranker returns scores, not vectors.
+type parseRerankSection struct {
+	Provider string `toml:"provider"`
+	Model    string `toml:"model"`
+	BaseURL  string `toml:"base_url"`
+	Key      string `toml:"key"`
 }
 
 // parseCredentials mirrors the optional [credentials] TOML table. Pointer
@@ -51,6 +115,7 @@ type parseCredentials struct {
 	AnthropicAPIKey string `toml:"anthropic_api_key"`
 	OpenAIAPIKey    string `toml:"openai_api_key"`
 	GeminiAPIKey    string `toml:"gemini_api_key"`
+	CohereAPIKey    string `toml:"cohere_api_key"`
 }
 
 // parseSection mirrors a single TOML table. Four keys:
@@ -153,15 +218,8 @@ func Parse(data []byte) (*Config, error) {
 		}
 		cfg.Summarizer = &s
 	}
-	if raw.Dream != nil {
-		s, err := translateSection(string(ConsumerDream), *raw.Dream)
-		if err != nil {
-			return nil, err
-		}
-		cfg.Dream = &s
-	}
 	if raw.Supervisor != nil {
-		s, err := translateSection(string(ConsumerHiveSupervisor), *raw.Supervisor)
+		s, err := translateSection(string(ConsumerSupervisor), *raw.Supervisor)
 		if err != nil {
 			return nil, err
 		}
@@ -174,6 +232,9 @@ func Parse(data []byte) (*Config, error) {
 		}
 		cfg.Topics = &s
 	}
+	if err := applyEmbedAxes(cfg, raw); err != nil {
+		return nil, err
+	}
 	if raw.Credentials != nil {
 		cfg.Credentials = &Credentials{
 			VoyageAPIKey:    raw.Credentials.VoyageAPIKey,
@@ -181,6 +242,7 @@ func Parse(data []byte) (*Config, error) {
 			AnthropicAPIKey: raw.Credentials.AnthropicAPIKey,
 			OpenAIAPIKey:    raw.Credentials.OpenAIAPIKey,
 			GeminiAPIKey:    raw.Credentials.GeminiAPIKey,
+			CohereAPIKey:    raw.Credentials.CohereAPIKey,
 		}
 	}
 	return cfg, nil
@@ -199,6 +261,110 @@ func Parse(data []byte) (*Config, error) {
 // entry with an unknown provider returns the same unknown-provider error as a
 // top-level section. Each entry is named "<name>.fallback[i]" so the error
 // pinpoints which entry is bad.
+// applyEmbedAxes translates the two optional embed/rerank tables onto cfg.
+// An absent table leaves its pointer nil, which the resolvers read as "use
+// the defaults". Split out of Parse purely to keep that function under the
+// repo's statement cap; it is one step of the same translation sequence.
+func applyEmbedAxes(cfg *Config, raw parseShape) error {
+	if raw.Embedder != nil {
+		s, err := translateEmbedSection(*raw.Embedder)
+		if err != nil {
+			return err
+		}
+		cfg.Embedder = &s
+		if err := applyEmbedProfiles(cfg, *raw.Embedder); err != nil {
+			return err
+		}
+	}
+	if raw.Reranker != nil {
+		s, err := translateRerankSection(*raw.Reranker)
+		if err != nil {
+			return err
+		}
+		cfg.Reranker = &s
+	}
+	return nil
+}
+
+// translateEmbedSection lowercases the provider string and checks it
+// against the EmbedProvider vocabulary — the same normalize-then-validate
+// primitive translateSection applies to the LLM axis, instanced for the
+// embed one. An empty provider defaults to voyage.
+//
+// THE ADMISSION GATE. An absent/zero dimension defaults to the accepted
+// width and an absent/empty dtype to the accepted dtype; a value outside the
+// accepted SETS is AN ERROR naming the value and the accepted vocabulary. It
+// is a refusal, not a coercion and not a warn-and-continue. The sets widened
+// once the format carried its own width and the builder refused a mixed
+// batch — the hazard the single-value refusal existed for — but widening what
+// is accepted did not soften the rule for anything outside it.
+func translateEmbedSection(raw parseEmbedSection) (EmbedSection, error) {
+	return translateEmbedShape("embedder", embedShapeFields{
+		Provider:  raw.Provider,
+		Model:     raw.Model,
+		BaseURL:   raw.BaseURL,
+		Dimension: raw.Dimension,
+		Dtype:     raw.Dtype,
+		Key:       raw.Key,
+	})
+}
+
+// embedShapeFields is the raw scalar set an embedder table carries, shared by
+// [embedder] and every [embedder.profile.<name>] so the two cannot drift in
+// what they default or what they refuse.
+type embedShapeFields struct {
+	Provider  string
+	Model     string
+	BaseURL   string
+	Dimension int
+	Dtype     string
+	Key       string
+}
+
+// translateEmbedShape is the one normalize-then-validate implementation for
+// an embedder table. section names the table for the error prefix, so a
+// refusal points at the profile that carries the bad value rather than at
+// "[embedder]" generically.
+func translateEmbedShape(section string, raw embedShapeFields) (EmbedSection, error) {
+	out := EmbedSection{
+		Provider:  EmbedProviderVoyage,
+		Model:     raw.Model,
+		BaseURL:   raw.BaseURL,
+		Key:       raw.Key,
+		Dimension: AcceptedEmbedDimension,
+		Dtype:     AcceptedEmbedDtype,
+	}
+	if raw.Provider != "" {
+		out.Provider = EmbedProvider(strings.ToLower(raw.Provider))
+	}
+	if raw.Dimension != 0 {
+		out.Dimension = raw.Dimension
+	}
+	if raw.Dtype != "" {
+		out.Dtype = strings.ToLower(raw.Dtype)
+	}
+	if err := validateEmbedShape(out.Provider, out.Dimension, out.Dtype); err != nil {
+		return EmbedSection{}, fmt.Errorf("config: section [%s]: %w", section, err)
+	}
+	return out, nil
+}
+
+// (applyEmbedProfiles, which consumes the two nested maps above, lives in
+// embed_profiles.go beside the profile surface it populates.)
+
+// translateRerankSection is translateEmbedSection for the [reranker] table,
+// minus the quantization knobs the rerank axis does not have.
+func translateRerankSection(raw parseRerankSection) (RerankSection, error) {
+	out := RerankSection{Provider: EmbedProviderVoyage, Model: raw.Model, BaseURL: raw.BaseURL, Key: raw.Key}
+	if raw.Provider != "" {
+		out.Provider = EmbedProvider(strings.ToLower(raw.Provider))
+	}
+	if !out.Provider.IsValid() {
+		return RerankSection{}, fmt.Errorf("config: section [reranker]: %w", unknownEmbedProviderError(string(out.Provider)))
+	}
+	return out, nil
+}
+
 func translateSection(name string, raw parseSection) (Section, error) {
 	out := Section{Model: raw.Model, CLIBin: raw.CLIBin, BaseURL: raw.BaseURL}
 	if raw.Provider != "" {

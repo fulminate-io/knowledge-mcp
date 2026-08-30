@@ -7,11 +7,11 @@ package tools
 // each file inside the repo's file-length gate; see mutate_arm_registry.go for
 // the authoring rules every cell in all three files follows.
 // justifyAnswerDerived and justifyAnswerBodyEdit explain the two distinct
-// reasons the answer arm refuses a body field: the first pair is written by the
+// reasons the answer arm refuses a body field: the first is written by the
 // operation itself (routing a caller value would fight that write), the second
 // trio is an ordinary body edit the arm has no business doing.
 const (
-	justifyAnswerDerived  = "the answer operation sets status and summary itself"
+	justifyAnswerDerived  = "the answer operation sets status itself"
 	justifyAnswerBodyEdit = "it is a body edit; issue mutate(update) on the question instead"
 
 	// justifyBulkMetadataOnly covers the top-level body scalars on
@@ -33,10 +33,16 @@ const (
 
 var updateArmSpecs = map[armID]armSpec{
 
-	// The backend-backed single-id update runs the tracker write-through then
-	// forwards the local half, which carries keywords and source as top-level
-	// set_fields the same way every other update arm does. The per-type params
-	// stay rejected: a tracker-backed node is a work item and owns none of them.
+	// The backend-backed single-id update runs the tracker write-through, forwards
+	// the local half (which carries keywords and source as top-level set_fields the
+	// same way every other update arm does), and then cascades a terminal status to
+	// the container's live descendants. The per-type params stay rejected: a
+	// tracker-backed node is a work item and owns none of them.
+	//
+	// `expand_to_descendants` is CONSUMED here, and it was rejected until this arm
+	// gained a cascade. It now selects whether that cascade runs, exactly as it does
+	// on the local arm — so a caller opting out gets the opt-out they asked for and
+	// a caller opting in is not refused for requesting behaviour this arm has.
 	//
 	// `status` is consumed here, but with a VALUE-CONDITIONAL rejection this
 	// table cannot express and does not replace: an explicitly-supplied EMPTY
@@ -48,12 +54,13 @@ var updateArmSpecs = map[armID]armSpec{
 		handler:   "Linear write-through in handleInterceptMutateUpdate",
 		consumed: paramSet(
 			"operation", "id", "ids", "graph", "name", "description", "summary", "content",
-			"status", "metadata", "keywords", "source",
+			"status", "expand_to_descendants", "metadata", "keywords", "source",
 			"verified_quote", "cited_range",
 		),
 		rejected: paramSet(
+			"repo", "account",
 			"supports",
-			"type", "expand_to_descendants", "evidence", "question_id", "concludes",
+			"type", "evidence", "question_id", "concludes",
 			"scope", "enforcement", "step_id", "command", "criterion_type", "from", "to",
 			"relationship", "conclusion", "findings", "language", "binary_vector",
 			"confidence", "method", "edge_evidence", "last_validated", "link_graph", "branches_from",
@@ -66,16 +73,18 @@ var updateArmSpecs = map[armID]armSpec{
 	// The container-status rollup cascades status down the contains tree and
 	// applies the accompanying body fields to the NAMED node only, via a separate
 	// by-id write. The per-type params stay rejected: the node is a
-	// project/ticket/plan/phase/step and none of those owns a criterion/rule/
-	// finding key — the same rule the typed-update arm's per-node-type refinement
-	// encodes.
+	// project/ticket/plan/phase/step/test_plan/test_step and none of those owns a
+	// criterion/rule/finding key — the same rule the typed-update arm's
+	// per-node-type refinement encodes.
 	//
 	// The negation proof params are REJECTED here, and that is deliberate rather
 	// than an omission — do not "fix" it to match the sibling update arms. The
-	// rollup is claimed only when a.Status == kgtypes.StatusCompleted
-	// (intercept_mutate_dispatch.go:131), and the only update-shaped negation is
-	// status:"invalidated" (negation_gate.go recognizeNegationOp), so no negation
-	// call can ever select this arm. A proof param here routes nothing.
+	// rollup is claimed only for a status the terminal-cascade vocabulary
+	// recognizes — the completed, abandoned and superseded families — and
+	// "invalidated" is a deliberate non-member of that vocabulary. Since the only
+	// update-shaped negation is status:"invalidated" (negation_gate.go
+	// recognizeNegationOp), no negation call can ever select this arm. A proof
+	// param here routes nothing.
 	armUpdateRollup: {
 		operation: "update",
 		handler:   "handleClientUpdateStatusRollup",
@@ -84,6 +93,7 @@ var updateArmSpecs = map[armID]armSpec{
 			"name", "description", "summary", "content", "metadata", "keywords", "source",
 		),
 		rejected: paramSet(
+			"repo", "account",
 			"supports",
 			"type", "evidence", "question_id",
 			"concludes", "scope", "enforcement", "step_id", "command", "criterion_type", "from", "to",
@@ -107,12 +117,13 @@ var updateArmSpecs = map[armID]armSpec{
 		operation: "update",
 		handler:   "handleClientMutateUpdateTyped",
 		consumed: paramSet(
-			"operation", "id", "ids", "graph", "language", "name", "description", "summary",
+			"operation", "id", "ids", "graph", "name", "description", "summary",
 			"content", "status", "keywords", "source", "metadata", "command",
 			"criterion_type", "scope", "enforcement", "evidence",
 			"verified_quote", "cited_range",
 		),
 		rejected: paramSet(
+			"repo", "account",
 			"supports",
 			"type", "question_id", "concludes", "step_id", "from", "to", "relationship",
 			"conclusion", "findings", "binary_vector", "confidence", "method", "edge_evidence",
@@ -121,6 +132,7 @@ var updateArmSpecs = map[armID]armSpec{
 			"items", "nodes", "edges", "updates",
 		),
 		deliberatelyIgnored: map[string]string{
+			"language":              justifyKnowledgeSingletonSelector,
 			"format":                justifyClientRendered,
 			"expand_to_descendants": justifyTypedNoCascade,
 		},
@@ -134,11 +146,12 @@ var updateArmSpecs = map[armID]armSpec{
 		operation: "update",
 		handler:   "engine compileMutateByIDUpdate",
 		consumed: paramSet(
-			"operation", "id", "ids", "graph", "language", "name", "description", "summary",
+			"operation", "id", "ids", "graph", "name", "description", "summary",
 			"content", "status", "keywords", "source", "metadata", "format", "expand_to_descendants",
 			"verified_quote", "cited_range",
 		),
 		rejected: paramSet(
+			"repo", "account",
 			"supports",
 			"type", "evidence", "question_id", "concludes", "scope", "enforcement", "step_id",
 			"command", "criterion_type", "from", "to", "relationship", "conclusion", "findings",
@@ -146,7 +159,7 @@ var updateArmSpecs = map[armID]armSpec{
 			"branches_from", "links", "session", "ticket_id", "polarity", "weight", "reasoning",
 			"charge_evidence", "thought_parent", "references", "items", "nodes", "edges", "updates",
 		),
-		deliberatelyIgnored: map[string]string{},
+		deliberatelyIgnored: map[string]string{"language": justifyKnowledgeSingletonSelector},
 	},
 
 	// A multi-id update batch. source and the five per-type params ARE rejected:
@@ -166,10 +179,11 @@ var updateArmSpecs = map[armID]armSpec{
 		operation: "update",
 		handler:   "guardBatchUpdateShape then engine compileMutateByIDUpdate",
 		consumed: paramSet(
-			"operation", "ids", "graph", "language", "name", "description", "summary", "content",
+			"operation", "ids", "graph", "name", "description", "summary", "content",
 			"status", "keywords", "metadata", "format",
 		),
 		rejected: paramSet(
+			"repo", "account",
 			"supports",
 			"type", "id", "expand_to_descendants", "source", "evidence", "question_id", "concludes",
 			"scope", "enforcement", "step_id", "command", "criterion_type", "from", "to",
@@ -179,7 +193,7 @@ var updateArmSpecs = map[armID]armSpec{
 			"references", "items", "nodes", "edges", "updates",
 			"verified_quote", "cited_range",
 		),
-		deliberatelyIgnored: map[string]string{},
+		deliberatelyIgnored: map[string]string{"language": justifyKnowledgeSingletonSelector},
 	},
 
 	// update_batch carries its whole payload in items[]; the top-level body
@@ -194,8 +208,9 @@ var updateArmSpecs = map[armID]armSpec{
 	armUpdateBatchItems: {
 		operation: "update_batch",
 		handler:   "engine compileMutateUpdateBatch",
-		consumed:  paramSet("operation", "items", "graph", "language", "format"),
+		consumed:  paramSet("operation", "items", "graph", "format"),
 		rejected: paramSet(
+			"repo", "account",
 			"supports",
 			"name",
 			"type", "id", "ids", "description", "summary", "content", "status",
@@ -207,7 +222,7 @@ var updateArmSpecs = map[armID]armSpec{
 			"references", "nodes", "edges", "updates",
 			"verified_quote", "cited_range",
 		),
-		deliberatelyIgnored: map[string]string{},
+		deliberatelyIgnored: map[string]string{"language": justifyKnowledgeSingletonSelector},
 	},
 
 	// bulk_update_metadata carries its whole payload in updates[]. The top-level
@@ -222,8 +237,9 @@ var updateArmSpecs = map[armID]armSpec{
 	armBulkUpdateMetadata: {
 		operation: "bulk_update_metadata",
 		handler:   "engine compileMutateBulkMetadata",
-		consumed:  paramSet("operation", "updates", "graph", "language", "format"),
+		consumed:  paramSet("operation", "updates", "graph", "format"),
 		rejected: paramSet(
+			"repo", "account",
 			"supports",
 			"type", "id", "ids", "expand_to_descendants", "evidence", "question_id", "concludes",
 			"scope", "enforcement", "step_id", "command", "criterion_type", "from", "to",
@@ -234,6 +250,7 @@ var updateArmSpecs = map[armID]armSpec{
 			"verified_quote", "cited_range",
 		),
 		deliberatelyIgnored: map[string]string{
+			"language":    justifyKnowledgeSingletonSelector,
 			"name":        justifyBulkMetadataOnly,
 			"description": justifyBulkMetadataOnly,
 			"summary":     justifyBulkMetadataOnly,
@@ -250,8 +267,9 @@ var updateArmSpecs = map[armID]armSpec{
 	armDelete: {
 		operation: "delete",
 		handler:   "handleInterceptMutateDelete",
-		consumed:  paramSet("operation", "id", "ids", "graph", "language"),
+		consumed:  paramSet("operation", "id", "ids", "graph"),
 		rejected: paramSet(
+			"repo", "account",
 			"supports",
 			"type", "name", "description", "summary", "content", "status", "expand_to_descendants",
 			"source", "evidence", "question_id", "concludes", "scope", "enforcement", "step_id",
@@ -262,24 +280,31 @@ var updateArmSpecs = map[armID]armSpec{
 			"items", "nodes", "edges", "updates",
 			"verified_quote", "cited_range",
 		),
-		deliberatelyIgnored: clientRenderedFormat(),
+		deliberatelyIgnored: map[string]string{
+			"format":   justifyClientRendered,
+			"language": justifyKnowledgeSingletonSelector,
+		},
 	},
 
 	// Answer resolves the question by id (question_id is the documented alias),
 	// stamps the conclusion, and comma-splits findings into answers edges. Caller
-	// metadata is merged alongside the derived conclusion key. The body fields
-	// stay rejected for two different reasons, so each carries its own
-	// explanation: status and summary are written by the operation itself, and
+	// metadata is merged alongside the operation's own conclusion key. `summary`
+	// is CONSUMED: the answer replaces the question's summary with the author's
+	// description of the concluded state rather than composing one over it. The
+	// remaining body fields stay rejected for two different reasons, so each
+	// carries its own explanation: status is written by the operation itself, and
 	// name/description/content are plain body edits with a home on mutate(update).
 	armAnswer: {
 		operation: "answer",
 		handler:   "handleClientMutateAnswer",
 		consumed: paramSet(
 			"operation", "id", "graph", "question_id", "conclusion", "findings", "metadata",
+			"summary",
 		),
 		rejected: paramSet(
+			"repo", "account",
 			"supports",
-			"type", "ids", "name", "description", "summary", "content", "status",
+			"type", "ids", "name", "description", "content", "status",
 			"expand_to_descendants", "source", "evidence", "concludes", "scope", "enforcement",
 			"step_id", "command", "criterion_type", "from", "to", "relationship", "language",
 			"keywords", "binary_vector", "confidence", "method", "edge_evidence",
@@ -290,7 +315,6 @@ var updateArmSpecs = map[armID]armSpec{
 		),
 		rejectionReasons: map[string]string{
 			"status":      justifyAnswerDerived,
-			"summary":     justifyAnswerDerived,
 			"name":        justifyAnswerBodyEdit,
 			"description": justifyAnswerBodyEdit,
 			"content":     justifyAnswerBodyEdit,

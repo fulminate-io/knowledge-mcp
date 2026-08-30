@@ -91,7 +91,7 @@ const reducedAccuracyWarning = "knowledge setup: no Voyage API key set — searc
 
 // customizationLossWarning is printed on --reconfigure when the config
 // carries hand-edited sections the template regenerate would drop.
-const customizationLossWarning = "knowledge setup: --reconfigure regenerates ~/.knowledge/config from the template — any hand-edited [summarizer]/[dream]/[supervisor]/[topics] sections or health_probe_interval will be lost and must be re-applied by hand."
+const customizationLossWarning = "knowledge setup: --reconfigure regenerates ~/.knowledge/config from the template — any hand-edited [summarizer]/[supervisor]/[topics] sections or health_probe_interval will be lost and must be re-applied by hand."
 
 // noProviderNote is printed when setup finds NO LLM provider (no
 // claude/codex CLI on PATH, no ANTHROPIC/OPENAI/GEMINI key). Setup still
@@ -404,7 +404,7 @@ func coalesceCred(stored, env string) string {
 // rewrite. A thin predicate over the *Config config.Load already
 // returned; no second parse.
 func hasCustomSections(cfg *config.Config) bool {
-	return cfg.Summarizer != nil || cfg.Dream != nil || cfg.Supervisor != nil || cfg.Topics != nil || cfg.HealthProbeInterval != 0
+	return cfg.Summarizer != nil || cfg.Supervisor != nil || cfg.Topics != nil || cfg.HealthProbeInterval != 0
 }
 
 // installSetupAssets runs the Claude and Codex asset installers when

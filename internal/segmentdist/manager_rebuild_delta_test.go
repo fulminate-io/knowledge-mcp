@@ -4,6 +4,7 @@ package segmentdist
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -48,8 +49,7 @@ func TestRebuiltDeltaCorpusExactAcrossCountChange(t *testing.T) {
 		"the fixture must cross a partition-count boundary: %d docs derive %d partitions, %d derive %d",
 		deltaSeedN, seedCount, deltaCorpusN, corpusCount)
 
-	_, view := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	gt, name := kgtypes.GraphCode, "delta-straddle"
 
 	// Seed BOTH serving engines: the delta finalize publishes per format, and its
@@ -107,10 +107,8 @@ func TestResetThenDeltaThenDrainKeepsCardinality(t *testing.T) {
 	require.Equal(t, buckets, searchengine.BucketCountFor(corpus+drain),
 		"the fixture must hold the partition count STABLE across the drain, or a changed cardinality would be legitimate realignment rather than a defect")
 
-	svc, view := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	gt, name := kgtypes.GraphCode, "reset-delta-drain"
-	target := graphSelector(gt, name)
 
 	// 1 — the reset rebuild.
 	docs := vecContentDocs(corpus)
@@ -119,7 +117,7 @@ func TestResetThenDeltaThenDrainKeepsCardinality(t *testing.T) {
 	require.NoError(t, err)
 	swapped := res.Swapped
 	require.True(t, swapped, "the reset rebuild's publish must LAND")
-	require.Len(t, writerManifest(svc, target, "", hnswFormatName), buckets,
+	require.Len(t, l2IDsFor(mgr.cacheDir, name, hnswFormatName), buckets,
 		"the reset publishes one segment per partition it built")
 
 	// 2 — a one-node delta through the bucket machinery.
@@ -130,17 +128,21 @@ func TestResetThenDeltaThenDrainKeepsCardinality(t *testing.T) {
 		"the reset handed its layer to the serving engines, so the delta shape applies immediately after it")
 	require.Equal(t, buckets, derived, "the delta runs at the corpus's own partition count")
 	require.True(t, deltaSwapped, "the delta's publish must LAND")
-	require.Len(t, writerManifest(svc, target, "", hnswFormatName), buckets,
+	require.Len(t, l2IDsFor(mgr.cacheDir, name, hnswFormatName), buckets,
 		"a one-node delta re-emits a partition — it does not add one")
 
 	// 3 — the embed reconcile tick.
 	embedDM := mgr.managerFor(gt, name)
-	before := embedDM.completedSwapCount()
+	beforeIDs := slices.Sorted(slices.Values(embedDM.cache.Keys()))
 	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, vecContentDocsSeed(drain, 800000)))
 	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, gt, name))
-	require.Greater(t, embedDM.completedSwapCount(), before,
-		"the drain's publish must LAND — a manifest naming a reaped blob is SKIPPED with a nil error, and that is exactly the regression this asserts against")
-	require.Len(t, writerManifest(svc, target, "", hnswFormatName), buckets,
+	// The drain's WRITE must land. The original asserted this through the publish-gate
+	// swap counter, whose regression was a manifest naming a reaped blob being SKIPPED
+	// with a nil error; the local equivalent of "silently did nothing" is an unchanged
+	// L2 id set, so the assertion is that the set actually MOVED.
+	require.NotEqual(t, beforeIDs, slices.Sorted(slices.Values(embedDM.cache.Keys())),
+		"the drain's write must LAND — a no-op tick also returns a nil error")
+	require.Len(t, l2IDsFor(mgr.cacheDir, name, hnswFormatName), buckets,
 		"the drain re-emits its dirty partitions — the manifest cardinality is unchanged")
 
 	// And the corpus is whole across the whole sequence.
@@ -160,6 +162,9 @@ type toolsShipperAdapter struct{ *Manager }
 
 // FinalizeRebuild maps the reset finalize's per-format result onto the tools-local
 // struct, carrying every value across unchanged.
+// FinalizeRebuild drops the corpusComplete argument the cloud rail's coverage gate
+// consumed. A method DECLARATION is not a call expression, so no call-site sweep
+// reaches it — it had to be corrected here by hand.
 func (a toolsShipperAdapter) FinalizeRebuild(
 	ctx context.Context, gt kgtypes.GraphType, name string,
 ) (tools.RebuildFinalizeResult, error) {

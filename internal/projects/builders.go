@@ -80,16 +80,12 @@ func BuildPlanGraph(plan PlanArgs, unresolvedPatternIDs []string, unresolvedLang
 
 	for _, q := range plan.OpenQuestions {
 		qIdx := len(nodes)
-		summary := q.Summary
-		if summary == "" {
-			summary = DeriveQuestionSummary(q.Question, q.Context)
-		}
 		nodes = append(nodes, &knowledgev1.Node{
 			Type:        string(kgtypes.NodeQuestion),
 			Source:      "llm:claude",
 			SymbolName:  q.Question,
 			Description: q.Context,
-			Summary:     summary,
+			Summary:     q.Summary,
 			Status:      kgtypes.StatusOpen,
 		})
 		edges = append(edges, kgwire.BatchEdge{FromIdx: projectIdx, ToIdx: qIdx, Type: kgtypes.EdgeKGContains})
@@ -114,7 +110,7 @@ func wirePatternEdges(planIdx int, plan PlanArgs, nodes []*knowledgev1.Node, edg
 			Source:      "llm:claude",
 			SymbolName:  p.Name,
 			Description: p.Sketch,
-			Summary:     DerivePatternSummary(p.Name, p.Sketch),
+			Summary:     p.Summary,
 			Status:      "emerging",
 		}
 		if p.Sketch != "" {
@@ -155,8 +151,8 @@ func appendPhaseSubtree(planIdx, prevPhaseIdx int, phase PhaseArgs, nodes []*kno
 	return nodes, edges, phaseIdx
 }
 
-// appendStepSubtree appends a step + its file-path implements edges + its
-// criteria, returning the updated node/edge slices and the new prevStepIdx.
+// appendStepSubtree appends a step + its criteria, returning the updated
+// node/edge slices and the new prevStepIdx.
 func appendStepSubtree(phaseIdx, prevStepIdx int, step StepArgs, nodes []*knowledgev1.Node, edges []kgwire.BatchEdge) ([]*knowledgev1.Node, []kgwire.BatchEdge, int) {
 	stepIdx := len(nodes)
 	stepNode := &knowledgev1.Node{
@@ -193,8 +189,9 @@ func appendStepSubtree(phaseIdx, prevStepIdx int, step StepArgs, nodes []*knowle
 	//
 	// The paths are not lost: step.FilePaths is already persisted as file_paths
 	// metadata immediately above. Genuine cross-graph step->file linking goes
-	// through the linkage graph (mutate link_graph:"linkage" with the bare code
-	// path), which resolves correctly and is the supported mechanism.
+	// through a plain mutate(link) whose target is the bare code-graph node ID —
+	// the repo-relative path — which materializes a proxy in the knowledge graph
+	// and reads back through both query(include_edges) and traverse.
 	for _, c := range step.Criteria {
 		cIdx := len(nodes)
 		nodes = append(nodes, BuildCriterionNode(c))
@@ -385,7 +382,7 @@ func wireTicketPatternEdges(ticketIdx int, args TicketArgs, nodes []*knowledgev1
 			Source:      "llm:claude",
 			SymbolName:  p.Name,
 			Description: p.Sketch,
-			Summary:     DerivePatternSummary(p.Name, p.Sketch),
+			Summary:     p.Summary,
 			Status:      "emerging",
 		}
 		if p.Sketch != "" {
@@ -402,7 +399,11 @@ func wireTicketPatternEdges(ticketIdx int, args TicketArgs, nodes []*knowledgev1
 	return nodes, edges
 }
 
-// BuildCriterionNode constructs a criterion node from a CriterionArgs.
+// BuildCriterionNode constructs a criterion node from a CriterionArgs. The
+// summary is stored as the caller authored it — there is NO fallback derivation
+// when c.Summary is empty; the callers' validators own the empty rejection, the
+// same split DeriveCriterionName's own comment describes for the empty-
+// description case.
 func BuildCriterionNode(c CriterionArgs) *knowledgev1.Node {
 	cType := c.Type
 	if cType == "" {
@@ -411,9 +412,9 @@ func BuildCriterionNode(c CriterionArgs) *knowledgev1.Node {
 	node := &knowledgev1.Node{
 		Type:        string(kgtypes.NodeCriterion),
 		Source:      "llm:claude",
-		SymbolName:  c.Description,
+		SymbolName:  DeriveCriterionName(c.Description),
 		Description: c.Description,
-		Summary:     DeriveCriterionSummary(cType, c.Description, c.Command),
+		Summary:     c.Summary,
 	}
 	if c.Command != "" {
 		kgtypes.SetValue(node, "command", c.Command)

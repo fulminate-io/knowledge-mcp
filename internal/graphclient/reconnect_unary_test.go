@@ -64,7 +64,7 @@ func (h *refuseHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func newRefuseTestServer(t *testing.T, h *refuseHandler) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(h2c.NewHandler(h, &http2.Server{}))
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 	return srv
 }
 
@@ -101,12 +101,13 @@ func TestSelfHealingWire_UnarySurvivesRestart(t *testing.T) {
 	srv := newRefuseTestServer(t, flaky)
 
 	httpClient := newH2CClient()
+	t.Cleanup(httpClient.CloseIdleConnections)
 	retry := connect.WithInterceptors(newReconnectInterceptor())
 	client := knowledgev1connect.NewHealthServiceClient(httpClient, srv.URL, retry)
 
 	// Warm the conn.
 	_, err := client.Check(context.Background(),
-		connect.NewRequest(&knowledgev1.HealthCheckRequest{}))
+		connect.NewRequest(&knowledgev1.CheckRequest{}))
 	require.NoError(t, err)
 
 	// Refuse the next 2 calls; the interceptor retries past them.
@@ -114,7 +115,7 @@ func TestSelfHealingWire_UnarySurvivesRestart(t *testing.T) {
 
 	start := time.Now()
 	_, err = client.Check(context.Background(),
-		connect.NewRequest(&knowledgev1.HealthCheckRequest{}))
+		connect.NewRequest(&knowledgev1.CheckRequest{}))
 	elapsed := time.Since(start)
 	require.NoError(t, err, "interceptor should retry past the two 503s")
 

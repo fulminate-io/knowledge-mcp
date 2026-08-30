@@ -5,9 +5,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/backends/dispatch"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
 
@@ -38,8 +36,13 @@ type mutateArgs struct {
 	Metadata    map[string]string `json:"metadata,omitempty"`
 	Graph       string            `json:"graph,omitempty"`
 	Language    string            `json:"language,omitempty"`
-	Format      string            `json:"format,omitempty"`
-	LinkGraph   string            `json:"link_graph,omitempty"`
+	// Repo and Account are read ONLY by requireGraphInstanceSelector. No write
+	// path threads them: on the non-knowledge path the client declines and the
+	// engine's own mutateArgs decodes the same verbatim payload.
+	Repo      string `json:"repo,omitempty"`
+	Account   string `json:"account,omitempty"`
+	Format    string `json:"format,omitempty"`
+	LinkGraph string `json:"link_graph,omitempty"`
 
 	// Link fields — claimed for the intra-practice
 	// cross-graph-link branch (mutate(link, graph:practice)).
@@ -73,7 +76,7 @@ type mutateArgs struct {
 	// Keywords) the per-type update intercept (intercept_mutate_update.go).
 	// Command + CriterionType were previously only on criterionCreateArgs; the
 	// update path needs them on this shared wire-mirror to route a criterion
-	// update's command/criterion_type into metadata + re-derive the summary.
+	// update's command/criterion_type into metadata.
 	Evidence      string             `json:"evidence,omitempty"`
 	Source        string             `json:"source,omitempty"`
 	Scope         string             `json:"scope,omitempty"`
@@ -89,11 +92,14 @@ type mutateArgs struct {
 	Supports      string             `json:"supports,omitempty"`
 	References    []findingReference `json:"references,omitempty"`
 
-	// Context-linking fields: optional pass-through so a
-	// finding/research/rule create is born linked to the active ticket
-	// (ticket--contains-->node), grouped under a session
-	// (session--contains-->node), and related to touched code/knowledge
-	// nodes (node--relates-to-->target). Lowered onto the create_batch by
+	// Context-linking fields: optional pass-through so a created node is born
+	// linked to the active ticket (ticket--contains-->node), grouped under a
+	// session (session--contains-->node), and related to touched code/knowledge
+	// nodes (node--relates-to-->target).
+	// The scope is universal:
+	// every knowledge-graph create routes the context-link trio — the types with
+	// their own handlers route it there, and every other type is claimed by the
+	// type-blind arm on the PRESENCE of one of these three fields. Lowered onto the create_batch by
 	// buildContextLinks (write_context_links.go); every edge is
 	// fail-tolerant (an unresolvable target drops+warns, never blocks the
 	// write). Session reuses the think-path get-or-create.
@@ -128,13 +134,18 @@ func (a mutateArgs) cascadeToDescendants() bool {
 }
 
 // findingReference is the typed wire shape for a single finding
-// reference (URL / file / node_id). Mirrors
-// projects.ReferenceArgs.
+// reference (URL / file / node_id).
+//
+// Summary is REQUIRED on the url and file kinds and refused on node_id: the
+// first two CREATE a reference node, which is embed-only-knowledge and so
+// carries an author summary like every other created node, while a node_id
+// entry only draws an edge to a node that already has one.
 type findingReference struct {
-	URL    string `json:"url,omitempty"`
-	File   string `json:"file,omitempty"`
-	NodeID string `json:"node_id,omitempty"`
-	Title  string `json:"title,omitempty"`
+	URL     string `json:"url,omitempty"`
+	File    string `json:"file,omitempty"`
+	NodeID  string `json:"node_id,omitempty"`
+	Title   string `json:"title,omitempty"`
+	Summary string `json:"summary,omitempty"`
 }
 
 // InterceptMutate is the client-side mutate dispatch head. It claims the
@@ -164,7 +175,12 @@ type findingReference struct {
 // Returns (false, _) when:
 //   - The tool isn't `mutate`.
 //   - The graph isn't knowledge (practice / transformers fall through).
-//   - The operation isn't update or delete.
+//   - A create the create dispatch does not claim: an empty type, or a
+//     non-finding/research/rule type supplying none of ticket_id/session/links.
+//   - A declared operation that reaches the dispatch default bucket and declines
+//     to an engine arm (create_batch, upsert, update_batch,
+//     bulk_update_metadata, unlink) — accounted here, then handed on.
+//   - A link handleClientCrossGraphLink does not fully resolve.
 //   - The lookup says the node is local-only (single id), or the multi-id batch
 //     is contract-valid (passes guardBatchUpdateShape).
 //
@@ -260,10 +276,24 @@ func InterceptMutate(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 		// non-knowledge graph reaches here too. It was already accounted upstream
 		// under its own arm, and accounting it a second time under a different
 		// spec would reject a call neither arm rejects on its own.
-		if a.Operation != "link" {
-			if err := accountMutateParams(armNonKnowledgeFallthrough, a); err != nil {
-				return true, errorResult(err.Error())
-			}
+		if err := accountNonKnowledgeMutate(a); err != nil {
+			return true, errorResult(err.Error())
+		}
+		// Param accounting keeps FIRST refusal above, so a rejected param keeps
+		// its own specific message; this one claims only the calls accounting
+		// let through. It refuses an instance-addressed graph whose selector is
+		// empty, naming the value and the vocabulary rather than spending a
+		// server round trip on "graph selector invalid". Singleton families
+		// return nil, so the corpus-check guard below still runs for checks.
+		if err := requireGraphInstanceSelector(a); err != nil {
+			return true, errorResult(err.Error())
+		}
+		// The check gate's second call site, and the one that closes the upsert
+		// bypass plus the two batch-update shapes — none of which reach the
+		// passthrough arm above. It self-filters on graph=="checks", so practice,
+		// transformers and every foreign graph pass straight through.
+		if err := guardCorpusCheckWrite(ctx, gc, a); err != nil {
+			return true, errorResult(err.Error())
 		}
 		return false, kgtools.ToolResult{}
 	}
@@ -353,72 +383,7 @@ func handleInterceptMutateUpdate(
 	if backendName == "" {
 		return handleLocalOnlyMutateUpdate(ctx, deps, gc, a, node)
 	}
-	if err := accountMutateParams(armUpdateBackend, a); err != nil {
-		return true, errorResult(err.Error())
-	}
-	// Clear-to-blank has no meaning on a tracker-backed node: the work item lives
-	// in an external tracker whose status vocabulary has no blank state, so the
-	// write could not be represented there even though it is legal locally.
-	// Rejected BEFORE any tracker write, so the item is left untouched.
-	if statusExplicitlySupplied(a.raw) && a.Status == "" {
-		return true, errorResult(fmt.Sprintf(
-			"mutate(update): status cannot be cleared to blank — node %s is backed by the %s tracker, "+
-				"which has no blank state; set an explicit status instead",
-			a.ID, backendName,
-		))
-	}
-	backend := deps.BackendResolver().ByName(backendName)
-	if backend == nil {
-		return true, errorResult(fmt.Sprintf(
-			"mutate(update): backend %q recorded on node %s but not currently configured",
-			backendName, a.ID,
-		))
-	}
-
-	updateArgs := dispatch.UpdateArgs{NodeID: a.ID}
-	if a.Name != "" {
-		v := a.Name
-		updateArgs.Name = &v
-	}
-	if a.Description != "" {
-		v := a.Description
-		updateArgs.Description = &v
-	}
-	if a.Status != "" {
-		v := a.Status
-		updateArgs.Status = &v
-	}
-	if pri, ok := a.Metadata["priority"]; ok && pri != "" {
-		v := parsePriority(pri)
-		updateArgs.Priority = &v
-	}
-	if labels, ok := a.Metadata["labels"]; ok && labels != "" {
-		v := labels
-		updateArgs.Labels = &v
-	}
-
-	if err := dispatch.Update(ctx, node, backendName, backend, updateArgs); err != nil {
-		return true, errorResult("mutate(update): " + err.Error())
-	}
-
-	// Build the forwarded args from a FRESH map (NOT in-place mutation
-	// of caller's metadata). stripBackendPrivateMetadata is pure. The
-	// knowledge-graph forward runs AFTER the backend dispatch.Update above,
-	// routed through the login-aware Execute carrier seam (by-id UPDATE, cloud
-	// when logged in) — the ordering + the desync message below are preserved
-	// byte-for-byte.
-	forwardedArgs := marshalForwardedMutateUpdateArgs(a, backendName)
-	if _, err := executeMutate(ctx, gc, forwardedArgs); err != nil {
-		return true, errorResult(fmt.Sprintf(
-			"Linear update succeeded for %s, but local update failed: %v; the next manual update will not be a no-op until local catches up",
-			a.ID, err,
-		))
-	}
-	// Surface a thin success message — the local mutate's result would
-	// usually be empty for an update path, and the user typically cares
-	// only that both halves landed.
-	_ = params // reserved for future passthrough use
-	return true, textResult(fmt.Sprintf("mutate(update): backend %q + local update succeeded for %s", backendName, a.ID))
+	return handleBackendMutateUpdate(ctx, deps, gc, a, node, backendName, params)
 }
 
 // marshalForwardedMutateUpdateArgs builds a fresh JSON payload for the

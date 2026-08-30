@@ -45,6 +45,13 @@ type fakeTranscriptBackend struct {
 	// surviving batch wire type — since the batch path is the only transcript path.
 	confirms []confirmBatchChunk
 
+	// confirmBodies records the RAW marshaled confirm-batch body of every confirm in
+	// arrival order — the exact bytes the producer emitted, before any decode. The
+	// captured-payload artifact is taken from here rather than from a re-marshaled
+	// confirms element, because the artifact exists to prove the tag spellings the
+	// producer's marshaller actually writes.
+	confirmBodies [][]byte
+
 	// Failure injection for the ship tests.
 	presignErr bool
 	confirmErr bool
@@ -171,6 +178,10 @@ func (b *fakeTranscriptBackend) handlePresignBatch(body []byte) ([]byte, error) 
 func (b *fakeTranscriptBackend) handleConfirmBatch(body []byte) ([]byte, error) {
 	b.mu.Lock()
 	b.confirmCalls++
+	// Record a COPY of the emitted bytes before the failure-injection short-circuit: the
+	// producer emitted them either way, and the caller owns the slice, so the recorder
+	// must not alias a buffer the transport may reuse.
+	b.confirmBodies = append(b.confirmBodies, append([]byte(nil), body...))
 	failed := b.confirmErr
 	if b.confirmFailFirstN > 0 {
 		b.confirmFailFirstN--
@@ -254,6 +265,17 @@ func (b *fakeTranscriptBackend) confirmsForSession(session string) []confirmBatc
 		}
 	}
 	return out
+}
+
+// lastConfirmBody returns a copy of the most recently recorded raw confirm-batch body,
+// or nil when none was recorded.
+func (b *fakeTranscriptBackend) lastConfirmBody() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.confirmBodies) == 0 {
+		return nil
+	}
+	return append([]byte(nil), b.confirmBodies[len(b.confirmBodies)-1]...)
 }
 
 // putObjectCount reports how many GCS objects were stored (proves a PUT happened

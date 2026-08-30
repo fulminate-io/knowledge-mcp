@@ -85,7 +85,7 @@ func aliasFixture(t *testing.T) (interface {
 	VectorByID(string) ([]byte, bool)
 }, []byte) {
 	t.Helper()
-	g := buildBinaryHNSWSerialDeterministic(randomBuildItems(t, 16), defaultVecBytes, defaultM, defaultEfConstruction)
+	g := buildBinaryHNSWSerialDeterministic(randomBuildItems(t, 16), defaultVecBytes, dtypeUbinary, defaultM, defaultEfConstruction)
 	blob, err := encodeGraphV3(g)
 	require.NoError(t, err)
 	seg, err := Format{}.Decode(blob)

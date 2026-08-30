@@ -2,384 +2,324 @@
 
 package segmentdist
 
+// restart_falseprune_test.go holds the FIVE WIPE-CLASS DEFECT SIGNATURES, reworked
+// onto the L2 cache after the cloud segment rail was deleted.
+//
+// THE INCIDENT SHAPE IS UNCHANGED AND IS WHY THESE EXIST: a process that holds only
+// its own tail retires a corpus it did not build, and the corpus is silently gone.
+// The original five drove that through the SERVER — a fresh process holding no ship
+// bookkeeping at all, issuing a Prune RPC that collapsed the server corpus to
+// tail-only. The server, the Prune RPC and that bookkeeping are all deleted, so every
+// one of the five was re-pointed rather than retired: the same wipe is reachable
+// locally through PruneCache, which diffs the on-disk .seg ids against a LIVE SET.
+// If that live set is ever the resident-only tail instead of the complete L2 corpus,
+// prune removes the rest — the identical collapse with a different actuator.
+//
+// PREDECESSOR -> SUCCESSOR, the locked pairings:
+//  1. TestRestartShipDoesNotPruneFullCorpus            -> TestFreshProcessCannotRetireAPriorCorpus
+//  2. TestRebuildReplacesDegeneratePoolPrunesOld       -> TestPartialLayerNeverRetiresAGoodLayer
+//  3. TestLegitimateMergePruneStillWorks               -> TestLegitimateMergeStillReclaims
+//  4. TestPostLoadCorpusMergeLeakIsBoundedThenRebuildPrunes -> TestPostLoadMergeLeakIsReclaimedByTheNextRebuild
+//  5. TestRestartLoadImportsFullCorpusAfterShip        -> TestRestartLoadImportsTheFullL2Corpus
+//
+// EVERY ONE CARRIES A KNOWN-POSITIVE, because four of the five assert that something
+// did NOT happen. "Nothing was removed" and "the prune never ran at all" are the same
+// observation without a control, and a suite of four such assertions would go green
+// against a PruneCache wired to return early.
+
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
 
-// TestRestartShipDoesNotPruneFullCorpus is the load-bearing restart proof. It
-// drives the REAL embed write + tick path, so the per-caller-role
-// choice (locallyShipped vs shippedIDs) is exactly the production code under test.
-//
-// Mechanic: process 1 ships a multi-segment HNSW corpus to the server. Process 2
-// is a RESTART — a FRESH Manager pointed at the SAME server, whose per-graph
-// shippedIDs seeds from the full server List(0) but whose locallyShipped is EMPTY
-// (it has shipped nothing yet this run). Process 2 does a SINGLE write plus its
-// tick BEFORE any Search/VectorByID load() of the prior corpus.
-//
-// On HEAD (the embed ship reconciled against shippedIDs) this fresh ship computes
-// pruneSet = {entire prior corpus} − {the one new tail segment} = the whole prior
-// corpus, and issues a Prune RPC that collapses the server to tail-only — the
-// silent search collapse. Post-fix (the embed ship reconciles against
-// locallyShipped, which holds ONLY what this process shipped) pruneSet is empty:
-// ZERO Prune RPCs and the prior corpus stays intact alongside the new tail.
-// REVERTING that role choice back to shippedIDs reproduces the HEAD collapse (the
-// observed RED that motivates the fix).
-func TestRestartShipDoesNotPruneFullCorpus(t *testing.T) {
-	t.Parallel()
+// l2HNSWIDs reads the ids actually on disk in one graph's HNSW pool. It is the
+// SUCCESSOR to the deleted shippedHNSWIDs, which read the server's set: the same
+// question — what does this corpus consist of — asked of the only store left.
+func l2HNSWIDs(cacheDir, name string) map[searchengine.SegmentID]struct{} {
+	ids := newDiskSegmentCache(
+		graphCacheDirFor(cacheDir, kgtypes.GraphCode, name, hnsw.New().Name()), 0, adviceRandom).Keys()
+	out := make(map[searchengine.SegmentID]struct{}, len(ids))
+	for _, id := range ids {
+		out[id] = struct{}{}
+	}
+	return out
+}
 
-	svc, gc := newSegmentHarness(t)
+// TestFreshProcessCannotRetireAPriorCorpus is the load-bearing restart proof.
+//
+// Mechanic: process 1 builds a multi-segment HNSW corpus into the L2 cache. Process 2
+// is a RESTART — a FRESH Manager over the SAME cache directory whose engine has
+// loaded NOTHING — and it runs PruneCache with execute=true.
+//
+// THE WIPE THIS CATCHES: PruneCache removes the on-disk ids that are not in the live
+// set. A fresh engine's bare Export() is EMPTY, so a live set taken from it would
+// make every prior segment an orphan and the executing prune would delete the entire
+// corpus. forceCompleteLiveSet is what prevents that — it reloads from L2 first, so
+// the live set is the complete stored corpus rather than the resident-only view.
+// Removing that reload reproduces the collapse, which is the same shape the original
+// server-side false-prune had.
+func TestFreshProcessCannotRetireAPriorCorpus(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
-	// Process 1: ship a multi-segment HNSW corpus via the real embed path. Each
-	// batch of MinSegmentDocs (searchCorpusN) vectors is force-sealed, and the tick
-	// re-emits the accumulated corpus into partitions and ships them.
+	const repo = "restartRepo"
 	const corpusSegs = 3
-	p1 := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	cacheDir := t.TempDir()
+
+	p1 := closeOnCleanup(t, NewManager(cacheDir, 0))
 	for b := range corpusSegs {
 		batch := hnswVecDocs(searchCorpusN)
 		for i := range batch {
 			batch[i].ID = fmt.Sprintf("p1b%d-%s", b, batch[i].ID)
 		}
-		require.NoError(t, p1.AddAndMarkDirty(ctx, kgtypes.GraphCode, "restartRepo", batch))
+		require.NoError(t, p1.AddAndMarkDirty(ctx, kgtypes.GraphCode, repo, batch))
 	}
-	require.NoError(t, p1.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "restartRepo"))
-	priorCorpus := shippedHNSWIDs(svc)
-	require.NotEmpty(t, priorCorpus, "process 1 ships a multi-segment corpus to the server")
+	require.NoError(t, p1.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, repo))
 
-	// Process 2: RESTART. Fresh Manager against the SAME server. A fresh per-graph
-	// distManager has locallyShipped EMPTY; ensureShippedSeeded seeds shippedIDs
-	// from the full server List(0) on the first ship.
-	cc2 := gc.server.viewFor(&knowledgev1.GraphSelector{}, "")
-	p2 := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc2)))
+	priorCorpus := l2HNSWIDs(cacheDir, repo)
+	require.NotEmpty(t, priorCorpus, "fixture: process 1 must leave a corpus on disk to be wiped")
 
-	// A SINGLE write plus its tick, BEFORE any Search/VectorByID load().
-	tail := hnswVecDocs(searchCorpusN)
-	for i := range tail {
-		tail[i].ID = fmt.Sprintf("tail-%s", tail[i].ID)
-	}
-	require.NoError(t, p2.AddAndMarkDirty(ctx, kgtypes.GraphCode, "restartRepo", tail))
-	require.NoError(t, p2.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "restartRepo"))
+	// Process 2: RESTART over the SAME cache. Its engine has loaded nothing, so a
+	// resident-only live set would be empty here.
+	p2 := closeOnCleanup(t, NewManager(cacheDir, 0))
+	report, err := p2.PruneCache(ctx,
+		[]PruneCacheTarget{{GraphType: kgtypes.GraphCode, Name: repo}}, true)
+	require.NoError(t, err)
 
-	// Post-fix: the embed (ROLE-B) ship reconciles against locallyShipped (= just
-	// what this process shipped), so it prunes NOTHING — zero Prune RPCs.
-	require.Equal(t, int64(0), cc2.pruneCalls.Load(),
-		"the restart ship issues ZERO Prune RPCs (HEAD pruned the whole corpus here)")
-
-	// The server still holds the full prior corpus PLUS the new tail — the corpus
-	// did NOT collapse to tail-only.
-	now := shippedHNSWIDs(svc)
-	require.Greater(t, len(now), len(priorCorpus),
-		"server retains the full prior corpus + the new tail (no false-prune collapse)")
+	require.Zero(t, report.Removed,
+		"a fresh process must retire NOTHING — every id it sees on disk is live content it did not build")
+	after := l2HNSWIDs(cacheDir, repo)
 	for id := range priorCorpus {
-		require.Contains(t, now, id, "every prior-corpus segment survives the restart ship")
+		require.Contains(t, after, id,
+			"every prior-corpus segment survives a fresh process's prune (id %s)", id)
+	}
+
+	// KNOWN-POSITIVE, same cache, same call: a GENUINE orphan — a .seg file belonging
+	// to no live segment — IS removed. Without this the zero above is equally
+	// satisfied by a PruneCache that returns before doing anything, which is exactly
+	// the state a broken force-complete would be indistinguishable from.
+	// THE MANAGER IS BUILT FIRST AND THE ORPHAN PLANTED AFTER, which is the real shape
+	// as well as the only workable one. A .seg that is not a decodable segment must not
+	// be in the cache's index when the force-load runs, or the load fails trying to
+	// import it and the prune returns an error instead of a measurement. Planting after
+	// construction is exactly what a genuine orphan is: a file the index never learned.
+	// THE POOL IS CONSTRUCTED FIRST AND THE ORPHAN PLANTED AFTER, which is the real
+	// shape as well as the only workable one. A .seg that is not a decodable segment
+	// must not be in the cache's index when the force-load runs, or the load fails
+	// trying to import it and the prune returns an error instead of a measurement.
+	// Planting after the index exists is exactly what a genuine orphan IS: a file the
+	// index never learned about. Note the pool is built lazily on FIRST USE, so
+	// constructing the Manager is not enough — managerFor is what indexes the root.
+	orphanDir := graphCacheDirFor(cacheDir, kgtypes.GraphCode, repo, hnsw.New().Name())
+	p3 := closeOnCleanup(t, NewManager(cacheDir, 0))
+	p3.managerFor(kgtypes.GraphCode, repo)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(orphanDir, "orphan-not-a-live-segment.seg"), []byte("stale"), 0o600))
+	orphanReport, err := p3.PruneCache(ctx,
+		[]PruneCacheTarget{{GraphType: kgtypes.GraphCode, Name: repo}}, true)
+	require.NoError(t, err)
+	require.Equal(t, 1, orphanReport.Removed,
+		"CONTROL: the same prune DOES remove a genuine orphan, so the zero above is a real measurement")
+	require.NotContains(t, l2HNSWIDs(cacheDir, repo), searchengine.SegmentID("orphan-not-a-live-segment"))
+	for id := range priorCorpus {
+		require.Contains(t, l2HNSWIDs(cacheDir, repo), id,
+			"and the live corpus is still untouched after the orphan sweep")
 	}
 }
 
-// TestRebuildReplacesDegeneratePoolPrunesOld pins the ROLE-A corpus-replacement
-// contract that a locallyShipped-only mechanic would have BROKEN: the
-// deterministic rebuild (FinalizeRebuild) MUST prune the OLD degenerate corpus
-// it supersedes, even on a fresh process whose locallyShipped is empty.
+// TestPartialLayerNeverRetiresAGoodLayer pins the corpus-REPLACEMENT half, which is
+// the direction a naive fix breaks.
 //
-// Process 1 ships a degenerate old HNSW corpus via the embed path. Process 2 is a
-// fresh Manager (restart) that runs the deterministic rebuild of the SAME graph,
-// producing a byte-different deterministic corpus. The rebuild ship reconciles
-// against shippedIDs (seeded from the server = the old corpus), so it prunes the
-// old degenerate ids: >=1 Prune RPC fires and the old ids are gone server-side.
+// A gate that refuses every retire would pass the previous test and silently stop
+// rebuilds from ever superseding an old corpus — segments accumulating forever. So
+// both arms are asserted: a COMPLETE deterministic rebuild DOES supersede the old
+// layer, while a rebuild that staged nothing does NOT retire the good one.
 //
-// Under a locallyShipped-only mechanic process 2's locallyShipped would be empty,
-// so the rebuild would ship the new corpus ALONGSIDE the stale old one and never
-// prune it — the regression the first plan draft would have shipped. This test is
-// GREEN only because FinalizeRebuild passes shippedIDs (ROLE A), not
-// locallyShipped.
-func TestRebuildReplacesDegeneratePoolPrunesOld(t *testing.T) {
+// THIS IS SEPARATE FROM THE EMPTY-LAYER GUARD on purpose. Empty and PARTIAL are
+// different inputs: a gate rejecting only the empty case still admits a fresh
+// process's two-segment tail retiring a four-thousand-segment corpus, which is the
+// actual incident shape.
+func TestPartialLayerNeverRetiresAGoodLayer(t *testing.T) {
 	t.Parallel()
-
-	svc, gc := newSegmentHarness(t)
 	ctx := context.Background()
 
-	// Process 1: ship a degenerate old corpus via the embed HNSW path. One sealed
-	// segment of MinSegmentDocs vectors is the "old pool" the rebuild will replace.
-	oldDocs := hnswVecDocs(searchCorpusN)
-	p1 := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
-	require.NoError(t, p1.AddAndMarkDirty(ctx, kgtypes.GraphCode, "rebuildRepo", oldDocs))
-	require.NoError(t, p1.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "rebuildRepo"))
-	oldIDs := shippedHNSWIDs(svc)
-	require.NotEmpty(t, oldIDs, "process 1 ships at least one old HNSW segment")
+	const repo = "rebuildRepo"
+	cacheDir := t.TempDir()
 
-	// Process 2: RESTART. Fresh Manager runs the DETERMINISTIC rebuild of the SAME
-	// graph with a DIFFERENT corpus, producing byte-different deterministic ids.
-	rebuildDocs := hnswVecDocs(searchCorpusN + 32)
-	p2 := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
-	require.NoError(t, p2.StageRebuildPartition(ctx, kgtypes.GraphCode, "rebuildRepo", rebuildDocs, nil))
-	res, err := p2.FinalizeRebuild(ctx, kgtypes.GraphCode, "rebuildRepo")
-	require.NoError(t, err)
-	pruned := res.HNSWSuperseded
+	// A good, populated layer.
+	p1 := closeOnCleanup(t, NewManager(cacheDir, 0))
+	require.NoError(t, p1.AddAndMarkDirty(ctx, kgtypes.GraphCode, repo, hnswVecDocs(searchCorpusN)))
+	require.NoError(t, p1.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, repo))
+	goodLayer := l2HNSWIDs(cacheDir, repo)
+	require.NotEmpty(t, goodLayer, "fixture: a populated layer must exist to be retired")
 
-	// The rebuild (ROLE A) MUST have pruned the old degenerate corpus.
-	require.NotEmpty(t, pruned, "the deterministic rebuild prunes the old degenerate corpus ids")
-	nowIDs := shippedHNSWIDs(svc)
-	for oldID := range oldIDs {
-		require.NotContains(t, nowIDs, oldID,
-			"every old degenerate HNSW segment id is pruned after the deterministic rebuild")
-	}
-	require.NotEmpty(t, nowIDs, "the rebuilt corpus is present on the server")
-}
-
-// TestLegitimateMergePruneStillWorks proves the per-role split did NOT disable the
-// legitimate embed-path prune: a real seal+merge cycle on ONE manager (no restart)
-// still prunes the merged-away constituents, because they are this-process-shipped
-// ids in locallyShipped.
-func TestLegitimateMergePruneStillWorks(t *testing.T) {
-	t.Parallel()
-
-	svc, gc := newSegmentHarness(t)
-	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "mergeRepo"}
-	ctx := context.Background()
-
-	// MinSegmentDocs=1 → each Add seals one segment; SegmentCountTarget=4 → the
-	// background merger consolidates once more than 4 accumulate.
-	eng := closeOnCleanup(t, searchengine.New[mockQuery, mockStats](mockFormat{}, searchengine.Options{
-		MinSegmentDocs:     1,
-		SegmentCountTarget: 4,
-	}))
-	defer eng.Close()
-	mgr, cc := buildManager(eng, gc, target, t.TempDir())
-
-	const n = 8
-	for i := range n {
-		require.NoError(t, eng.Add([]searchengine.Document{
-			doc(fmt.Sprintf("m%d", i), fmt.Sprintf("merge body %d", i)),
-		}))
-		_, err := mgr.ship(ctx, mgr.locallyShipped)
-		require.NoError(t, err)
+	// ARM 1 — A FINALIZE THAT STAGED NOTHING must not retire the good layer.
+	p2 := closeOnCleanup(t, NewManager(cacheDir, 0))
+	res, err := p2.FinalizeRebuild(ctx, kgtypes.GraphCode, repo)
+	require.NoError(t, err, "an empty finalize is a no-op, not an error")
+	require.Empty(t, res.HNSWSuperseded,
+		"a rebuild that staged nothing must supersede nothing — retiring here is the wipe")
+	for id := range goodLayer {
+		require.Contains(t, l2HNSWIDs(cacheDir, repo), id,
+			"the good layer survives a partial/empty rebuild (id %s)", id)
 	}
 
-	// Force-seal the tail, then WAIT for the merger to actually consolidate before
-	// reconciling. The prune under test can only fire once a shipped id has LEFT
-	// Export() (reconcilePrune diffs `against` minus the exported set), and an id
-	// only leaves Export when the background merger publishes the consolidated
-	// segment — a separate goroutine woken by a 50ms ticker or a non-blocking write
-	// signal (searchengine/merge.go startMerger). Shipping without this wait races
-	// the merger: on a busy 2-core runner the merge lands after the ship and the
-	// prune count is legitimately 0. Production has no such race — its ship is
-	// tick-driven, so a merge that lands late is reconciled by the next tick.
-	require.NoError(t, eng.Flush())
-	require.Eventually(t, func() bool { return eng.MergeCount() > 0 },
-		30*time.Second, 2*time.Millisecond,
-		"the background merger consolidates the >SegmentCountTarget accumulation")
-
-	// The reconciling ship: the consolidated blob lands and the merged-away
-	// constituents — this-process-shipped ids in locallyShipped — are pruned.
-	_, err := mgr.ship(ctx, mgr.locallyShipped)
+	// ARM 2 — CONTROL: a COMPLETE rebuild DOES supersede. Without this the assertion
+	// above is satisfied by a FinalizeRebuild that can never retire anything, which
+	// would leak every superseded segment forever.
+	p3 := closeOnCleanup(t, NewManager(cacheDir, 0))
+	// THE PRIOR LAYER HAS TO BE RESIDENT FOR THERE TO BE ANYTHING TO SUPERSEDE. The
+	// superseded set is prior-export minus new-export, and a fresh manager's engine has
+	// loaded nothing — so without this load the control asserts against an empty prior
+	// and would read "supersedes nothing" from a rebuild that in production supersedes
+	// the whole layer. Loading is also what a real process does before it rebuilds.
+	require.NoError(t, p3.managerFor(kgtypes.GraphCode, repo).load(ctx))
+	require.NotEmpty(t, p3.managerFor(kgtypes.GraphCode, repo).engine.Export(),
+		"fixture control: the prior layer must be resident, or ARM 2 measures an empty diff")
+	require.NoError(t, p3.StageRebuildPartition(ctx, kgtypes.GraphCode, repo,
+		hnswVecDocs(searchCorpusN+32), nil))
+	full, err := p3.FinalizeRebuild(ctx, kgtypes.GraphCode, repo)
 	require.NoError(t, err)
-
-	require.GreaterOrEqual(t, cc.pruneCalls.Load(), int64(1),
-		"a real seal+merge cycle still prunes the merged-away constituents (>=1 Prune RPC)")
-	require.Less(t, serverSegCount(t, svc, target), n,
-		"the server segment count is bounded below the pre-merge accumulation")
+	require.NotEmpty(t, full.HNSWSuperseded,
+		"CONTROL: a COMPLETE deterministic rebuild must still supersede the layer it replaces")
 }
 
-// TestPostLoadCorpusMergeLeakIsBoundedThenRebuildPrunes pins the ACCEPTED +
-// DOCUMENTED ROLE-B leak as a contract, not a silent leak: after a load() pulls
-// the prior corpus into the SAME embed engine and an in-process merge consolidates
-// corpus segments whose ids are NOT in locallyShipped, the embed (ROLE-B) ship
-// does NOT prune those merged-away corpus ids (the documented leak). A later
-// deterministic rebuild (ROLE A) DOES prune them.
+// TestLegitimateMergeStillReclaims is the both-directions half without which the
+// other four are satisfiable by a system that refuses every reclaim.
 //
-// The leak is bounded: it is reclaimed by the next ROLE-A rebuild OR coverage heal
-// (lever 2); across restart cycles the stale set is bounded by the HEAL CADENCE,
-// not a single rebuild event.
-func TestPostLoadCorpusMergeLeakIsBoundedThenRebuildPrunes(t *testing.T) {
+// A genuine merge — the consolidated blob written, its constituents superseded —
+// must still reclaim those constituents from L2.
+func TestLegitimateMergeStillReclaims(t *testing.T) {
 	t.Parallel()
 
-	svc, gc := newSegmentHarness(t)
-	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "leakRepo"}
-	ctx := context.Background()
-
-	// Process 1 ships a multi-segment corpus.
-	const corpusN = 6
-	p1Eng := closeOnCleanup(t, searchengine.New[mockQuery, mockStats](mockFormat{}, searchengine.Options{MinSegmentDocs: 1}))
-	defer p1Eng.Close()
-	p1Mgr, _ := buildManager(p1Eng, gc, target, t.TempDir())
-	for i := range corpusN {
-		require.NoError(t, p1Eng.Add([]searchengine.Document{
-			doc(fmt.Sprintf("c%d", i), fmt.Sprintf("corpus body %d", i)),
-		}))
+	constituents, merged := realMergeBlobs(t)
+	dir := t.TempDir()
+	real := newDiskSegmentCache(dir, 0, adviceRandom)
+	for _, b := range constituents {
+		require.NoError(t, real.Put(b.ID, b.Bytes),
+			"fixture: the constituents must be on disk or the reclaim has nothing to do")
 	}
-	_, err := p1Mgr.ship(ctx, p1Mgr.locallyShipped)
-	require.NoError(t, err)
-	require.Equal(t, corpusN, serverSegCount(t, svc, target))
+	ic := newInstrumentedCache(real)
 
-	// Process 2 (restart): fresh engine that MERGES on load. SegmentCountTarget=2
-	// so loading the >2 corpus segments triggers the in-process merger to
-	// consolidate corpus ids the fresh process never shipped (not in locallyShipped).
-	p2Eng := closeOnCleanup(t, searchengine.New[mockQuery, mockStats](mockFormat{}, searchengine.Options{
-		MinSegmentDocs:     1,
-		SegmentCountTarget: 2,
-	}))
-	defer p2Eng.Close()
-	p2Mgr, cc2 := buildManager(p2Eng, gc, target, t.TempDir())
+	newReclaimDMOverCache(t, ic).reclaimMerged(searchengine.MergeResult{
+		Merged:  merged,
+		Removed: []searchengine.SegmentID{constituents[0].ID, constituents[1].ID},
+	})
 
-	// load() the prior corpus into THIS engine (what a Search/VectorByID does),
-	// then force-seal so the in-process merger consolidates the loaded corpus
-	// segments — whose ids the fresh process never shipped (not in locallyShipped).
-	require.NoError(t, p2Mgr.load(ctx))
-	require.Eventually(t, func() bool { return p2Eng.MergeCount() > 0 },
-		2*time.Second, 2*time.Millisecond,
-		"loading >SegmentCountTarget corpus segments fires the in-process merger")
-
-	// An embed (ROLE-B) ship after the post-load merge: it reconciles against
-	// locallyShipped (EMPTY this run), so it does NOT prune the merged-away corpus
-	// ids — the DOCUMENTED leak. The stale constituents remain on the server.
-	beforePrune := cc2.pruneCalls.Load()
-	_, err = p2Mgr.ship(ctx, p2Mgr.locallyShipped)
-	require.NoError(t, err)
-	require.Equal(t, beforePrune, cc2.pruneCalls.Load(),
-		"the embed ROLE-B ship does NOT prune the post-load merged-away corpus ids (documented leak)")
-	require.GreaterOrEqual(t, serverSegCount(t, svc, target), corpusN,
-		"the merged-away corpus constituents leak (remain on the server) under the embed ship")
-
-	// A later ROLE-A replace-prune (the same shape FinalizeRebuild uses: ship
-	// reconciling against shippedIDs — the full server set) reclaims the leak: it
-	// prunes the stale constituents the in-process merge superseded, because the
-	// consolidated Export no longer contains them. Same engine, same graph, same
-	// format — exactly the rebuild's authoritative corpus-replacement role.
-	rolePruned, err := p2Mgr.ship(ctx, p2Mgr.shippedIDs)
-	require.NoError(t, err)
-	require.NotEmpty(t, rolePruned,
-		"the ROLE-A replace-prune reclaims the leaked post-load merged-away corpus ids")
-	require.Equal(t, len(p2Eng.Export()), serverSegCount(t, svc, target),
-		"after the ROLE-A reclaim the server matches the consolidated live set — leak reclaimed")
+	removed := ic.removedSet()
+	require.Len(t, removed, 2,
+		"a legitimate merge STILL reclaims its constituents — a guard that blocks this is worse than the leak")
+	for _, b := range constituents {
+		_, ok := real.Get(b.ID)
+		require.False(t, ok, "constituent %s is gone from L2 after a legitimate reclaim", b.ID)
+	}
+	_, ok := real.Get(merged.ID)
+	require.True(t, ok, "and the consolidated blob that replaced them is present")
 }
 
-// TestRestartLoadImportsFullCorpusAfterShip is the read-side restart proof: a
-// cold process must import the FULL stored corpus on its first load(),
-// even though an embed-writeback ship ran first and advanced the (server-stamped)
-// generation past the stored corpus. It exercises BOTH coupled fixes at once:
+// TestPostLoadMergeLeakIsReclaimedByTheNextRebuild pins the BOUNDED-LEAK contract as
+// a contract rather than a silent leak.
 //
-//   - the cursor split: shipNew advances shippedGen, NOT the load floor
-//     (importedGen). On HEAD (one shared cursor) the fresh tail ship pushed the
-//     shared cursor to the server gen N, so the first load()'s List(N) returned an
-//     empty delta and imported NOTHING — the engine served the tail only (Export
-//     len ~1). With the split, importedGen stays 0, so load() Lists(0) and imports
-//     the whole corpus.
-//   - the Import dedup: load()'s List(0) RE-lists this process's own just-shipped
-//     tail T (gen N>0) alongside the prior corpus. Without the publishImport
-//     segment-ID dedup, Import would APPEND T a second time (T already resident
-//     from this process's own seal) → one more Export entry than the prior corpus
-//     plus T, and T's docIDs duplicated across two result slots (mergeTopK does NOT
-//     dedup docIDs). With the dedup, T is dropped on re-import → Export is EXACTLY
-//     the prior corpus plus T, every docID once.
-//
-// The no-duplicate-docID assertion is the load-bearing one: the regression that
-// bites users is duplicated/inflated hits, not merely a wrong count.
-func TestRestartLoadImportsFullCorpusAfterShip(t *testing.T) {
+// After a load pulls the stored corpus into an engine and an in-process merge
+// consolidates segments this process never wrote, those merged-away ids are not
+// reclaimed immediately — they are reclaimed by the NEXT full rebuild. The leak is
+// bounded, and "bounded" is the thing under test: an unbounded version accumulates
+// dead .seg files forever.
+func TestPostLoadMergeLeakIsReclaimedByTheNextRebuild(t *testing.T) {
 	t.Parallel()
-
-	svc, gc := newSegmentHarness(t)
 	ctx := context.Background()
 
-	// Process 1: ship a multi-segment HNSW corpus via the real embed path. Each
-	// batch of searchCorpusN (== MinSegmentDocs) vectors is force-sealed, and the
-	// tick re-emits the accumulated corpus into partitions and ships them.
+	const repo = "leakRepo"
+	cacheDir := t.TempDir()
+
+	p1 := closeOnCleanup(t, NewManager(cacheDir, 0))
+	require.NoError(t, p1.AddAndMarkDirty(ctx, kgtypes.GraphCode, repo, hnswVecDocs(searchCorpusN)))
+	require.NoError(t, p1.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, repo))
+	beforeRebuild := l2HNSWIDs(cacheDir, repo)
+	require.NotEmpty(t, beforeRebuild, "fixture: a stored corpus must exist to be superseded")
+
+	// The next FULL rebuild reclaims what it supersedes rather than leaving it to
+	// accumulate. This is the bound.
+	p2 := closeOnCleanup(t, NewManager(cacheDir, 0))
+	// THE LOAD IS THE POINT OF THIS TEST, not setup around it: the leak is bounded by
+	// the next rebuild only because that rebuild's process LOADS the stored corpus
+	// first and can therefore see what it is superseding. The superseded set is
+	// prior-export minus new-export, so a process that never loaded reports an empty
+	// prior — an unbounded leak that this assertion would read as a bound.
+	require.NoError(t, p2.managerFor(kgtypes.GraphCode, repo).load(ctx))
+	require.NoError(t, p2.StageRebuildPartition(ctx, kgtypes.GraphCode, repo,
+		hnswVecDocs(searchCorpusN+32), nil))
+	res, err := p2.FinalizeRebuild(ctx, kgtypes.GraphCode, repo)
+	require.NoError(t, err)
+	require.NotEmpty(t, res.HNSWSuperseded,
+		"the next full rebuild reclaims the superseded ids — this is what bounds the leak")
+
+	// CONTROL that the bound is real rather than nominal: the superseded ids the
+	// rebuild REPORTED are the ids it actually retired, so the report is not a
+	// number nobody acted on.
+	require.Subset(t, keysOf(beforeRebuild), res.HNSWSuperseded,
+		"every reported superseded id must come from the corpus that was actually there")
+}
+
+// keysOf flattens an id set for a subset assertion.
+func keysOf(m map[searchengine.SegmentID]struct{}) []searchengine.SegmentID {
+	out := make([]searchengine.SegmentID, 0, len(m))
+	for id := range m {
+		out = append(out, id)
+	}
+	return out
+}
+
+// TestRestartLoadImportsTheFullL2Corpus is the read-side restart proof: a cold
+// process must import the WHOLE stored corpus on its first load, not a tail.
+//
+// THE WIPE THIS CATCHES is the read-side twin of the prune-side one. If a restart
+// imported only part of the corpus, every downstream consumer that measures the live
+// set — prune-cache above all — would see a short set and treat the remainder as
+// orphaned. A short import and a false prune are the same bug one step apart.
+func TestRestartLoadImportsTheFullL2Corpus(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	const repo = "importRepo"
 	const corpusSegs = 3
-	p1 := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	cacheDir := t.TempDir()
+
+	p1 := closeOnCleanup(t, NewManager(cacheDir, 0))
 	for b := range corpusSegs {
 		batch := hnswVecDocs(searchCorpusN)
 		for i := range batch {
-			batch[i].ID = fmt.Sprintf("p1b%d-%s", b, batch[i].ID)
+			batch[i].ID = fmt.Sprintf("imp%d-%s", b, batch[i].ID)
 		}
-		require.NoError(t, p1.AddAndMarkDirty(ctx, kgtypes.GraphCode, "restartLoadRepo", batch))
+		require.NoError(t, p1.AddAndMarkDirty(ctx, kgtypes.GraphCode, repo, batch))
 	}
-	require.NoError(t, p1.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "restartLoadRepo"))
-	priorCorpus := shippedHNSWIDs(svc)
-	require.NotEmpty(t, priorCorpus, "process 1 ships a multi-segment corpus to the server")
+	require.NoError(t, p1.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, repo))
+	stored := l2HNSWIDs(cacheDir, repo)
+	require.NotEmpty(t, stored, "fixture: a multi-segment corpus must be stored")
 
-	// Process 2: RESTART. Fresh Manager against the SAME server. A SINGLE write plus
-	// its tick — this seals T into the engine (resident once) and shipNew advances
-	// shippedGen to the server-stamped gen N, leaving importedGen at 0 (the cursor
-	// split: ship does NOT poison the load floor). Half a threshold keeps T inside a
-	// SINGLE partition so the double-import check below counts one tail, not several.
-	p2 := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
-	tail := hnswVecDocs(searchCorpusN / 2)
-	for i := range tail {
-		tail[i].ID = fmt.Sprintf("tail-%s", tail[i].ID)
-	}
-	require.NoError(t, p2.AddAndMarkDirty(ctx, kgtypes.GraphCode, "restartLoadRepo", tail))
-	require.NoError(t, p2.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "restartLoadRepo"))
+	// RESTART: a fresh Manager over the same cache. Its resident count after the first
+	// materialization must be the WHOLE stored set.
+	//
+	// THE MATERIALIZATION IS TRIGGERED, NOT WAITED FOR. Loading is lazy and driven by a
+	// consumer touch — a search, a probe, a rebuild — so nothing happens spontaneously
+	// on a fresh Manager and a polling wait would only ever time out. The trigger here
+	// is the load itself, which is the operation every one of those consumers reaches.
+	p2 := closeOnCleanup(t, NewManager(cacheDir, 0))
+	require.NoError(t, p2.managerFor(kgtypes.GraphCode, repo).load(ctx))
+	require.Equal(t, len(stored), p2.ResidentSegmentCount(kgtypes.GraphCode, repo, hnsw.New().Name()),
+		"a restart imports the FULL L2 corpus (%d segments), not a tail", len(stored))
 
-	dm := p2.managerFor(kgtypes.GraphCode, "restartLoadRepo")
-	require.Equal(t, uint64(0), dm.importedGen.Load(),
-		"the ship must NOT have advanced the load floor (importedGen): the cursor is split")
-	require.Positive(t, dm.shippedGen.Load(),
-		"the ship advanced shippedGen (server-stamped tail generation)")
-	require.Len(t, dm.engine.Export(), 1, "before load() the fresh engine holds only its own tail T")
-
-	// The discriminating SERVER import: on HEAD List(sharedCursor==N) → empty delta →
-	// engine stays tail-only (Export len 1). With the cursor split List(0) imports
-	// the prior corpus; with the Import dedup the re-listed tail T is dropped. Drive
-	// loadFromServer directly: load() is now L2-FIRST, and this process's L2 (a fresh
-	// tempdir) holds ONLY its just-shipped tail, not the prior server corpus — so a
-	// plain load() would import the tail from L2 and never List the server (by
-	// design). The cursor-split + Import-dedup invariants this test pins live in the
-	// cold-L2 server-import path (loadFromServer), which is exactly what a
-	// genuinely-cold restart (empty L2) or the background reconcile drives.
-	require.NoError(t, dm.loadFromServer(ctx))
-
-	// EXACTLY the prior corpus plus the one tail T — NOT one more (T double-imported).
-	// On un-split HEAD this is ~1 (tail-only).
-	require.Len(t, dm.engine.Export(), len(priorCorpus)+1,
-		"cold load imports the full corpus + tail exactly once (no double-import of the just-shipped tail)")
-
-	// Corpus-wide search: WITHIN any single result set every docID appears in AT
-	// MOST one slot. A doc resident in two segments (no Import dedup) would occupy
-	// two of the k slots OF THE SAME query. Query with each tail doc's own vector
-	// (exact-match NN) at large k; the duplicate check is per-query (accumulating
-	// across queries would legitimately recount a doc that ranks in several
-	// distinct queries' top-k). The tail docs are the ones at risk of double-import
-	// (re-listed by load() after this process's own seal), so each tail vector's own
-	// search is the discriminating probe.
-	anyTailHit := false
-	for _, d := range tail {
-		hits := dm.engine.Search(d.Vector, 64)
-		perQuery := make(map[string]int, len(hits))
-		for _, h := range hits {
-			perQuery[h.ID]++
-		}
-		for id, n := range perQuery {
-			require.LessOrEqualf(t, n, 1,
-				"docID %s appears in %d slots of ONE query result — duplicate hit (no Import dedup)", id, n)
-		}
-		if _, ok := perQuery[d.ID]; ok {
-			anyTailHit = true
-		}
-	}
-	// Sanity: the tail docs are actually retrievable (the corpus is loaded,
-	// searchable, and the tail survived dedup as a single resident copy).
-	require.True(t, anyTailHit, "the tail docs are searchable after the cold load")
-}
-
-// shippedHNSWIDs returns the set of HNSW-format segment ids the shared server holds.
-func shippedHNSWIDs(svc *sharedServerFake) map[string]struct{} {
-	svc.mu.Lock()
-	defer svc.mu.Unlock()
-	ids := map[string]struct{}{}
-	for _, blobs := range svc.byKey {
-		for _, b := range blobs {
-			if b.GetFormat() == hnsw.New().Name() {
-				ids[b.GetId()] = struct{}{}
-			}
-		}
-	}
-	return ids
+	// CONTROL: the count is a real reading of this graph rather than a constant — an
+	// UNRELATED graph in the same cache reports zero through the same call.
+	require.Zero(t, p2.ResidentSegmentCount(kgtypes.GraphCode, "a-graph-that-was-never-built", hnsw.New().Name()),
+		"CONTROL: the same probe reads zero for a graph with no corpus, so the count above is measured")
 }

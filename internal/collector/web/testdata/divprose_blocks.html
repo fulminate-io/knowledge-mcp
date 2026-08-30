@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Channels in Practice</title>
+</head>
+<body>
+
+<div class="tmd-doc">
+
+  <div class="tmd-usual">A channel is a typed conduit through which one goroutine hands a value to
+    another, and the handover is the synchronisation point rather than a side effect of it.</div>
+
+  <div class="tmd-usual">Every channel carries an element type, so the compiler rejects a send whose
+    value cannot be received on the other side.</div>
+
+  <div class="tmd-usual">An unbuffered channel completes a send only when a receiver is ready, which
+    is why it doubles as a rendezvous between two goroutines. The <a href="/article/buffered.html">buffered
+    form</a> relaxes that by admitting a fixed number of queued values.</div>
+
+  <div class="tmd-usual">Capacity is fixed when the channel is made and never changes afterwards, so
+    a program cannot grow a queue to absorb a burst it did not plan for.</div>
+
+  <div class="tmd-usual">Receiving from a closed channel yields the zero value of the element type
+    immediately, and the two value form reports whether the value was real.</div>
+
+  <div class="tmd-usual">Closing is a sender side operation. A receiver that closes a channel invites
+    a send on a closed channel, which is a run time panic rather than an error value.</div>
+
+  <div class="tmd-usual">A nil channel blocks forever on both operations, which is occasionally
+    useful as a way to disable one arm of a select without restructuring the loop. The
+    <a href="/article/select.html">select statement</a> is where that behaviour pays off.</div>
+
+  <div class="tmd-usual">Select chooses among ready cases uniformly at random, so a program must not
+    depend on the order in which its cases were written.</div>
+
+  <div class="tmd-usual">A default case turns select into a non blocking probe, and it is the usual
+    way to attempt a send without risking a stall.</div>
+
+  <div class="tmd-usual">Directional channel types narrow a parameter to send only or receive only,
+    which documents intent and lets the compiler enforce it.</div>
+
+  <div class="tmd-usual">The runtime detects the case where every goroutine is blocked on channel
+    operations and reports a deadlock rather than hanging silently.</div>
+
+  <div class="tmd-usual">Two rules cover most channel bugs in practice:
+    <small>
+      <div>
+        <ul>
+          <li>the goroutine that owns a channel is the one that closes it</li>
+          <li>a receiver never assumes a value arrived without checking the second result</li>
+        </ul>
+      </div>
+    </small>
+  </div>
+
+  <div class="tmd-usual">Neither rule is enforced by the compiler, so both belong in review rather
+    than in the type system.</div>
+
+</div>
+
+</body>
+</html>

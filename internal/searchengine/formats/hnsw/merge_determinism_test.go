@@ -63,7 +63,7 @@ func TestDuplicateMergeSurvivorIsDeterministic(t *testing.T) {
 
 	mergeBytes := func(a, b searchengine.Segment[[]byte, struct{}]) []byte {
 		t.Helper()
-		merged, err := f.Merge(
+		merged, err := mergeSegments(t,
 			[]searchengine.Segment[[]byte, struct{}]{a, b},
 			[]func(searchengine.ExternalID) bool{nil, nil},
 		)
@@ -102,7 +102,7 @@ func TestDuplicateMergeSurvivorIsDeterministic(t *testing.T) {
 	// The caller appends the freshly built segment last, so this is what makes a fresh
 	// write win; between two resident layers it is arbitrary-but-stable, and it is NOT
 	// newest-wins overall.
-	merged, err := f.Merge(
+	merged, err := mergeSegments(t,
 		[]searchengine.Segment[[]byte, struct{}]{a1, b1},
 		[]func(searchengine.ExternalID) bool{nil, nil},
 	)

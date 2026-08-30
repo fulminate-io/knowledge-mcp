@@ -8,14 +8,12 @@ import (
 	"time"
 )
 
-// fakeCleaned builds a cleanedArticle stub around a raw HTML body. The
-// walker only looks at CleanedHTML + Title/Byline/PubDate, so the other
-// readability fields can stay empty.
-func fakeCleaned(title, html string) *cleanedArticle {
-	return &cleanedArticle{
-		Title:       title,
-		CleanedHTML: []byte(html),
-	}
+// fakeCleaned builds a cleanedArticle stub. The walker parses the RAW
+// response body (see parsePage), never any readability output, so the HTML
+// argument is accepted for call-site symmetry with fakeFetched and read by
+// nothing — hence the blank name.
+func fakeCleaned(title string, _ string) *cleanedArticle {
+	return &cleanedArticle{Title: title}
 }
 
 func fakeFetched(finalURL, body string) *fetchedPage {
@@ -25,6 +23,42 @@ func fakeFetched(finalURL, body string) *fetchedPage {
 		Status:    200,
 		Body:      []byte(body),
 		FetchedAt: time.Unix(0, 0).UTC(),
+	}
+}
+
+// TestParsePage_EmptyBodyIsRefused pins the invariant the retention design
+// rests on: a page with no body never becomes a pageRecord, so a raw_html node
+// holding no HTML cannot be constructed through parsePage.
+//
+// The non-empty control in the same run is what keeps this from being
+// satisfiable by a parsePage that refuses everything, and it also pins the
+// positive half of the invariant — a real body yields a populated
+// RawHTMLBase64 rather than an empty one.
+func TestParsePage_EmptyBodyIsRefused(t *testing.T) {
+	const pageURL = "https://example.com/empty"
+
+	rec, err := parsePage(fakeFetched(pageURL, ""), fakeCleaned("", ""))
+	if err == nil {
+		t.Fatalf("empty body: want an error, got record %+v", rec)
+	}
+	if rec != nil {
+		t.Errorf("empty body: want a nil record alongside the error, got %+v", rec)
+	}
+	if !strings.Contains(err.Error(), "parsePage") {
+		t.Errorf("error %q does not name parsePage", err.Error())
+	}
+	if !strings.Contains(err.Error(), pageURL) {
+		t.Errorf("error %q does not name the URL %q", err.Error(), pageURL)
+	}
+
+	// KNOWN POSITIVE, same function: a real body is accepted and retained.
+	const body = `<html><body><h1>Kept</h1><p>a body with content</p></body></html>`
+	ok, err := parsePage(fakeFetched("https://example.com/kept", body), fakeCleaned("Kept", body))
+	if err != nil {
+		t.Fatalf("non-empty body: unexpected error %v — the guard above is refusing everything", err)
+	}
+	if ok.RawHTMLBase64 == "" {
+		t.Error("non-empty body: RawHTMLBase64 is empty, so the retention capture did not happen")
 	}
 }
 

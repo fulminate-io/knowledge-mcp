@@ -34,6 +34,7 @@ var manageOperations = []string{
 	"list_branches",
 	"list_log_backends",
 	"list_logs",
+	"migrate_embed_identity",
 	"pause_pipeline",
 	"pipeline_status",
 	"pprof_start",

@@ -83,6 +83,9 @@ func releaseUnattached(release func()) {
 // the decline to the caller instead would work, but it puts the obligation on
 // every call site and the leak returns the first time one forgets.
 func (e *SegmentedIndex[Q, S]) RemapResident(id SegmentID, blob SegmentBlob) error {
+	// THE PAYLOAD IS Bytes, ALREADY SPLIT. An envelope, if this blob carries one,
+	// is in Envelope and is not consulted here at all: the record is taken from the
+	// entry being replaced rather than from the blob — see the copy below.
 	seg, err := e.format.Decode(blob.Bytes)
 	if err != nil {
 		releaseUnattached(blob.Release)
@@ -110,6 +113,16 @@ func (e *SegmentedIndex[Q, S]) RemapResident(id SegmentID, blob SegmentBlob) err
 			live:    src.live,
 			members: src.members,
 			meta:    src.meta,
+			// THE RECORD COMES FROM THE ENTRY, not from the blob, for the same reason
+			// its liveness does: the bytes are byte-identical to the published ones (a
+			// segment id is their payload's content hash), so the two agree — and
+			// taking it from the entry keeps ONE source for what this segment replaced.
+			record: src.record,
+			// The same borrowed-memory pin entryFromDecoded carries, for the same
+			// reason: a blob's bytes can be a view into memory another entry owns,
+			// and the unmap is keyed on that owner's reachability rather than on
+			// holding the bytes.
+			pin: blob.keepAlive,
 		}
 		entries := make([]*segmentEntry[Q, S], len(old.entries))
 		copy(entries, old.entries)

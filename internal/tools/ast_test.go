@@ -18,7 +18,7 @@ import (
 	"testing"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 
@@ -37,18 +37,15 @@ type astTestDeps struct {
 	rootDirSet bool
 }
 
-func (d astTestDeps) LocalLiveness() LocalLiveness                 { return nil }
-func (d astTestDeps) Sink() collector.Sink                         { return nil }
-func (d astTestDeps) RootDir() string                              { return d.rootDir }
-func (d astTestDeps) RootDirSet() bool                             { return d.rootDirSet }
-func (d astTestDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
-func (d astTestDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
-func (d astTestDeps) WorkerReady() bool                            { return true }
-func (d astTestDeps) PropReady() bool                              { return true }
-func (d astTestDeps) PipelineReady() bool                          { return true }
-func (d astTestDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
-func (d astTestDeps) BanSet() *hivemonitor.BanSet                  { return nil }
-func (d astTestDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d astTestDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d astTestDeps) Sink() collector.Sink            { return nil }
+func (d astTestDeps) RootDir() string                 { return d.rootDir }
+func (d astTestDeps) RootDirSet() bool                { return d.rootDirSet }
+func (d astTestDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+
+func (d astTestDeps) PropReady() bool     { return true }
+func (d astTestDeps) PipelineReady() bool { return true }
+
 func (d astTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
 func (d astTestDeps) Embedder() embed.BinaryEmbedder               { return nil }
 func (d astTestDeps) BackendResolver() BackendResolver             { return nil }

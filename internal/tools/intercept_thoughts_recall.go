@@ -16,7 +16,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/config"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/rerank"
 
@@ -69,7 +68,7 @@ func validateRecallClientArgs(a recallClientArgs) string {
 func handleRecallClient(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) kgtools.ToolResult {
 	var a recallClientArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
-		return errorResult("invalid arguments: " + err.Error())
+		return errorResult("invalid arguments: " + decodeArgsError(params.Arguments, err))
 	}
 	if msg := validateRecallClientArgs(a); msg != "" {
 		return errorResult(msg)
@@ -112,15 +111,15 @@ func handleRecallClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 		ConnectedTo:    a.ConnectedTo,
 		Limit:          effLimit,
 	}
-	// Construct the rerank seam at the call site (search.go:94-108,167 precedent):
-	// an empty Voyage key gates the reranker to nil, which rerankRecallResults
-	// degrades to RRF ordering on. Done unconditionally so didRerank threading is
-	// uniform; the reranker is only used on the a.Query != "" branch below.
-	voyageKey := config.VoyageAPIKey()
-	var reranker rerank.Reranker
-	if voyageKey != "" {
-		reranker = rerank.NewVoyage(voyageKey, widePoolSize, widePoolTopK)
-	}
+	// Construct the rerank seam at the call site, through the shared
+	// tools-package helper both rerank sites use: a missing credential on the
+	// resolved [reranker] axis gates the reranker to nil, which
+	// rerankRecallResults degrades to RRF ordering on — the same contract as
+	// before, now read from that axis's own provider rather than from a single
+	// Voyage key. A malformed section also yields nil, with the error logged.
+	// Done unconditionally so didRerank threading is uniform; the reranker is
+	// only used on the a.Query != "" branch below.
+	reranker := buildReranker(ctx, widePoolSize, widePoolTopK)
 	if a.Query != "" {
 		configureRecallQueryPath(ctx, deps, a.Query, &opts)
 	}
@@ -213,7 +212,16 @@ func configureRecallQueryPath(ctx context.Context, deps ClientDeps, query string
 		slog.Warn("recall: no embedder on query path — HNSW arm down, BM25-only gather", "query_len", len(query))
 		return
 	}
-	if vec, err := emb.EmbedBinary(ctx, query); err == nil && len(vec) > 0 {
+	// The embed ERROR gets the same diagnostic the nil-embedder case above gets.
+	// It used to be discarded, so a CONFIGURED embedder that failed at call time was
+	// strictly quieter than having no embedder at all — the louder condition
+	// produced a warning and the more surprising one produced silence.
+	vec, err := emb.EmbedBinary(ctx, query)
+	switch {
+	case err != nil:
+		slog.Warn("recall: query embed failed — HNSW arm down, BM25-only gather",
+			"error", err, "query_len", len(query))
+	case len(vec) > 0:
 		opts.QueryVec = vec
 	}
 }

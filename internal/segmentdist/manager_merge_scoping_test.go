@@ -53,7 +53,7 @@ func TestSegmentEnginesDoNotAutoMerge(t *testing.T) {
 	)
 	gt := kgtypes.GraphCode
 
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: false}, t.TempDir(), 0))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	t.Run("embed hnsw", func(t *testing.T) {
 		dm := mgr.managerFor(gt, "mergescoping-embed")
@@ -91,7 +91,7 @@ func TestFactoryWiresReclaimHookDespiteDisarm(t *testing.T) {
 	t.Parallel()
 
 	gt := kgtypes.GraphCode
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: false}, t.TempDir(), 0))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	require.True(t, mgr.managerFor(gt, "hookwiring").engine.HasMergeHook(),
 		"the HNSW engine must carry the reclaim hook")

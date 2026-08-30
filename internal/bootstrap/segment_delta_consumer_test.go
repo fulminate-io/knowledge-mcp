@@ -15,19 +15,10 @@ import (
 )
 
 // publishedHNSWDigests snapshots the content hashes in the graph's PUBLISHED hnsw
-// manifest — the routed bucket blobs as the server holds them. It is a durable,
-// server-side observable on purpose: a delete that only cleared an in-memory live
-// bit leaves this set byte-identical, and that is precisely the gap this criterion
+// The on-disk content-hash ids — the routed bucket blobs as they are stored. A
+// DURABLE observable on purpose: a delete that only cleared an in-memory live bit
+// leaves this set byte-identical, and that is precisely the gap this criterion
 // exists to close.
-func publishedHNSWDigests(b *fakeSegBackend, repo string) map[string]struct{} {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	out := map[string]struct{}{}
-	for _, d := range b.manifests[segManifestKey(string(kgtypes.GraphCode), repo, hnsw.New().Name())] {
-		out[d.ContentHash] = struct{}{}
-	}
-	return out
-}
 
 // searchHitsK bounds every probe in these fixtures: wide enough that a document
 // losing its slot is a real absence rather than a ranking accident, and every caller
@@ -94,15 +85,26 @@ func TestCollectorDeleteReachesPoolWithinOneReconcile(t *testing.T) {
 		seededHorizon = int64(1_600_000_000_000_000_000)
 	)
 
-	c, eng, backend := buildReconcileClientWithSeg(t, embedded, repo)
+	c, eng, dir := buildReconcileClientWithDir(t, embedded, repo)
 	require.NoError(t, c.segmentMgr.SaveMergeWatermark(kgtypes.GraphCode, repo, seededHorizon))
 
 	docs := fastloadVecDocs(repo, corpusN)
 	require.NoError(t, c.segmentMgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, repo, docs))
+	// BOTH FORMATS ARE SEEDED, AND THE FIELD ONE IS A PRECONDITION RATHER THAN
+	// SYMMETRY. A delete's vector partition is re-emitted by the drain rather than by
+	// the delete, and the drain declines to serve that work unless BOTH pools hold a
+	// corpus clearing the residency floor — a count derived from a near-empty pool
+	// collapses every masked id onto one partition. A vector-only fixture would
+	// therefore never re-emit, and the digest assertion below would be reporting the
+	// fixture's own asymmetry rather than the delete path.
+	//
+	// THE FIELD NAME MATTERS. The BM25 format indexes a FIXED vocabulary, so a document
+	// whose only field is outside it carries no terms and leaves the field pool empty —
+	// which is the same below-the-floor state as seeding nothing at all.
+	require.NoError(t, c.segmentMgr.AddAndMarkDirtyFields(ctx, kgtypes.GraphCode, repo, fieldDocsOf(docs)))
 	require.NoError(t, c.segmentMgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, repo))
 
-	degenerate, err := c.segmentMgr.ReconcileResidentDegenerate(ctx, kgtypes.GraphCode, repo)
-	require.NoError(t, err)
+	degenerate := armIsDegenerate(t, c.segmentMgr, kgtypes.GraphCode, repo, embedded)
 	require.False(t, degenerate,
 		"PRECONDITION: the fixture graph must be HEALTHY, so the pass reaches the healthy-graph continue and no rebuild can do this work instead")
 
@@ -110,7 +112,7 @@ func TestCollectorDeleteReachesPoolWithinOneReconcile(t *testing.T) {
 	require.True(t, hitsContain(searchHits(t, c, ctx, repo, victim.Vector), victim.ID),
 		"PRECONDITION: the victim must be searchable before the delete, or its absence afterwards means nothing")
 
-	before := publishedHNSWDigests(backend, repo)
+	before := l2SegmentIDs(t, dir, repo, hnsw.New().Name())
 	require.NotEmpty(t, before, "PRECONDITION: the corpus must be published as real routed-bucket blobs")
 
 	// THE COLLECTOR-ORIGINATED DELETE, arriving only as a tombstone on the feed.
@@ -132,12 +134,43 @@ func TestCollectorDeleteReachesPoolWithinOneReconcile(t *testing.T) {
 	require.Positive(t, eng.deltaScanCallCount(repo),
 		"the bounded tombstone-delta read is what must have carried the delete")
 
-	after := publishedHNSWDigests(backend, repo)
+	// THE RE-EMIT STILL LANDS IN THIS PASS, THOUGH NOT ON THE DELETE'S OWN GOROUTINE.
+	// The delete kills the id's live bit and seals it into the durable tombstone mask;
+	// the mask is the drain's work ledger, and the delta consume runs BEFORE the drain
+	// in this same reconcile, so the drain that follows re-emits the partition the mask
+	// names. A byte-identical digest set here means neither half happened.
+	after := l2SegmentIDs(t, dir, repo, hnsw.New().Name())
 	require.NotEqual(t, before, after,
 		"the routed bucket must RE-EMIT: an unchanged published digest set means the blob is byte-identical and the delete never left this process's memory")
+
+	// AND THE DELETE WAS DURABLE BEFORE THAT RE-EMIT RAN, which is what makes the
+	// deferral safe rather than merely faster: the mask is written synchronously by the
+	// delete, so a process that died between the two would still mask the id at import.
+	// Here the drain has already discharged it, so the record is empty — asserting the
+	// discharge is the observable half of "the mask carried it".
+	_, masked, err := c.segmentMgr.LoadRebuildState(kgtypes.GraphCode, repo)
+	require.NoError(t, err)
+	require.NotContains(t, masked, victim.ID,
+		"the drain re-emitted this id's partition, so the mask must have discharged it — an id still "+
+			"masked after its partition was published means the trim never fired and the drain will "+
+			"re-offer the same partition forever")
 
 	require.False(t, hitsContain(searchHits(t, c, ctx, repo, victim.Vector), victim.ID),
 		"the deleted id must lose its rank slot within one reconcile interval, with no manual rebuild")
 	require.True(t, hitsContain(searchHits(t, c, ctx, repo, survivor.Vector), survivor.ID),
 		"a document nobody deleted must survive — without this leg an implementation that emptied the pool would pass")
+}
+
+// fieldDocsOf re-labels a vector fixture's documents into the BM25 format's own field
+// vocabulary, so seeding them actually produces a field corpus.
+func fieldDocsOf(docs []searchengine.Document) []searchengine.Document {
+	out := make([]searchengine.Document, 0, len(docs))
+	for _, d := range docs {
+		out = append(out, searchengine.Document{
+			ID:     d.ID,
+			Vector: d.Vector,
+			Fields: map[string]string{searchengine.FieldContent: "fixture content for " + d.ID},
+		})
+	}
+	return out
 }

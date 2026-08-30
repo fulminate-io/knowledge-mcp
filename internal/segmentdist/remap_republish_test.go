@@ -50,8 +50,7 @@ func TestRemapMergedRepublishesTheMapping(t *testing.T) {
 			mgr: func(t *testing.T, c segmentL2Cache) republishArm {
 				t.Helper()
 				eng := closeOnCleanup(t, searchengine.New[[]byte, struct{}](hnsw.New(), searchengine.Options{}))
-				return newDistManager(eng, newSharedServerFake().viewFor(
-					graphSelector(kgtypes.GraphCode, "republish"), ""), c,
+				return newDistManager(eng, c,
 					graphSelector(kgtypes.GraphCode, "republish"), hnsw.New().Name())
 			},
 		},
@@ -61,8 +60,7 @@ func TestRemapMergedRepublishesTheMapping(t *testing.T) {
 			mgr: func(t *testing.T, c segmentL2Cache) republishArm {
 				t.Helper()
 				eng := closeOnCleanup(t, searchengine.New[bm25.Query, *bm25.CorpusStats](bm25.New(), searchengine.Options{}))
-				return newDistManager(eng, newSharedServerFake().viewFor(
-					graphSelector(kgtypes.GraphCode, "republish"), ""), c,
+				return newDistManager(eng, c,
 					graphSelector(kgtypes.GraphCode, "republish"), bm25.New().Name())
 			},
 		},

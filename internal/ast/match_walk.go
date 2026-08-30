@@ -21,7 +21,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -87,7 +86,7 @@ func runWorkers(ctx context.Context, a runWorkerArgs) ([]RawMatch, map[string]fi
 	if len(a.files) == 0 {
 		return nil, nil, counters, nil
 	}
-	workers := min(runtime.NumCPU(), len(a.files))
+	workers := min(walkWorkerCount(), len(a.files))
 	if workers <= 0 {
 		workers = 1
 	}
@@ -283,6 +282,7 @@ func recordCleanHint(a processArgs, hint *fileParseHint) {
 // skipped flag, so the walk can report which rule cost it a file instead of
 // one undifferentiated total.
 func matchFile(ctx context.Context, a processArgs) fileResult {
+	defer walkAdmission.admit(ctx)()
 	absPath := filepath.Join(a.repoDir, a.relPath)
 	src, err := os.ReadFile(absPath)
 	if err != nil {

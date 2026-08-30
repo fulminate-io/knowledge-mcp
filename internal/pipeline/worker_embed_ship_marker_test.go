@@ -54,66 +54,43 @@ func embedMarkerStamps(f *fakeWireClient) map[string]string {
 }
 
 // TestShipEmbedStampsShipFailureMarker drives a real embed batch through the
-// writeback seam against a segment manager programmed to fail, once per format,
-// and asserts the dropped ids carry a durable marker naming the format that
-// dropped them. Without the marker an embedded-but-unshipped node is
-// indistinguishable from a healthy one and the coverage hole is untraceable.
+// writeback seam against a segment manager programmed to fail, and asserts the
+// dropped ids carry a durable marker naming the format that dropped them. Without
+// the marker an embedded-but-unshipped node is indistinguishable from a healthy one
+// and the coverage hole is untraceable.
+//
+// THE BM25 SUBTEST IS GONE, NOT WEAKENED. It asserted that a FIELDS ship failure on
+// the embed axis stamped a bm25-named marker — behaviour this ticket removed, since
+// the embed axis no longer ships BM25 at all. A test kept alive against a deleted
+// path would assert nothing while looking like coverage. The BM25 ship's failure
+// disposition now lives with its producer and is a HELD CURSOR rather than a marker:
+// see TestBM25Arm_CursorHeldOnShipFailure, which is a strictly stronger property —
+// it re-drives the work instead of recording that work was lost.
+//
+// The HNSW arm below is UNCHANGED and still the reason this test exists.
 func TestShipEmbedStampsShipFailureMarker(t *testing.T) {
-	t.Run("hnsw", func(t *testing.T) {
-		ctx := context.Background()
-		be := newFakeWireClient()
-		fe := &fakeEmbedder{vectors: map[string][]byte{"n1": vec32(1), "n2": vec32(2)}}
-		p := New(Config{}, be, nil, fe.call)
-		// No Bm25Fields on the work below, so BuildBM25Documents yields nothing and
-		// the BM25 ship never runs — the HNSW drop is the only one in play.
-		p.AttachSegmentManager(&fakeShipManager{err: errors.New("hnsw seal boom")})
+	ctx := context.Background()
+	be := newFakeWireClient()
+	fe := &fakeEmbedder{vectors: map[string][]byte{"n1": vec32(1), "n2": vec32(2)}}
+	p := New(Config{}, be, nil, fe.call)
+	p.AttachSegmentManager(&fakeShipManager{err: errors.New("hnsw seal boom")})
 
-		runEmbedWorkerBatch(ctx, p, []EmbedWork{
-			{GraphType: kgtypes.GraphCode, GraphName: "repo", NodeID: "n1", EmbedText: "a", Backend: be},
-			{GraphType: kgtypes.GraphCode, GraphName: "repo", NodeID: "n2", EmbedText: "b", Backend: be},
-		})
-
-		stamps := shipMarkerStamps(be)
-		require.Len(t, stamps, 2, "both dropped ids are stamped")
-		for _, id := range []string{"n1", "n2"} {
-			require.Contains(t, stamps, id)
-			require.Contains(t, strings.ToLower(stamps[id]), "hnsw",
-				"the reason names the format that dropped the ship")
-			require.Contains(t, stamps[id], "hnsw seal boom",
-				"the reason carries the underlying error")
-		}
-		require.Empty(t, embedMarkerStamps(be),
-			"a ship drop must not write the embed-failure key the rebuild scans exclude")
+	runEmbedWorkerBatch(ctx, p, []EmbedWork{
+		{GraphType: kgtypes.GraphCode, GraphName: "repo", NodeID: "n1", EmbedText: "a", Backend: be},
+		{GraphType: kgtypes.GraphCode, GraphName: "repo", NodeID: "n2", EmbedText: "b", Backend: be},
 	})
 
-	t.Run("bm25", func(t *testing.T) {
-		ctx := context.Background()
-		be := newFakeWireClient()
-		fe := &fakeEmbedder{vectors: map[string][]byte{"n1": vec32(1), "n2": vec32(2)}}
-		p := New(Config{}, be, nil, fe.call)
-		// Only the FIELDS ship fails here, so the HNSW half succeeds and any stamp
-		// observed below can only have come from the BM25 site.
-		p.AttachSegmentManager(&fakeShipManager{fieldsErr: errors.New("bm25 seal boom")})
-
-		runEmbedWorkerBatch(ctx, p, []EmbedWork{
-			{GraphType: kgtypes.GraphCode, GraphName: "repo", NodeID: "n1", EmbedText: "a", Backend: be,
-				Bm25Fields: map[string]string{"symbol_name": "alpha"}},
-			{GraphType: kgtypes.GraphCode, GraphName: "repo", NodeID: "n2", EmbedText: "b", Backend: be,
-				Bm25Fields: map[string]string{"symbol_name": "beta"}},
-		})
-
-		stamps := shipMarkerStamps(be)
-		require.Len(t, stamps, 2, "both dropped ids are stamped")
-		for _, id := range []string{"n1", "n2"} {
-			require.Contains(t, stamps, id)
-			require.Contains(t, strings.ToLower(stamps[id]), "bm25",
-				"the reason names the format that dropped the ship")
-			require.NotContains(t, strings.ToLower(stamps[id]), "hnsw",
-				"the two ship sites are distinguishable from the marker alone")
-		}
-		require.Empty(t, embedMarkerStamps(be),
-			"a ship drop must not write the embed-failure key the rebuild scans exclude")
-	})
+	stamps := shipMarkerStamps(be)
+	require.Len(t, stamps, 2, "both dropped ids are stamped")
+	for _, id := range []string{"n1", "n2"} {
+		require.Contains(t, stamps, id)
+		require.Contains(t, strings.ToLower(stamps[id]), "hnsw",
+			"the reason names the format that dropped the ship")
+		require.Contains(t, stamps[id], "hnsw seal boom",
+			"the reason carries the underlying error")
+	}
+	require.Empty(t, embedMarkerStamps(be),
+		"a ship drop must not write the embed-failure key the rebuild scans exclude")
 }
 
 // TestShipEmbedStampsNothingOnSuccess is the known-positive control for the two
@@ -129,8 +106,7 @@ func TestShipEmbedStampsNothingOnSuccess(t *testing.T) {
 	p.AttachSegmentManager(&fakeShipManager{})
 
 	runEmbedWorkerBatch(ctx, p, []EmbedWork{
-		{GraphType: kgtypes.GraphCode, GraphName: "repo", NodeID: "n1", EmbedText: "a", Backend: be,
-			Bm25Fields: map[string]string{"symbol_name": "alpha"}},
+		{GraphType: kgtypes.GraphCode, GraphName: "repo", NodeID: "n1", EmbedText: "a", Backend: be},
 	})
 
 	require.Empty(t, shipMarkerStamps(be), "a successful ship stamps nothing")

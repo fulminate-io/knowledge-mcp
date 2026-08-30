@@ -23,8 +23,8 @@ Returns the full plan tree. Use this instead of individual create_project/create
 				"name":    {Type: "string", Description: "Plan name"},
 				"goal":    {Type: "string", Description: "What this plan aims to achieve"},
 				"summary": {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars (handler enforces)."},
-				"phases": {Type: "array", Description: "Ordered list of phases. Each phase REQUIRES name and summary; each step REQUIRES name, description, and summary (handler enforces).", Items: &kgtools.Property{
-					Type: "object", Description: `Phase object: {"name":"...","overview":"...","summary":"required search-optimized one-line summary, max 500 chars","steps":[{"name":"...","description":"...","summary":"required search-optimized one-line summary, max 500 chars","file_paths":"...","criteria":[{"description":"...","command":"...","type":"automated|manual"}]}]}`,
+				"phases": {Type: "array", Description: "Ordered list of phases. Each phase REQUIRES name and summary; each step REQUIRES name, description, and summary (handler enforces); and each criterion REQUIRES description and summary (handler enforces).", Items: &kgtools.Property{
+					Type: "object", Description: `Phase object: {"name":"...","overview":"...","summary":"required search-optimized one-line summary, max 500 chars","steps":[{"name":"...","description":"...","summary":"required search-optimized one-line summary, max 500 chars","file_paths":"...","criteria":[{"description":"...","summary":"required search-optimized one-line summary, max 500 chars","command":"...","type":"automated|manual"}]}]}`,
 					AdditionalProperties: &falseValue, Properties: map[string]kgtools.Property{
 						"name":     {Type: "string", Description: "Phase name (required)"},
 						"overview": {Type: "string", Description: "Phase overview"},
@@ -35,9 +35,10 @@ Returns the full plan tree. Use this instead of individual create_project/create
 				"research_id": {Type: "string", Description: "Research project ID that informed this plan (optional — creates informed-by edge)"},
 				"ticket_id":   {Type: "string", Description: "Ticket node ID to link this plan under (optional)"},
 				"open_questions": {Type: "array", Description: "Open questions that need user input before implementation can proceed. Creates question nodes (status: open) linked to the plan.", Items: &kgtools.Property{
-					Type: "object", Description: `Question object: {"question":"...","context":"why this question matters and what options exist"}`,
+					Type: "object", Description: `Question object: {"question":"...","summary":"...","context":"why this question matters and what options exist"}`,
 					AdditionalProperties: &falseValue, Properties: map[string]kgtools.Property{
 						"question": {Type: "string", Description: "The open question to surface for user input"},
+						"summary":  {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary of the open question, max 500 chars. Over-cap values are clamped at a word boundary with a warning."},
 						"context":  {Type: "string", Description: "Why this question matters and what options exist"},
 					},
 				}},
@@ -69,10 +70,13 @@ func planStepItems() *kgtools.Property {
 }
 
 // criterionItems returns the closed nested-object Items shape for a step's
-// criteria[] array: {description, command, type}.
+// criteria[] array: {description, summary, command, type}. Shared by create_plan
+// and create_test_plan, so this is the single declaration of the criteria wire
+// shape for both tools.
 func criterionItems() *kgtools.Property {
 	return &kgtools.Property{Type: "object", Description: "Criterion object", AdditionalProperties: &falseValue, Properties: map[string]kgtools.Property{
 		"description": {Type: "string", Description: "What the criterion verifies"},
+		"summary":     {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars"},
 		"command":     {Type: "string", Description: "Verification command (for automated criteria)"},
 		"type":        {Type: "string", Description: "Criterion type: automated or manual", Enum: []string{"automated", "manual"}},
 	}}
@@ -83,7 +87,8 @@ func criterionItems() *kgtools.Property {
 // create_ticket.
 func proposedPatternItems() *kgtools.Property {
 	return &kgtools.Property{Type: "object", Description: "Proposed pattern object", AdditionalProperties: &falseValue, Properties: map[string]kgtools.Property{
-		"name":   {Type: "string", Description: "Proposed pattern name"},
-		"sketch": {Type: "string", Description: "Interface sketch / pseudocode describing the proposed pattern shape (optional)"},
+		"name":    {Type: "string", Description: "Proposed pattern name"},
+		"summary": {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary of the proposed pattern, max 500 chars."},
+		"sketch":  {Type: "string", Description: "Interface sketch / pseudocode describing the proposed pattern shape (optional)"},
 	}}
 }

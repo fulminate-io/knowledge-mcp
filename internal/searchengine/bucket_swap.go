@@ -121,14 +121,17 @@ func (e *SegmentedIndex[Q, S]) ReplaceBucket(
 		return "", nil
 	}
 
-	merged, err := e.format.Merge(segs, accept)
+	entry, err := e.mergeEntry(segs, accept)
 	if err != nil {
 		return "", err
 	}
-	entry, err := e.newEntry(merged, nil)
-	if err != nil {
-		return "", err
-	}
+	// THE DURABLE SUPERSESSION RECORD, stamped BEFORE the publish below because a
+	// published snapshot is immutable. It names EXACTLY what step (6) tells the owner
+	// to reclaim — one fact, so the stored record and the reclaim cannot disagree —
+	// with this output as its whole cohort, since this swap publishes one segment and
+	// that segment carries the constituents' live members forward.
+	reclaimable := excluding(removed, map[SegmentID]bool{entry.meta.ID: true})
+	stampSupersession(entry, reclaimable, []SegmentID{entry.meta.ID})
 
 	// (5) Publish in ONE swap: the constituents leave and the consolidated segment
 	// arrives together, so no reader ever observes a duplicate or a hole. Retry on a
@@ -150,20 +153,37 @@ func (e *SegmentedIndex[Q, S]) ReplaceBucket(
 	// content hash, so consolidating a partition back to the bytes one of its inputs
 	// already held republishes that same id. Leaving it in the removed list would
 	// tell the owner to reclaim the stored copy of the segment that is now live.
-	e.fireMergeHook(entry, excluding(removed, map[SegmentID]bool{entry.meta.ID: true}))
+	e.fireMergeHook(entry, reclaimable)
 	return entry.meta.ID, nil
 }
 
-// harvestPartition builds ONE partition's output against the group's already
-// resolved constituents. It never publishes and never removes anything — the
-// group owns both — so a failure here leaves the resident set untouched, which is
-// what makes the group's all-or-nothing contract possible.
+// harvestPartition builds ONE partition's output against the constituents that
+// SPAN that partition. It never publishes and never removes anything — the group
+// owns both — so a failure here leaves the resident set untouched, which is what
+// makes the group's all-or-nothing contract possible.
+//
+// IT TAKES THE PARTITION'S OWN SHARE, NOT THE GROUP'S WHOLE RESOLVED UNION, and
+// the signature is what makes the multiplier structurally impossible to
+// reintroduce rather than a comment asking nobody to. A constituent holding no
+// member of this partition contributes ZERO accepted documents — acceptLiveMembers
+// ends in BucketOf(id, bucketCount) == bucket — so passing it was always a
+// provable no-op for the OUTPUT and a full term-dictionary walk in COST. Feeding
+// every partition the whole union made the group cost len(work) x len(resolved)
+// dictionary walks; feeding each its own share is byte-identical and cheap.
 //
 // It returns a nil entry when the partition harvested nothing, and the id of the
 // freshly built segment when there were incoming documents, so the caller can add
 // that id to the group's removal set.
+//
+// SEVERAL PARTITIONS' HARVESTS RUN AT ONCE, so this must be safe to call
+// concurrently for distinct BucketWork against shares of one resolved set, and it
+// is: it only READS the shared entries (their payload, members and live bits,
+// all immutable or atomically-mutated in place), writes nothing back into the
+// engine's segment set, and returns everything it produces. The concurrent
+// readers do share e.format across calls, which is what obliges a SegmentFormat
+// implementation's Build and Merge to be safe for concurrent use.
 func (e *SegmentedIndex[Q, S]) harvestPartition(
-	resolved []*segmentEntry[Q, S], w BucketWork, bucketCount int,
+	spanning []*segmentEntry[Q, S], w BucketWork, bucketCount int,
 ) (*segmentEntry[Q, S], SegmentID, error) {
 	var fresh *segmentEntry[Q, S]
 	if len(w.Docs) > 0 {
@@ -177,9 +197,9 @@ func (e *SegmentedIndex[Q, S]) harvestPartition(
 		}
 	}
 
-	segs := make([]Segment[Q, S], 0, len(resolved)+1)
-	accept := make([]func(ExternalID) bool, 0, len(resolved)+1)
-	for _, entry := range resolved {
+	segs := make([]Segment[Q, S], 0, len(spanning)+1)
+	accept := make([]func(ExternalID) bool, 0, len(spanning)+1)
+	for _, entry := range spanning {
 		segs = append(segs, entry.payload)
 		accept = append(accept, acceptLiveMembers(entry, w.Bucket, bucketCount))
 	}
@@ -193,11 +213,7 @@ func (e *SegmentedIndex[Q, S]) harvestPartition(
 		return nil, freshID, nil
 	}
 
-	merged, err := e.format.Merge(segs, accept)
-	if err != nil {
-		return nil, "", err
-	}
-	entry, err := e.newEntry(merged, nil)
+	entry, err := e.mergeEntry(segs, accept)
 	if err != nil {
 		return nil, "", err
 	}

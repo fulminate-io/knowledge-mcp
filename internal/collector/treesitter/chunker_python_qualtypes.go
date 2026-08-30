@@ -35,6 +35,12 @@ const (
 	pyKindSubscript
 	pyKindDecoratedDefinition
 	pyKindDecorator
+	pyKindDefaultParameter
+	pyKindKeywordSeparator
+	pyKindListSplatPattern
+	pyKindDictionarySplatPattern
+	pyKindReturnStatement
+	pyKindLambda
 )
 
 // pyKindNames maps every python node-kind spelling the python arms name onto
@@ -49,25 +55,31 @@ const (
 // carries TWO regular ids, the multiplicity newSymbolClasses assigns every
 // member of rather than stopping at the first.
 var pyKindNames = map[string]uint8{
-	"class_definition":        pyKindClassDefinition,
-	"function_definition":     pyKindFunctionDefinition,
-	"parameters":              pyKindParameters,
-	"typed_parameter":         pyKindTypedParameter,
-	"typed_default_parameter": pyKindTypedDefaultParameter,
-	"argument_list":           pyKindArgumentList,
-	"keyword_argument":        pyKindKeywordArgument,
-	"block":                   pyKindBlock,
-	"expression_statement":    pyKindExpressionStatement,
-	"assignment":              pyKindAssignment,
-	"type":                    pyKindType,
-	"identifier":              pyKindIdentifier,
-	"attribute":               pyKindAttribute,
-	"call":                    pyKindCall,
-	"string":                  pyKindString,
-	"generic_type":            pyKindGenericType,
-	"subscript":               pyKindSubscript,
-	"decorated_definition":    pyKindDecoratedDefinition,
-	"decorator":               pyKindDecorator,
+	"class_definition":         pyKindClassDefinition,
+	"function_definition":      pyKindFunctionDefinition,
+	"parameters":               pyKindParameters,
+	"typed_parameter":          pyKindTypedParameter,
+	"typed_default_parameter":  pyKindTypedDefaultParameter,
+	"argument_list":            pyKindArgumentList,
+	"keyword_argument":         pyKindKeywordArgument,
+	"block":                    pyKindBlock,
+	"expression_statement":     pyKindExpressionStatement,
+	"assignment":               pyKindAssignment,
+	"type":                     pyKindType,
+	"identifier":               pyKindIdentifier,
+	"attribute":                pyKindAttribute,
+	"call":                     pyKindCall,
+	"string":                   pyKindString,
+	"generic_type":             pyKindGenericType,
+	"subscript":                pyKindSubscript,
+	"decorated_definition":     pyKindDecoratedDefinition,
+	"decorator":                pyKindDecorator,
+	"default_parameter":        pyKindDefaultParameter,
+	"keyword_separator":        pyKindKeywordSeparator,
+	"list_splat_pattern":       pyKindListSplatPattern,
+	"dictionary_splat_pattern": pyKindDictionarySplatPattern,
+	"return_statement":         pyKindReturnStatement,
+	"lambda":                   pyKindLambda,
 }
 
 // pyKindTable is the python instance of the shared memo.

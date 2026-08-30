@@ -38,11 +38,20 @@ type Request struct {
 	// account key for cloud graphs, linkage instance name, etc. May be empty
 	// for graphs that have only one instance (e.g. knowledge).
 	Name string
-	// RepoRoot is the local working-directory root of the code repo, set by
-	// the client dispatcher from deps.RootDir(); analyzers that read repo files
-	// (dsm reads go.mod + .knowledge/topology_layers.yaml) use it, others
-	// ignore it.
+	// RepoRoot is the local working-directory root of the code repo. The client
+	// dispatcher RESOLVES it from the caller's repo argument — a bare name via
+	// the machine-local repo manifest, or an absolute checkout path directly —
+	// for the analyzers that declare on its allowlist that they read it, and
+	// leaves it at the daemon's own root for every analyzer that does not. An
+	// analyzer that starts reading repo files must add itself to that list, or it
+	// will be handed the daemon root and walk the wrong tree.
 	RepoRoot string
+	// PathPrefix optionally narrows the analysis to a repo-relative subtree.
+	// Empty means no narrowing. It is NOT honored by every analyzer: the
+	// dispatcher refuses the param for any analyzer not on its declared
+	// honoring list, so a caller never believes a control is in force when it
+	// is not.
+	PathPrefix string
 	// TopK caps how many findings the analyzer should return (0 = no cap).
 	// Analyzers that produce ranked output (PageRank, centrality) honor this;
 	// structural analyzers (SCC, orphan) may ignore it.

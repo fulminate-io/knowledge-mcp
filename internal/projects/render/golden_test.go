@@ -151,6 +151,10 @@ func TestGoldenTicketWithLanguagePatterns(t *testing.T) {
 		Id: "lp-id", Type: string(kgtypes.NodeFinding), SymbolName: "lang-pattern-fixture",
 		Source: "test", Status: "active",
 	}
+	// 102 characters on purpose — longer than the 80-character cut this
+	// section used to apply, so the golden below can only be produced by a
+	// render that emits the body whole.
+	kgtypes.SetValue(lp, "dsl_pattern", "defer $DB.Close(); rows, err := $DB.QueryContext($CTX, $Q, $$$ARGS); if err != nil { return nil, err }")
 	f := newGraphFixture().
 		addKnowledgeNode(ticket).addKnowledgeNode(lp).
 		addKnowledgeEdge("tkt-lang", "lp-id", kgtypes.EdgeAudits)

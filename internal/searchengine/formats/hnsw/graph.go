@@ -132,7 +132,7 @@ func (a *neighborArena) alloc(capL int) []uint32 {
 
 // newBinaryGraph constructs an empty graph with the given HNSW parameters.
 func newBinaryGraph(vecBytes, m, efConstruction int) *binaryGraph {
-	return &binaryGraph{
+	g := &binaryGraph{
 		vectorBlock:    vectorBlock{vecBytes: vecBytes},
 		m:              m,
 		mMax0:          m * 2,
@@ -143,6 +143,11 @@ func newBinaryGraph(vecBytes, m, efConstruction int) *binaryGraph {
 		idMap:          make(map[string]uint32),
 		rng:            newRand(),
 	}
+	// Resolve the metric before the graph is usable. A fresh graph is ubinary
+	// until a caller says otherwise — that is the tag every historical segment
+	// carries — and setDtype is what keeps the tag and the metric in step.
+	g.setDtype(dtypeUbinary)
+	return g
 }
 
 // randomLevel draws a random layer for a node from the inverse-log distribution.
@@ -185,16 +190,37 @@ func (h *binaryGraph) Insert(externalID string, vec []byte) {
 		return
 	}
 
+	// The inserted vector IS the query for its own neighbor search, so it is
+	// prepared once here on the same seam a real query uses.
+	//
+	// THIS IS NOT A PER-INSERT WIDTH GUARD, AND MUST NOT BE READ AS ONE. Three
+	// paths defeat it: the append at the top of this function has ALREADY put vec
+	// into the block by the time this line runs, the first insert into an empty
+	// graph returns above without reaching it, and the re-insert branch copies
+	// over an existing vector and returns before it. A wrong-width vector is
+	// therefore already stored in every case that matters.
+	//
+	// WHAT ACTUALLY GUARANTEES UNIFORM WIDTH IS UPSTREAM: batchVecBytes derives
+	// the block's width from the batch and refuses a batch that mixes widths, so
+	// by the time Insert runs every vector in the batch is the same size as the
+	// block. That is the invariant to preserve when changing this path — not
+	// anything this line does.
+	q := h.prepareQuery(vec)
+
+	// One scratch for this insert's whole descent — see searchTopK's twin.
+	bs, _ := batchScratchPool.Get().(*batchScratch)
+
 	ep := h.entryPoint
 	for l := h.maxLevel; l > level; l-- {
-		ep = greedyClosest(&h.vectorBlock, h, vec, ep, l)
+		ep = greedyClosest(&h.vectorBlock, h, &q, ep, l, bs)
 	}
+	batchScratchPool.Put(bs)
 
 	topLayer := min(level, h.maxLevel)
 	entryPoints := []uint32{ep}
 
 	for l := topLayer; l >= 0; l-- {
-		results := searchLayer(&h.vectorBlock, h, vec, entryPoints, h.efConstruction, l)
+		results := searchLayer(&h.vectorBlock, h, &q, entryPoints, h.efConstruction, l)
 
 		mLayer := h.m
 		if l == 0 {
@@ -251,7 +277,7 @@ func (h *binaryGraph) addBidirectionalEdge(nodeID, neighborID uint32, layer, mLa
 		candidates := &h.pruneScratch
 		*candidates = (*candidates)[:0]
 		for _, id := range node.neighbors[layer] {
-			d := hammingDistance(nVec, h.nodeVector(id))
+			d := h.nodeDistance(nVec, h.nodeVector(id))
 			candidates.push(heapItem{id: id, dist: d})
 		}
 		// Re-prune in place: pruneScratch above already holds an independent copy of
@@ -291,9 +317,13 @@ func (h *binaryGraph) selectNeighborsHeuristic(_ []byte, candidates *maxHeap, m 
 	//
 	// slices.SortFunc (not sort.Slice) avoids reflect.Swapper boxing and its per-call
 	// allocation on this hot path. Total-order comparator: distance first, then
-	// internal id as the secondary key — an exact total order (heapItem.id is the
-	// unique build ordinal and dist is integer-popcount Hamming, no float rounding),
-	// so equal-distance ties resolve identically every run rather than landing in the
+	// internal id as the secondary key — an exact total order for EITHER dtype.
+	// heapItem.id is the unique build ordinal, so the secondary key alone settles
+	// every tie; the distance need only be a deterministic function of the same
+	// bytes, which holds for the integer-popcount Hamming metric and for the
+	// float32 dot alike (identical inputs yield identical float32 results — this
+	// does not depend on float distances being tie-free). Equal-distance ties
+	// therefore resolve identically every run rather than landing in the
 	// non-stable sort's input-dependent order, keeping Encode byte-reproducible.
 	items := *candidates
 	slices.SortFunc(items, func(a, b heapItem) int {
@@ -321,7 +351,7 @@ func (h *binaryGraph) selectNeighborsHeuristic(_ []byte, candidates *maxHeap, m 
 
 		good := true
 		for _, selID := range selected {
-			distToSelected := hammingDistance(h.nodeVector(item.id), h.nodeVector(selID))
+			distToSelected := h.nodeDistance(h.nodeVector(item.id), h.nodeVector(selID))
 			if distToSelected < item.dist {
 				good = false
 				break

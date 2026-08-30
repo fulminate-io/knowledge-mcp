@@ -6,10 +6,10 @@
 // buildClient holds the full client construction + background-wire
 // sequence the streamable-HTTP daemon path (runServe) needs. (It was
 // originally factored out so the now-deleted per-session stdio entrypoint
-// could share it; the daemon is now the only caller.) The three
-// long-running background loops (LLM pipeline, dream Runner,
-// PropagationLoop) are drained by the returned cleanup closure rather
-// than caller-scope `defer`s.
+// could share it; the daemon is now the only caller.) The two
+// long-running background loops (LLM pipeline, PropagationLoop) are
+// drained by the returned cleanup closure rather than caller-scope
+// `defer`s.
 
 package bootstrap
 
@@ -21,47 +21,54 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/config"
+	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/llmproviders"
+	"github.com/fulminate-io/knowledge-mcp/internal/profiling"
+	"github.com/fulminate-io/knowledge-mcp/internal/rerank"
 	"github.com/fulminate-io/knowledge-mcp/internal/tools"
 )
 
 // the bind-first startup change UNIFIED SHUTDOWN BUDGET (keep these in sync with the Makefile
-// daemon-stop drain loop count): on SIGTERM, runServe drains EIGHT bounded stages
-// SEQUENTIALLY in LIFO defer order — reaper.Stop + monitor.Stop (both marshaled by
-// the startHiveLoops stop closure deferred in runServe, reaper first), then
-// drainOnShutdown's wireJoinDeadline wait + the segment backlog drain +
-// pipeline.Stop + runtime.Stop + propLoop.Stop + collectRuntime.Stop. The budget
-// inequality is:
+// daemon-stop drain loop count): on SIGTERM, runServe drains SIX bounded stages
+// SEQUENTIALLY in LIFO defer order — drainOnShutdown's wireJoinDeadline wait +
+// the segment backlog drain + pipeline.Stop + propLoop.Stop +
+// collectRuntime.Stop + segmentMgr.Close. The budget inequality is:
 //
-//	reaper.Stop + monitor.Stop + wireJoinDeadline + segment backlog drain +
-//	pipeline.Stop + runtime.Stop + propLoop.Stop + collectRuntime.Stop
+//	wireJoinDeadline + segment backlog drain + pipeline.Stop +
+//	propLoop.Stop + collectRuntime.Stop + segmentMgr.Close
 //	  <=  Makefile daemon-stop drain window.
 //
-// Every stage is cooperative (the monitor + reaper cancel their ctx before their
-// bounded wg.Wait; PropagationLoop.Stop and CollectRuntime.Stop cancel baseCtx
-// before their inFlight drain; the pipeline drains its bounded worker pool; the
-// segment drain skips any graph whose ship outlives the window), so a clean drain
-// finishes in a few seconds — the per-stage deadlines below are abandon-backstops,
-// not expected durations. Pinned to 3s each → 8 * 3s = 24s worst-case, under the
-// Makefile's 27s drain window. If you change one of these, re-check the Makefile
-// loop count (and the reaper/monitor Stop deadlines in hive_loops.go) so the
-// inequality still holds.
+// Every stage is cooperative (PropagationLoop.Stop and CollectRuntime.Stop cancel
+// baseCtx before their inFlight drain; the pipeline drains its bounded worker pool;
+// the segment drain skips any graph whose ship outlives the window; segmentMgr.Close
+// joins mergers that abandon their work at the next coarse boundary), so a clean
+// drain finishes in a few seconds — the per-stage deadlines below are
+// abandon-backstops, not expected durations. Pinned to 3s each → 6 * 3s = 18s
+// worst-case, under the Makefile's 27s drain window. If you change one of these,
+// re-check the Makefile loop count so the inequality still holds.
+//
+// segmentMgr.Close BECAME A BOUNDED STAGE when engine Close started JOINING its
+// merge goroutine rather than merely signaling it. It previously waited for
+// nothing and cost nothing here. It now waits, and Manager.Close loops SERIALLY
+// over every per-graph engine, so its cost is a SUM across graphs — which is why it
+// is bounded like its siblings rather than left unbounded.
 const (
 	// wireJoinDeadline bounds how long drainOnShutdown waits for the background
 	// wiring goroutine (wireRuntimesBackground) to finish before it gives up and
 	// drains only the already-ready subsystems.
 	wireJoinDeadline = 3 * time.Second
 	// daemonStopDeadline is the per-stage drain bound for the segment backlog
-	// drain, pipeline, dream Runner, PropagationLoop, collect runtime, hive
-	// monitor, and hive reaper. See the budget note above.
+	// drain, pipeline, PropagationLoop and collect runtime. See the budget note
+	// above.
 	daemonStopDeadline = 3 * time.Second
 )
 
 // buildClient constructs the MCP client + runs the cheap synchronous bind-ready
 // prefix (constructClient, the boot-spawn decision, the one-shot asset-drift
 // hints), then returns the *client ready to BIND the HTTP MCP listener. The
-// background runtimes (dream worker Runner, PropagationLoop, LLM pipeline,
+// background runtimes (PropagationLoop, segment Manager, LLM pipeline,
 // instruction bootstrap) are NOT wired here — runServe launches
 // c.wireRuntimesBackground in a goroutine AFTER the listener binds (Bind-first startup:
 // bind first, wire in the background) so first-call latency is ~25ms instead of
@@ -147,9 +154,10 @@ func buildClient(f Config) (*client, func(), error) {
 // by the mark*Ready atomic Store, and a nil/half-wired handle is never Stopped.
 // Each Stop stays nil-safe as defense-in-depth.
 //
-// Deadline budget (reconciled in Phase 3): wireJoinDeadline + the four sequential
-// Stop deadlines below must fit inside the Makefile daemon-stop SIGTERM window so
-// a clean drain completes before SIGKILL.
+// Deadline budget (reconciled in Phase 3): wireJoinDeadline + the five sequential
+// Stop deadlines below — the segment backlog drain, pipeline.Stop, propLoop.Stop,
+// collectRuntime.Stop and the segmentMgr.Close join — must fit inside the Makefile
+// daemon-stop SIGTERM window so a clean drain completes before SIGKILL.
 func (c *client) drainOnShutdown() {
 	if c.wireCancel != nil {
 		c.wireCancel()
@@ -171,7 +179,7 @@ func (c *client) drainOnShutdown() {
 		c.drainSegmentBacklog(drainCtx)
 		drainCancel()
 	}
-	// Flag-gated drain in the fixed order (segment backlog, pipeline, dream Runner,
+	// Flag-gated drain in the fixed order (segment backlog, pipeline,
 	// PropagationLoop, the always-constructed collect runtime, then the segment
 	// engines). The readiness flag guarantees the handle was published before we
 	// read it; the nil-check is belt-and-suspenders. Each Stop is bounded to
@@ -181,18 +189,6 @@ func (c *client) drainOnShutdown() {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), daemonStopDeadline)
 		defer stopCancel()
 		_ = c.pipeline.Stop(stopCtx)
-	}
-	if c.WorkerReady() && c.runtime != nil {
-		// The dream Runner's Stop is an ABANDON-on-deadline backstop: it closes
-		// stopCh + waits inFlight up to the deadline but does NOT cancel the
-		// per-invocation ctxs (Start was called with context.Background()), so an
-		// in-flight LLM ReAct worker is abandoned (slog.Warn) at the deadline rather
-		// than cancelled. That is acceptable — a worker invocation is an LLM call,
-		// not state-critical local work, and explicit Cancel() exists. Bounding the
-		// deadline to 3s only keeps an abandoned worker from stretching shutdown past
-		// the SIGTERM window; cooperative cancellation of the Runner is out of scope
-		// for the bind-first startup change.
-		c.runtime.Stop(daemonStopDeadline)
 	}
 	if c.PropReady() && c.propLoop != nil {
 		c.propLoop.Stop(daemonStopDeadline)
@@ -210,18 +206,45 @@ func (c *client) drainOnShutdown() {
 	// engine would retire the background worker out from under live work. Same
 	// readiness gate as the backlog drain — markPipelineReady is the atomic Store
 	// that publishes c.segmentMgr, so it is the only barrier under which this
-	// field may be read. It carries no deadline because it waits for nothing: it
-	// takes the manager's mutex, which is only ever held across a map
-	// check-and-store, and it does not wait for the mergers to observe the close.
-	// So it adds nothing to the SIGTERM budget the deadlines above are reconciled
-	// against.
+	// field may be read.
+	//
+	// IT IS A BOUNDED STAGE, and it did not used to be. Engine Close now JOINS its
+	// merge goroutine instead of only signaling it, so this call WAITS — and
+	// Manager.Close loops serially over every per-graph engine, making that wait a
+	// SUM across graphs rather than a single merge. The join is unconditional
+	// inside the engine, which is what gives every other caller a real guarantee;
+	// the bound belongs HERE, in the process that is exiting anyway. At daemon exit
+	// the write a late merger would make is a content-addressed L2 blob the next
+	// boot rebuilds, so abandoning it after the deadline costs nothing; in a test
+	// the same write lands in a directory being torn down, which is the defect the
+	// unconditional engine-level join exists to prevent.
 	if c.PipelineReady() && c.segmentMgr != nil {
-		c.segmentMgr.Close()
+		closeDone := make(chan struct{})
+		go func() {
+			defer close(closeDone)
+			c.segmentMgr.Close()
+		}()
+		select {
+		case <-closeDone:
+		case <-time.After(daemonStopDeadline):
+			slog.Warn("segment engines did not finish closing before the shutdown deadline; abandoning the join",
+				"deadline", daemonStopDeadline)
+		}
 	}
+	// The pprof endpoint is released after everything above, so a goroutine or heap
+	// dump stays pullable for the whole drain — the window where a wedged subsystem
+	// is worth profiling. No-op when --pprof was never passed and no
+	// manage(pprof_start) ever ran. Without it this is the one listener the daemon
+	// opens and never closes. It carries no deadline because it waits for nothing —
+	// Close drops the listener and the open connections and returns — so it is not
+	// one of the SIX bounded stages the shutdown-budget inequality is reconciled
+	// against. (segmentMgr.Close above USED to share that property and no longer
+	// does: it joins its merge goroutines and is now a bounded stage itself.)
+	profiling.Stop()
 }
 
-// wireRuntimesBackground wires every client-side background runtime — dream
-// worker Runner, client embedder, PropagationLoop, LLM pipeline, instruction
+// wireRuntimesBackground wires every client-side background runtime — client
+// embedder, PropagationLoop, LLM pipeline, instruction
 // bootstrap — in the SAME order buildClient used to wire them synchronously, but
 // off the bind-critical path (bind-first startup). runServe launches it in a goroutine after
 // the HTTP MCP listener binds. Each stage keeps its slog stage line + its
@@ -242,43 +265,38 @@ func (c *client) wireRuntimesBackground(ctx context.Context, f Config) {
 		slog.Debug("client.startup", "stage", name, "elapsed", time.Since(t0))
 	}
 
-	if !f.NoWorkerRuntime {
-		if err := wireWorkerRuntime(c, f); err != nil {
-			slog.Warn("dream worker runtime unavailable; worker.trigger/status will return errors but other tools work",
-				"error", err)
-		}
-		stage("wireWorkerRuntime done")
-	} else {
-		slog.Debug("dream worker runtime skipped (--no-worker-runtime)")
-		// A --headless daemon skips the worker runtime, so config.LoadOrAutoDetect
-		// (reached ONLY via wireWorkerRuntime → buildRuntime) never runs. Load
-		// ~/.knowledge/config here — independently of the worker runtime — so the
-		// [credentials] section resolves config-first for BuildEmbedder (query
-		// embedder + rerank) below. Degrade-not-die + never-write; precheck stays
-		// gated on !NoWorkerRuntime so this does NOT resurrect it.
-		if f.Headless {
-			loadHeadlessConfig()
-		}
-	}
-	// c.runtime is assigned above (wireWorkerRuntime, or left nil on degrade);
-	// the atomic Store publishes it — a reader seeing WorkerReady()==true observes
-	// the wired handle. Do NOT reorder the Store before the field write.
-	c.markWorkerReady()
+	// Load ~/.knowledge/config FIRST, on every serve, independently of any
+	// runtime below. It must precede llmproviders.BuildEmbedder so the query
+	// embedder + rerank resolve the config voyage_api_key rather than falling
+	// straight to VOYAGE_API_KEY, and it must precede the LLM precheck, which
+	// is gated on there being a config to precheck.
+	loadBootConfig(f)
 
 	if ctx.Err() != nil {
 		return
 	}
 
 	// Wire the client-side embedder so InterceptSearch / InterceptQuery
-	// can embed query text on the client side (Phase 4.5). nil when no
-	// voyage_api_key is configured — the search path then runs BM25-only.
+	// can embed query text on the client side (Phase 4.5). nil when the
+	// resolved [embedder] axis has no credential and no base_url — the
+	// search path then runs BM25-only. This is the QUERY-role embedder:
+	// search-time query text gets the query input role, which the corpus
+	// side (the index pipeline) does not share.
 	// The server holds no embedder at all by design, so query embedding is
-	// exclusively client-side. BuildEmbedder populates c.embedder, which the
-	// search/query intercepts read LAZILY via deps.Embedder() at call time —
-	// there is NO wiring-order dependency between it and wirePropagationRuntime
-	// below (WithTopicDeps takes only scanner + summarizer, no embedder). The
-	// existing call order is preserved purely to avoid needless churn.
-	c.embedder = llmproviders.BuildEmbedder()
+	// exclusively client-side. c.embedder is read LAZILY by the
+	// search/query intercepts via deps.Embedder() at call time — there is
+	// NO wiring-order dependency between it and wirePropagationRuntime
+	// below (WithTopicDeps takes only scanner + summarizer, no embedder).
+	// The existing call order is preserved purely to avoid needless churn.
+	queryEmbedder, err := llmproviders.BuildEmbedder(ctx, embed.InputRoleQuery)
+	if err != nil {
+		// Degrade-not-die, matching how this site already treats a nil
+		// embedder — but the misconfiguration is logged rather than
+		// swallowed, so a malformed [embedder] section is visible.
+		slog.Warn("client runtime: query embedder build failed; search runs BM25-only", "error", err)
+		queryEmbedder = nil
+	}
+	c.embedder = queryEmbedder
 	stage("llmproviders.BuildEmbedder done")
 
 	// Wire the client-side PropagationLoop. Runs
@@ -301,22 +319,22 @@ func (c *client) wireRuntimesBackground(ctx context.Context, f Config) {
 		return
 	}
 
-	// LLM precheck runs ASYNC (2026-05-20) against the config loaded as
-	// a side-effect of wireWorkerRuntime → buildRuntime →
-	// config.LoadOrAutoDetect. Empty config silently no-ops; misconfigured
-	// keys surface as `slog.Error "llmproviders: precheck failed"` from
-	// the background goroutine rather than blocking the MCP handshake.
+	// LLM precheck runs ASYNC (2026-05-20) against the config loadBootConfig
+	// installed at the top of this function. Empty config silently no-ops;
+	// misconfigured keys surface as `slog.Error "llmproviders: precheck failed"`
+	// from the background goroutine rather than blocking the MCP handshake.
 	//
-	// Gated on !NoWorkerRuntime for the SAME reason wireWorkerRuntime is:
-	// config.LoadOrAutoDetect is loaded inside wireWorkerRuntime, so a plain
-	// --no-worker-runtime process (which skips wireWorkerRuntime) never loaded
-	// config and RunPrecheck → config.Active() would panic. A --headless process
-	// DOES load config here (loadHeadlessConfig in the else-branch above), but the
-	// precheck stays gated: like any --no-worker-runtime process it makes no LLM
-	// calls of its own, so it has no consumer to precheck — and keeping the gate
-	// means config-loaded-but-no-worker never resurrects the precheck.
-	if !f.NoWorkerRuntime {
-		_ = llmproviders.RunPrecheck(context.Background(), f.SkipLLMPrecheck)
+	// Gated on config.Loaded() — precheck the configured providers when there is
+	// a config to precheck. A normal serve loads one and still runs the precheck;
+	// a --headless serve still makes no LLM call, because applyHeadless sets
+	// SkipLLMPrecheck and RunPrecheck's own skip arm returns immediately.
+	if config.Loaded() {
+		// rerank.CheckProvider is supplied HERE, at the composition root, so
+		// neither llmproviders nor llm/precheck carries a dependency on rerank:
+		// llmproviders forwards the value straight to precheck.RunAll and the
+		// binary is the only package that names both sides. Passing nil is
+		// refused loudly at both hops rather than skipping the axis.
+		_ = llmproviders.RunPrecheck(context.Background(), f.SkipLLMPrecheck, rerank.CheckProvider)
 		stage("llmproviders.RunPrecheck spawned (async)")
 	}
 
@@ -332,8 +350,8 @@ func (c *client) wireRuntimesBackground(ctx context.Context, f Config) {
 
 	// Wire the client-side LLM pipeline (Phase 6). Builds summarizer +
 	// embedder + worker pools, runs the initial graph-list registration,
-	// then spawns a background refresh goroutine that replaces the
-	// deleted server-side RegisterPipelineHooks. nil-safe Stop is run by
+	// then spawns a background refresh goroutine that replaces the retired
+	// server-side RegisterPipelineHooks wire-up. nil-safe Stop is run by
 	// the cleanup closure.
 	if err := wirePipelineRuntime(ctx, c, f); err != nil {
 		slog.Warn("client pipeline wire failed; LLM background processing disabled",
@@ -395,9 +413,8 @@ func runServe(args []string) error {
 	applyRootDirSet(fs, &cfg)
 
 	// Normalize --headless into its implied gate set ONCE, before cfg flows into
-	// either consumer: buildClient → wireRuntimesBackground (the worker /
-	// propagation / pipeline / transcript gates) and the runServe-scope hive
-	// monitor / reaper block below both read the expanded bools.
+	// its consumer: buildClient → wireRuntimesBackground (the worker /
+	// propagation / pipeline / transcript gates) reads the expanded bools.
 	applyHeadless(&cfg)
 
 	// Mirror bootstrap.Run's setup (run.go:62-71) — runServe is a
@@ -433,10 +450,7 @@ func runServe(args []string) error {
 		LoggedIn:        c.router.LoggedIn,
 	})
 
-	// The claim Registry passed here is the SAME instance ClaimRegistry() returns
-	// and startHiveLoops installs its lifecycle hooks on — a different instance
-	// would silently mean hive sessions never open or end.
-	hs := graphclient.NewHTTPServer(c.mcpClient, *httpPort, cfg.AllowedWebOrigins, c.claimRegistry)
+	hs := graphclient.NewHTTPServer(c.mcpClient, *httpPort, cfg.AllowedWebOrigins)
 
 	// Bind-first (bind-first startup): the MCPClient + HTTPServer above reference c only via
 	// func-field injection (InterceptChain=c.runInterceptChain,
@@ -449,14 +463,6 @@ func runServe(args []string) error {
 	// return the loud "daemon still starting" error until each stage's readiness
 	// flag is set.
 	go c.wireRuntimesBackground(c.wireCtx, cfg)
-
-	// Install the hive daemon Monitor + peer machine-down reaper lifecycle. The
-	// loops do not start here: they follow this daemon's hive sessions, and each
-	// stays gated on its Config bool (NoHiveMonitor / NoHiveReaper, both set under
-	// --headless). The returned closure drains whichever loops are running;
-	// deferring it here keeps the hive Stops ahead of drainOnShutdown (deferred
-	// earlier, so it runs last).
-	defer c.startHiveLoops(cfg, hs)()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()

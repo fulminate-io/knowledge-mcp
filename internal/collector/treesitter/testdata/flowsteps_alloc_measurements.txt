@@ -1,0 +1,68 @@
+# flowsteps_alloc_measurements.txt — the recorded baseline for the flow-step
+# arms, the closure engine and the emission they feed.
+#
+# WHY ALLOCATIONS AND NOT TIME, stated with both numbers because the contrast IS
+# the argument. On the run recorded below the flow arm moved:
+#
+#     allocs/op   5720 -> 6902   = 1.207x
+#     ns/op    6436599 -> 6720625 = 1.044x
+#
+# A time budget set at any sane tolerance sees 1.04x and reports nothing. The
+# qualifier sibling recorded the same shape one order of magnitude more sharply
+# (1.005x on time against 1.794x on allocations) and its own header says that is
+# "precisely why a time-only budget could not see the regression". A flow arm
+# does strictly more per declaration than a qualifier arm — five step kinds, a
+# closure pass over them, and the facts that come out — so the same blindness
+# applies with more to hide.
+#
+# WHAT THE FOUR BenchmarkChunkFile LEGS MEASURE. arm_off and arm_on belong to
+# the qualifier sibling and are untouched by this ticket; flow_off and flow_on
+# are this artifact's. The flow arm stays REGISTERED on both qualifier legs
+# deliberately, so its cost appears in both of their terms and cancels — which
+# is exactly why it needed legs of its own.
+#
+# THE STATE OF THE QUALIFIER SIBLING'S RATCHET WHEN THIS ARTIFACT WAS CREATED.
+# The plan that produced this file recorded testdata/qualtypes_alloc_measurements.txt
+# as measured RED at HEAD 629bf54a — arm_off 3823 against arm_on 5707, a ratio of
+# 1.4928 against its recorded ceiling of 1.41 — on the plan author's machine.
+# THAT WAS NOT REPRODUCED HERE and is recorded as their measurement rather than
+# claimed as this one: on the machine below the same two legs read arm_off 6195
+# and arm_on 6902, a ratio of 1.114. Nothing in this ticket touched that
+# artifact, that ceiling, or those two legs.
+#
+# THE SEQUENCING CONSTRAINT, AND IT MUST SURVIVE THIS TICKET'S MERGE.
+# Because the flow arm registers on BOTH the arm_off and the arm_on side, its
+# cost F is added to both terms, and adding the same quantity to both moves the
+# measured ratio TOWARD 1. Solving (5707+F) <= 1.41*(3823+F) against the plan
+# author's red numbers turns that gate green at F >= 773 allocs/op. The flow
+# arm's measured cost here is 6902-5720 = 1182 allocs/op, comfortably past that
+# threshold. SO: if this ticket lands before the qualifier ratchet is re-derived
+# on the machine that measured it red, that gate goes green for the wrong reason
+# and the regression it exists to catch becomes permanently invisible. Re-deriving
+# it belongs to whoever owns those two criteria; recording the constraint here is
+# what stops the merge erasing it.
+#
+# THE RATCHET IS A CEILING PROTECTING FUTURE CHANGE, NOT A PREDICTION. It cannot
+# fail on the run that records it, and saying so plainly is more honest than
+# dressing it as a red-first gate. It is derived by the rule the qualifier
+# sibling states for its own: the measured flow_on/flow_off allocs ratio, rounded
+# UP to two decimal places, PLUS 0.05 absolute headroom for the one-allocation
+# jitter that sibling records seeing between runs.
+#
+#     6902 / 5720 = 1.2066 -> 1.21 -> 1.26
+
+head_baseline_commit=ae53a719925a2a6e516d6edaad77c577a182c612
+machine=darwin/arm64, Apple M4 Max, 16 procs, go test -benchmem -count=3, all three runs byte-identical on every allocs/op below
+
+# BenchmarkChunkFile: the whole chunker, flow arm off versus on.
+baseline_flow_off_allocs=5720
+baseline_flow_on_allocs=6902
+baseline_flow_off_ns=6436599
+baseline_flow_on_ns=6720625
+
+# BenchmarkGoFlowWalk: the arm plus the closure engine alone, parsing lifted out
+# of the measured loop, over the same input the two BenchmarkChunkFile legs read.
+baseline_walk_allocs=1048
+baseline_walk_ns=451661
+
+ratchet_multiple=1.26

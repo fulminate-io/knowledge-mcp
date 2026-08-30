@@ -43,6 +43,22 @@ const (
 	shapeRejectedByAccounting
 	// shapeNoReadShape — the payload names no read at all; the generic deny is correct.
 	shapeNoReadShape
+	// shapeStatsServed — a (mode, graph) combination the stats arm SERVES. marker
+	// is that graph's own stats header, so the row proves a stats render answered
+	// rather than merely that something claimed the call.
+	shapeStatsServed
+	// shapeGraphVocabularyRefusal — the graph VALUE names no graph at all, so the
+	// call is claimed and refused with the accepted vocabulary. marker is a
+	// fragment of that vocabulary message. Distinct from shapeStatsServed on the
+	// same mode: a kind that only said "claimed" could not tell a served graph
+	// from a refused one, which is the whole point of adding the graph axis.
+	shapeGraphVocabularyRefusal
+	// shapeForeignHandOff — an EARLIER arm in the chain declines a shape it does
+	// not serve, and a LATER client arm claims it. Distinct from shapeEngineRead,
+	// which declines all the way past the chain: here the hand-off target is
+	// another intercept, so the row asserts handled==true plus the ABSENCE of the
+	// declining arm's own render.
+	shapeForeignHandOff
 )
 
 // modeDisposition declares how one published mode must be answered. marker, when
@@ -204,4 +220,63 @@ var queryShapeDispositions = []shapeDisposition{
 	// The single declared generic-deny cell: a payload naming no read at all.
 	// Declared rather than omitted so the invariant's scope is visible.
 	{name: "no_read_shape", args: map[string]any{"graph": "knowledge"}, kind: shapeNoReadShape},
+
+	// The chain-level proof of the practice arm's foreign-shape hand-off.
+	// InterceptQueryPracticeLinkage runs at dream.go:296 and
+	// InterceptQueryMetadataStats at :305, so the practice arm sees this payload
+	// FIRST and its decline is what lets the metadata_stats arm claim it. Every
+	// other test of that guard observes the practice intercept in isolation and can
+	// prove only that it declines — this row is the only one that proves the
+	// hand-off completes.
+	//
+	// THE MARKER IS THE FALSIFYING LEG, and it is a POSITIVE one because the
+	// absence legs alone do not discriminate here. MEASURED by A/B against this
+	// fixture: with the decline removed, the payload falls into the practice
+	// ranked-search arm and this harness's unwired segment manager answers
+	// "practice search: client segment engine unavailable" — which is handled,
+	// carries no generic deny, and carries no "Best Practices" either, so all three
+	// absence legs pass against the mis-route. "practice:go" is
+	// InterceptQueryMetadataStats' own domainGraphLabel, emitted on BOTH of its
+	// render branches (the empty-rows message and RenderMetadataStatsTable's
+	// header) and on neither practice-search output.
+	{name: "practice_metadata_stats", args: map[string]any{
+		"graph": "practice", "language": "go", "mode": "metadata_stats",
+	}, kind: shapeForeignHandOff, marker: "practice:go"},
+
+	// === THE GRAPH AXIS ===
+	//
+	// WHY THESE ROWS EXIST. Every row above pins a graph and no row varies it, so
+	// a mode served on ONE graph and denied on another satisfied the headline
+	// invariant while shipping the defect: mode:stats reached the generic deny on
+	// checks and on transformers even though the mode-level row (graph:knowledge)
+	// was green. The mode axis cannot express this — queryModeDispositions enforces
+	// exactly one disposition per published mode — so the cross goes here.
+	//
+	// The four rows split into two dispositions, and asserting WHICH is the point:
+	// a real graph with no stats arm is now SERVED, while a value naming no graph
+	// at all is REFUSED with the accepted vocabulary. Both assert the absence of
+	// the generic deny; only the kind says what answered.
+	{name: "stats_checks", args: map[string]any{"graph": "checks", "mode": "stats"},
+		kind: shapeStatsServed, marker: checksStatsHeader},
+	{name: "stats_transformers", args: map[string]any{
+		"graph": "transformers", "name": "recipes", "mode": "stats",
+	}, kind: shapeStatsServed, marker: transformersStatsHeaderPrefix},
+	// `all` is a TICKET-NAMED measured value, and a plausible-looking word a caller
+	// reasonably tries; the unregistered string is the typo stand-in. They are not
+	// interchangeable — an implementation could special-case one without the other.
+	{name: "stats_graph_all", args: map[string]any{"graph": "all", "mode": "stats"},
+		kind: shapeGraphVocabularyRefusal, marker: "all"},
+	{name: "stats_graph_unregistered", args: map[string]any{"graph": "nonsense-graph-xyz", "mode": "stats"},
+		kind: shapeGraphVocabularyRefusal, marker: "nonsense-graph-xyz"},
 }
+
+// The stats headers the served rows above match on. Declared here rather than
+// inlined so the row and the arm cannot drift into two spellings.
+const (
+	checksStatsHeader             = "## Checks Graph"
+	transformersStatsHeaderPrefix = "## Transformers Graph: recipes"
+	// graphVocabularyMarker is the fragment acceptedGraphVocabulary always emits,
+	// so the refusal rows assert the VOCABULARY was rendered and not merely that
+	// the offending value was echoed back.
+	graphVocabularyMarker = "valid graphs are the built-ins"
+)

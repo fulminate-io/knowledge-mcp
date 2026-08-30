@@ -28,7 +28,7 @@ func remapFixture(t *testing.T) (*distManager[mockQuery, mockStats], *instrument
 	require.Len(t, blobs, 1)
 	merged := blobs[0]
 
-	ic.Put(merged.ID, merged.Bytes)
+	ic.Put(merged.ID, merged.Envelope, merged.Bytes)
 	require.NoError(t, dm.engine.Import([]searchengine.SegmentBlob{merged}, nil))
 	return dm, ic, merged
 }
@@ -66,7 +66,7 @@ func TestRemapFailureConvergesOnNextTouch(t *testing.T) {
 		"a failed remap must be RECORDED as pending, not logged and forgotten")
 
 	// A drain while the cause persists must NOT drop it — it is still repairable.
-	dm.drainRemapPending()
+	require.NoError(t, dm.drainRemapPending())
 	require.Equal(t, []searchengine.SegmentID{merged.ID}, dm.pendingRemapIDs(),
 		"a drain that cannot repair must keep the id pending, not silently forfeit it")
 
@@ -75,7 +75,7 @@ func TestRemapFailureConvergesOnNextTouch(t *testing.T) {
 	ic.failMapping = false
 	ic.mu.Unlock()
 
-	dm.drainRemapPending()
+	require.NoError(t, dm.drainRemapPending())
 	require.Empty(t, dm.pendingRemapIDs(),
 		"once the cause clears, the next drain must converge and drop the id")
 }
@@ -109,7 +109,7 @@ func TestRemapPendingStopsReArmingAtTheBound(t *testing.T) {
 
 	// Drive drains past the bound. The cause never clears.
 	for range remapMaxAttempts + 2 {
-		dm.drainRemapPending()
+		require.NoError(t, dm.drainRemapPending())
 	}
 
 	// (1) EXACTLY ONE additive re-Put was attempted at the bound.
@@ -121,8 +121,8 @@ func TestRemapPendingStopsReArmingAtTheBound(t *testing.T) {
 	// "still re-arming quietly".
 	require.Empty(t, dm.pendingRemapIDs(), "past the bound the id must be TERMINAL, not still pending")
 	mappedBefore := countOps(ic, "getmapped", merged.ID)
-	dm.drainRemapPending()
-	dm.drainRemapPending()
+	require.NoError(t, dm.drainRemapPending())
+	require.NoError(t, dm.drainRemapPending())
 	require.Equal(t, mappedBefore, countOps(ic, "getmapped", merged.ID),
 		"a terminal id must never be re-armed — further drains must attempt nothing")
 

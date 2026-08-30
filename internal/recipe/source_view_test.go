@@ -152,3 +152,58 @@ func TestSourceView_ReadMethods(t *testing.T) {
 	// "contains": out has none, in has a--contains-->c → FromId "a".
 	assert.Equal(t, []string{"a"}, sv.edgesFrom("c", "contains", bothEdges))
 }
+
+// TestSourceView_ChildEdgesOrdered covers the whole ordering rule, one subtest
+// per obligation. The two unpositioned cases are the half no realistic source
+// graph exercises — both collectors always stamp a position — so without their
+// own subtests a fixture that simply omitted them would satisfy the test.
+func TestSourceView_ChildEdgesOrdered(t *testing.T) {
+	// posEvidence renders the Evidence blob a contains edge carries.
+	posEvidence := func(pos string) string { return `{"position":"` + pos + `"}` }
+	edge := func(to, evidence string) *knowledgev1.Edge {
+		return &knowledgev1.Edge{FromId: "sec1", ToId: to, Type: "contains", Evidence: evidence}
+	}
+	ids := func(edges []*knowledgev1.Edge) []string {
+		out := make([]string, 0, len(edges))
+		for _, e := range edges {
+			out = append(out, e.ToId)
+		}
+		return out
+	}
+
+	t.Run("position_order", func(t *testing.T) {
+		// Supplied 2,0,1 — distinct targets, so the returned order is
+		// observable rather than incidental.
+		sv := &sourceView{outEdges: map[string][]*knowledgev1.Edge{
+			"sec1": {edge("two", posEvidence("2")), edge("zero", posEvidence("0")), edge("one", posEvidence("1"))},
+		}}
+		assert.Equal(t, []string{"zero", "one", "two"}, ids(sv.childEdgesOrdered("sec1", "contains")))
+	})
+
+	t.Run("unpositioned_last", func(t *testing.T) {
+		sv := &sourceView{outEdges: map[string][]*knowledgev1.Edge{
+			"sec1": {edge("nopos", ""), edge("one", posEvidence("1")), edge("zero", posEvidence("0"))},
+		}}
+		assert.Equal(t, []string{"zero", "one", "nopos"}, ids(sv.childEdgesOrdered("sec1", "contains")))
+	})
+
+	t.Run("unparseable_position", func(t *testing.T) {
+		// Evidence present but the position is not an integer. It sorts with
+		// the unpositioned edges, and the two of them keep the order they were
+		// materialized in relative to each other.
+		sv := &sourceView{outEdges: map[string][]*knowledgev1.Edge{
+			"sec1": {edge("bad", posEvidence("not-a-number")), edge("empty", ""), edge("zero", posEvidence("0"))},
+		}}
+		assert.Equal(t, []string{"zero", "bad", "empty"}, ids(sv.childEdgesOrdered("sec1", "contains")))
+	})
+
+	t.Run("edge_type_filtered", func(t *testing.T) {
+		// A known-negative for the filter: a differently-typed edge with a
+		// winning position must not appear at all.
+		other := &knowledgev1.Edge{FromId: "sec1", ToId: "ref", Type: "references", Evidence: posEvidence("0")}
+		sv := &sourceView{outEdges: map[string][]*knowledgev1.Edge{
+			"sec1": {other, edge("one", posEvidence("1"))},
+		}}
+		assert.Equal(t, []string{"one"}, ids(sv.childEdgesOrdered("sec1", "contains")))
+	})
+}

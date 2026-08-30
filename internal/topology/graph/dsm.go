@@ -71,10 +71,13 @@ func (DSMAnalyzer) Run(ctx context.Context, req foundation.Request) ([]foundatio
 		return nil, fmt.Errorf("topology/dsm: read module path: %w", err)
 	}
 	if modulePath == "" {
-		// No go.mod under RepoRoot (or no module directive) → either the
-		// repo isn't a Go module or RepoRoot is unset. DSM only handles Go
-		// today, so skip.
-		return nil, nil
+		// No go.mod under RepoRoot, which now means exactly one thing: the
+		// dispatcher resolves the walk root from the repo argument, so the root is
+		// never unset here and the branch narrows to a genuinely non-Go tree. DSM
+		// only handles Go today, and that inability is STATED rather than returned
+		// as an empty result, which would render as "this repo has no layering
+		// violations". Nothing is retried or computed another way.
+		return []foundation.Finding{dsmNoGoModuleFinding(req.RepoRoot)}, nil
 	}
 
 	pkgs, deps, reps, err := buildPackageGraph(ctx, req, modulePath)
@@ -104,6 +107,27 @@ func (DSMAnalyzer) Run(ctx context.Context, req foundation.Request) ([]foundatio
 
 	findings := buildDSMFindings(violations, cycles, layering.Source)
 	return foundation.TruncateTopK(findings, req.TopK), nil
+}
+
+// DSMNoGoModuleTitle titles the one informational finding dsm emits for a tree
+// that carries no go.mod. It names the analyzer and the reason class, following
+// the disclosure shape corpus_scan established; the resolved root rides in the
+// summary as payload.
+const DSMNoGoModuleTitle = "dsm: not a Go module"
+
+// dsmNoGoModuleFinding states the absent-module fact AND the root it was looked
+// for under. The root is not decoration: without it a reader cannot tell a
+// genuinely non-Go tree from a mis-resolved one, which is the ambiguity the
+// resolved walk root exists to remove.
+func dsmNoGoModuleFinding(repoRoot string) foundation.Finding {
+	return foundation.Finding{
+		Algorithm: "dsm",
+		Severity:  foundation.SeverityNotice,
+		Title:     DSMNoGoModuleTitle,
+		Summary: fmt.Sprintf("no go.mod with a module directive under %s, and this analyzer models Go packages only — "+
+			"so it reports nothing about this tree's layering rather than reporting none", repoRoot),
+		Evidence: []string{repoRoot},
+	}
 }
 
 // readModulePath opens <rootDir>/go.mod and returns the `module ...`

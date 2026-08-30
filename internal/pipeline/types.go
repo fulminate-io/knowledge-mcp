@@ -63,16 +63,7 @@ type EmbedWork struct {
 	GraphName string
 	NodeID    string
 	EmbedText string // server-composed embed input (item.GetEmbedText()); may be empty
-	// Bm25Fields is the server-composed per-field BM25 text (item.GetBm25Fields()),
-	// populated only on the EMBED axis (Option A). The client builds BM25
-	// segments from these fields at the embed writeback seam (alongside the HNSW
-	// vector ship). May be nil — the server leaves it nil for nodes with no
-	// indexable field, and a code-leaf embedded via Content before its summary/
-	// keywords land carries a thin map (acceptable: transient, self-heals when
-	// re-summarization bumps the embed dirty-gen and re-ships — it only
-	// under-indexes that one node for the brief window until it re-ships).
-	Bm25Fields map[string]string
-	Release    chan<- string
+	Release   chan<- string
 	// Backend is the CONCRETE backend the originating collector scanned this
 	// item from. See SummaryWork.Backend — same login-routed-writeback contract
 	// on the embed axis. Constant per collector; may be nil for collector-less

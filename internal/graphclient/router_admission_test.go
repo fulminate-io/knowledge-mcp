@@ -92,6 +92,49 @@ func TestWorkingSet_PipelineWritebackDoesNotAdmit(t *testing.T) {
 			"admitting the writeback would make the working set self-admitting")
 }
 
+// TestWorkingSet_StatsRPCAdmitsNothing pins the property the coverage table's
+// unmanaged rows now depend on by name: manage(status) issues a per-graph Stats
+// RPC for EVERY graph in the account, including the ones this client has never
+// interacted with, and not one of them may become a working-set member as a
+// result.
+//
+// IT IS A SEPARATE PIN FROM TestManageStatusSweepDoesNotAdmit (bootstrap
+// client_workingset_test.go) BECAUSE IT COVERS A DIFFERENT ROUTE. That test drives
+// Stats-SHAPED requests through Router.Execute, where the operation partition is
+// what excludes them; production reaches the coverage counts through this method
+// instead — the collector type-asserts the GraphCaller up to the Stats seam and
+// calls it directly — and Router.Stats is a bare pick-and-forward that touches no
+// admitter at all. Nothing about the Execute pin constrains this method, so before
+// this test the route the counts actually travel had no admission pin on it.
+//
+// THE KNOWN-POSITIVE IS THE SAME RECORDER IN THE SAME TEST. An empty slice from a
+// recorder that was never wired proves nothing, so an admitting Execute runs first
+// and its admission is asserted before the Stats calls' silence is read.
+func TestWorkingSet_StatsRPCAdmitsNothing(t *testing.T) {
+	t.Parallel()
+
+	r, rec := routerWithRecorder(t)
+
+	_, _ = r.Execute(WithOperation(context.Background(), OpMutate), codeMutation("control-repo"))
+	require.Equal(t, []string{"code/control-repo"}, rec.recorded(),
+		"control: the recorder must be live before its silence means anything")
+
+	// The coverage fan-out's own shape: concrete instance targets, under the manage
+	// operation, for graphs no interaction has admitted. A type-only target would be
+	// refused by the structural instance-key gate and would prove nothing here.
+	manageCtx := WithOperation(context.Background(), OpManage)
+	for _, repo := range []string{"foreign-a", "foreign-b", "foreign-c"} {
+		_, _ = r.Stats(manageCtx, &knowledgev1.StatsRequest{
+			Target:          &knowledgev1.GraphSelector{Graph: string(kgtypes.GraphCode), Repo: repo},
+			IncludeCoverage: true,
+		})
+	}
+
+	assert.Equal(t, []string{"code/control-repo"}, rec.recorded(),
+		"counting a graph is not interacting with it: a per-graph Stats RPC must leave the "+
+			"working set exactly as it found it, however many graphs the coverage walk counts")
+}
+
 // TestUserCallAdmitsOnlyTheNamedGraph states the invariant the whole fan-out
 // CLASS must keep: one user call admits the one graph it named, and the internal
 // fan-outs it triggers admit nothing — however many graphs they happen to
@@ -130,7 +173,9 @@ func TestUserCallAdmitsOnlyTheNamedGraph(t *testing.T) {
 }
 
 // TestWorkingSet_InstanceTargetAdmitsTypeOnlyDoesNot pins the structural half of
-// the gate and its one named exception.
+// the gate and its named exceptions. It covers the knowledge one; the checks
+// sibling — the other single-instance family — is pinned in
+// router_admission_checks_test.go alongside the defect it was found by.
 func TestWorkingSet_InstanceTargetAdmitsTypeOnlyDoesNot(t *testing.T) {
 	t.Parallel()
 
@@ -161,11 +206,11 @@ func TestWorkingSet_InstanceTargetAdmitsTypeOnlyDoesNot(t *testing.T) {
 
 	t.Run("a type-only knowledge target admits the default instance", func(t *testing.T) {
 		t.Parallel()
-		// THE NAMED EXCEPTION, pinned rather than left as prose. knowledge is
+		// A NAMED EXCEPTION, pinned rather than left as prose. knowledge is
 		// single-instance, so a type-only knowledge target IS the default
-		// instance and a user query against it is a direct interaction. For this
-		// family the operation partition stays load-bearing instead of being
-		// backstopped by the instance-key gate.
+		// instance and a user query against it is a direct interaction. For the
+		// single-instance families the operation partition stays load-bearing
+		// instead of being backstopped by the instance-key gate.
 		r, rec := routerWithRecorder(t)
 		_, _ = r.Execute(WithOperation(context.Background(), OpQuery),
 			query(&knowledgev1.GraphSelector{Graph: string(kgtypes.GraphKnowledge)}))

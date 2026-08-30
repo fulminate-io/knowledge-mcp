@@ -91,8 +91,7 @@ func diskCacheIDs(c *diskSegmentCache) map[string]struct{} {
 func newReclaimDMOverCache(t *testing.T, cache segmentL2Cache) *distManager[mockQuery, mockStats] {
 	t.Helper()
 	target := graphSelector(kgtypes.GraphCode, "crash")
-	src := newSharedServerFake().viewFor(target, "")
-	return newDistManager[mockQuery, mockStats](newMockEngine(t), src, cache, target, "")
+	return newDistManager(newMockEngine(t), cache, target, "")
 }
 
 // TestReclaimCrashSafety proves the Put-before-Remove crash ordering across the

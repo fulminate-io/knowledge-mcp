@@ -41,8 +41,12 @@ import (
 //   - false — the contract partition entry B1 forbids: an evicted pool declines and
 //     the read reports 0.
 type evictableCoverageFake struct {
-	mu           sync.Mutex
+	mu sync.Mutex
+	// covered is the SUMMING count the loading reader returns; liveCovered is the
+	// DISTINCT one the gate actually compares. This fixture models a bucket with no
+	// cross-segment duplication, so they agree — the duplication case has its own test.
 	covered      int
+	liveCovered  int
 	evicted      bool
 	materializes bool
 	reads        int
@@ -68,22 +72,37 @@ func (f *evictableCoverageFake) readCount() int {
 
 func (f *evictableCoverageFake) ShippedSegmentDocCount(
 	_ context.Context, _ kgtypes.GraphType, _ string,
-) (int, bool, error) {
+) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reads++
 	if f.evicted {
 		if !f.materializes {
-			return 0, false, nil // the declining contract: a zero nobody measured
+			return 0, nil // the declining contract: a zero nobody measured
 		}
 		f.evicted = false // the landed contract: the read materializes the pool
 	}
-	return f.covered, false, nil
+	return f.covered, nil
+}
+
+// LiveResidentDocCount is the DISTINCT operand the gate compares against the bar,
+// and this fake models the real reader's residency behaviour rather than a constant:
+// it does NOT load, so an evicted pool reads 0 — "nobody looked", not "nothing is
+// there". That is what makes the evict/reload cycle below meaningful. The loading
+// sibling above is what materializes the pool, so on the materializing contract this
+// read lands after `evicted` was cleared and answers the real count; on the declining
+// contract the pool stays evicted and this correctly reads 0.
+func (f *evictableCoverageFake) LiveResidentDocCount(kgtypes.GraphType, string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.evicted {
+		return 0
+	}
+	return f.liveCovered
 }
 
 // The rest of the seam is unread by this gate.
-func (f *evictableCoverageFake) ResidentDocCount(kgtypes.GraphType, string) int     { return 0 }
-func (f *evictableCoverageFake) LiveResidentDocCount(kgtypes.GraphType, string) int { return 0 }
+func (f *evictableCoverageFake) ResidentDocCount(kgtypes.GraphType, string) int { return 0 }
 func (f *evictableCoverageFake) RepairVerification(kgtypes.GraphType, string) (RepairVerification, bool) {
 	return RepairVerification{}, false
 }
@@ -113,7 +132,7 @@ func TestUnifiedSearchVerdictSurvivesAnEvictReloadCycle(t *testing.T) {
 	overlay := overlayName(repo, branch)
 
 	newDeps := func(materializes bool) (codeSearchDeps, *evictableCoverageFake) {
-		cov := &evictableCoverageFake{covered: 120, materializes: materializes}
+		cov := &evictableCoverageFake{covered: 120, liveCovered: 120, materializes: materializes}
 		return codeSearchDeps{cov: cov, gc: &poolBarFake{embedded: 100}}, cov
 	}
 

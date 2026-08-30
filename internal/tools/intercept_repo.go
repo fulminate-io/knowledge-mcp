@@ -5,7 +5,10 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/coderun"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/session"
@@ -86,6 +89,12 @@ var manageCodeGraphOps = map[string]bool{
 // base graph WITHOUT error — the caller passes branch: explicitly to read an
 // overlay. repo="all" is never branch-stamped.
 //
+// A branch the CALLER supplied is VALIDATED rather than auto-filled, and it is
+// the one branch input that can refuse a call: it must name either a local ref
+// of that repo or a collected branch graph. Naming neither is refused here
+// instead of being answered from the base graph under a header claiming the
+// branch — see resolveBranchArg and validateCallerSuppliedBranch.
+//
 // Return tuple:
 //   - rewritten: a possibly-mutated CallToolParams. When no rewrite was
 //     necessary, the original params is returned unchanged.
@@ -106,12 +115,16 @@ var manageCodeGraphOps = map[string]bool{
 //  3. Repo injection: missing/empty args["repo"] → ResolveCwd. Hit
 //     populates args["repo"]; miss returns typed error.
 //
-//  4. Branch injection (manifest-based): missing/empty args["branch"]
-//     auto-fills via coderun.DetectBranch run in the repo's recorded on-disk
-//     directory (lookupRepoDir → ~/.knowledge/repos.json). A manifest miss, a
-//     detection failure (a non-git directory, or a detached HEAD), or
-//     repo="all" leaves branch unstamped and falls through to the base graph
-//     WITHOUT error. Never inferred from cwd.
+//  4. Branch injection or validation (resolveBranchArg). MISSING/empty
+//     args["branch"] auto-fills via coderun.DetectBranch run in the repo's
+//     recorded on-disk directory (lookupRepoDir → ~/.knowledge/repos.json). A
+//     manifest miss, a detection failure (a non-git directory, or a detached
+//     HEAD), or repo="all" leaves branch unstamped and falls through to the base
+//     graph WITHOUT error. Never inferred from cwd. A SUPPLIED branch is instead
+//     validated against the repo's local refs and its collected branch graphs,
+//     and a branch in neither returns a typed error. A call with NO branch-scoped
+//     read is skipped outright — see hasNoBranchScopedRead, which excludes
+//     query(mode:"topology") because its arm refuses branch rather than drop it.
 //
 //  5. Graph materialization (search only): a `search` that got past the gate
 //     targets the code graph — an omitted graph was the code default, an
@@ -184,18 +197,9 @@ func InjectRepoIfCodeGraph(ctx context.Context, deps ClientDeps, params kgtools.
 		args["graph"] = json.RawMessage(`"code"`)
 	}
 
-	// Branch auto-detect (machine-correct, manifest-based). Repo STAYS explicitly
-	// required above — this does NOT re-introduce repo inference. When the caller
-	// omitted branch, the repo's real on-disk dir from the machine-local manifest
-	// drives DetectBranch so the searched repo's ACTUAL branch is stamped; on a
-	// manifest miss, a detection failure (a detached HEAD is one), or repo="all"
-	// it stays unset (→ base graph).
-	if decodeStringField(args, "branch") == "" && repo != "all" {
-		if branch := autoDetectBranch(ctx, repo); branch != "" {
-			if b, mErr := json.Marshal(branch); mErr == nil {
-				args["branch"] = b
-			}
-		}
+	// Branch: auto-fill a missing one, validate a supplied one. See resolveBranchArg.
+	if err := resolveBranchArg(ctx, deps, params.Name, repo, args); err != nil {
+		return params, true, errorResult(params.Name + ": " + err.Error())
 	}
 
 	// Staleness trio (search only, staleness:true only): opt-in git state for the
@@ -211,6 +215,113 @@ func InjectRepoIfCodeGraph(ctx context.Context, deps ClientDeps, params kgtools.
 	}
 	params.Arguments = rewritten
 	return params, false, kgtools.ToolResult{}
+}
+
+// resolveBranchArg settles the branch for a code-graph call: it auto-fills a
+// MISSING branch and VALIDATES a caller-supplied one. It returns an error only
+// for the second case, and only when the supplied branch names nothing readable.
+//
+// THE TWO BRANCHES ARE NOT SYMMETRIC, and that asymmetry is the point. An
+// auto-detected branch was read out of the repo's own checkout by
+// coderun.DetectBranch, so it is a ref by construction and re-checking it would
+// spend an exec and an RPC to re-derive a fact this package just produced. A
+// caller-supplied branch has been through no such check: server-side an unknown
+// branch falls back to the base graph and is rendered under a header naming the
+// branch that was asked for, so the caller gets a plausible payload about a
+// branch that does not exist.
+//
+// Auto-fill stays silent on failure — a manifest miss, a non-git directory, or a
+// detached HEAD leaves branch unset and the read falls through to the base
+// graph. That is unchanged; only the supplied-branch arm can refuse.
+//
+// EXTRACTED RATHER THAN INLINE because the combined form nests past the limit
+// the linter enforces, and because this file already keeps its branch logic in
+// helpers (autoDetectBranchReason, autoDetectBranch, hasNoBranchScopedRead).
+func resolveBranchArg(ctx context.Context, deps ClientDeps, tool, repo string, args map[string]json.RawMessage) error {
+	if repo == "all" || hasNoBranchScopedRead(tool, args) {
+		return nil
+	}
+	branch := decodeStringField(args, "branch")
+	if branch == "" {
+		if detected := autoDetectBranch(ctx, repo); detected != "" {
+			if b, mErr := json.Marshal(detected); mErr == nil {
+				args["branch"] = b
+			}
+		}
+		return nil
+	}
+	return validateCallerSuppliedBranch(ctx, deps, repo, branch)
+}
+
+// validateCallerSuppliedBranch reports whether branch names something a read of
+// repo can actually be scoped to, and returns a refusal or a probe error when it
+// does not.
+//
+// THE VOCABULARY IS SPLIT ACROSS THE TWO SIDES, WHICH IS WHY THE CHECK IS HERE
+// AND NOT AT THE SERVER'S RESOLVER. The set of real branches lives in git, which
+// only this side can reach — it holds the machine-local repo manifest. The set of
+// collected branch graphs lives on the server. A branch can legitimately be in
+// either one alone: a locally-deleted branch whose branch graph survives is still
+// readable, and a real local branch that was never collected is not. So the
+// question is union membership, and the client is the only side that can consult
+// both. The server keeps falling back to base for a branch it has no graph for,
+// exactly as its own regression guard pins.
+//
+// THREE OUTCOMES, AND THE THIRD IS NOT THE SECOND. Accept; refuse as bad input
+// once BOTH vocabularies were successfully consulted and neither had it; or ERROR
+// as unverifiable when a PROBE FAILED, naming what could not be read. A probe
+// failure rendered as "is not a branch" would be a false explanation of a state
+// nobody observed, and accepting on a failed probe would be a silent fallback.
+//
+// A MANIFEST MISS IS NOT A PROBE FAILURE. There is simply no checkout on this
+// machine to consult, so the git vocabulary is unavailable by absence and the
+// branch-graph set decides alone. The refusal says which vocabularies were
+// consulted so the caller can tell the two situations apart.
+func validateCallerSuppliedBranch(ctx context.Context, deps ClientDeps, repo, branch string) error {
+	gitConsulted := false
+	if dir, ok := lookupRepoDir(repo); ok {
+		exists, err := coderun.BranchExists(ctx, dir, branch)
+		if err != nil {
+			return fmt.Errorf("branch %q cannot be verified for repo %q: the recorded checkout %q could not be read as a git repository (%v). Refusing rather than reporting a membership this client could not check", branch, repo, dir, err)
+		}
+		if exists {
+			return nil
+		}
+		gitConsulted = true
+	}
+
+	ix, err := manageIndexer(deps)
+	if err != nil {
+		return fmt.Errorf("branch %q cannot be verified for repo %q: the branch-graph list could not be read (%v). Refusing rather than reporting a membership this client could not check", branch, repo, err)
+	}
+	resp, ierr := ix.Index(ctx, &knowledgev1.IndexRequest{
+		Target:    branchGraphSelector(manageArgs{Name: repo}),
+		Operation: knowledgev1.IndexRequest_INDEX_OP_LIST_BRANCHES,
+	})
+	if ierr != nil {
+		return fmt.Errorf("branch %q cannot be verified for repo %q: the branch-graph list could not be read (%v). Refusing rather than reporting a membership this client could not check", branch, repo, ierr)
+	}
+
+	overlays := resp.GetBranches()
+	names := make([]string, 0, len(overlays))
+	for _, o := range overlays {
+		// GraphInfo.Name carries the BARE branch name — the registry trims the
+		// "<repo>@" prefix before setting it — so this is a direct comparison.
+		if o.GetName() == branch {
+			return nil
+		}
+		names = append(names, o.GetName())
+	}
+
+	consulted := "the branch graphs collected for it"
+	if gitConsulted {
+		consulted = "its local git refs and the branch graphs collected for it"
+	}
+	available := "none"
+	if len(names) > 0 {
+		available = strings.Join(names, ", ")
+	}
+	return fmt.Errorf("branch %q is not a branch of repo %q and no branch graph of that name exists"+" (consulted %s; branch graphs available: %s)", branch, repo, consulted, available)
 }
 
 // branchDetectState is WHY autoDetectBranchReason answered the way it did. It
@@ -266,6 +377,21 @@ func autoDetectBranchReason(ctx context.Context, repo string) (string, branchDet
 func autoDetectBranch(ctx context.Context, repo string) string {
 	branch, _ := autoDetectBranchReason(ctx, repo)
 	return branch
+}
+
+// hasNoBranchScopedRead reports whether this call has no branch-scoped read for
+// a detected branch to scope, so stamping one would be meaningless.
+//
+// query(mode:"topology") is the one such shape today. Every analyzer reads
+// through foundation.Request, which carries no Branch field, so armTopology
+// REFUSES branch rather than accept a scope control it would silently drop.
+// Auto-filling it here would turn that refusal on callers who never asked for a
+// branch — measured live, it failed EVERY code-graph topology call on a machine
+// whose repo manifest resolves. An EXPLICIT branch on a topology call is still
+// refused by the arm, which is the intended behavior: this only declines to
+// invent one.
+func hasNoBranchScopedRead(tool string, args map[string]json.RawMessage) bool {
+	return tool == "query" && decodeStringField(args, "mode") == "topology"
 }
 
 // populateStaleness fills current_head / uncommitted_count from coderun

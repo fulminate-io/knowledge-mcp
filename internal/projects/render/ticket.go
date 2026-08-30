@@ -27,14 +27,14 @@ func assembleTicket(ctx context.Context, gc GraphCaller, node *knowledgev1.Node)
 	fmt.Fprintf(&sb, "# Ticket: %s\n\n", node.SymbolName)
 	renderTicketHeader(node, &sb)
 
-	// Walk contains edges to find child plans and research.
-	childEdges, _ := IterEdges(ctx, gc, node.Id, kgwire.OutgoingEdges, kgtypes.EdgeKGContains)
+	// Depth 2: the ticket's child plans and research are depth 1, and the
+	// phases and questions the sections below count are depth 2. Nothing this
+	// arm renders lives deeper, and a larger depth would pull rows the render
+	// discards while bringing the server's row ceiling closer.
+	childIndex, byID, _, truncated := AssembleSubtree(ctx, gc, node.Id, 2)
+
 	var plans, researches []*knowledgev1.Node
-	for _, e := range childEdges {
-		cn, err := FetchNode(ctx, gc, e.ToId)
-		if err != nil || cn == nil {
-			continue
-		}
+	for _, cn := range childIndex[node.Id] {
 		switch kgtypes.NodeType(cn.Type) {
 		case kgtypes.NodePlan:
 			plans = append(plans, cn)
@@ -43,47 +43,51 @@ func assembleTicket(ctx context.Context, gc GraphCaller, node *knowledgev1.Node)
 		}
 	}
 
-	sb.WriteString(renderTicketPlans(ctx, gc, plans))
-	sb.WriteString(renderTicketResearch(ctx, gc, researches))
+	sb.WriteString(renderTicketPlans(plans, childIndex))
+	sb.WriteString(renderTicketResearch(researches, childIndex))
 
 	// Walk outgoing edges for linked decisions, findings, and
 	// patterns. One IterEdges call (no type filter) so we can
-	// dispatch on edge type below.
+	// dispatch on edge type below, then ONE bulk hydrate over every
+	// target the four edge types name.
 	outEdges, _ := IterEdges(ctx, gc, node.Id, kgwire.OutgoingEdges)
-	var decisions, findings, patterns, languagePatterns []*knowledgev1.Node
+	targetIDs := make([]string, 0, len(outEdges))
 	for _, e := range outEdges {
 		switch kgtypes.EdgeType(e.Type) {
+		case kgtypes.EdgeInformedBy, kgtypes.EdgeRelatesTo, kgtypes.EdgeUses, kgtypes.EdgeAudits:
+			targetIDs = append(targetIDs, e.ToId)
+		}
+	}
+	linked, linkedTruncated, _ := FetchNodesByIDs(ctx, gc, targetIDs)
+	truncated = truncated || linkedTruncated
+
+	// Walk the EDGE slice, never the hydrated map: the slice carries edge order
+	// and a map range would reorder every section below at random.
+	var decisions, findings, patterns, languagePatterns []*knowledgev1.Node
+	for _, e := range outEdges {
+		// BROKEN-LINK TOLERANCE, PRESERVED. A uses or audits edge can point at
+		// a pattern id that does not resolve, and an unresolved target is
+		// SKIPPED here rather than reported inline — the unresolved ids are
+		// surfaced separately through the unresolved_pattern_ids and
+		// unresolved_language_patterns metadata keys. The condition used to be
+		// a FetchNode error; with a bulk hydrate it is a miss in the map, and
+		// it stays a skip.
+		tgt, ok := linked[e.ToId]
+		if !ok {
+			continue
+		}
+		switch kgtypes.EdgeType(e.Type) {
 		case kgtypes.EdgeInformedBy, kgtypes.EdgeRelatesTo:
-			ln, err := FetchNode(ctx, gc, e.ToId)
-			if err != nil || ln == nil {
-				continue
-			}
-			switch kgtypes.NodeType(ln.Type) {
+			switch kgtypes.NodeType(tgt.Type) {
 			case kgtypes.NodeDecision:
-				decisions = append(decisions, ln)
+				decisions = append(decisions, tgt)
 			case kgtypes.NodeFinding:
-				findings = append(findings, ln)
+				findings = append(findings, tgt)
 			}
 		case kgtypes.EdgeUses:
-			// Broken-link tolerance: EdgeUses can point at pattern
-			// IDs that don't resolve (v1 bogus-id handling). Skip
-			// unresolved targets — they're reported via the
-			// unresolved_pattern_ids metadata key in
-			// renderTicketPatterns.
-			pn, err := FetchNode(ctx, gc, e.ToId)
-			if err != nil || pn == nil {
-				continue
-			}
-			patterns = append(patterns, pn)
+			patterns = append(patterns, tgt)
 		case kgtypes.EdgeAudits:
-			// Language-pattern targets. Same broken-link tolerance
-			// as EdgeUses — unresolved IDs are reported via the
-			// unresolved_language_patterns metadata key.
-			lp, err := FetchNode(ctx, gc, e.ToId)
-			if err != nil || lp == nil {
-				continue
-			}
-			languagePatterns = append(languagePatterns, lp)
+			languagePatterns = append(languagePatterns, tgt)
 		}
 	}
 
@@ -92,5 +96,9 @@ func assembleTicket(ctx context.Context, gc GraphCaller, node *knowledgev1.Node)
 	sb.WriteString(renderTicketDecisions(decisions))
 	sb.WriteString(renderTicketFindings(findings))
 
-	return kgtools.TextResult(sb.String())
+	// Two verdicts, OR'd: a clamped traversal silently shortens the plan and
+	// research lists — which looks exactly like a small ticket — and a clamped
+	// linked-nodes hydrate silently shortens the pattern, decision and finding
+	// sections. A complete subtree with a clamped hydrate is still incomplete.
+	return AppendTruncationNotice(kgtools.TextResult(sb.String()), truncated, len(byID)+len(linked))
 }

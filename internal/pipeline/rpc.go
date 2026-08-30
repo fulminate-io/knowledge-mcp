@@ -88,22 +88,48 @@ type BackendResolver interface {
 // scan against this (gt, name, axis); when non-zero AND equal to the
 // server's current gen, the server short-circuits and returns empty
 // items without iterating the node map.
-func scanGaps(ctx context.Context, c WireClient, gt kgtypes.GraphType, name, axis string, limit int, lastSeenGen uint64) ([]*knowledgev1.PipelineScanItem, uint64, error) {
+// Its THIRD return is the server's gap_set_complete: every SQL arm the scan
+// issued, on every layer it visited, returned fewer rows than its own budget, so
+// the items ARE the complete admissible gap set for this axis. Combined with an
+// empty page that means there is no work left on this axis — which an empty page
+// alone does not, because a page can be empty because the scan failed, because it
+// was truncated, or because the Go gate refused everything in a saturated window.
+func scanGaps(
+	ctx context.Context, c WireClient, gt kgtypes.GraphType, name, axis string,
+	limit int, lastSeenGen uint64, identity *knowledgev1.EmbedIdentity,
+) ([]*knowledgev1.PipelineScanItem, uint64, bool, error) {
 	// Background loop with no originating tool call — it stamps its own
 	// query-origin operation so its share of the load is attributable rather
 	// than arriving unlabeled.
 	ctx = graphclient.WithOperation(ctx, graphclient.OpPipelineGapScan)
-	resp, err := c.PipelineScan(ctx, &knowledgev1.PipelineScanRequest{
+	req := &knowledgev1.PipelineScanRequest{
 		GraphType:   string(gt),
 		GraphName:   name,
 		Axis:        axis,
 		Limit:       int32(limit),
 		LastSeenGen: lastSeenGen,
-	})
-	if err != nil {
-		return nil, 0, fmt.Errorf("pipeline.rpc: PipelineScan %s/%s (%s): %w", gt, name, axis, err)
 	}
-	return resp.GetItems(), resp.GetDirtyGen(), nil
+	// STATED ON THE EMBED AXIS ONLY, which is the axis contract rather than a
+	// caller's choice: the summary axis produces no vectors and the
+	// segment_rebuild axis reads vectors a graph already holds, so an identity on
+	// either claims something about bytes neither one produces. Applied here so
+	// the rule holds for every caller instead of at each call site.
+	//
+	// The server refuses an embed scan whose stated identity is not the graph's
+	// recorded one, so a client that would be refused at writeback learns BEFORE
+	// it pays a provider. A scan that states nothing bypasses that check
+	// entirely — which is why an absent identity here is a real cost, not a
+	// harmless omission.
+	if axis == "embed" {
+		req.EmbedIdentity = identity
+	}
+	resp, err := c.PipelineScan(ctx, req)
+	if err != nil {
+		// FALSE ON THE ERROR PATH, not the zero value by accident: a scan that did
+		// not return cannot have observed a complete gap set.
+		return nil, 0, false, fmt.Errorf("pipeline.rpc: PipelineScan %s/%s (%s): %w", gt, name, axis, err)
+	}
+	return resp.GetItems(), resp.GetDirtyGen(), resp.GetGapSetComplete(), nil
 }
 
 // pipelineEligibleGraphTypes is the BUILTIN base of the set of graph types the
@@ -123,6 +149,14 @@ var pipelineEligibleGraphTypes = []kgtypes.GraphType{
 	kgtypes.GraphCloud,
 	kgtypes.GraphCICD,
 	kgtypes.GraphTransformers,
+	// GraphChecks rides the ranked-search cutover: check nodes are summarized at
+	// authoring time and embed-eligible on the server (fixtures excluded there),
+	// so the client must drain the graph or every check node sits at embedded=0
+	// with nothing reporting the gap. This list is a deliberate client-side
+	// DUPLICATE of server eligibility across the module boundary — the same
+	// contract shape kgtypes.SyncEligible documents — so a server-side
+	// eligibility change for a builtin type MUST be reflected here too.
+	kgtypes.GraphChecks,
 }
 
 // pipelineDrainsType reports whether the pipeline enriches graphs of type gt.
@@ -157,12 +191,18 @@ type GraphRef struct {
 
 // updateBatchItem is one row in a mutate(update_batch) call. Mirrors the
 // server-side mutateUpdateBatchItem shape exactly.
+//
+// EmbedIdentity states what BinaryVector's bytes ARE, and is set ONLY on an item
+// that carries one. An identity without a vector claims nothing about stored
+// bytes — the server ignores it there — so the summary, metadata and
+// failure-marker writebacks leave it nil and say nothing.
 type updateBatchItem struct {
-	ID           string            `json:"id"`
-	Summary      *string           `json:"summary,omitempty"`
-	Keywords     *string           `json:"keywords,omitempty"`
-	BinaryVector []byte            `json:"binary_vector,omitempty"`
-	Metadata     map[string]string `json:"metadata,omitempty"`
+	ID            string                     `json:"id"`
+	Summary       *string                    `json:"summary,omitempty"`
+	Keywords      *string                    `json:"keywords,omitempty"`
+	BinaryVector  []byte                     `json:"binary_vector,omitempty"`
+	Metadata      map[string]string          `json:"metadata,omitempty"`
+	EmbedIdentity *knowledgev1.EmbedIdentity `json:"embed_identity,omitempty"`
 }
 
 // updateBatchArgs is the wrapped arguments for mutate(operation:"update_batch").
@@ -247,7 +287,12 @@ func writeBatchUpdates(ctx context.Context, c WireClient, gt kgtypes.GraphType, 
 		// here is a wiring bug, not a routing decision.
 		return fmt.Errorf("pipeline.rpc: update_batch did not compile to a MutationPlan (wiring bug)")
 	}
-	return executeBatchWithRetry(ctx, c, req, len(items))
+	// The lock domain this writeback will contend on server-side. Derived from
+	// the RAW graphName (not the `base` local above) because admissionKeyFor owns
+	// the base/full decision: the code family keeps its "@overlay" suffix, every
+	// other family drops it. The permit itself is taken further in, around the
+	// single Execute round trip — see executeBatchWithRetry.
+	return executeBatchWithRetry(ctx, c, req, len(items), admissionKeyFor(gt, graphName))
 }
 
 // Writeback retry bounds: a rate-limited update_batch (a remote backend 429s
@@ -268,10 +313,22 @@ const (
 // already-computed work. Non-rate-limit errors return immediately — the happy
 // path is still exactly ONE Execute RPC, preserving the load-bearing perf
 // criterion (the integration test never injects a 429, so it sees 1 RPC/group).
-func executeBatchWithRetry(ctx context.Context, c WireClient, req *knowledgev1.ExecuteRequest, itemCount int) error {
+//
+// key is the server lock domain this writeback contends on, and this function is
+// where the per-domain admission permit is taken. It is taken HERE, and not
+// around the whole call in writeBatchUpdates, because this loop honors the
+// server's Retry-After hint UNCAPPED: a permit spanning the retry sequence would
+// let two rate-limited writebacks block every writeback to this domain for as
+// long as a backend cares to ask, terminal-marker writes included — and those
+// markers are the eligibility loop's only breaker. Every writeback still crosses
+// this one call, so the chokepoint property is unchanged; only the permit's
+// window is narrowed to the one round trip it needs to cover.
+func executeBatchWithRetry(ctx context.Context, c WireClient, req *knowledgev1.ExecuteRequest, itemCount int, key graphKey) error {
 	var wait time.Duration
 	for attempt := 0; ; attempt++ {
 		if wait > 0 {
+			// UN-ADMITTED by construction: the permit is acquired below, after
+			// this sleep, and released before the next iteration reaches it.
 			t := time.NewTimer(wait)
 			select {
 			case <-ctx.Done():
@@ -280,7 +337,11 @@ func executeBatchWithRetry(ctx context.Context, c WireClient, req *knowledgev1.E
 			case <-t.C:
 			}
 		}
-		_, err := c.Execute(ctx, req)
+		var err error
+		func() {
+			defer admitWriteback(ctx, key)()
+			_, err = c.Execute(ctx, req)
+		}()
 		if err == nil {
 			return nil
 		}

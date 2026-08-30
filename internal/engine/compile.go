@@ -18,8 +18,11 @@
 // LONGER a client concern: the server engine enforces it in
 // decodeCreate and returns invalidMutation, which Dispatch relays verbatim —
 // the engine package no longer imports cmd/knowledge/internal/validate. The
-// package imports gen/knowledge/v1 + pkg/store so the bootstrap chokepoint and
-// the InterceptSearch/Query tails can import it without a cycle.
+// package imports gen/knowledge/v1 plus client leaf packages only (kgtypes,
+// kgwire, kgtools, graphsel, paging, graphclient, auth) — never the server store
+// package, which cmd/knowledge cannot reach across the internal boundary anyway
+// — so the bootstrap chokepoint and the InterceptSearch/Query tails can import
+// it without a cycle.
 package engine
 
 import (

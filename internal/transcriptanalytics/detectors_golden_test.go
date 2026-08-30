@@ -43,9 +43,14 @@ import (
 //   - a duplicate group with previews inserted in DESCENDING order to pin MIN(preview)
 //     byte-wise (Edit/e1: "m-b" then "m-a" → MIN "m-a").
 //   - 2 files, each session (SA, SB) SPANNING both files → cross-file aggregation.
+//   - an agent whose lane contains an ABOVE-threshold idle gap (agent-4), so span and
+//     active diverge somewhere in the golden. Every other agent's gaps are 60s or 120s,
+//     under subagentIdleGapMs, and would read identically whether the idle split works or
+//     is a no-op.
 //   - ORDER BY tie-breaks: ToolLatency p90-tie→tool asc (Bash/Grep at 4095; Edit/Fetch at
 //     511), duplicate wasted+run_count-tie→session asc (SA/SB Edit at 1000/2),
-//     SubagentWallTime wall-tie→agent asc (agent-2/agent-3 at 60000),
+//     SubagentWallTime THREE-WAY active-tie at 60000 (agent-4/agent-2/agent-3) broken first
+//     on span desc — agent-4's 1,860,000 puts it ahead — and then on agent asc,
 //     TokensBySubagentType (in+out)-tie→key asc (planner/tester at 300).
 func buildGoldenCorpus(t *testing.T) *Service {
 	t.Helper()
@@ -90,6 +95,17 @@ func buildGoldenCorpus(t *testing.T) *Service {
 		{Model: m, SessionID: "SA", RecordTS: mustTS(t, "2026-06-01T10:04:00Z"), InputTokens: 200, OutputTokens: 100, IsSidechain: true, AgentID: "agent-1", SubagentType: "researcher"},
 		{Model: m, SessionID: "SA", RecordTS: mustTS(t, "2026-06-01T10:05:00Z"), InputTokens: 100, OutputTokens: 50, IsSidechain: true, AgentID: "agent-2", SubagentType: "planner"},
 		{Model: m, SessionID: "SA", RecordTS: mustTS(t, "2026-06-01T10:06:00Z"), InputTokens: 100, OutputTokens: 50, IsSidechain: true, AgentID: "agent-2", SubagentType: "planner"},
+		// SA agent-4 (researcher): the IDLE lane. Gaps of 60s then 30min, so span is
+		// 1,860,000ms while active is only the 60,000ms gap. It carries zero tokens, zero
+		// duration, no tool name and no input hash so it moves ONLY the two subagent
+		// families — every other family must read exactly as it did before this lane
+		// existed. It joins SA rather than SB or a new session: SB would tie SA's subagent
+		// count and reorder the chain family, and a new session would move
+		// avg_tokens_per_session's denominator; reusing "researcher" keeps SA's type
+		// diversity at 2 and adds no tokens_by_subagent_type key.
+		{Model: m, SessionID: "SA", RecordTS: mustTS(t, "2026-06-01T10:10:00Z"), IsSidechain: true, AgentID: "agent-4", SubagentType: "researcher"},
+		{Model: m, SessionID: "SA", RecordTS: mustTS(t, "2026-06-01T10:11:00Z"), IsSidechain: true, AgentID: "agent-4", SubagentType: "researcher"},
+		{Model: m, SessionID: "SA", RecordTS: mustTS(t, "2026-06-01T10:41:00Z"), IsSidechain: true, AgentID: "agent-4", SubagentType: "researcher"},
 		// SA is_meta=true row — inflated values that MUST be excluded from ALL totals.
 		{Model: m, SessionID: "SA", RecordTS: mustTS(t, "2026-06-01T10:00:50Z"), ToolName: "Bash", DurationMs: 99999, InputTokens: 99999, OutputTokens: 99999, CacheReadTokens: 99999, CacheCreationTokens: 99999, ToolInputHash: "hmeta", ToolInputPreview: "x", CacheCreation1hTokens: 99999, CacheCreation5mTokens: 99999, StopReason: "max_tokens", IsAPIError: true, IsMeta: true, Interrupted: true},
 		// SA <synthetic>-model row — MUST be excluded from ALL totals.
@@ -116,8 +132,8 @@ type detectorGoldens struct {
 	ToolLatency      []ToolLatencyRow // histogram percentiles — asserted Phase 3 only.
 	ToolTimeTotals   []ToolTimeTotalRow
 	Avg              AvgTokensPerSession
-	TokensByTool     map[string]TokenByDimensionRow
 	TokensBySubagent map[string]TokenByDimensionRow
+	Residency        []ResultResidencyRow
 	Cache            CacheEfficiency
 	SubagentWall     []SubagentWallTime
 	AgentChains      []AgentChainRow
@@ -131,9 +147,12 @@ func goldenTable() detectorGoldens {
 	return detectorGoldens{
 		// GROUP (session,tool,hash) HAVING count>1; ORDER wasted desc, run_count desc,
 		// session asc. SA & SB Edit/e1 tie on wasted(1000)+run_count(2) → session asc.
+		// Edit has 4 trustworthy samples here, far under minSamplesForP999, so both groups
+		// land on the undetermined arm with no bound (ToolP999Ms 0) while still reporting
+		// their per-call figure: 1000ms over 2 trustworthy runs.
 		Duplicates: []DuplicateCommandRow{
-			{SessionID: "SA", ToolName: "Edit", ToolInputHash: "e1", RunCount: 2, WastedDurationMs: 1000, SamplePreview: "m-a"},
-			{SessionID: "SB", ToolName: "Edit", ToolInputHash: "e1", RunCount: 2, WastedDurationMs: 1000, SamplePreview: "sb-x"},
+			{SessionID: "SA", ToolName: "Edit", ToolInputHash: "e1", RunCount: 2, WastedDurationMs: 1000, PerCallWasteMs: 500, ToolP999Ms: 0, WasteVerdict: wasteVerdictUndetermined, SamplePreview: "m-a"},
+			{SessionID: "SB", ToolName: "Edit", ToolInputHash: "e1", RunCount: 2, WastedDurationMs: 1000, PerCallWasteMs: 500, ToolP999Ms: 0, WasteVerdict: wasteVerdictUndetermined, SamplePreview: "sb-x"},
 		},
 		// Histogram percentiles (bucketRepresentative(b)=2^(b+1)-1). ORDER p90 desc, tool
 		// asc: Bash/Grep tie at 4095 → Bash,Grep; Edit/Fetch tie at 511 → Edit,Fetch.
@@ -155,11 +174,13 @@ func goldenTable() detectorGoldens {
 		},
 		// AVG over per-session token sums. SA(in2000,out4850), SB(in200,out100). 2 sessions.
 		Avg: AvgTokensPerSession{AvgInputTokens: 1100, AvgOutputTokens: 2475, AvgTotalTokens: 3575, SessionCount: 2},
-		// All token-bearing rows carry an empty tool_name → the "" key holds every token.
-		TokensByTool: map[string]TokenByDimensionRow{
-			"":     {Key: "", InputTokens: 2200, OutputTokens: 4950},
-			"Bash": {Key: "Bash", InputTokens: 0, OutputTokens: 0},
-		},
+		// EMPTY, and that is a property of the FIXTURE rather than of the instrument: these
+		// rows are constructed as transcripts.Row literals that predate the result-size
+		// columns, so every result measures zero bytes and zero images and no tool accrues
+		// residency. Do NOT add result bytes here to make the family non-empty — five other
+		// families are frozen against this corpus. The residency fold's real behaviour is
+		// covered over its own purpose-built lane in detectors_residency_test.go.
+		Residency: []ResultResidencyRow{},
 		TokensBySubagent: map[string]TokenByDimensionRow{
 			"researcher": {Key: "researcher", InputTokens: 500, OutputTokens: 250},
 			"planner":    {Key: "planner", InputTokens: 200, OutputTokens: 100},
@@ -167,16 +188,23 @@ func goldenTable() detectorGoldens {
 		},
 		// SUM cache_read/input/1h/5m over kept rows; ratio 800/2200.
 		Cache: CacheEfficiency{CacheReadTokens: 800, InputTokens: 2200, CacheReadRatio: 800.0 / 2200.0, CacheCreation1hTokens: 40, CacheCreation5mTokens: 60},
-		// Per agent_id; ORDER wall desc, agent asc. agent-2/agent-3 tie at 60000 → agent asc.
+		// Per agent_id; ORDER active desc, span desc, agent asc. agent-4/agent-2/agent-3 tie
+		// three ways on active at 60000, and agent-4's 1,860,000 span breaks it in its
+		// favor — which is also the family's proof that ranking moved off span: agent-4 has
+		// by far the largest span and still sits BELOW agent-1, whose active time is higher.
 		SubagentWall: []SubagentWallTime{
-			{AgentID: "agent-1", SubagentType: "researcher", WallMs: 120000, InputTokens: 500, OutputTokens: 250},
-			{AgentID: "agent-2", SubagentType: "planner", WallMs: 60000, InputTokens: 200, OutputTokens: 100},
-			{AgentID: "agent-3", SubagentType: "tester", WallMs: 60000, InputTokens: 200, OutputTokens: 100},
+			{AgentID: "agent-1", SubagentType: "researcher", SpanMs: 120000, ActiveMs: 120000, InputTokens: 500, OutputTokens: 250},
+			{AgentID: "agent-4", SubagentType: "researcher", SpanMs: 1860000, ActiveMs: 60000},
+			{AgentID: "agent-2", SubagentType: "planner", SpanMs: 60000, ActiveMs: 60000, InputTokens: 200, OutputTokens: 100},
+			{AgentID: "agent-3", SubagentType: "tester", SpanMs: 60000, ActiveMs: 60000, InputTokens: 200, OutputTokens: 100},
 		},
-		// Per session; ORDER count desc, total-wall desc, session asc.
+		// Per session; ORDER count desc, total-span desc, session asc. SA's totals move
+		// because agent-4 joined it: count 2→3 and span total 180,000→2,040,000, while its
+		// type diversity stays 2 (agent-4 reuses "researcher") and the SA-then-SB order is
+		// unchanged.
 		AgentChains: []AgentChainRow{
-			{SessionID: "SA", SubagentCount: 2, SubagentTypeDiversity: 2, TotalSubagentWallMs: 180000, MaxSubagentWallMs: 120000},
-			{SessionID: "SB", SubagentCount: 1, SubagentTypeDiversity: 1, TotalSubagentWallMs: 60000, MaxSubagentWallMs: 60000},
+			{SessionID: "SA", SubagentCount: 3, SubagentTypeDiversity: 2, TotalSubagentSpanMs: 2040000, MaxSubagentSpanMs: 1860000, TotalSubagentActiveMs: 240000, MaxSubagentActiveMs: 120000},
+			{SessionID: "SB", SubagentCount: 1, SubagentTypeDiversity: 1, TotalSubagentSpanMs: 60000, MaxSubagentSpanMs: 60000, TotalSubagentActiveMs: 60000, MaxSubagentActiveMs: 60000},
 		},
 		// max_tokens FILTER on RAW duration_ms (T2: out 4000, dur 5000). is_meta row excluded.
 		Waste: WasteSummary{CacheCreation1hTokens: 40, CacheCreation5mTokens: 60, APIErrorCount: 1, InterruptedCount: 1, MaxTokensTruncationCount: 1, MaxTokensOutputTokens: 4000, MaxTokensDurationMs: 5000},
@@ -204,10 +232,8 @@ func assertNineFamilies(t *testing.T, rep *DetectorReport, g detectorGoldens) {
 	assert.Equal(t, g.SubagentWall, rep.SubagentWallTime, "subagent wall time")
 	assert.Equal(t, g.Waste, rep.Waste, "waste summary")
 
-	gotTool := tokenByKey(rep.TokensByTool)
-	for k, want := range g.TokensByTool {
-		assert.Equal(t, want, gotTool[k], "tokens by tool key %q", k)
-	}
+	assert.Equal(t, g.Residency, rep.ResultResidencyByTool, "result residency by tool")
+
 	gotSub := tokenByKey(rep.TokensBySubagentType)
 	for k, want := range g.TokensBySubagent {
 		assert.Equal(t, want, gotSub[k], "tokens by subagent key %q", k)
@@ -229,7 +255,7 @@ func assertNineFamilies(t *testing.T, rep *DetectorReport, g detectorGoldens) {
 // p90=4095, Edit/Fetch p90=511, Write=127).
 func TestGoldenCorpus_PureGoParity(t *testing.T) {
 	svc := buildGoldenCorpus(t)
-	rep, err := svc.RunDetectors(context.Background())
+	rep, err := svc.RunDetectors(context.Background(), Filters{})
 	require.NoError(t, err)
 	require.NotNil(t, rep)
 

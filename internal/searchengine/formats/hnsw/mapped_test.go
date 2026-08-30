@@ -13,7 +13,7 @@ import (
 // mappedFixture seals a real graph and returns the blob plus its reader.
 func mappedFixture(t *testing.T, n int) ([]byte, *mappedGraph, *binaryGraph) {
 	t.Helper()
-	g := buildBinaryHNSWSerialDeterministic(randomBuildItems(t, n), defaultVecBytes, defaultM, defaultEfConstruction)
+	g := buildBinaryHNSWSerialDeterministic(randomBuildItems(t, n), defaultVecBytes, dtypeUbinary, defaultM, defaultEfConstruction)
 	blob, err := encodeGraphV3(g)
 	require.NoError(t, err)
 	mg, err := openGraphV3(blob)
@@ -75,7 +75,7 @@ func TestNeighborsAtMatchesBuiltTopology(t *testing.T) {
 // ordinal order and id order DISAGREE, re-encodes, and requires every id to still
 // resolve to its own vector. An ordinal-keyed directory fails here and nowhere else.
 func TestVectorByIDResolvesWhenOrdinalOrderIsNotIDOrder(t *testing.T) {
-	g := buildBinaryHNSWSerialDeterministic(randomBuildItems(t, 24), defaultVecBytes, defaultM, defaultEfConstruction)
+	g := buildBinaryHNSWSerialDeterministic(randomBuildItems(t, 24), defaultVecBytes, dtypeUbinary, defaultM, defaultEfConstruction)
 
 	// Reverse the id ordering relative to ordinals: ordinal 0 gets the LAST name.
 	n := len(g.nodes)

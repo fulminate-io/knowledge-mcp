@@ -4,6 +4,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"testing"
@@ -189,7 +190,7 @@ func TestDeltaRunReadsBackManifestCardinality(t *testing.T) {
 		out, err := RebuildSegments(ctx, twoBucketScanner(), shipper, kgtypes.GraphCode, "full-readback", false)
 		require.NoError(t, err)
 		require.Zero(t, shipper.deltaCalls.Load(), "a zero watermark is from-scratch, not a delta")
-		require.Equal(t, 2, out.PublishedManifest, "the read-back runs without an explicit reset")
+		require.Equal(t, 2, out.ResidentSegmentCount, "the read-back runs without an explicit reset")
 	})
 
 	t.Run("the delta captures its baseline BEFORE the re-emit", func(t *testing.T) {
@@ -200,7 +201,7 @@ func TestDeltaRunReadsBackManifestCardinality(t *testing.T) {
 		require.Equal(t, int64(1), shipper.deltaAtManifestRead,
 			"exactly one manifest read must precede the re-emit — a baseline captured AFTER it compares the manifest to itself")
 		require.Equal(t, int64(2), shipper.manifestReads.Load(), "and one more after it")
-		require.Equal(t, 4, out.PublishedManifest, "an unchanged manifest at a stable count is the clean reading")
+		require.Equal(t, 4, out.ResidentSegmentCount, "an unchanged manifest at a stable count is the clean reading")
 	})
 
 	t.Run("a GROWN manifest at a stable count is reported", func(t *testing.T) {
@@ -211,8 +212,8 @@ func TestDeltaRunReadsBackManifestCardinality(t *testing.T) {
 
 		out, err := RebuildSegments(ctx, twoBucketScanner(), shipper, kgtypes.GraphCode, "grown-repo", false)
 		require.NoError(t, err)
-		require.Equal(t, 5, out.PublishedManifest, "the reading is reported so a caller can compare it")
-		require.NotEmpty(t, logs.linesContaining(slog.LevelWarn, "CHANGED the published manifest cardinality"),
+		require.Equal(t, 5, out.ResidentSegmentCount, "the reading is reported so a caller can compare it")
+		require.NotEmpty(t, logs.linesContaining(slog.LevelWarn, "CHANGED the resident segment cardinality"),
 			"a delta re-emits partitions in place, so a changed cardinality at a stable count is the defect")
 	})
 
@@ -226,11 +227,11 @@ func TestDeltaRunReadsBackManifestCardinality(t *testing.T) {
 
 		out, err := RebuildSegments(ctx, twoBucketScanner(), shipper, kgtypes.GraphCode, "realign-repo", false)
 		require.NoError(t, err)
-		require.Equal(t, manifestCardinalityUnmeasured, out.PublishedManifest,
+		require.Equal(t, derivedBucketCardinalityUnmeasured, out.ResidentSegmentCount,
 			"no honest equality holds across a realignment, so the run must report UNMEASURED")
 		require.Equal(t, int64(1), shipper.manifestReads.Load(),
 			"and it must not even pay the second read once the count is known to have moved")
-		require.Empty(t, logs.linesContaining(slog.LevelWarn, "CHANGED the published manifest cardinality"),
+		require.Empty(t, logs.linesContaining(slog.LevelWarn, "CHANGED the resident segment cardinality"),
 			"a legitimate realignment must NEVER be reported as a defect")
 	})
 
@@ -240,6 +241,101 @@ func TestDeltaRunReadsBackManifestCardinality(t *testing.T) {
 		out, err := RebuildSegments(ctx, twoBucketScanner(), shipper, kgtypes.GraphCode, "noreadback-repo", false)
 		require.NoError(t, err, "the corpus is published by then; a verification read must never fail a landed rebuild")
 		require.True(t, out.Published)
-		require.Equal(t, manifestCardinalityUnmeasured, out.PublishedManifest)
+		require.Equal(t, derivedBucketCardinalityUnmeasured, out.ResidentSegmentCount)
 	})
+}
+
+// deltaTrimFixture derives the two axes a retention-trim assertion has to vary: a
+// tombstoned id whose partition the delta's window DID touch, and tombstoned ids whose
+// partitions it did not. Both are derived through searchengine.BucketOf at the count
+// the re-emit reports, never hardcoded, so a fixture that drifts onto the wrong side of
+// the predicate fails here rather than greening the assertion.
+type deltaTrimFixture struct {
+	windowIDs []string
+	emitted   map[int]struct{}
+	victim    searchengine.ExternalID
+	survivors []searchengine.ExternalID
+}
+
+func newDeltaTrimFixture(t *testing.T, emittedBucketCount, windowSize int) deltaTrimFixture {
+	t.Helper()
+
+	f := deltaTrimFixture{emitted: map[int]struct{}{}}
+	for i := range windowSize {
+		id := fmt.Sprintf("dw-%08d", i)
+		f.windowIDs = append(f.windowIDs, id)
+		f.emitted[searchengine.BucketOf(id, emittedBucketCount)] = struct{}{}
+	}
+
+	var seen []int
+	for i := 0; (f.victim == "" || len(f.survivors) < 2) && i < 4096; i++ {
+		id := searchengine.ExternalID(fmt.Sprintf("dt-%d", i))
+		part := searchengine.BucketOf(id, emittedBucketCount)
+		if _, touched := f.emitted[part]; touched {
+			if f.victim == "" {
+				f.victim = id
+			}
+			continue
+		}
+		if len(f.survivors) >= 2 {
+			continue
+		}
+		for _, p := range seen {
+			if p == part {
+				part = -1
+				break
+			}
+		}
+		if part < 0 {
+			continue
+		}
+		seen = append(seen, part)
+		f.survivors = append(f.survivors, id)
+	}
+	require.NotEmpty(t, f.victim, "fixture could not derive a tombstoned id inside a partition the window touched")
+	require.Len(t, f.survivors, 2, "fixture could not derive two tombstoned ids outside every partition the window touched")
+
+	return f
+}
+
+// TestDeltaRebuildKeepsTombstonesOutsideItsOwnPartitions drives the DRIVER, because the
+// seam that was wrong is the call site rather than the predicate: retainTombstones is
+// only as correct as the partition count its caller supplies, and a unit test on the
+// helper alone cannot see an arm that hands it the count of its own WINDOW.
+//
+// A window of a handful of items derives ONE partition on its own
+// (searchengine.BucketCountFor is 1 for any corpus up to DefaultMinSegmentDocs), under
+// which every tombstoned id maps to partition 0 and the run's own items put partition 0
+// in the emitted set — so the delta arm persisted an EMPTY record on any landed
+// rebuild, dropping ids whose partitions it never re-emitted.
+//
+// BOTH AXES ARE VARIED IN ONE RUN. Asserting only that the outside ids survive is
+// satisfied by a trim that never fires; asserting only that the inside id is dropped is
+// satisfied by a trim that empties the record. The pair is what pins the predicate.
+func TestDeltaRebuildKeepsTombstonesOutsideItsOwnPartitions(t *testing.T) {
+	const emittedBucketCount = 128
+	const window = 4
+
+	require.Less(t, searchengine.BucketCountFor(window), emittedBucketCount,
+		"FIXTURE PRECONDITION: the window's own derived count must be smaller than the count the re-emit ran at, "+
+			"or this fixture cannot tell the two provenances apart")
+
+	f := newDeltaTrimFixture(t, emittedBucketCount, window)
+	t.Logf("re-emit ran at %d partitions: window touched %v, victim sits inside one of them, survivors outside",
+		emittedBucketCount, f.emitted)
+
+	shipper := &fakeRebuildShipper{deltaBucketCount: emittedBucketCount}
+	shipper.watermark = deltaPriorWatermark
+	shipper.tombstoned = append(append([]searchengine.ExternalID(nil), f.survivors...), f.victim)
+	scanner := &fakeRebuildScanner{pages: [][]*knowledgev1.PipelineScanItem{bucketScanPage(f.windowIDs)}}
+
+	out, err := RebuildSegments(context.Background(), scanner, shipper, kgtypes.GraphCode, "delta-trim", false)
+	require.NoError(t, err)
+	require.True(t, out.Ran)
+	require.True(t, out.Published, "the trim runs only behind a landed publish, so an unpublished run proves nothing here")
+
+	require.Positive(t, shipper.saves, "the durable record must have been rewritten, or the trim never ran at all")
+	require.ElementsMatch(t, f.survivors, shipper.tombstoned,
+		"the record must keep exactly the ids whose partitions this window never touched (%v) and drop the one it did (%s)",
+		f.survivors, f.victim)
 }

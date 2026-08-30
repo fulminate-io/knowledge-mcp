@@ -4,25 +4,21 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 )
 
-// LLM clients frequently send numeric / boolean / array params encoded
-// differently from the JSON schema's declared type — quoted ints, comma-
-// joined arrays, etc. The flex* types defer the rigid type check until
+// LLM clients frequently send numeric / boolean params encoded
+// differently from the JSON schema's declared type — quoted ints, quoted
+// bools, etc. The flex* types defer the rigid type check until
 // after the obvious coercions succeed, so the wire shape stays honest
 // without forcing every caller through a string workaround.
 //
-// These mirror the server-side flexInt / flexBool / flexStringSlice at
-// cmd/knowledge-server/tools/helpers.go, duplicated rather than shared
-// because (a) cmd/knowledge-server cannot import cmd/knowledge/internal
-// (wrong direction for the client/server split), (b) extracting to a
-// shared subpkg under domains/ widens API surface for stable helpers
-// that never change, and (c) the duplication cost is two ~40-line
-// copies vs. the cost of a third package that exists only for two
-// callers.
+// This is the only copy in the tree: the server binary carries no flexInt /
+// flexBool of its own, and could not import this package across the
+// client/server split in any case.
 
 // flexInt unmarshals both JSON numbers (5) and JSON strings ("5") into
 // an int.
@@ -71,47 +67,101 @@ func (f *flexBool) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("flexBool: cannot unmarshal %s", string(data))
 }
 
-// flexStringSlice unmarshals into a []string and accepts any of:
-//   - a JSON array of strings: ["a","b"]
-//   - a JSON-encoded array string: "[\"a\",\"b\"]" (LLMs sometimes
-//     double-encode)
-//   - a comma-separated string: "a,b,c"
-//   - a single string: "abc"
-type flexStringSlice []string
-
-func (f *flexStringSlice) UnmarshalJSON(data []byte) error {
-	var arr []string
-	if err := json.Unmarshal(data, &arr); err == nil {
-		*f = arr
-		return nil
+// decodeArgsError renders a caller-facing message for a JSON decode failure on a
+// tool's argument payload. It is the single translator every decode site routes
+// through, so no site leaks a raw Go decode error.
+//
+// THE DEFECT IT REPLACES was the raw error verbatim:
+//
+//	json: cannot unmarshal string into Go struct field thinkArgs.links of type []string
+//
+// which leaks an internal Go struct name (thinkArgs), never quotes the value the
+// caller sent, and never says what to send instead. All three are fixed here: the
+// message names the WIRE param (the json tag, which is what the caller typed),
+// quotes the offending value read back out of the caller's own payload, and
+// states the accepted form.
+//
+// IT DOES NOT COERCE. A bare string where an array is declared is BAD INPUT and
+// errors, naming the value and the vocabulary. Three in-tree UnmarshalJSON
+// implementations do wrap a bare string into a one-element slice
+// (ast/where_json.go's jsonStringOrArr and the two cloud collectors'
+// stringOrSlice); that shape is deliberately NOT copied here, because a param
+// silently promoted is a param the caller never learns to send correctly.
+//
+// A non-type decode failure (malformed JSON, a truncated body) falls through to
+// the underlying message, which is already caller-facing.
+func decodeArgsError(raw json.RawMessage, err error) string {
+	var typeErr *json.UnmarshalTypeError
+	if !errors.As(err, &typeErr) || typeErr.Field == "" {
+		return err.Error()
 	}
-	var s string
-	if err := json.Unmarshal(data, &s); err != nil {
-		return fmt.Errorf("flexStringSlice: cannot unmarshal %s", string(data))
+	msg := fmt.Sprintf("%s was sent as %s", typeErr.Field, describeJSONKind(typeErr.Value))
+	if got := rawFieldValue(raw, typeErr.Field); got != "" {
+		msg = fmt.Sprintf("%s was sent as %s (%s)", typeErr.Field, describeJSONKind(typeErr.Value), got)
 	}
-	*f = parseFlexStringSliceString(s)
-	return nil
+	return msg + ", but it takes " + describeGoTarget(typeErr.Type.String()) + "."
 }
 
-// parseFlexStringSliceString extracts a []string from s, handling empty
-// strings, JSON-encoded arrays, and comma-separated / single values.
-func parseFlexStringSliceString(s string) []string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil
+// describeJSONKind renders the encoding/json name of the sent value's kind in
+// caller words. The zero case keeps the raw token rather than guessing.
+func describeJSONKind(kind string) string {
+	switch kind {
+	case "string":
+		return "a string"
+	case "number":
+		return "a number"
+	case "bool":
+		return "a boolean"
+	case "array":
+		return "an array"
+	case "object":
+		return "an object"
 	}
-	if strings.HasPrefix(s, "[") {
-		var inner []string
-		if err := json.Unmarshal([]byte(s), &inner); err == nil {
-			return inner
-		}
+	return kind
+}
+
+// describeGoTarget renders the DECLARED shape a param takes, from the Go type the
+// decoder was aiming at. Only the shapes the tool schemas actually declare are
+// named; anything else is reported verbatim rather than paraphrased into a claim
+// the schema does not make.
+func describeGoTarget(goType string) string {
+	switch goType {
+	case "[]string":
+		return `an array of strings — wrap the value in brackets, e.g. ["a", "b"]`
+	case "[]int", "[]int64", "[]float64":
+		return "an array of numbers — wrap the value in brackets, e.g. [1, 2]"
+	case "string":
+		return "a string"
+	case "int", "int32", "int64", "float64":
+		return "a number"
+	case "bool":
+		return "a boolean"
+	case "map[string]string", "map[string]any", "map[string]interface {}":
+		return "an object of key/value pairs"
 	}
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
+	return goType
+}
+
+// rawFieldValue reads one TOP-LEVEL field back out of the caller's payload so the
+// refusal can quote what they actually sent. A nested field path (a.b) and an
+// unreadable payload both return "" — the message then names the kind without the
+// literal, which is still actionable.
+func rawFieldValue(raw json.RawMessage, field string) string {
+	if strings.Contains(field, ".") {
+		return ""
 	}
-	return out
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return ""
+	}
+	v, ok := top[field]
+	if !ok {
+		return ""
+	}
+	const maxQuoted = 80
+	s := strings.TrimSpace(string(v))
+	if len(s) > maxQuoted {
+		s = s[:maxQuoted] + "…"
+	}
+	return s
 }

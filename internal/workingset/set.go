@@ -246,19 +246,32 @@ func (s *Set) signal(ref Ref) {
 //     member could never equal a registered collector's name nor a reconcile ref:
 //     the gate would be permanently inert while its own tests stayed green.
 //
-//  2. KNOWLEDGE DEFAULT-INSTANCE. The knowledge graph is single-instance, and its
-//     instance name is written both as "" (the Stats selector) and as "default"
-//     (the reconcile seed) in existing code. Collapsing "" to "default" here is
-//     what stops those two spellings becoming two different members — a drift
-//     this area has already produced once.
+//  2. DEFAULT-INSTANCE FOR A SINGLE-INSTANCE FAMILY. The knowledge graph is
+//     single-instance, and its instance name is written both as "" (the Stats
+//     selector) and as "default" (the reconcile seed) in existing code.
+//     Collapsing "" to "default" here is what stops those two spellings becoming
+//     two different members — a drift this area has already produced once.
+//     The checks graph is the same case reached from the other direction: its
+//     selector policy declares it carries NO instance field and REJECTS a set
+//     name, so every read of it sends "" and there is no other spelling it could
+//     send. Both are listed in singleInstanceGraphs below.
 //
-// A non-knowledge type with an empty instance name resolves nothing and is
-// refused.
+// AN EMPTY NAME MEANS TWO OPPOSITE THINGS AND THE LIST IS WHAT TELLS THEM APART.
+// For code / cloud / practice it means the caller named no repo, account or
+// language — a catalog enumeration, which must admit nothing, and that refusal is
+// the structural half of the admission gate. For a family with no instance field
+// to leave empty, it is not an absent selector at all: it IS the one instance.
+// Conflating the two is what left the checks graph permanently outside the
+// working set, so the catalog loop registered no collector for it and its nodes
+// stayed unembedded through every drain while the operation half of the gate
+// passed and made the failure look like a routing question.
+//
+// Any other type with an empty instance name resolves nothing and is refused.
 func Normalize(gt kgtypes.GraphType, name string) (Ref, bool) {
 	base, _, _ := strings.Cut(strings.TrimSpace(name), "@")
-	if gt == kgtypes.GraphKnowledge {
+	if singleInstanceGraphs[gt] {
 		if base == "" {
-			base = "default"
+			base = DefaultInstanceName
 		}
 		return Ref{GraphType: gt, Name: base}, true
 	}
@@ -266,4 +279,55 @@ func Normalize(gt kgtypes.GraphType, name string) (Ref, bool) {
 		return Ref{}, false
 	}
 	return Ref{GraphType: gt, Name: base}, true
+}
+
+// singleInstanceGraphs names every graph type whose empty instance name IS its
+// one instance rather than an absent selector.
+//
+// IT IS ENUMERATED HERE RATHER THAN DERIVED FROM graphsel BECAUSE THIS PACKAGE IS
+// A LEAF — its own doc states it depends only on kgtypes and the standard
+// library, so pipeline, tools and bootstrap can all import it without a cycle,
+// and importing the selector package to ask InstanceField would retire that
+// property for one predicate. The cost is a second place the fact is written, and
+// it is paid down by a drift guard rather than by a comment: a test that CAN see
+// both packages requires every family graphsel classifies as carrying no instance
+// field to normalize here, so a future singleton cannot be added on one side
+// alone.
+var singleInstanceGraphs = map[kgtypes.GraphType]bool{
+	kgtypes.GraphKnowledge: true,
+	kgtypes.GraphChecks:    true,
+}
+
+// DefaultInstanceName is the canonical instance a single-instance family is keyed
+// under everywhere inside this process.
+const DefaultInstanceName = "default"
+
+// CanonicalInstanceName returns the name (gt, name) is KEYED UNDER INTERNALLY —
+// by the per-graph segment engine, the collector registry and the working set.
+//
+// IT IS NOT A WIRE NAME, and the distinction is the whole reason this exists as a
+// separate helper rather than as "just call Normalize". A graph has TWO names and
+// they are not always the same string: the one a CALLER may legally put on a
+// selector, and the one this process keys its own maps by. For the checks graph
+// they DIVERGE — the server's selector policy carries no instance field and
+// REJECTS a set name, so every wire read must send "", while the collector seals
+// its segments under the canonical instance. A seam that used one name for both
+// searched an engine instance nothing had ever written to and returned a
+// confident zero; that conflation has now surfaced at three separate seams, so
+// the two namespaces are named apart here rather than left to each call site.
+//
+// IT DELIBERATELY DOES NOT STRIP AN OVERLAY SUFFIX, which is where it parts
+// company with Normalize. Normalize cuts a "repo@branch" name at the "@" because
+// working-set membership is per BASE graph; an overlay-qualified SEARCH, by
+// contrast, means to address the overlay, and canonicalizing it would silently
+// redirect the read to the base pool. The only transformation applied here is the
+// single-instance empty-name resolution.
+//
+// Every other (gt, name) is returned UNCHANGED, so this is safe to apply at any
+// seam: for a family that carries a real instance field it is the identity.
+func CanonicalInstanceName(gt kgtypes.GraphType, name string) string {
+	if name == "" && singleInstanceGraphs[gt] {
+		return DefaultInstanceName
+	}
+	return name
 }

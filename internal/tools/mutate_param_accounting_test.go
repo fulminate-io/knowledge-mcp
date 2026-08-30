@@ -146,7 +146,7 @@ func TestMutateParamAccounting_SuppliedParamsReadsCallerKeys(t *testing.T) {
 	// There is no longer a LIVE instance of an undeclared-but-consumed param to
 	// pin this against, and that is the point rather than a gap: `supports` was
 	// closed by declaring it, and `verified_quote`/`cited_range` were closed the
-	// same way and are now classified on all 21 arms. The class being empty is
+	// same way and are now classified on all 22 arms. The class being empty is
 	// exactly what TestNegationProofParams_NoUndeclaredWireField now enforces
 	// durably. So the reader-side property is pinned against a SYNTHETIC key that
 	// is not a schema param at all — which keeps the property under test without

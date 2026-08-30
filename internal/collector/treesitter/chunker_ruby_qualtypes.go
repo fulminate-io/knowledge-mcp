@@ -26,6 +26,9 @@ const (
 	rbKindSelf
 	rbKindAssignment
 	rbKindIdentifier
+	rbKindMethodParameters
+	rbKindInstanceVariable
+	rbKindReturn
 )
 
 // rbKindNames maps every ruby node-kind spelling the ruby arms name onto its
@@ -41,18 +44,21 @@ const (
 // kind map naming it would panic at first use. It is reached through the regular
 // `superclass` wrapper instead, which is why that wrapper is named here.
 var rbKindNames = map[string]uint8{
-	"class":            rbKindClass,
-	"module":           rbKindModule,
-	"superclass":       rbKindSuperclass,
-	"constant":         rbKindConstant,
-	"scope_resolution": rbKindScopeResolution,
-	"call":             rbKindCall,
-	"argument_list":    rbKindArgumentList,
-	"body_statement":   rbKindBodyStatement,
-	"method":           rbKindMethod,
-	"self":             rbKindSelf,
-	"assignment":       rbKindAssignment,
-	"identifier":       rbKindIdentifier,
+	"class":             rbKindClass,
+	"module":            rbKindModule,
+	"superclass":        rbKindSuperclass,
+	"constant":          rbKindConstant,
+	"scope_resolution":  rbKindScopeResolution,
+	"call":              rbKindCall,
+	"argument_list":     rbKindArgumentList,
+	"body_statement":    rbKindBodyStatement,
+	"method":            rbKindMethod,
+	"self":              rbKindSelf,
+	"assignment":        rbKindAssignment,
+	"identifier":        rbKindIdentifier,
+	"method_parameters": rbKindMethodParameters,
+	"instance_variable": rbKindInstanceVariable,
+	"return":            rbKindReturn,
 }
 
 // rbKindTable is the ruby instance of the shared memo.

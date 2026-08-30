@@ -53,7 +53,7 @@ func startStampingEngine(t *testing.T, gen uint64, withH2C bool) string {
 		handler = h2c.NewHandler(mux, &http2.Server{})
 	}
 	srv := httptest.NewServer(handler)
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 	return srv.URL
 }
 
@@ -65,7 +65,7 @@ func startStampingEngine(t *testing.T, gen uint64, withH2C bool) string {
 func TestRouterFreshnessGenPicksBackend(t *testing.T) {
 	localURL := startStampingEngine(t, 11, true)
 	cloudURL := startStampingEngine(t, 22, false)
-	localGC := NewGraphClientForURL(localURL)
+	localGC := closeIdleOnCleanup(t, NewGraphClientForURL(localURL))
 
 	store := newFakeAuthStore() // empty → not logged in
 	as := auth.NewAuthState(store, time.Millisecond)

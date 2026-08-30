@@ -28,9 +28,27 @@ type SegmentedIndex[Q, S any] struct {
 	activeMu sync.Mutex
 	active   []Document
 
+	// scratchMu guards scratchLive AND serializes the stale-scratch sweep against
+	// scratch-file creation. Holding one lock across both is what makes the sweep
+	// safe: without it a sweep could run between a sibling merge's CreateTemp and
+	// its registration, and delete a file that merge is about to write into.
+	scratchMu sync.Mutex
+	// scratchLive is the set of scratch file NAMES this engine's in-flight merges
+	// own. The sweep removes everything in the scratch directory that is not in
+	// here — several merges of one engine share that directory (harvestGroup runs
+	// min(NumCPU, partitions) of them at once), so "not mine" is the only safe
+	// definition of stale.
+	scratchLive map[string]bool
+
 	// merge background machinery (startMerger/Close/Metrics live in merge.go).
-	stopOnce    sync.Once
-	stop        chan struct{}
+	stopOnce sync.Once
+	stop     chan struct{}
+	// done is closed by the background merge goroutine as it exits, and it is what
+	// makes Close a JOIN rather than a signal. Without it Close returned while a
+	// merge was still in flight, and that merge's completion path fires OnMerge —
+	// in production a cache.Put that writes a file — so an owner could have a blob
+	// written into a directory it had already started tearing down.
+	done        chan struct{}
 	mergeSignal chan struct{}
 	mergeCnt    atomic.Uint64
 }
@@ -42,6 +60,7 @@ func New[Q, S any](f SegmentFormat[Q, S], opts Options) *SegmentedIndex[Q, S] {
 		format:      f,
 		opts:        opts.withDefaults(),
 		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
 		mergeSignal: make(chan struct{}, 1),
 	}
 	e.set.Store(newSegmentSet[Q, S](f, nil))
@@ -310,34 +329,6 @@ func (e *SegmentedIndex[Q, S]) Delete(id ExternalID) {
 	e.activeMu.Unlock()
 }
 
-// VectorByID resolves a member's stored vector by external id, or (nil,false) when
-// no sealed segment holds it. It mirrors Delete's route-map walk (set.route → owning
-// entry) for an O(1) lookup + O(#segments) entryByID scan — no full-corpus walk —
-// then reads the vector off the segment's concrete payload via a runtime
-// type-assert to the by-id accessor. The inline-interface assert keeps the method
-// generic-safe across [Q,S]: the HNSW instantiation's payload (*hnswSegment)
-// satisfies it; a payload without the accessor (e.g. bm25) fails the assert and
-// yields (nil,false) — never a panic, never a wrong-type read. Vectors only exist
-// on sealed segments, so the un-sealed active buffer is intentionally not consulted.
-func (e *SegmentedIndex[Q, S]) VectorByID(externalID ExternalID) ([]byte, bool) {
-	set := e.set.Load()
-	sid, ok := set.route[externalID]
-	if !ok {
-		return nil, false
-	}
-	entry := set.entryByID(sid)
-	if entry == nil {
-		return nil, false
-	}
-	vb, ok := entry.payload.(interface {
-		VectorByID(string) ([]byte, bool)
-	})
-	if !ok {
-		return nil, false
-	}
-	return vb.VectorByID(externalID)
-}
-
 // Search runs a lock-free, parallel cross-segment query. It loads the immutable
 // set with a SINGLE atomic load (NO mutex, NO RLock — activeMu is never touched
 // here), fans out one goroutine per segment bounded by NumCPU, each writing a
@@ -411,10 +402,11 @@ func (e *SegmentedIndex[Q, S]) DistinctResidentDocCount() int {
 }
 
 // residentMemberIn is the ONE searchability predicate. Every membership answer in
-// this file derives from it, so a count and a diff can never disagree about what
-// "covered" means. It mirrors killSuperseded's route-then-kill walk and Search's
-// accept closure: a deleted id keeps its route and members entries and only loses
-// its live bit, so route presence alone is NOT membership.
+// the PACKAGE derives from it — the aggregates below, and the by-id stored-vector
+// read in vectorbyid.go — so a count, a diff and a vector lookup can never disagree
+// about what "covered" means. It mirrors killSuperseded's route-then-kill walk and
+// Search's accept closure: a deleted id keeps its route and members entries and only
+// loses its live bit, so route presence alone is NOT membership.
 //
 // It takes the RESOLVED entry rather than looking it up, because entryByID is a
 // linear scan over the snapshot's entries and calling it per id would make every

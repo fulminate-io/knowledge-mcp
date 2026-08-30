@@ -21,7 +21,7 @@ package tools
 //     rejected set can catch one, because every arm's sets are authored from
 //     schema keys only, so a key with no cell can never be classified rejected.
 //     The sweep keys on the SCHEMA rather than on the arm, which is exactly what
-//     makes it one check here instead of a rejection cell on each of the 47 arms:
+//     makes it one check here instead of a rejection cell on each of the 51 arms:
 //     a key the schema does not declare is unknown for every one of them.
 //
 // WHY THIS FILE EXISTS AT ALL — a disclosed deviation from the plan. The plan's
@@ -38,10 +38,15 @@ package tools
 // claims the standalone `file_symbols` tool as well as query(mode:file_symbols),
 // so its gate call sweeps a file_symbols payload against the QUERY schema. That
 // is safe rather than lucky: FileSymbolsToolDef declares file_path, file_paths,
-// include_source, include_tombstones, format and repo, all six of which
-// QueryToolDef also declares, so no file_symbols param can be reported unknown.
-// A param added to the file_symbols schema and NOT to query's would break that
-// containment — hence TestQuerySweepCoversFileSymbolsSchema, which asserts it.
+// include_source, include_tombstones, format, limit, repo and branch, every one of
+// which QueryToolDef also declares, so no file_symbols param can be reported
+// unknown. A param added to the file_symbols schema and NOT to query's would break
+// that containment — TestResidueToolSchemas_DeclareEveryReadKey
+// (param_schema_parity_residue_test.go) is what asserts it, walking the
+// file_symbols residueParityTable entry and requiring every key the handler READS
+// to be declared by its own schema or explicitly credited to query's.
+// (An earlier version of this note named TestQuerySweepCoversFileSymbolsSchema,
+// a test nobody ever wrote — a reader following it landed nowhere.)
 //
 // SCOPE IS TOP-LEVEL ONLY. The `extra` and `meta` map CONTENTS stay flex-open by
 // design — the sweep reads suppliedMutateParams' key set, which never descends

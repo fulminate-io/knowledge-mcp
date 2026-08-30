@@ -193,8 +193,11 @@ func bindGoParameterList(b *qualBinder, list *sitter.Node, src []byte) {
 			continue
 		}
 		text := goQualTypeText(typeNode, src)
-		for _, name := range names {
-			b.bind(name.Content(src), QualType{Text: text})
+		// The names ARE the declaration's first `names` named children — that
+		// is goLeadingIdentifiers' contract — and re-reading a child by index
+		// costs nothing, since the tree memoizes each node's wrapper.
+		for j := range names {
+			b.bind(decl.NamedChild(j).Content(src), QualType{Text: text})
 		}
 	}
 }
@@ -303,8 +306,10 @@ func bindGoSpecs(b *qualBinder, decl *sitter.Node, src []byte) {
 			continue
 		}
 		text := goQualTypeText(typeNode, src)
-		for _, name := range names {
-			b.bind(name.Content(src), QualType{Text: text})
+		// The names are the spec's first `names` named children — see
+		// bindGoParameterList for why reading them back by index is free.
+		for j := range names {
+			b.bind(spec.NamedChild(j).Content(src), QualType{Text: text})
 		}
 	}
 }
@@ -325,53 +330,41 @@ func bindGoShortVarDeclaration(b *qualBinder, decl *sitter.Node, src []byte) {
 	if left == nil || right == nil {
 		return
 	}
-	names := goNamedChildrenOfKind(left, goKindIdentifier)
-	if len(names) == 0 {
+	// THE NAMES ARE COUNTED, THEN RE-WALKED, rather than collected into a
+	// slice. This runs for every `:=` in every declaration body the qualifier
+	// walk descends, so the slice was one allocation per short declaration in
+	// the file; re-reading a child by index is free, because the tree memoizes
+	// each node's Go wrapper on first access.
+	count := goCountNamedChildrenOfKind(left, goKindIdentifier)
+	if count == 0 {
 		return
 	}
 
 	if int(right.NamedChildCount()) == 1 && b.classes.class(right.NamedChild(0).Symbol()) == goKindCallExpression {
 		call := right.NamedChild(0)
 		text := goCalleeText(call, src)
-		for i, name := range names {
+		goEachNamedChildOfKind(left, goKindIdentifier, func(i int, name *sitter.Node) {
 			b.bind(name.Content(src), QualType{Text: text, FromCall: true, ResultIndex: i})
-		}
+		})
 		return
 	}
 
-	if int(right.NamedChildCount()) != len(names) {
+	if int(right.NamedChildCount()) != count {
 		return
 	}
-	for i, name := range names {
+	goEachNamedChildOfKind(left, goKindIdentifier, func(i int, name *sitter.Node) {
 		qt, ok := goQualTypeFromExpr(right.NamedChild(i), src)
 		if !ok {
-			continue
+			return
 		}
 		b.bind(name.Content(src), qt)
-	}
+	})
 }
 
 // goShortVarSides returns the left and right expression_list of a
-// short_var_declaration.
+// short_var_declaration, and declines unless there are EXACTLY two.
 func goShortVarSides(decl *sitter.Node) (left, right *sitter.Node) {
-	lists := goNamedChildrenOfKind(decl, goKindExpressionList)
-	if len(lists) != 2 {
-		return nil, nil
-	}
-	return lists[0], lists[1]
-}
-
-// goNamedChildrenOfKind collects a node's direct named children of one kind
-// class.
-func goNamedChildrenOfKind(node *sitter.Node, kind uint8) []*sitter.Node {
-	classes := goKinds()
-	var out []*sitter.Node
-	for i := range int(node.NamedChildCount()) {
-		if child := node.NamedChild(i); classes.class(child.Symbol()) == kind {
-			out = append(out, child)
-		}
-	}
-	return out
+	return goTwoNamedChildrenOfKind(decl, goKindExpressionList)
 }
 
 // goQualTypeFromExpr infers a qualifier's type from the expression it was

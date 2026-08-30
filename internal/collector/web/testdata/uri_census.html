@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head><title>A Reference Page With In-Page Anchors</title></head>
+<body>
+<article>
+<h1 id="overview">A Reference Page With In-Page Anchors</h1>
+<p>This fixture exists to exercise the per-node uri stamp end to end, from HTTP fetch through readability and the DOM walk into node emission. It carries enough ordinary running prose that readability keeps the body rather than discarding it as boilerplate chrome.</p>
+<p>A second paragraph of substantive prose sits under the anchored top-level heading, so the inherited-fragment arm of the census has a real child node to measure rather than an empty section.</p>
+<h2 id="anchored-section">A Section Carrying Its Own Anchor</h2>
+<p>This section's heading carries an id attribute, so every node emitted beneath it must address itself from the page base with that fragment appended. The paragraph you are reading is one such node.</p>
+<p>Another paragraph in the same anchored section supplies a second measurement point, and enough text that the extractor treats the surrounding document as an article rather than a navigation shell.</p>
+<ul>
+<li>A list item beneath the anchored section, with enough text to survive extraction</li>
+<li>A second list item, likewise carrying the anchored section's address</li>
+</ul>
+<h2>A Section With No Anchor At All</h2>
+<p>This heading carries no id attribute, so this section and its children inherit whatever address the enclosing scope already had. That inheritance arm is what the census measures here.</p>
+<p>The paragraph below holds a link whose target carries a fragment of its own, which must never be mistaken for this node's address in the containing document.</p>
+<p>See <a href="https://elsewhere.example.org/other-document#a-target-fragment">the other document's own section</a> for the neighbouring treatment, which is maintained separately from this page and changes on its own schedule.</p>
+<pre><code class="language-go">package census
+
+func main() {}
+</code></pre>
+</article>
+</body>
+</html>

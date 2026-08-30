@@ -40,5 +40,6 @@ repo. For the full parameter reference, run `help("file_symbols")`.
 | `format` | string |  |  | Output format: 'text' (default, markdown) or 'json' (structured rows: {id, symbol_name, type, file_path, start_line, end_line, signature, summary}). |
 | `include_source` | boolean |  |  | Include source code (default: true). |
 | `include_tombstones` | boolean |  |  | Include tombstoned (deleted) symbols in results. Default false. |
+| `limit` | number |  |  | Cap the RENDERED symbol rows. It bounds the response, not the read — the per-file fetch is unchanged. Omit to render every symbol. Across several paths the cap is a total spent in request order. |
 | `repo` | string |  |  | Repository (code graph) name — REQUIRED for graph=code; it is never inferred from cwd. search accepts 'all' to span every code repo. Not used by the knowledge graph. |
 <!-- END GENERATED: params -->

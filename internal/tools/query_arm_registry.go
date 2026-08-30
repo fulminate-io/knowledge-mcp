@@ -30,12 +30,13 @@ package tools
 // arm's precondition — it reads params only to refuse, so it routes nothing and
 // has no read set.
 //
-// FILE SPLIT, and where the assembly lives. The table is split across three
+// FILE SPLIT, and where the assembly lives. The table is split across four
 // sibling files purely to stay inside the repo's 500-line file convention:
 // query_arm_registry_graphs.go (the per-graph-family arms),
-// query_arm_registry_modes.go (the composite-mode, code and rendering arms) and
-// query_arm_registry_reflect.go (the ten reflect arms). The registry is ONE
-// object — queryArmRegistry below is assembled from all three in a single init,
+// query_arm_registry_modes.go (the composite-mode, code and rendering arms),
+// query_arm_registry_reflect.go (the ten reflect arms) and
+// query_arm_registry_stats.go (the selector-driven stats arms). The registry is
+// ONE object — queryArmRegistry below is assembled from all four in a single init,
 // so the classification the gate enforces and the classification the tests
 // assert can never drift apart. mutate makes the same split and puts its init in
 // mutate_param_accounting.go (the file that owns the types and the gate);
@@ -49,7 +50,7 @@ package tools
 //	Layer 1 — VOCABULARY. Is this key part of the query tool's declared param set
 //	at all? A key the schema does not declare is a typo or a param belonging to
 //	another tool, and it is unknown for EVERY arm, so the check keys on the
-//	SCHEMA and lives in ONE place rather than as a cell on each of the 47 arms.
+//	SCHEMA and lives in ONE place rather than as a cell on each of the 51 arms.
 //	Its helper has the shape func(supplied map[string]bool, schema map[string]T)
 //	[]string — named by signature rather than by symbol because it is shared with
 //	the mutate surface and either side may move it.
@@ -153,10 +154,11 @@ package tools
 // arm's sets, and the partition assertion in query_param_accounting_test.go
 // fails until someone classifies it.
 //
-// `since` HAS NO READER. It is declared by QueryToolDef and carried by
-// queryArgs, so the Phase-1 census is satisfied, but no arm on the query surface
-// reads it. It is therefore REJECTED on all 47 arms — the honest classification,
-// and the one that turns today's silent drop into an error.
+// `since` HAS NO READER BUT ONE. It is declared by QueryToolDef and carried by
+// queryArgs, and exactly one arm on the query surface reads it:
+// armKnowledgeRecentBrowse, where it lowers to an updated_at GTE field predicate
+// on the fetch selection. Every OTHER arm REJECTS it — the honest classification,
+// and the one that turns what was a silent drop into an error.
 //
 // THE RULES ARM'S CELLS ARE POST-FIX. InterceptQueryRules now drains the rule
 // corpus in keyset pages and slices the caller's page out of the scope-filtered
@@ -167,13 +169,14 @@ package tools
 // the parity fixture lists both as opaque for that reason rather than claiming an
 // observability the arm cannot have.
 //
-// ARM COUNT: 47, against the plan's seven locked per-entry-point FLOORS. Two
+// ARM COUNT: 51, against the plan's seven locked per-entry-point FLOORS. Two
 // entry points EXCEED their floor, which the floors permit (they are minima):
 // InterceptQueryCloudCICD takes 5 against a floor of 4 (the ranked-text search
 // via composeResourceSearchClient is a distinct read set from the browse), and
-// InterceptQueryPracticeLinkage takes 9 against a floor of 8 (the practice
-// language:"all" scatter-gather at intercept_query_practice_linkage.go:148-149
-// is a distinct read set the floor folded into "practice search").
+// InterceptQueryPracticeLinkage takes 10 against a floor of 8 (the practice
+// language:"all" scatter-gather is a distinct read set the floor folded into
+// "practice search", and the text-less practice BROWSE is a third — one
+// Selection + one Execute, sharing nothing with either ranked arm).
 
 import (
 	"maps"
@@ -236,6 +239,22 @@ var (
 // the arm's own contract cannot drift into two different claims.
 const justifyRulesKnowledgeOnly = "rule nodes are knowledge-graph nodes — this path routes no graph " +
 	"selector at all, and no other graph family carries rules; drop the param"
+
+// justifyTopologyBranchUnrouted is the rejection explanation for `branch` on
+// the topology arm. The generic message ("this path does not route it") is true
+// but leaves a reader unable to tell an unroutable param from an unrouted one,
+// and branch is the second: resolveCode DOES resolve repo@branch and its Scope
+// returns a composite of base plus overlay
+// (cmd/knowledge-server/internal/tools/tools_graph_routing.go:236-262), so a
+// branch-scoped topology read would be well-defined if anything routed it.
+// Nothing does — the dispatch builds foundation.Request from
+// Caller/Graph/Name/RepoRoot/PathPrefix/TopK/Language/Extra and that struct has
+// no Branch field — and threading a third scope component through foundation's
+// wire helpers is a 61-call-site change this changeset does not make. So the
+// caller is told rather than ignored. Do not overstate this as "branch is
+// meaningless for topology": that would stop a future reader reconsidering it.
+const justifyTopologyBranchUnrouted = "foundation.Request carries no Branch field, so no analyzer read is " +
+	"branch-scoped and the value would be silently dropped; drop the param, or scope with path_prefix"
 
 // knowledgeGraphRedundantAliases are the `graph` values a knowledge-only arm
 // accepts as VALID-BUT-REDUNDANT rather than refusing: a caller naming the one
@@ -302,7 +321,7 @@ func queryFieldsIgnored() map[string]string {
 	return map[string]string{"fields": justifyQueryNoProjection}
 }
 
-// The 47 query dispatch arms. Each armID names one claim point in the intercept
+// The 51 query dispatch arms. Each armID names one claim point in the intercept
 // chain; together they cover every path a host-originated `query` call can take
 // through the client intercept layer. Phase 4 wires exactly one gate call per
 // armID, and the bijection test holds the two sets equal.
@@ -314,16 +333,18 @@ const (
 	armCloudCICDSearch     armID = "armCloudCICDSearch"
 	armCloudCICDBrowse     armID = "armCloudCICDBrowse"
 
-	// InterceptQueryPracticeLinkage — 9 arms (locked floor 8).
+	// InterceptQueryPracticeLinkage — 11 arms (locked floor 8).
 	armPracticeListGraphs   armID = "armPracticeListGraphs"
 	armPracticeStats        armID = "armPracticeStats"
+	armPracticeBrowse       armID = "armPracticeBrowse"
 	armPracticeSearchFanOut armID = "armPracticeSearchFanOut"
 	armPracticeSearch       armID = "armPracticeSearch"
 	armLinkageListGraphs    armID = "armLinkageListGraphs"
 	armLinkageStats         armID = "armLinkageStats"
 	armLinkageGetNode       armID = "armLinkageGetNode"
 	armLinkageSearchRetired armID = "armLinkageSearchRetired"
-	armWebPDFSearchRetired  armID = "armWebPDFSearchRetired"
+	armWebPDFSearch         armID = "armWebPDFSearch"
+	armWebPDFStats          armID = "armWebPDFStats"
 
 	// InterceptQueryKnowledgeSearch — 2 arms (locked floor 2).
 	armKnowledgeRecentBrowse armID = "armKnowledgeRecentBrowse"
@@ -334,6 +355,19 @@ const (
 	armRegisteredGraphSearch armID = "armRegisteredGraphSearch"
 	armLogsQuery             armID = "armLogsQuery"
 	armRules                 armID = "armRules"
+	// armUnrankedBuiltinSearchRefused covers BOTH transformers and checks. One
+	// arm, not two, because an armID names a CLAIM POINT in the chain rather than
+	// a graph: InterceptQueryUnrankedBuiltin is a single gate whose two branches
+	// differ only in which fixed message they return, and splitting it would
+	// declare two arms against one accountQueryParams call — the exact
+	// registry/wiring mismatch the bijection test exists to catch.
+	armUnrankedBuiltinSearchRefused armID = "armUnrankedBuiltinSearchRefused"
+	// armBuiltinGraphStats covers BOTH checks and transformers, for the same
+	// reason armUnrankedBuiltinSearchRefused does: InterceptQueryBuiltinStats is a
+	// single gate whose two branches share one read set (the selector-driven stats
+	// body) and differ only in their header and their `name` policy. Two armIDs
+	// against one accountQueryParams call is the mismatch the bijection catches.
+	armBuiltinGraphStats armID = "armBuiltinGraphStats"
 
 	// InterceptQueryCorrelationsPivot / InterceptQueryExplainTimeline — 2 each.
 	armCorrelations armID = "armCorrelations"
@@ -374,15 +408,15 @@ const (
 // queryArmCount is the plan-locked number of arms. A literal, not a len() of the
 // registry, so a table edit that silently drops or duplicates an arm fails
 // instead of moving the target with it.
-const queryArmCount = 47
+const queryArmCount = 51
 
 // queryArmRegistry is the complete per-arm param classification for the query
-// surface, assembled from the three sibling table files. The split is a
+// surface, assembled from the four sibling table files. The split is a
 // file-length concern only: the registry is ONE object, so the classification
 // the gate enforces and the classification the tests assert cannot drift apart.
 var queryArmRegistry = map[armID]armSpec{}
 
-// init assembles the registry from its three groups and precomputes each arm's
+// init assembles the registry from its four groups and precomputes each arm's
 // sorted rejected-key slice. Package-level vars are initialized before init
 // runs, so the groups are populated by the time this executes. The gate runs on
 // every host-originated query call, so the ordering that makes its error
@@ -392,6 +426,7 @@ func init() {
 	maps.Copy(queryArmRegistry, queryGraphArmSpecs)
 	maps.Copy(queryArmRegistry, queryModeArmSpecs)
 	maps.Copy(queryArmRegistry, queryReflectArmSpecs)
+	maps.Copy(queryArmRegistry, queryStatsArmSpecs)
 	for arm, spec := range queryArmRegistry {
 		sorted := make([]string, 0, len(spec.rejected))
 		for key := range spec.rejected {

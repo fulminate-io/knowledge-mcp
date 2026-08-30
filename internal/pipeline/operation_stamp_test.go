@@ -54,7 +54,7 @@ func (c *opRecordingWireClient) Execute(
 func TestPipelineLoopsStampOperation(t *testing.T) {
 	t.Run("gap scan stamps its own operation", func(t *testing.T) {
 		c := &opRecordingWireClient{}
-		_, _, err := scanGaps(context.Background(), c, kgtypes.GraphKnowledge, "default", "embed", 10, 0)
+		_, _, _, err := scanGaps(context.Background(), c, kgtypes.GraphKnowledge, "default", "embed", 10, 0, nil)
 		require.NoError(t, err)
 		assert.Equal(t, graphclient.OpPipelineGapScan, c.scanOp,
 			"the gap scan must stamp its own operation — it has no originating tool call to inherit one from")

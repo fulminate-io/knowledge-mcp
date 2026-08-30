@@ -106,14 +106,18 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 	},
 	{
 		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_kind_symbols.go",
-		Disposition: dispositionFollowUp,
+		Disposition: dispositionOptsIn,
 		Reason: "The Go kind-class TABLE: it maps node-kind spellings to class codes so a hot-path arm " +
-			"classifies by SYMBOL ID rather than by a cgo call returning a fresh string. It carries " +
-			"no method_elem entry because the interface arms still compare kinds as STRINGS — " +
-			"goTypeFacts switches on the chunkType parameter, and the interface/generic/sole-spec " +
-			"helpers compare node.Type(). Converting them would add method_elem, type_spec, " +
-			"type_parameter_list and interface_type here. Named as follow-up rather than done, " +
-			"because that conversion belongs with the allocation measurement that justifies it.",
+			"classifies by SYMBOL ID rather than by a cgo call returning a fresh string. The " +
+			"conversion this row previously named as a follow-up has been done, under the allocation " +
+			"measurement that justifies it: method_elem, interface_type and type_parameter_list are " +
+			"here now, alongside the signature-composition vocabulary chunker_go_sig.go names. " +
+			"type_spec is the ONE kind that follow-up predicted and this table still does NOT carry, " +
+			"and the omission is deliberate: goSoleTypeSpec — the only reader of that spelling — is " +
+			"reached by extractGoEmbeds and extractGoInterfaceEmbeds as well, so it runs on the " +
+			"un-armed benchmark leg too. Converting it would cut real allocations while LOWERING the " +
+			"denominator of the arm's ratio budget. The fence is arm-exclusivity, and it is stated in " +
+			"full on the const block in the file itself.",
 	},
 	{
 		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_go_typefacts.go",
@@ -300,6 +304,18 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 			"remains a candidate as before. The one real consequence is on the members side and it is " +
 			"wanted: a Go interface's CONTAINS set now includes its specs, so its member count reflects " +
 			"the true size of the method set instead of zero.",
+	},
+	{
+		Path:        "cmd/knowledge/internal/topology/corpusscan/assertion.go",
+		Disposition: dispositionExcluded,
+		Reason: "It filters on NO closed set of declaration kinds at all: a graph-shaped corpus check " +
+			"names its node_type as free text in the check body, and the parser validates only that the " +
+			"value is non-empty, precisely because tree-sitter kinds are an open per-grammar vocabulary. " +
+			"So method_elem is already expressible by a corpus author with no code change here, and a " +
+			"closed list would be the thing that broke it. The quoted kind that puts this file in the " +
+			"subject set is the example in node_type's doc comment. The absence of a candidate node of " +
+			"the requested kind is caught at runtime by the non-empty-candidate-set control in " +
+			"exec_graph.go rather than by a compile-time enumeration.",
 	},
 	{
 		Path:        "cmd/knowledge-server/internal/store/node_type_eligibility_table.go",

@@ -54,7 +54,8 @@ func renderTicketPatterns(ticket *knowledgev1.Node, patterns []*knowledgev1.Node
 // metadata, emit a placeholder line — silent omission would hide the
 // empty-state signal from the planner.
 //
-// Verbatim port of cmd/knowledge-server/tools/tools_assemble_containers.go:206.
+// Ported from cmd/knowledge-server/tools/tools_assemble_containers.go:206, and
+// no longer verbatim: the body render below diverges deliberately.
 func renderLanguagePatternsSection(host *knowledgev1.Node, languagePatterns []*knowledgev1.Node, sb *strings.Builder) {
 	unresolved := kgtypes.Value(host, "unresolved_language_patterns")
 	if len(languagePatterns) == 0 && unresolved == "" {
@@ -65,7 +66,11 @@ func renderLanguagePatternsSection(host *knowledgev1.Node, languagePatterns []*k
 	for _, lp := range languagePatterns {
 		fmt.Fprintf(sb, "- %s — %s\n", lp.Id, lp.SymbolName)
 		if dsl := kgtypes.Value(lp, "dsl_pattern"); dsl != "" {
-			fmt.Fprintf(sb, "  %s\n", truncate(dsl, 80))
+			// Rendered WHOLE, in a fence, rather than truncated. A pattern body
+			// is executable text: cut at 80 characters it cannot be read,
+			// copied or run, so a reviewer reading this section could not tell
+			// a real check from a decorative one.
+			fmt.Fprintf(sb, "\n```\n%s\n```\n", dsl)
 		}
 	}
 	if unresolved != "" {

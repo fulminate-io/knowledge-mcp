@@ -344,3 +344,58 @@ func TestEvalExpr_UnknownFunction(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown function")
 }
+
+// TestEvalExpr_BodyField covers the virtual `body` field, which coalesces
+// Content then Description so one field name reaches the text on either raw
+// collector. Each case is its own subtest with distinct concrete values, so no
+// two collapse into each other and a fixture carrying only the easy pair cannot
+// satisfy the whole set.
+func TestEvalExpr_BodyField(t *testing.T) {
+	cases := []struct {
+		name    string
+		node    *knowledgev1.Node
+		want    string
+		notWant string
+	}{
+		{
+			// Web shape: a paragraph carries its text in Content.
+			name: "content_only",
+			node: &knowledgev1.Node{Id: "b1", Type: "paragraph", Content: "a routed message body"},
+			want: "a routed message body",
+		},
+		{
+			// PDF shape: a chunk carries its text in Description, never Content.
+			name: "description_only",
+			node: &knowledgev1.Node{Id: "b2", Type: "chunk", Description: "a paged chunk body"},
+			want: "a paged chunk body",
+		},
+		{
+			// Both set, with two DIFFERENT strings so the precedence is
+			// observable rather than incidental.
+			name:    "content_wins",
+			node:    &knowledgev1.Node{Id: "b3", Type: "paragraph", Content: "content text", Description: "description text"},
+			want:    "content text",
+			notWant: "description text",
+		},
+		{
+			// Web section shape: neither field is set, so body is empty. This is
+			// the residual asymmetry the accessor cannot remove — a section's
+			// body comes from its children, not from itself.
+			name: "neither_empty",
+			node: &knowledgev1.Node{Id: "b4", Type: "section", SymbolName: "Message Router"},
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sv := seededView()
+			sv.byID[tc.node.Id] = tc.node
+			row := &Row{NodeID: tc.node.Id, Node: tc.node, Vars: map[string]string{}}
+			got := mustEval(t, newEnv(), row, ExprField{Path: []string{tc.node.Type, "body"}}, sv)
+			assert.Equal(t, tc.want, got)
+			if tc.notWant != "" {
+				assert.NotEqual(t, tc.notWant, got)
+			}
+		})
+	}
+}

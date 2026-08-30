@@ -90,6 +90,22 @@ func evalField(env *Env, row *Row, path []string) (string, error) {
 	if len(path) == 1 {
 		return row.Node.SymbolName, nil
 	}
+	// A ROW-SCOPED PSEUDO-VARIABLE wins over the node read: group_by stashes
+	// its key list on the representative row under a literal dotted name, and
+	// without this the read falls through to the node and returns a metadata
+	// key that does not exist, so the documented accessor yielded nothing.
+	//
+	// The guards before the join are load-bearing rather than defensive. This
+	// is the hottest path in the interpreter, so joining unconditionally would
+	// allocate on every dotted read to service a lookup that almost always
+	// misses; a single-segment head cannot be a dotted name and never reaches
+	// the join. Only the ROW's Vars are consulted — the environment would let a
+	// stale global shadow a row-scoped read.
+	if len(row.Vars) > 0 && len(path) >= 2 {
+		if v, ok := row.Vars[strings.Join(path, ".")]; ok {
+			return v, nil
+		}
+	}
 	return readNodeField(row.Node, path[1:]), nil
 }
 
@@ -120,10 +136,28 @@ func evalVarField(env *Env, row *Row, name string, rest []string) string {
 
 // readNodeField returns the value for a dotted path rooted on a Node.
 // Supported first segments: type, symbol_name, name (alias for
-// symbol_name), summary, description, content, source, status.
+// symbol_name), summary, description, content, source, status, body.
 // Everything else is treated as a metadata key or, if the segment is
 // literally "metadata", consumes the next segment as the metadata key
 // so `node.metadata.kind` reads kgtypes.Value(n, "kind").
+//
+// `body` is VIRTUAL: no collector writes a metadata key by that name, so it
+// shadows nothing. It exists because the two raw-document collectors disagree
+// about where a node's text lives — the web collector puts paragraph, list-item
+// and code-block text in Content and a flattened page body in Description,
+// while the pdf collector puts every chunk's text in Description and never sets
+// Content. Coalescing Content then Description gives one field name that reaches
+// the text on either source, and it deliberately does NOT branch on the
+// collector: a source check would silently return nothing for any future
+// emitter, where the coalesce is total. A recipe that genuinely needs to tell
+// the sources apart still has the source field.
+//
+// ONE ASYMMETRY SURVIVES AND CANNOT BE FIXED BY AN ACCESSOR, so it is stated
+// rather than hidden: on a pdf SECTION the text and the heading are the same
+// string, so body returns the heading; on a web SECTION the node carries
+// neither field, so body returns "". Section BODIES on both sources come from
+// subtree_concat over the section's children, never from body on the section
+// itself.
 func readNodeField(n *knowledgev1.Node, rest []string) string {
 	if len(rest) == 0 {
 		return n.SymbolName
@@ -146,6 +180,11 @@ func readNodeField(n *knowledgev1.Node, rest []string) string {
 		return n.Status
 	case "id":
 		return n.Id
+	case "body":
+		if n.Content != "" {
+			return n.Content
+		}
+		return n.Description
 	case "metadata":
 		if len(rest) < 2 {
 			return ""
@@ -214,10 +253,10 @@ func compileRegex(pattern string) (*regexp.Regexp, error) {
 // currently validate builtin names against the known list so this is
 // the last line of defense.
 //
-// The dispatch is split across three category-specific helpers
-// (string ops, graph ops, boolean ops) to keep this top function
-// short. Each helper returns (value, handled, error); when handled
-// is false the next helper gets a turn.
+// The dispatch is split across four category-specific helpers
+// (string ops, graph ops, boolean ops, render ops) to keep this top
+// function short. Each helper returns (value, handled, error); when
+// handled is false the next helper gets a turn.
 func evalFunc(
 	ctx context.Context,
 	env *Env,
@@ -236,6 +275,9 @@ func evalFunc(
 		return v, err
 	}
 	if v, ok, err := evalBoolFunc(f.Name, args); ok {
+		return v, err
+	}
+	if v, ok, err := evalRenderFunc(row, f.Name, args, sv); ok {
 		return v, err
 	}
 	return "", fmt.Errorf("unknown function %q at %d:%d", f.Name, f.Pos.Line, f.Pos.Col)

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package provider routes between concrete Backend adapters via a closed
-// switch. It is split out from domains/backends to avoid an import cycle:
-// adapters (e.g. domains/backends/linear) import domains/backends for the
+// switch. It is split out from internal/backends to avoid an import cycle:
+// adapters (e.g. internal/backends/linear) import internal/backends for the
 // Backend interface and the value types, and this provider package imports
-// both domains/backends and the adapter sub-packages to wire them up.
+// both internal/backends and the adapter sub-packages to wire them up.
 //
 // # Closed-switch policy
 //

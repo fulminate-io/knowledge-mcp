@@ -441,7 +441,8 @@ func TestInterceptQueryPlanTree_TombstonedChild_DroppedFromBothPaths(t *testing.
 func TestBuildPlanTreeJSON_NoChildIndexEntry_OmitsChildrenKey(t *testing.T) {
 	node := &knowledgev1.Node{Id: "leaf", Type: string(kgtypes.NodeStep), SymbolName: "leaf", Status: "pending"}
 	// Empty index → no entry for "leaf".
-	row := buildPlanTreeJSON(node, 0, 10, map[string][]*knowledgev1.Node{})
+	// No projection: the fixed key set, which is the shape this contract is about.
+	row := buildPlanTreeJSON(node, 0, 10, map[string][]*knowledgev1.Node{}, nil)
 
 	_, hasChildren := row["children"]
 	assert.False(t, hasChildren, "a node with no indexed children must omit the children key entirely")

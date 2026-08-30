@@ -22,8 +22,8 @@ Returns the full test plan tree.`,
 				"name":    {Type: "string", Description: "Test plan name"},
 				"goal":    {Type: "string", Description: "What this test plan verifies"},
 				"summary": {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars (handler enforces)."},
-				"steps": {Type: "array", Description: "Ordered list of test steps. Each step REQUIRES name, description, and summary (handler enforces).", Items: &kgtools.Property{
-					Type: "object", Description: `Step object: {"name":"...","description":"...","summary":"required search-optimized one-line summary, max 500 chars","criteria":[{"description":"...","command":"...","type":"automated|manual"}]}`,
+				"steps": {Type: "array", Description: "Ordered list of test steps. Each step REQUIRES name, description, and summary (handler enforces); and each criterion REQUIRES description and summary (handler enforces).", Items: &kgtools.Property{
+					Type: "object", Description: `Step object: {"name":"...","description":"...","summary":"required search-optimized one-line summary, max 500 chars","criteria":[{"description":"...","summary":"required search-optimized one-line summary, max 500 chars","command":"...","type":"automated|manual"}]}`,
 					AdditionalProperties: &falseValue, Properties: map[string]kgtools.Property{
 						"name":        {Type: "string", Description: "Test step name (required)"},
 						"description": {Type: "string", Description: "Test step description (required)"},

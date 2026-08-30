@@ -38,6 +38,7 @@ func TestInterceptAddCriterion_BareRunCommandRejected(t *testing.T) {
 	args := mustMarshal(t, map[string]any{
 		"operation": "create", "type": "criterion", "step_id": testStepID,
 		"description": "the recipe suite is green",
+		"summary":     "the recipe suite is green",
 		"command":     bareRunCommand,
 	})
 	handled, res := InterceptAddCriterion(opCtx(), &logE2EDeps{gc: gc}, kgtools.CallToolParams{
@@ -67,6 +68,7 @@ func TestInterceptAddCriterion_BareRunMetadataKeyRejected(t *testing.T) {
 	args := mustMarshal(t, map[string]any{
 		"operation": "create", "type": "criterion", "step_id": testStepID,
 		"description": "the recipe suite is green",
+		"summary":     "the recipe suite is green",
 		"metadata":    map[string]string{"command": bareRunCommand},
 	})
 	handled, res := InterceptAddCriterion(opCtx(), &logE2EDeps{gc: gc}, kgtools.CallToolParams{
@@ -99,7 +101,7 @@ func TestInterceptCreatePlan_BareRunCriterionRejected(t *testing.T) {
 			"no_patterns_reason":"trivial",
 			"phases":[{"name":"phase-1","overview":"o","summary":"s","steps":[
 				{"name":"step-1","description":"step 1 description body","summary":"s",
-				 "criteria":[{"description":"the recipe suite is green","type":"automated",
+				 "criteria":[{"description":"the recipe suite is green","summary":"the recipe suite is green","type":"automated",
 				              "command":"` + bareRunCommand + `"}]}
 			]}]
 		}`),
@@ -122,7 +124,7 @@ func TestInterceptCreateTestPlan_BareRunCriterionRejected(t *testing.T) {
 		Arguments: json.RawMessage(`{
 			"name":"tp","goal":"g","summary":"a concise plan summary",
 			"steps":[{"name":"s1","description":"do a thing","summary":"a concise step summary",
-			          "criteria":[{"description":"the recipe suite is green","type":"automated",
+			          "criteria":[{"description":"the recipe suite is green","summary":"the recipe suite is green","type":"automated",
 			                       "command":"` + bareRunCommand + `"}]}]
 		}`),
 	})

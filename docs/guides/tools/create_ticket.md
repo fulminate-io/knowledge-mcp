@@ -48,5 +48,6 @@ For the full field reference, run `help("create_ticket")`.
 | `proposed_patterns[]` | object |  |  | Proposed pattern object |
 | `proposed_patterns[].name` | string |  |  | Proposed pattern name |
 | `proposed_patterns[].sketch` | string |  |  | Interface sketch / pseudocode describing the proposed pattern shape (optional) |
+| `proposed_patterns[].summary` | string |  |  | Required search-optimized one-line summary of the proposed pattern, max 500 chars. (max length: 500) |
 | `summary` | string | yes |  | Required search-optimized one-line summary, max 500 chars (handler enforces). (max length: 500) |
 <!-- END GENERATED: params -->

@@ -63,7 +63,7 @@ func TestSerialBuildersTop1Recall(t *testing.T) {
 	items := randomVectors(n)
 
 	serial := buildSerial(items)
-	deterministic := buildBinaryHNSWSerialDeterministic(items, defaultVecBytes, defaultM, defaultEfConstruction)
+	deterministic := buildBinaryHNSWSerialDeterministic(items, defaultVecBytes, dtypeUbinary, defaultM, defaultEfConstruction)
 
 	// Both graphs are approximate, so top-1 AGREEMENT compounds two ~97% recalls.
 	// The honest property is that each independently recovers the EXACT top-1 (the
@@ -99,7 +99,7 @@ func TestSerialBuildersTop1Recall(t *testing.T) {
 func TestSerializeRoundTripIdenticalSearch(t *testing.T) {
 	const n = 800
 	items := randomVectors(n)
-	orig := buildBinaryHNSWSerialDeterministic(items, defaultVecBytes, defaultM, defaultEfConstruction)
+	orig := buildBinaryHNSWSerialDeterministic(items, defaultVecBytes, dtypeUbinary, defaultM, defaultEfConstruction)
 
 	blob, err := encodeGraphV3(orig)
 	if err != nil {
@@ -141,7 +141,7 @@ func TestSerializeRoundTripIdenticalSearch(t *testing.T) {
 func TestExactTop1Recovery(t *testing.T) {
 	const n = 1000
 	items := randomVectors(n)
-	h := buildBinaryHNSWSerialDeterministic(items, defaultVecBytes, defaultM, defaultEfConstruction)
+	h := buildBinaryHNSWSerialDeterministic(items, defaultVecBytes, dtypeUbinary, defaultM, defaultEfConstruction)
 
 	// Sample the WHOLE corpus so the measured fraction is a stable estimate of the
 	// ~97% mean (the build is deterministic, but per-node recall varies across the

@@ -21,7 +21,7 @@ import (
 // buildSerialDeterministic is the deterministic serial build under measurement —
 // the same path Format.Build runs in production.
 func buildSerialDeterministic(items []binaryBuildItem) *binaryGraph {
-	return buildBinaryHNSWSerialDeterministic(items, defaultVecBytes, defaultM, defaultEfConstruction)
+	return buildBinaryHNSWSerialDeterministic(items, defaultVecBytes, dtypeUbinary, defaultM, defaultEfConstruction)
 }
 
 // ---- Per-segment deterministic build throughput ----

@@ -25,11 +25,16 @@ const formatName = "hnswv3"
 // Format is the binary-HNSW SegmentFormat for the segmented engine. It is generic
 // over [[]byte, struct{}]: the query is a raw binary vector and there are no
 // corpus-wide statistics (HNSW search needs none — AggregateStats is a no-op).
-// The format owns its concrete Segment type (*hnswSegment) so Merge type-asserts
+// The format owns its concrete Segment type (*hnswSegment) so MergeTo type-asserts
 // its inputs and reads their internals (vectors) directly — no Document retention.
 // There is no build-variant state: the HNSW builder is deterministic everywhere
 // (the byte-reproducible serial path is the ONLY builder), so Format carries no
 // fields.
+//
+// IT SATISFIES SegmentFormat's CONCURRENCY OBLIGATION by being a STATELESS VALUE
+// TYPE: no fields, value receivers, every per-call allocation local. The engine
+// drives one Format value from several harvest goroutines at once, so a mutable
+// receiver here would race silently.
 type Format struct{}
 
 // New returns the HNSW SegmentFormat ready to hand to searchengine.New. Build is
@@ -62,24 +67,48 @@ func (Format) Name() string { return formatName }
 // builder (fixed PCG seed + stable sorted-by-id insertion), so identical inputs
 // yield a byte-identical blob. An all-empty batch yields an empty (searchable,
 // zero-hit) segment.
+//
+// THE WIDTH AND THE DTYPE BOTH COME FROM THE DOCUMENTS, never from a constant
+// this format chose. batchVecBytes derives the width and batchBuildDtype the
+// representation, and each REFUSES a batch that mixes its own — see their docs
+// for the corruption a fixed value was measured to cause. The empty-vector skip
+// above is a separate rule and survives untouched: it is the tolerate-absent-
+// data contract, not a width or dtype judgement.
+//
+// THEY ARE DERIVED AS A PAIR, over the SAME post-skip items, because deriving
+// one and fixing the other is what this call used to do: the width tracked the
+// documents while the dtype was pinned to ubinary, so a float32 batch sealed at
+// its correct width and was then ranked by Hamming distance over IEEE bit
+// patterns — a segment that is byte-correct, length-correct and ordered wrong,
+// with nothing anywhere reporting a problem.
 func (Format) Build(docs []searchengine.Document) (searchengine.Segment[[]byte, struct{}], error) {
 	items := make([]binaryBuildItem, 0, len(docs))
 	for _, d := range docs {
 		if len(d.Vector) == 0 {
 			continue
 		}
-		items = append(items, binaryBuildItem{id: d.ID, vec: d.Vector})
+		items = append(items, binaryBuildItem{id: d.ID, vec: d.Vector, dtype: d.Dtype})
 	}
-	graph := buildBinaryHNSWSerialDeterministic(items, defaultVecBytes, defaultM, defaultEfConstruction)
+	vecBytes, err := batchVecBytes(items)
+	if err != nil {
+		return nil, err
+	}
+	dtype, err := batchBuildDtype(items)
+	if err != nil {
+		return nil, fmt.Errorf("hnsw build: %w", err)
+	}
+	graph := buildBinaryHNSWSerialDeterministic(items, vecBytes, dtype, defaultM, defaultEfConstruction)
 	return publishGraph(graph)
 }
 
 // publishGraph is the ONE seal-and-open path: it encodes a freshly built graph
 // to v3 bytes and reopens them as the mapped payload the engine will hold.
 //
-// EVERY PRODUCER GOES THROUGH IT — Build and Merge both — so no path can publish
-// a heap-resident graph and quietly reintroduce the per-node Go structure this
-// format exists to remove. The round trip is not waste: the bytes are the
+// EVERY BUILD GOES THROUGH IT, so no build path can publish a heap-resident
+// graph and quietly reintroduce the per-node Go structure this format exists to
+// remove. A MERGE no longer comes through here: MergeTo writes its graph
+// straight to the engine's destination and never reopens it, which is how the
+// merge's retention of that output reaches zero. The round trip is not waste: the bytes are the
 // segment's canonical form (its id is their sha256), so building them here is
 // work Encode would otherwise do later anyway.
 func publishGraph(h *binaryGraph) (searchengine.Segment[[]byte, struct{}], error) {
@@ -108,32 +137,52 @@ func (Format) Decode(blob []byte) (searchengine.Segment[[]byte, struct{}], error
 	return &hnswSegment{graph: graph}, nil
 }
 
-// Merge consolidates several HNSW segments into one all-live segment, Lucene-style.
-// It type-asserts each input to *hnswSegment (the format owns its concrete type),
-// iterates each segment's (externalID, vector) pairs, keeps only members for which
-// accept[i](id) is true, and re-INSERTS the survivors into a fresh graph. An HNSW
-// graph cannot be spliced (neighbor links are internal-id-relative), so re-add is
-// the only correct merge — this is exactly how Lucene merges HNSW.
+// MergeTo consolidates segs into dst and reports the merged segment's byte
+// length. The consolidation is shared with Build's own graph construction via
+// mergeToGraph; what differs is the ending — a direct write to dst instead of an
+// encode-and-reopen.
 //
-// Construction goes through the SAME byte-reproducible serial builder Build uses,
-// which buys two properties the caller depends on. The merge CONVERGES: repeating
-// it over the same survivors yields the same bytes and therefore the same content
-// hash, so one writer re-running its work republishes an identical segment instead
-// of a fresh generation. And it is ORDER-INDEPENDENT: the builder sorts by id, so
-// the result does not depend on which order the inputs were visited in, which is
-// what makes a repeated consolidation idempotent even when the survivor set is
-// assembled differently.
+// WHAT THIS REMOVES, AND WHAT IT DOES NOT. It removes the encoder's
+// output-sized buffer — encodeGraphV3To writes the blob to dst instead of
+// materializing it — and it takes the merge's retention of that output to zero,
+// because nothing here holds the encoded bytes after they are written.
 //
-// Collecting the survivors first and building once is what enables both. Inserting
-// into a graph as each input is walked would make the result depend on input order
-// and on a per-call random seed.
-func (Format) Merge(segs []searchengine.Segment[[]byte, struct{}], accept []func(searchengine.ExternalID) bool) (searchengine.Segment[[]byte, struct{}], error) {
+// IT DOES NOT MAKE AN HNSW MERGE ALLOCATION-FREE IN THE OUTPUT'S SIZE, and
+// saying otherwise would be false. This format cannot splice graphs: neighbor
+// links are internal-id-relative, so a merge re-inserts every survivor into a
+// fresh binaryGraph, and that graph's vector block alone is output-sized and must
+// be fully resident before a byte can be emitted. The peak drops by roughly the
+// encode buffer; it does not reach zero. The zero-output-sized-allocation merge
+// property is bm25's, by that format's algorithm rather than by any extra care
+// taken here.
+//
+// OWNERSHIP: dst belongs to the caller. This does not truncate, close, stat,
+// unlink or map it, and it leaves dst in place on the error path.
+func (Format) MergeTo(dst searchengine.MergeSink, segs []searchengine.Segment[[]byte, struct{}], accept []func(searchengine.ExternalID) bool) (int64, error) {
+	merged, err := mergeToGraph(segs, accept)
+	if err != nil {
+		return 0, err
+	}
+	return encodeGraphV3To(dst, merged)
+}
+
+// mergeToGraph is the consolidation MergeTo runs: collect the survivors, derive
+// width and dtype as a pair, check the per-dtype seal target, and build one graph
+// through the byte-reproducible serial builder.
+//
+// IT IS ITS OWN FUNCTION so the consolidation stays separable from the emission.
+// The convergence and order-independence properties MergeTo documents are
+// properties of THIS body, and the dtype derivation in particular is the step
+// whose loss once turned a merge of two float32 segments into a ubinary one.
+func mergeToGraph(segs []searchengine.Segment[[]byte, struct{}], accept []func(searchengine.ExternalID) bool) (*binaryGraph, error) {
 	var items []binaryBuildItem
+	hss := make([]*hnswSegment, 0, len(segs))
 	for i, s := range segs {
 		hs, ok := s.(*hnswSegment)
 		if !ok {
 			return nil, fmt.Errorf("hnsw merge: input %d is %T, not *hnswSegment", i, s)
 		}
+		hss = append(hss, hs)
 		var keep func(searchengine.ExternalID) bool
 		if i < len(accept) {
 			keep = accept[i]
@@ -145,8 +194,34 @@ func (Format) Merge(segs []searchengine.Segment[[]byte, struct{}], accept []func
 			items = append(items, binaryBuildItem{id: externalID, vec: vec})
 		})
 	}
-	merged := buildBinaryHNSWSerialDeterministic(dedupeItemsByID(items), defaultVecBytes, defaultM, defaultEfConstruction)
-	return publishGraph(merged)
+	survivors := dedupeItemsByID(items)
+	// WIDTH AND DTYPE ARE DERIVED AS A PAIR, from the constituents themselves.
+	// Deriving only the width and passing a fixed dtype is what made a merge of
+	// two float32 segments produce a ubinary one: every vector byte preserved,
+	// the metric that ranks them replaced, and nothing anywhere reporting a
+	// problem.
+	vecBytes, err := batchVecBytes(survivors)
+	if err != nil {
+		return nil, fmt.Errorf("hnsw merge: %w", err)
+	}
+	dtype, err := batchDtype(hss)
+	if err != nil {
+		return nil, fmt.Errorf("hnsw merge: %w", err)
+	}
+	// THE PER-DTYPE SEAL TARGET IS CHECKED HERE, BEFORE THE BUILD, because this is
+	// where the u32 blob ceiling actually bites. Segments seal at a fraction of the
+	// hard ceiling (v3SealSafetyDivisor) so that consolidating that many full
+	// segments still fits; a consolidation of MORE than that can exceed it. Left
+	// unchecked, the cost is paid twice over: the builder does the full O(n log n)
+	// insertion work first and only then does encodeGraphV3 refuse, reporting a
+	// byte count rather than the thing the operator can act on — how many nodes
+	// this width admits per segment.
+	if maxNodes := maxNodesPerSegment(vecBytes); len(survivors) > maxNodes {
+		return nil, fmt.Errorf(
+			"hnsw merge: %d survivors at %d bytes per vector exceed the %d-node per-segment ceiling a u32 offset can address; merge fewer constituents at this width",
+			len(survivors), vecBytes, maxNodes)
+	}
+	return buildBinaryHNSWSerialDeterministic(survivors, vecBytes, dtype, defaultM, defaultEfConstruction), nil
 }
 
 // dedupeItemsByID collapses the collected merge items to ONE per external id,

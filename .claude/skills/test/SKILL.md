@@ -82,7 +82,7 @@ Failures need user input (legitimate touch point — design decision).
 - **Fix and re-run**: suggest `/implement` to address, then re-run with new session.
 - **Re-run specific tests**: spawn tester targeting failed test_run nodes from same plan.
 - **Record findings**: systemic issues → `mutate(operation:"create", type:"finding")`.
-- **Skip and continue**: known/acceptable failure → mark `skip` with documented reason.
+- **Skip and continue**: ONLY for a failure the USER has designated known/acceptable → mark `skip` citing the user's decision. Classifying a failure as acceptable is never the agent's call.
 
 <constraint id="test-execution-discipline" severity="hard">
 

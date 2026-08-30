@@ -26,11 +26,11 @@ package tools
 // these operations, so rejecting it would be a false rejection.
 const justifyClientRendered = "this arm renders its own result; the format switch lives in the engine render path"
 
-// justifyCriterionDerived is the rejection explanation for the two criterion
-// params that are DERIVED rather than caller-supplied. It tells the caller what
+// justifyCriterionDerived is the rejection explanation for the one criterion
+// param that is DERIVED rather than caller-supplied. It tells the caller what
 // to set instead, so the error is actionable rather than merely a refusal.
-const justifyCriterionDerived = "a criterion's name and summary are derived from its description " +
-	"and command; set those instead"
+const justifyCriterionDerived = "a criterion's name is derived from its description " +
+	"(the FIRST LINE of it); set the description instead"
 
 // justifyCriterionKnowledgeOnly is the rejection explanation for `graph` on the
 // criterion-create arm. The generic message ends "drop it or issue a separate
@@ -41,6 +41,27 @@ const justifyCriterionDerived = "a criterion's name and summary are derived from
 const justifyCriterionKnowledgeOnly = "criterion nodes are knowledge-graph-only — criteria attach to the " +
 	"plan/step verifies structure, which no other graph family carries, so this path routes no graph " +
 	"selector at all; drop the param"
+
+// justifyContextLinkFollowUp is the rejection explanation for the context-link
+// trio (links / session / ticket_id) on the two create arms that have no carrier
+// for them — the criterion arm and create_batch. The generic message ends
+// "issue a separate call that does" without naming the call; for these three
+// params the call is exact and always available, because the create returns the
+// id its follow-up link needs.
+//
+// It no longer serves the generic create fallthrough: every knowledge-graph create routes the context-link trio,
+// so a generic create carrying one of the three is claimed by the type-blind
+// context-linked arm instead of reaching a rejection at all.
+const justifyContextLinkFollowUp = "this create path has no context-link carrier " +
+	"(context-linking is a capability this arm does not have, not a param it drops); issue a follow-up mutate(link) " +
+	"against the id this create returns — links → from:<new id> to:<target> relationship:\"relates-to\", " +
+	"session/ticket_id → from:<session or ticket id> to:<new id> relationship:\"contains\""
+
+// justifyKnowledgeSingletonSelector is the shared justification for `language`
+// on a knowledge-family arm. The knowledge family addresses ONE graph and so
+// consumes no instance field; the schema advertises the param for the
+// name-addressed families, which is why it is ignored here rather than rejected.
+const justifyKnowledgeSingletonSelector = "the knowledge family addresses ONE graph and consumes no instance field, so language selects nothing on this path; the schema advertises it for the name-addressed families, so rejecting it here would be a false rejection"
 
 // paramSet builds a membership set from an explicit key list. Used only to keep
 // the table literals readable — it computes no complement.
@@ -58,7 +79,7 @@ func clientRenderedFormat() map[string]string {
 	return map[string]string{"format": justifyClientRendered}
 }
 
-// The 21 dispatch arms. Each armID names one decision point in the mutate
+// The 22 dispatch arms. Each armID names one decision point in the mutate
 // dispatch tree; together they cover every path a host-originated mutate call
 // can take through the client intercept layer.
 const (
@@ -66,6 +87,7 @@ const (
 	armCreateFinding           armID = "armCreateFinding"
 	armCreateResearch          armID = "armCreateResearch"
 	armCreateRule              armID = "armCreateRule"
+	armCreateContextLinked     armID = "armCreateContextLinked"
 	armCreateFallthrough       armID = "armCreateFallthrough"
 	armCreateBatch             armID = "armCreateBatch"
 	armUpsert                  armID = "armUpsert"
@@ -96,11 +118,12 @@ const (
 // therefore rejected rather than silently written to the knowledge graph.
 var createArmSpecs = map[armID]armSpec{
 	// Criterion create runs ahead of the generic mutate intercept. It routes
-	// step_id/description/command/criterion_type plus status/content/metadata
-	// onto the upserted node. name and summary stay rejected PERMANENTLY: both
-	// are derived (name from description, summary from criterion_type +
-	// description + command), so accepting a caller value would silently lose it
-	// to the derivation. Their rejection carries its own explanation.
+	// step_id/description/summary/command/criterion_type plus
+	// status/content/metadata onto the upserted node. summary is caller-authored,
+	// required and clamped like every other embed-only-knowledge type. name stays
+	// rejected PERMANENTLY: it is derived (from the description's first line via
+	// projects.DeriveCriterionName), so accepting a caller value would silently
+	// lose it to the derivation. Its rejection carries its own explanation.
 	//
 	// ticket_id/session/links also stay rejected — context-linking is a
 	// capability this arm does not have, not a param it drops.
@@ -108,12 +131,13 @@ var createArmSpecs = map[armID]armSpec{
 		operation: "create",
 		handler:   "InterceptAddCriterion",
 		consumed: paramSet(
-			"operation", "type", "step_id", "description", "command", "criterion_type",
+			"operation", "type", "step_id", "description", "summary", "command", "criterion_type",
 			"status", "content", "metadata",
 		),
 		rejected: paramSet(
+			"repo", "account",
 			"supports",
-			"id", "ids", "name", "summary", "expand_to_descendants", "source",
+			"id", "ids", "name", "expand_to_descendants", "source",
 			"evidence", "question_id", "concludes", "scope", "enforcement", "from", "to", "relationship",
 			"conclusion", "findings", "graph", "language", "keywords", "binary_vector",
 			"confidence", "method", "edge_evidence", "last_validated", "link_graph", "branches_from",
@@ -122,9 +146,11 @@ var createArmSpecs = map[armID]armSpec{
 			"verified_quote", "cited_range",
 		),
 		rejectionReasons: map[string]string{
-			"name":    justifyCriterionDerived,
-			"summary": justifyCriterionDerived,
-			"graph":   justifyCriterionKnowledgeOnly,
+			"name":      justifyCriterionDerived,
+			"graph":     justifyCriterionKnowledgeOnly,
+			"links":     justifyContextLinkFollowUp,
+			"session":   justifyContextLinkFollowUp,
+			"ticket_id": justifyContextLinkFollowUp,
 		},
 		deliberatelyIgnored: clientRenderedFormat(),
 	},
@@ -142,6 +168,7 @@ var createArmSpecs = map[armID]armSpec{
 			"content", "status", "metadata", "supports",
 		),
 		rejected: paramSet(
+			"repo", "account",
 			"id", "ids", "expand_to_descendants", "scope", "enforcement", "step_id",
 			"command", "criterion_type", "from", "to", "relationship", "conclusion", "findings",
 			"language", "keywords", "binary_vector", "confidence", "method", "edge_evidence",
@@ -163,6 +190,7 @@ var createArmSpecs = map[armID]armSpec{
 			"description", "status", "metadata",
 		),
 		rejected: paramSet(
+			"repo", "account",
 			"supports",
 			"id", "ids", "expand_to_descendants", "source", "evidence",
 			"question_id", "concludes", "scope", "enforcement", "step_id", "command", "criterion_type",
@@ -185,6 +213,7 @@ var createArmSpecs = map[armID]armSpec{
 			"ticket_id", "session", "links", "content", "status", "metadata",
 		),
 		rejected: paramSet(
+			"repo", "account",
 			"supports",
 			"id", "ids", "expand_to_descendants", "source", "evidence",
 			"question_id", "concludes", "step_id", "command", "criterion_type", "from", "to",
@@ -197,8 +226,47 @@ var createArmSpecs = map[armID]armSpec{
 		deliberatelyIgnored: clientRenderedFormat(),
 	},
 
-	// Any other create type declines to the engine CREATE arm, which builds one
-	// NodeBody from the seven body fields plus id and source. The thought/charge
+	// The type-blind context-linked create. It is armCreateFallthrough's cell with
+	// the context-link trio moved into consumed, because this arm is selected by
+	// the PRESENCE of one of the three and routes all of them through
+	// buildContextLinks. Every other cell is the fallthrough's, unchanged: the
+	// same body fields reach the same create_batch, so a create that gains a
+	// ticket_id gains edges and nothing else.
+	//
+	// `format` stays CONSUMED rather than deliberately ignored — this arm honors
+	// it, serving the engine's own json and text renders, which is what keeps a
+	// json caller's response shape from changing when they add a ticket_id.
+	//
+	// `language` is deliberately ignored rather than rejected: it selects nothing
+	// on a path that builds no Target at all.
+	armCreateContextLinked: {
+		operation: "create",
+		handler:   "handleClientMutateCreateContextLinked",
+		consumed: paramSet(
+			"operation", "type", "id", "name", "description", "summary", "content", "status",
+			"metadata", "source", "graph", "format",
+			"ticket_id", "session", "links",
+		),
+		rejected: paramSet(
+			"repo", "account",
+			"supports",
+			"ids", "expand_to_descendants", "evidence", "question_id", "concludes", "scope",
+			"enforcement", "step_id", "command", "criterion_type", "from", "to", "relationship",
+			"conclusion", "findings", "keywords", "binary_vector", "confidence", "method",
+			"edge_evidence", "last_validated", "link_graph", "branches_from",
+			"polarity", "weight", "reasoning", "charge_evidence", "thought_parent",
+			"references", "items", "nodes", "edges", "updates",
+			"verified_quote", "cited_range",
+		),
+		deliberatelyIgnored: map[string]string{"language": justifyKnowledgeSingletonSelector},
+	},
+
+	// A create carrying NONE of the context-link trio declines to the engine
+	// CREATE arm, which builds one NodeBody from the seven body fields plus id
+	// and source. The trio's ABSENCE is what selects this arm now — supplying any
+	// of the three deselects it in favor of armCreateContextLinked above — so
+	// the three stay in the rejected set as the discriminant, and they carry no
+	// rejection reason because no caller can reach one. The thought/charge
 	// fold-in params are rejected because the engine CREATE arm has no carrier
 	// for them: absent the gate a direct create carrying one would drop it
 	// silently, which is exactly what the rejection replaces.
@@ -207,9 +275,10 @@ var createArmSpecs = map[armID]armSpec{
 		handler:   "engine compileMutateCreate",
 		consumed: paramSet(
 			"operation", "type", "id", "name", "description", "summary", "content", "status",
-			"metadata", "source", "graph", "language", "format",
+			"metadata", "source", "graph", "format",
 		),
 		rejected: paramSet(
+			"repo", "account",
 			"supports",
 			"ids", "expand_to_descendants", "evidence", "question_id", "concludes", "scope",
 			"enforcement", "step_id", "command", "criterion_type", "from", "to", "relationship",
@@ -219,7 +288,7 @@ var createArmSpecs = map[armID]armSpec{
 			"references", "items", "nodes", "edges", "updates",
 			"verified_quote", "cited_range",
 		),
-		deliberatelyIgnored: map[string]string{},
+		deliberatelyIgnored: map[string]string{"language": justifyKnowledgeSingletonSelector},
 	},
 
 	// create_batch reads only the nodes[]/edges[] payload plus target routing —
@@ -227,7 +296,7 @@ var createArmSpecs = map[armID]armSpec{
 	// `name` is REJECTED, like every other top-level body field: each created node
 	// names itself in nodes[]{name}. It is not routing either — a foreign-graph
 	// create_batch never reaches this arm (the non-knowledge guard claims it under
-	// armNonKnowledgeFallthrough, practice/transformers under armGraphPassthrough),
+	// armNonKnowledgeFallthrough, practice/checks/transformers under armGraphPassthrough),
 	// so this arm only ever runs on the knowledge family, whose resolver reads no
 	// selector name at all. It read as consumed while the compile arm copied it
 	// into the Execute Target's graph-instance selector — a request for a graph
@@ -235,8 +304,9 @@ var createArmSpecs = map[armID]armSpec{
 	armCreateBatch: {
 		operation: "create_batch",
 		handler:   "engine compileMutateCreate",
-		consumed:  paramSet("operation", "nodes", "edges", "graph", "language", "format"),
+		consumed:  paramSet("operation", "nodes", "edges", "graph", "format"),
 		rejected: paramSet(
+			"repo", "account",
 			"supports",
 			"name",
 			"type", "id", "ids", "description", "summary", "content", "status",
@@ -248,7 +318,12 @@ var createArmSpecs = map[armID]armSpec{
 			"references", "items", "updates",
 			"verified_quote", "cited_range",
 		),
-		deliberatelyIgnored: map[string]string{},
+		rejectionReasons: map[string]string{
+			"links":     justifyContextLinkFollowUp,
+			"session":   justifyContextLinkFollowUp,
+			"ticket_id": justifyContextLinkFollowUp,
+		},
+		deliberatelyIgnored: map[string]string{"language": justifyKnowledgeSingletonSelector},
 	},
 
 	// Upsert builds ONE NodeBody carrying type/name/description/summary/content/
@@ -259,9 +334,10 @@ var createArmSpecs = map[armID]armSpec{
 		handler:   "engine compileMutateUpsert",
 		consumed: paramSet(
 			"operation", "type", "id", "name", "description", "summary", "content", "status",
-			"metadata", "source", "graph", "language", "format",
+			"metadata", "source", "graph", "format",
 		),
 		rejected: paramSet(
+			"repo", "account",
 			"supports",
 			"ids", "expand_to_descendants", "evidence", "question_id", "concludes", "scope",
 			"enforcement", "step_id", "command", "criterion_type", "from", "to", "relationship",
@@ -271,6 +347,6 @@ var createArmSpecs = map[armID]armSpec{
 			"references", "items", "nodes", "edges", "updates",
 			"verified_quote", "cited_range",
 		),
-		deliberatelyIgnored: map[string]string{},
+		deliberatelyIgnored: map[string]string{"language": justifyKnowledgeSingletonSelector},
 	},
 }

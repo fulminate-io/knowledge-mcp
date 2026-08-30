@@ -15,9 +15,9 @@ import (
 // gateway has already been observed to reject.
 //
 // It is the Connect-side half of the two stamping chokepoints; the raw
-// /v1/sync and /v1/segments surfaces are stamped inside
-// auth.Transport.issueBytes. Both read the same auth.AccountSelection, so
-// stamping and refusing cannot disagree between them.
+// /v1/sync surface is stamped inside auth.Transport.issueBytes. Both read the
+// same auth.AccountSelection, so stamping and refusing cannot disagree between
+// them.
 //
 // No selection stored => NO header at all, rather than an empty one: the
 // gateway then resolves the caller's primary account, exactly as it did before

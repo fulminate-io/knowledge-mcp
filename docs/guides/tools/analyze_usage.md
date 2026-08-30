@@ -42,6 +42,11 @@ with `--seed` to backfill the cache before analyzing.
 <!-- BEGIN GENERATED: params -->
 | Parameter | Type | Required | Enum | Description |
 | --- | --- | --- | --- | --- |
+| `agent` | string |  |  | Agent id selecting one subagent lane, for scope single. |
 | `format` | string |  |  | Output format: 'json' (default). |
 | `operation` | string | yes | run-detectors, recommend | Operation to perform: run-detectors (deterministic metrics only) or recommend (detectors + LLM-synthesized recommendations) |
+| `scope` | string |  | all, session-tree, single, time-range | Population to analyze. all: the whole retained cache (default). session-tree: one main session plus every subagent lane it spawned — requires session. single: one lane on its own, which additionally returns a lane_detail breakdown — requires exactly one of session or agent. time-range: records bounded by since/until — requires at least one of them. |
+| `session` | string |  |  | Session id selecting the population, for scope session-tree or single. |
+| `since` | string |  |  | RFC3339 timestamp; records at or after it are included (inclusive). For scope time-range. |
+| `until` | string |  |  | RFC3339 timestamp; records before it are included (exclusive). For scope time-range. |
 <!-- END GENERATED: params -->

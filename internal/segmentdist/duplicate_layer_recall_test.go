@@ -127,8 +127,7 @@ func TestRecallSurvivesWindowScaleDuplicateMerge(t *testing.T) {
 	ctx := context.Background()
 	gt, name := kgtypes.GraphCode, "windowscale"
 
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	dm := mgr.managerFor(gt, name)
 
 	// A large SINGLE-layer corpus: the ordinary steady state.

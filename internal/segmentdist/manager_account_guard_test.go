@@ -30,8 +30,7 @@ func TestSegmentManagerRefusesAfterAccountFlip(t *testing.T) {
 	ctx := context.Background()
 	live := stubAccountSelection(t, "acct_01AAA")
 
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	// Known-positive control: before the switch the SAME calls succeed, so the
 	// refusals below are the switch's doing and not a broken fixture.
@@ -71,8 +70,8 @@ func TestSegmentManagerRefusesAfterAccountFlip(t *testing.T) {
 
 	// A manager built with NO selection is unaffected while none is selected.
 	*live = ""
-	_, gc2 := newSegmentHarness(t)
-	unbound := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc2)))
+
+	unbound := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	if _, err := unbound.Search(ctx, kgtypes.GraphKnowledge, "default", "alpha", nil, 5); err != nil {
 		t.Errorf("search with no selection at all: %v", err)
 	}

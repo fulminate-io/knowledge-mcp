@@ -248,7 +248,14 @@ func DiscoverFilesReporting(ctx context.Context, repoDir string, opts DiscoveryO
 	rep := newDiscoveryReport(DiscoveryPathGit, gitPathRules, opts)
 	files, err := discoverWithGit(ctx, repoDir, opts, &rep)
 	if err != nil {
-		slog.Warn("git ls-files failed, falling back to filesystem walk", "error", err)
+		// git_stderr carries the REASON rather than leaving the reader with a bare
+		// exit status. Emitted unconditionally, empty when git wrote nothing, so
+		// "git said nothing" stays distinguishable from "nobody logged it". The
+		// level stays WARN deliberately: the two discovery paths run genuinely
+		// different rule chains, so which one served a result is something a
+		// reader wants told, not a detail to quieten.
+		slog.Warn("git ls-files failed, falling back to filesystem walk",
+			"error", err, "git_stderr", gitStderrLine(err))
 		rep = newDiscoveryReport(DiscoveryPathWalk, walkPathRules, opts)
 		files, err = discoverWithWalk(repoDir, opts, &rep)
 		return files, rep, err

@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package tools — InterceptQueryLineage ports the server-side
-// handleTraceLineage + buildLineageJSON + formatLineageNode handlers
-// client-side. Claims query(mode:"lineage").
+// Package tools — InterceptQueryLineage serves query(mode:"lineage")
+// client-side. It began as a port of the server-side handleTraceLineage
+// + buildLineageJSON + formatLineageNode handlers; all three are gone —
+// verified repo-wide by symbol and by path — and no server-side lineage
+// arm replaced them, so this intercept is the whole implementation.
 //
 // Walks the provenance chain upward from a node via three edge
 // probes per step (reverse contains, reverse implements, forward
 // informed-by). Up to depth 10. Markdown + JSON formats both
-// preserved.
-//
-// Phase 3: must be wired BEFORE Phase 5 deletes the
-// server-side lineage shortcut.
+// preserved, each with a byte-parity golden (testdata/lineage.golden,
+// testdata/lineage.json.golden).
 
 package tools
 
@@ -67,8 +67,19 @@ func InterceptQueryLineage(ctx context.Context, deps ClientDeps, params kgtools.
 	return true, kgtools.TextResult(renderLineageMarkdown(ctx, gc, node))
 }
 
-// renderLineageMarkdown ports handleTraceLineage's markdown branch
-// at tools_knowledge_query.go:296-355.
+// renderLineageMarkdown renders the start node's header, then walks up
+// to ten hops upward, emitting one formatLineageNode block per parent,
+// and falls through to the root-node hint when the first hop finds
+// nothing.
+//
+// PROVENANCE, NOT A POINTER: this wording was ported byte-for-byte from
+// the markdown branch of the server-side handleTraceLineage, which no
+// longer exists by symbol or by path. WHAT HOLDS THE FORMAT NOW is
+// TestInterceptQueryLineage_TextFormat_DeepChain_ByteIdentical against
+// testdata/lineage.golden for the populated chain, and
+// TestInterceptQueryLineage_RootNode_ShowsHint for the no-parent
+// branch — those assertions, not the vanished port source, are the
+// standing contract.
 func renderLineageMarkdown(ctx context.Context, gc GraphCaller, node *knowledgev1.Node) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Lineage for: %s (%s)\n", node.SymbolName, node.Type)
@@ -100,10 +111,16 @@ func renderLineageMarkdown(ctx context.Context, gc GraphCaller, node *knowledgev
 	return sb.String()
 }
 
-// nextLineageParent attempts the three edge probes the server-side
-// handler uses (reverse contains → reverse implements → forward
-// informed-by) and returns the first hit (parentID, edgeType). Empty
-// strings = no parent on this hop.
+// nextLineageParent attempts the three edge probes the since-deleted
+// server-side handler used (reverse contains → reverse implements →
+// forward informed-by) and returns the first hit (parentID, edgeType).
+// Empty strings = no parent on this hop.
+//
+// Only the contains probe is exercised anywhere in this package: the
+// shared fixture linker emits contains edges exclusively, and
+// kgtypes.EdgeKGImplements appears in the package at this line and
+// nowhere else. So the implements and informed-by arms, and the
+// precedence between all three, are unpinned.
 func nextLineageParent(ctx context.Context, gc GraphCaller, current string) (string, string) {
 	if edges, _ := render.IterEdges(ctx, gc, current, kgwire.IncomingEdges, kgtypes.EdgeKGContains); len(edges) > 0 {
 		return edges[0].FromId, "contains"
@@ -117,8 +134,19 @@ func nextLineageParent(ctx context.Context, gc GraphCaller, current string) (str
 	return "", ""
 }
 
-// formatLineageNode ports formatLineageNode at
-// tools_knowledge_query.go:359-371.
+// formatLineageNode emits one parent block: a blank line, the "↑ <edge>"
+// arrow, the name/type line with an optional [status] suffix, an optional
+// summary line, and the ID line. The block's base indent is two spaces per
+// hop; the summary and ID lines sit two further spaces in from that base.
+//
+// PROVENANCE, NOT A POINTER: this body was ported line-for-line from a
+// server-side function of the same name, now gone by symbol and by path;
+// only the parent parameter changed (a store node became the wire node,
+// so .ID became .Id). WHAT PINS THE LAYOUT NOW is testdata/lineage.golden.
+// Note its reach: every node in that fixture carries both a status and a
+// summary, so the golden pins the fully-populated block. The two
+// conditional branches — empty status, empty summary — have no fixture in
+// this package and are therefore unpinned.
 func formatLineageNode(sb *strings.Builder, parent *knowledgev1.Node, depth int, edgeType string) {
 	indent := strings.Repeat("  ", depth)
 	fmt.Fprintf(sb, "\n%s↑ %s\n", indent, edgeType)
@@ -133,8 +161,15 @@ func formatLineageNode(sb *strings.Builder, parent *knowledgev1.Node, depth int,
 	fmt.Fprintf(sb, "%s  ID: %s\n", indent, parent.Id)
 }
 
-// lineageRow mirrors the server-side JSON payload at
-// tools_knowledge_query.go:193-200.
+// lineageRow is the per-hop JSON row for query(mode:"lineage",
+// format:"json"). It began as a named copy of an anonymous struct
+// declared inside the since-deleted server-side buildLineageJSON; that
+// file is gone by path and the type with it.
+//
+// WHAT PINS THE SHAPE NOW is testdata/lineage.json.golden, asserted
+// byte-for-byte by TestInterceptQueryLineage_JSONFormat_ByteIdentical —
+// field set and field order, for every field including the omitempty
+// summary, since each node in that fixture carries one.
 type lineageRow struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
@@ -144,9 +179,17 @@ type lineageRow struct {
 	Depth    int    `json:"depth"`
 }
 
-// buildLineageJSON ports buildLineageJSON
-// (tools_knowledge_query.go:192-246) with three store.Store() calls
-// replaced by render.IterEdges.
+// buildLineageJSON assembles the lineage payload: a start header, then
+// the same upward walk renderLineageMarkdown performs, as one row per hop.
+//
+// PROVENANCE, NOT A POINTER: it is a port of a server-side function of
+// the same name, gone by symbol and by path along with the file that held
+// it. Two things changed in the port. Every direct store query became a
+// wire call — render.FetchNode for a node by ID, render.IterEdges for an
+// edge walk — because a client-side intercept has no store handle. And
+// the three edge probes, which the server duplicated inline in both its
+// JSON and its markdown path, were hoisted into the shared
+// nextLineageParent above, so the two paths here cannot drift apart.
 func buildLineageJSON(ctx context.Context, gc GraphCaller, node *knowledgev1.Node) map[string]any {
 	out := map[string]any{
 		"start": map[string]any{

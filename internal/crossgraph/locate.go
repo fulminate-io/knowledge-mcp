@@ -6,10 +6,12 @@
 // crossgraph.ResolveAndLink — there is exactly ONE proxy-materialization
 // implementation across the whole client tree (the single-owner invariant).
 //
-// It imports only render (FetchNodeIn), engine (Compile/Decode), pkg/store
-// (BuildCrossGraphProxy + types), graphclient (to stamp its own query origin on
-// the reads it issues, as every other RPC-issuing client package does), and
-// gen — NEVER cmd/knowledge/internal/tools
+// It imports only render (FetchNodeIn), engine (Compile/Decode), kgtypes,
+// graphclient (to stamp its own query origin on the reads it issues, as every
+// other RPC-issuing client package does), and gen. It reaches for no store
+// package at all: the proxy build is this package's own
+// BuildCrossGraphProxy (proxy_builder.go:29) over proto types, not the server
+// store's same-named builder. NEVER cmd/knowledge/internal/tools
 // or cmd/knowledge/internal/linker (which would cycle). It defines its own narrow
 // Call-only GraphCaller, mirroring the anti-cycle pattern render/tools/linker use.
 package crossgraph

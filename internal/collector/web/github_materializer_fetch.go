@@ -37,8 +37,13 @@ var errSizeExceeded = errors.New("github_materializer: download exceeded size ca
 // (size cap, transport error). Emitted as a NodeDocument warning node by
 // the dispatcher when present, with the metadata keys recorded here.
 type materializerWarning struct {
-	Reason    string // "size_cap_pre_read" | "size_cap_mid_stream" | "transport"
-	URL       string // the original github URL
+	Reason string // "size_cap_pre_read" | "size_cap_mid_stream" | "transport"
+	// URL is the CODELOAD TARBALL URL that was being fetched when the
+	// warning was raised — codeloadBaseURL/<owner>/<repo>/tar.gz/<ref>, built
+	// at fetchCodeloadTarball and passed to every site that sets this field.
+	// It is NOT the original github URL the crawl was given; that address
+	// reaches the emitted warning node separately, as its uri.
+	URL       string
 	BytesSeen int64
 	Cap       int64
 	Owner     string
@@ -87,9 +92,12 @@ func (lr *limitedReader) Read(p []byte) (int, error) {
 }
 
 // fetchRaw performs a single GET against url with the same User-Agent /
-// timeout / redirect policy the rest of the web collector uses, but
-// without the 10 MiB silent truncation of fetchClient.fetch. Returns the
-// response so the caller can stream the body through limitedReader.
+// timeout / redirect policy the rest of the web collector uses. Unlike
+// fetchClient.fetch, which reads a page body to EOF into memory, fetchRaw
+// returns the response so the caller can STREAM the body through
+// limitedReader against the materializer's own MaxDownloadBytes budget —
+// a budget that REFUSES loudly (errSizeExceeded plus a warning node, never
+// a partial repo) rather than truncating.
 //
 // On Content-Length > maxBytes, returns a non-nil warning + nil
 // io.ReadCloser (the response is consumed/closed before returning so no

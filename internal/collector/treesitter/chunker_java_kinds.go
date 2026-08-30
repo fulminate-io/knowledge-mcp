@@ -35,6 +35,13 @@ const (
 	javaKindExtendsInterfaces
 	javaKindClassBody
 	javaKindInterfaceBody
+	javaKindFormalParameters
+	javaKindMethodInvocation
+	javaKindArgumentList
+	javaKindAssignmentExpression
+	javaKindFieldAccess
+	javaKindReturnStatement
+	javaKindLambdaExpression
 )
 
 // javaKindNames maps every java node-kind spelling the java arms name onto its
@@ -62,6 +69,13 @@ var javaKindNames = map[string]uint8{
 	"extends_interfaces":          javaKindExtendsInterfaces,
 	"class_body":                  javaKindClassBody,
 	"interface_body":              javaKindInterfaceBody,
+	"formal_parameters":           javaKindFormalParameters,
+	"method_invocation":           javaKindMethodInvocation,
+	"argument_list":               javaKindArgumentList,
+	"assignment_expression":       javaKindAssignmentExpression,
+	"field_access":                javaKindFieldAccess,
+	"return_statement":            javaKindReturnStatement,
+	"lambda_expression":           javaKindLambdaExpression,
 }
 
 // javaKindTable memoizes the java class table for the process, on the shared

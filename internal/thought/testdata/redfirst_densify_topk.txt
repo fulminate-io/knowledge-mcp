@@ -1,0 +1,74 @@
+selectTopicKNN materialized every above-threshold candidate per member
+and fully sorted the list before cutting to k.
+
+Base measured: main tip 267681cefd0622800e56033d2d2e80c7278d20db.
+Command (both legs identical):
+
+    cd cmd/knowledge && go test ./internal/thought/ -run 'TestSelectTopicKNN_' -v
+
+The cost gate calls selectTopicKNN once over an all-pairs-admitted topic (every
+pair clears the threshold, which is the regime the ticket names) at k=4, and
+measures allocated bytes per call. Doubling the membership doubles the pairs
+SELECTED and quadruples the pairs COMPARED, so the materializing shape predicts a
+ratio near 4 and a bounded one near 1.
+
+
+=== RED — against the per-member full sort (densify.go:88) ===
+
+selectTopicKNN allocation: 600 members -> 19974032 B/call (1965 pairs);
+                          1200 members -> 121238114 B/call (2560 pairs)
+
+    --- FAIL: TestSelectTopicKNN_AllocationScalesWithSelectedPairsNotComparedPairs
+        --- PASS: .../instrument_is_live
+        --- FAIL: .../allocation_does_not_scale_with_compared_pairs
+              "121238114" is not less than "59922096"
+              doubling the membership took allocation from 19974032 B to
+              121238114 B per call — the selection is materializing every
+              compared candidate, not just the ones it keeps
+        --- FAIL: .../allocation_is_bounded_by_the_selected_pairs
+              "121238114" is not less than "1966080"
+              selecting 2560 pairs must cost under 1966080 B, not 121238114 B
+
+Observed ratio 121238114/19974032 = 6.07 — above the quadratic prediction of 4
+because the candidate slice's growth doubling reallocates on the way up.
+
+The instrument_is_live control PASSED in the red run.
+
+TestSelectTopicKNN_TieBreakIsUnchanged PASSED in the red run: that is how its
+golden was captured, against the pre-swap sort-then-cut implementation.
+
+
+=== GREEN — after offering candidates to searchengine.HitHeap ===
+
+selectTopicKNN allocation: 600 members -> 711504 B/call (1965 pairs);
+                          1200 members -> 842836 B/call (2560 pairs)
+
+    --- PASS: TestSelectTopicKNN_AllocationScalesWithSelectedPairsNotComparedPairs
+    --- PASS: TestSelectTopicKNN_TieBreakIsUnchanged
+
+Reduction: 121238114 -> 842836 B/call at 1200 members (143.8x), 19974032 ->
+711504 at 600 members (28.1x). Ratio 6.07 -> 1.18, i.e. allocation now tracks the
+pairs selected rather than the pairs compared.
+
+
+=== TIE-BREAK EQUIVALENCE — why the swap preserves the selection ===
+
+The old selection sorted each member's candidates by (score descending, partner ID
+ascending) and cut to k. HitHeap.Offer instead replaces the worst kept hit only on
+a STRICT score improvement, so a newcomer that TIES the worst kept hit is rejected
+and the incumbent — the EARLIER-OFFERED one — survives. That is arrival-order
+tie-breaking, not ID tie-breaking.
+
+The two coincide because selectTopicKNN sorts its members and builds each
+candidate list by ranging that sorted slice, so candidates arrive in ascending ID
+order. Rejection is monotone in arrival order at a fixed score: the heap's root
+score never falls, so if a smaller-ID candidate at score s was rejected, every
+later tie at s is rejected too. The kept tied subset is therefore a prefix of the
+tied candidates in ID order — exactly what the sort-then-cut kept. The member sort
+is consequently load-bearing for the tie-break and not merely for output
+determinism, which is what the docstring now records.
+
+MUTATION CHECK ON THE GOLDEN. HitHeap.Offer's `>` was temporarily changed to `>=`
+(last-offered wins a tie). TestSelectTopicKNN_TieBreakIsUnchanged went RED and the
+diff showed the p1-partnered pairs replaced by p5-partnered ones — the tie-break
+inverted, exactly the property the golden exists to pin. The mutant was reverted.

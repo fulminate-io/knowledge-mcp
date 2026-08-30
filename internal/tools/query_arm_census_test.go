@@ -41,6 +41,7 @@ var queryClaimEntryPoints = []string{
 	"InterceptLogsQuery",
 	"InterceptQuery",
 	"InterceptQueryAnalyzeNode",
+	"InterceptQueryBuiltinStats",
 	"InterceptQueryCloudCICD",
 	"InterceptQueryCodeSearch",
 	"InterceptQueryCorrelationsPivot",
@@ -57,6 +58,7 @@ var queryClaimEntryPoints = []string{
 	"InterceptQueryRegisteredGraphSearch",
 	"InterceptQueryRules",
 	"InterceptQueryStats",
+	"InterceptQueryUnrankedBuiltin",
 	"InterceptThoughts",
 	"InterceptTopology",
 }

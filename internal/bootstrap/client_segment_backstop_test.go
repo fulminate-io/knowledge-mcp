@@ -140,9 +140,22 @@ func TestBackstopSkippedOnNudgedPass(t *testing.T) {
 			repo          = "nudgedMergeRepo"
 			seededHorizon = int64(1_600_000_000_000_000_000)
 		)
-		c, eng, _ := buildReconcileClientWithSeg(t, 100, repo)
+		c, eng := buildReconcileClientWith(t, 100, repo)
 		eng.setServedHorizon(1_700_000_000_000_000_000)
 		require.NoError(t, c.segmentMgr.SaveMergeWatermark(kgtypes.GraphCode, repo, seededHorizon))
+
+		// THE GRAPH MUST BE HEALTHY, or this subtest measures the wrong arm. The
+		// degeneracy predicate reads a resident count of ZERO against a non-zero embedded
+		// count as a LOST POOL — unconditionally, ahead of any ratio or floor — so an
+		// unseeded graph is degenerate by construction, the heal arm pages the scanner
+		// for it, and the "no full-corpus scan on a scoped pass" assertion below fails
+		// for a reason that has nothing to do with scoping. 128 resident against 100
+		// embedded clears the ratio with room to spare.
+		require.NoError(t, c.segmentMgr.AddAndMarkDirty(
+			ctx, kgtypes.GraphCode, repo, fastloadVecDocs(repo, 128)))
+		require.NoError(t, c.segmentMgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, repo))
+		require.False(t, armIsDegenerate(t, c.segmentMgr, kgtypes.GraphCode, repo, 100),
+			"FIXTURE CONTROL: the graph must be healthy so only the scoping gate can zero the scan count")
 
 		// The graph must be IN the scope: a scoped pass skips every graph outside it, so
 		// a fixture whose graph was absent would show the same zeros while proving
@@ -198,7 +211,7 @@ func TestCalibrationPersistsSnapshotConvergedBit(t *testing.T) {
 		f.outcome = tools.RepairOutcome{Ran: true, MissingHNSW: 0, MissingBM25: 0}
 		return managerBackedRepairDeps{
 			fakeRepairDeps: f,
-			mgr:            segmentdist.NewManager(nil, t.TempDir(), 0),
+			mgr:            segmentdist.NewManager(t.TempDir(), 0),
 		}
 	}
 

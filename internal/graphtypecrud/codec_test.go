@@ -61,7 +61,7 @@ func TestToNode_FromNode_RoundTrip(t *testing.T) {
 		t.Fatalf("ToNode: %v", err)
 	}
 
-	// Node identity follows the worker convention.
+	// Node identity follows the name-as-id config-node convention.
 	if node.GetId() != in.GetName() {
 		t.Errorf("node Id = %q, want %q", node.GetId(), in.GetName())
 	}
@@ -117,7 +117,7 @@ func TestFromNode_Rejections(t *testing.T) {
 
 	// Wrong node type.
 	wrongType := &knowledgev1.Node{
-		Type:     string(kgtypes.NodeWorker),
+		Type:     string(kgtypes.NodeLogBackend),
 		Metadata: map[string]string{MetaGraphTypeDefPB: "AAAA"},
 	}
 	if _, err := FromNode(wrongType); err == nil {

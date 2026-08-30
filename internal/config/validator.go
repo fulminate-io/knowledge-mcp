@@ -51,6 +51,48 @@ func validateCLIBin(consumer Consumer, section Section) error {
 	return nil
 }
 
+// ValidateEmbedCredential enforces the value-level rule the TOML parser
+// cannot check, for one embed/rerank axis: an API provider must have a
+// resolved key OR a base_url. The rule is "key OR base_url, never
+// neither" — it is NOT "base_url implies keyless" and NOT "base_url is
+// required". The original wording, from the LLM axis's Config.Validate, is
+// carried here so the next reader can direction-check it without opening
+// that file:
+//
+//	// A keyless local endpoint (BaseURL set, empty APIKey) is valid:
+//	// the override targets an OpenAI-/anthropic-/gemini-compatible
+//	// server that handles auth out-of-band.
+//	if c.APIKey == "" && c.BaseURL == "" {
+//	    return fmt.Errorf("%w: %s requires APIKey or BaseURL", ErrInvalidConfig, c.Provider)
+//	}
+//
+// The deterministic fake is exempt: it makes no network call, so it needs
+// neither a credential nor an endpoint.
+//
+// This is the SINGLE implementation of the rule for both new axes —
+// embed.Config.Validate and rerank.Config.Validate call it rather than
+// restating it, so the three sites cannot drift apart in wording.
+//
+// NOTE ON SCOPE: this is not wired into the startup Config.Validate
+// consumer gate, and deliberately so. An operator with no embed
+// credential at all is the DOCUMENTED BM25-only degrade (see
+// VoyageAPIKey's doc comment in keys.go), not a startup failure; the
+// degrade is decided before an embed.Config is ever built. This rule
+// fires on a config that HAS asked for an arm, where neither a key nor an
+// endpoint can serve it.
+func ValidateEmbedCredential(provider EmbedProvider, apiKey, baseURL string) error {
+	if !provider.IsValid() {
+		return unknownEmbedProviderError(string(provider))
+	}
+	if !provider.IsAPI() {
+		return nil
+	}
+	if apiKey == "" && baseURL == "" {
+		return fmt.Errorf("%s requires an API key or a base_url", provider)
+	}
+	return nil
+}
+
 // Validate enforces the runtime requirements for each consumer in the
 // list:
 //
@@ -63,14 +105,14 @@ func validateCLIBin(consumer Consumer, section Section) error {
 //     binary path so launchd/systemd-managed servers (which run with a
 //     sanitized PATH) work the same as interactive shells.
 //
-// Validate is parameterized so callers (and follow-up tickets like the
-// dream-wiring work) decide which consumers are active. All collected
+// Validate is parameterized so callers decide which consumers are
+// active. All collected
 // errors are joined and returned together so operators see every
 // missing dep on a single startup pass instead of fixing one at a time.
 //
 // No per-consumer provider-type restriction is enforced here. Consumers
 // that need a specific provider capability (e.g. tool-use, which CLI
-// providers reject per domains/llm/claudecli/translate.go) guard at the
+// providers reject per internal/llm/claudecli/translate.go) guard at the
 // call site rather than at startup. Earlier revisions of this validator
 // rejected CLI providers for the transformer consumer, but the recipe
 // transformer is rule-based and does not currently use Options.LLM —

@@ -89,5 +89,5 @@ func (m *Manager) SaveMergeWatermark(gt kgtypes.GraphType, name string, horizonN
 
 	m.mergeStateMu.Lock()
 	defer m.mergeStateMu.Unlock()
-	return atomicWriteManifestState(mergeStatePathFor(m.cacheDir, gt, name), raw)
+	return atomicWriteStateFile(mergeStatePathFor(m.cacheDir, gt, name), raw)
 }

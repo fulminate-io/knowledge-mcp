@@ -54,8 +54,83 @@ func codeRefFake() *citedSourceFake {
 		edges: []*knowledgev1.Edge{
 			{FromId: codeRefThoughtID, ToId: proxyID, Type: string(kgtypes.EdgeRelatesTo), Method: "code-ref"},
 		},
-		proxyNodes: []*knowledgev1.Node{mkSourceCodeProxy(proxyID, "knowledge", codeRefCodeID)},
+		proxyNodes: []*knowledgev1.Node{mkSourceCodeProxy(proxyID, codeRefCodeID)},
 		codeNodes:  []*knowledgev1.Node{{Id: codeRefCodeID, Type: "function", Content: codeRefContent}},
+	}
+}
+
+// --- Citation-shape fixtures: content-less (file-level) vs content-bearing ---
+
+// The file-level citation fixture. A FILE code node is keyed by a bare path with no
+// symbol suffix and carries NO Content — the code graph stores source on symbol
+// nodes, not on the file node above them. That empty Content is the whole subject
+// of these tests: an empty resolution must never be silently compared against.
+const (
+	fileOnlyCodeID  = "pkg/cache.go"
+	fileOnlyProxyID = "proxy:knowledge:file-only"
+)
+
+// fileOnlyFake serves a contradicted thought whose ONLY code-ref born-link resolves
+// to the content-less file node above, plus that thought's own Summary+Content for
+// the require-own-content path. Parameterised by id/summary/content so a caller can
+// build it sharing a node ID and body with ownContentFake.
+func fileOnlyFake(id, summary, content string) *citedSourceFake {
+	return &citedSourceFake{
+		edges: []*knowledgev1.Edge{
+			{FromId: id, ToId: fileOnlyProxyID, Type: string(kgtypes.EdgeRelatesTo), Method: "code-ref"},
+		},
+		proxyNodes: []*knowledgev1.Node{mkSourceCodeProxy(fileOnlyProxyID, fileOnlyCodeID)},
+		// Content deliberately unset — this is the content-less file node.
+		codeNodes: []*knowledgev1.Node{{Id: fileOnlyCodeID, Type: "file"}},
+		thoughtNode: &knowledgev1.Node{
+			Id: id, Type: string(kgtypes.NodeThought),
+			Summary: summary, Content: content,
+		},
+	}
+}
+
+// mixedFake serves a thought carrying TWO code-ref born-links: one to the
+// content-less file node, one to the symbol node that carries real source
+// (codeRefCodeID/codeRefContent). It is the guard fixture — excluding the empty
+// source must not lower the bar the surviving symbol source sets.
+func mixedFake(id, summary, content string) *citedSourceFake {
+	const symbolProxyID = "proxy:knowledge:mixed-symbol"
+	return &citedSourceFake{
+		edges: []*knowledgev1.Edge{
+			{FromId: id, ToId: fileOnlyProxyID, Type: string(kgtypes.EdgeRelatesTo), Method: "code-ref"},
+			{FromId: id, ToId: symbolProxyID, Type: string(kgtypes.EdgeRelatesTo), Method: "code-ref"},
+		},
+		proxyNodes: []*knowledgev1.Node{
+			mkSourceCodeProxy(fileOnlyProxyID, fileOnlyCodeID),
+			mkSourceCodeProxy(symbolProxyID, codeRefCodeID),
+		},
+		codeNodes: []*knowledgev1.Node{
+			{Id: fileOnlyCodeID, Type: "file"},
+			{Id: codeRefCodeID, Type: "function", Content: codeRefContent},
+		},
+		thoughtNode: &knowledgev1.Node{
+			Id: id, Type: string(kgtypes.NodeThought),
+			Summary: summary, Content: content,
+		},
+	}
+}
+
+// linksParamFake serves a thought born-linked by the plain links param: a relates-to
+// edge with Method left EMPTY rather than "code-ref". codeRefProxiesByThought
+// (cmd/knowledge/internal/thought/cited_code_staleness.go:121) drops every
+// relates-to edge whose Method is not code-ref, so this edge never reaches the
+// code-ref resolution at all and the thought is served by its own content.
+func linksParamFake(id, summary, content string) *citedSourceFake {
+	return &citedSourceFake{
+		edges: []*knowledgev1.Edge{
+			{FromId: id, ToId: fileOnlyProxyID, Type: string(kgtypes.EdgeRelatesTo)},
+		},
+		proxyNodes: []*knowledgev1.Node{mkSourceCodeProxy(fileOnlyProxyID, fileOnlyCodeID)},
+		codeNodes:  []*knowledgev1.Node{{Id: fileOnlyCodeID, Type: "file"}},
+		thoughtNode: &knowledgev1.Node{
+			Id: id, Type: string(kgtypes.NodeThought),
+			Summary: summary, Content: content,
+		},
 	}
 }
 
@@ -173,6 +248,88 @@ func TestNegationGateE2E_WhitespaceNormalization(t *testing.T) {
 		"verified_quote": "if x { return nil }",
 	})
 	assert.False(t, handled, "a quote differing only in whitespace/indentation still passes")
+	assert.False(t, rejected)
+}
+
+// --- Citation-shape battery: file-level, mixed, and links-param born-links ---
+
+// TestNegationGateE2E_FileLevelCitation_FallsBackToOwnContent: a thought whose only
+// code-ref born-links resolve to content-less file nodes is negatable by a verbatim
+// quote of its OWN current Summary+Content — the same bar every thought citing no
+// code already meets. The second subtest varies ONLY the cited file node's
+// UpdatedAt, the single axis a staleness explanation would move, and shows the
+// outcome does not turn on it.
+func TestNegationGateE2E_FileLevelCitation_FallsBackToOwnContent(t *testing.T) {
+	const (
+		nodeID  = "th-file-only"
+		summary = "claim: the writer flushes synchronously"
+		content = "the negator disagrees with this reasoning body"
+		quote   = "disagrees with this reasoning body"
+	)
+	args := map[string]any{
+		"operation": "update", "id": nodeID, "status": "invalidated", "verified_quote": quote,
+	}
+
+	t.Run("own-content quote passes", func(t *testing.T) {
+		handled, rejected := runGate(t, fileOnlyFake(nodeID, summary, content), "mutate", args)
+		assert.False(t, handled, "a content-less file citation leaves the own-content quote as the bar")
+		assert.False(t, rejected)
+	})
+
+	t.Run("fresh UpdatedAt on the cited file node changes nothing", func(t *testing.T) {
+		fake := fileOnlyFake(nodeID, summary, content)
+		fake.codeNodes[0].UpdatedAt = 1_800_000_000_000_000_000
+		handled, rejected := runGate(t, fake, "mutate", args)
+		assert.False(t, handled, "the cited node's UpdatedAt is not an input to the quote match")
+		assert.False(t, rejected)
+	})
+}
+
+// TestNegationGateE2E_MixedFileAndSymbolCitation: when a thought cites BOTH a
+// content-less file node and a symbol node carrying real source, the symbol source
+// is still the bar. Both subtests are required — the first alone would pass against
+// a change that dropped code sources entirely, the second alone against a change
+// that resolved nothing.
+func TestNegationGateE2E_MixedFileAndSymbolCitation(t *testing.T) {
+	const (
+		nodeID   = "th-mixed"
+		summary  = "claim: flushing happens on a timer"
+		content  = "the thought's own reasoning, which quotes no source line"
+		ownQuote = "which quotes no source line"
+	)
+	mkArgs := func(quote string) map[string]any {
+		return map[string]any{
+			"operation": "link", "relationship": "contradicts", "to": nodeID, "verified_quote": quote,
+		}
+	}
+
+	t.Run("symbol source quote passes", func(t *testing.T) {
+		handled, rejected := runGate(t, mixedFake(nodeID, summary, content), "mutate", mkArgs("return w.Sync()"))
+		assert.False(t, handled, "the surviving symbol source still validates a verbatim quote of itself")
+		assert.False(t, rejected)
+	})
+
+	t.Run("own-content quote is still REJECTED", func(t *testing.T) {
+		handled, rejected := runGate(t, mixedFake(nodeID, summary, content), "mutate", mkArgs(ownQuote))
+		assert.True(t, handled, "a thought citing real symbol source may not be negated by quoting itself")
+		assert.True(t, rejected)
+	})
+}
+
+// TestNegationGateE2E_LinksParamEdgeUnaffected: a born-link written by the plain
+// links param carries no code-ref method, is dropped before the code-ref resolution,
+// and leaves the thought on the own-content path exactly as before.
+func TestNegationGateE2E_LinksParamEdgeUnaffected(t *testing.T) {
+	const (
+		nodeID  = "th-links-param"
+		summary = "claim: a method-less relates-to edge is not a citation"
+		content = "a plain relates-to edge never reaches the code-ref resolution"
+		quote   = "never reaches the code-ref resolution"
+	)
+	handled, rejected := runGate(t, linksParamFake(nodeID, summary, content), "mutate", map[string]any{
+		"operation": "update", "id": nodeID, "status": "invalidated", "verified_quote": quote,
+	})
+	assert.False(t, handled, "the method-less edge is filtered out, so the own-content quote is the bar")
 	assert.False(t, rejected)
 }
 

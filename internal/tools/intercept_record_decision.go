@@ -23,6 +23,7 @@ import (
 // recordDecisionArgs mirrors the wire shape for record_decision.
 type recordDecisionArgs struct {
 	Name         string `json:"name"`
+	Summary      string `json:"summary"`
 	Choice       string `json:"choice"`
 	Rationale    string `json:"rationale"`
 	Alternatives string `json:"alternatives,omitempty"`
@@ -53,7 +54,10 @@ func InterceptRecordDecision(ctx context.Context, deps ClientDeps, params kgtool
 	if params.Name != "record_decision" {
 		return false, kgtools.ToolResult{}
 	}
-	// Above the GraphCaller nil check, for the same reason as hive and assemble.
+	// Above the GraphCaller nil check, for the same reason as assemble.
+	if err := rejectSwallowedParamValues("record_decision", params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	if err := rejectUndeclaredParams("record_decision", "", RecordDecisionToolDef().InputSchema.Properties, params.Arguments); err != nil {
 		return true, errorResult(err.Error())
 	}
@@ -63,7 +67,7 @@ func InterceptRecordDecision(ctx context.Context, deps ClientDeps, params kgtool
 	}
 	var a recordDecisionArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
-		return true, errorResult("invalid arguments: " + err.Error())
+		return true, errorResult("invalid arguments: " + decodeArgsError(params.Arguments, err))
 	}
 	if err := validate.Name("record_decision", a.Name); err != nil {
 		return true, errorResult(err.Error())
@@ -74,9 +78,17 @@ func InterceptRecordDecision(ctx context.Context, deps ClientDeps, params kgtool
 	if strings.TrimSpace(a.Rationale) == "" {
 		return true, errorResult("record_decision: rationale is required and must be non-empty (why this was decided)")
 	}
+	clampedSummary, summaryWarn, serr := validate.ClampSummary("record_decision", "summary", a.Summary)
+	if serr != nil {
+		return true, errorResult(serr.Error())
+	}
+	a.Summary = clampedSummary
 
 	node := buildDecisionNode(a)
 	warnings, validRefs := validateInformedByRefs(ctx, gc, a.InformedBy)
+	if summaryWarn != "" {
+		warnings = append(warnings, summaryWarn)
+	}
 
 	nodes := []*knowledgev1.Node{node}
 	var edges []kgwire.BatchEdge
@@ -104,20 +116,19 @@ func InterceptRecordDecision(ctx context.Context, deps ClientDeps, params kgtool
 	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Decision recorded: %s → ID: %s", a.Name, id)
-	writeClientWarningsSection(&sb, warnings, "\n\n")
+	writeClientWarningsSection(&sb, warnings)
 	return true, textResult(sb.String() + " [graph: knowledge/default]")
 }
 
 // buildDecisionNode constructs the decision node with metadata.
 // Mirrors projects.RecordDecision body.
 func buildDecisionNode(a recordDecisionArgs) *knowledgev1.Node {
-	summary := truncateAtWordCreate(a.Choice, validate.SummaryMaxLen)
 	node := &knowledgev1.Node{
 		Type:        string(kgtypes.NodeDecision),
 		Source:      "llm:claude",
 		SymbolName:  a.Name,
 		Description: a.Choice,
-		Summary:     summary,
+		Summary:     a.Summary,
 	}
 	kgtypes.SetValue(node, "choice", a.Choice)
 	kgtypes.SetValue(node, "rationale", a.Rationale)

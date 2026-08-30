@@ -60,8 +60,17 @@ func handleClientPrune(ctx context.Context, deps ClientDeps, a manageArgs) kgtoo
 		slog.Warn("manage(prune): the server completed the sweep but reported a degradation",
 			"graph", a.Graph, "name", a.Name, "warning", w)
 	}
-	propagatePrunedToSegments(ctx, deps, a, resp)
-	return textResult(renderPruneAck(a, resp.GetAffectedCount(), beforeNanos, resp.GetWarning()))
+	reEmitErr := propagatePrunedToSegments(ctx, deps, a, resp)
+	ack := renderPruneAck(a, resp.GetAffectedCount(), beforeNanos, resp.GetWarning())
+	if reEmitErr != nil {
+		// The prune COMPLETED server-side; only its propagation into this client's
+		// shipped corpus failed. It stays a non-error result for the same reason the
+		// server's own degradation warning does — but it is no longer an unqualified
+		// "Pruned N", which is what a caller used to receive with the local corpus
+		// left carrying every pruned document.
+		ack += "\n\n" + segmentReEmitFailureNotice(reEmitErr)
+	}
+	return textResult(ack)
 }
 
 // propagatePrunedToSegments carries a completed HARD prune into this client's
@@ -89,14 +98,20 @@ func handleClientPrune(ctx context.Context, deps ClientDeps, a manageArgs) kgtoo
 // shipped blob — so the next L2 import resurrects them permanently, and no scan will
 // ever report them again to repair it. Seeding first costs nothing if the re-emit then
 // fails: the record marks them dead, which is the safe direction.
-func propagatePrunedToSegments(ctx context.Context, deps ClientDeps, a manageArgs, resp *knowledgev1.IndexResponse) {
+//
+// THE RETURN IS THE RE-EMIT'S VERDICT, and only that one. The record-write failure
+// above stays logged-and-continued because the buckets are still worth clearing
+// after it; the RE-EMIT failure is what leaves every pruned document resident in
+// the shipped corpus, so it is handed back for the ack to qualify. A prune whose
+// server sweep completed is never reported as failed either way.
+func propagatePrunedToSegments(ctx context.Context, deps ClientDeps, a manageArgs, resp *knowledgev1.IndexResponse) error {
 	pruned := resp.GetPrunedIds()
 	if len(pruned) == 0 {
 		if affected := resp.GetAffectedCount(); affected > 0 {
 			slog.Warn("manage(prune): the server reported pruned rows but no ids — the local segment corpus keeps those documents until a rebuild",
 				"graph", a.Graph, "name", a.Name, "affected", affected)
 		}
-		return
+		return nil
 	}
 	// The SAME target resolution reEmitDeletedFromSegments performs internally, so the
 	// record, the stamps and the buckets cannot address different corpora.
@@ -115,7 +130,7 @@ func propagatePrunedToSegments(ctx context.Context, deps ClientDeps, a manageArg
 				"graph", a.Graph, "name", a.Name, "ids", len(pruned), "error", merr)
 		}
 	}
-	reEmitDeletedFromSegments(ctx, deps, a.Graph, a.Name, pruned)
+	return reEmitDeletedFromSegments(ctx, deps, a.Graph, a.Name, pruned)
 }
 
 // parsePruneBefore converts the `before` arg to an absolute unix-nanos cutoff.

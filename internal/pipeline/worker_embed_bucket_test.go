@@ -15,14 +15,6 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/segmentdist"
 )
 
-// bucketTestCaller is the not-logged-in loginState the fixture Manager takes so the
-// source factory selects the L2-local segmentSource and the whole test runs with
-// zero network. It is the pipeline-side analog of segmentdist's own login stub,
-// which is unexported there.
-type bucketTestCaller struct{}
-
-func (bucketTestCaller) LoggedIn(context.Context) bool { return false }
-
 // bucketCorpusVec returns a deterministic 32-byte vector for one corpus id. The
 // seed is folded in so the RE-EMBEDDED generation of a document is byte-distinct
 // from its original, which is what lets the assertions tell a fresh copy from a
@@ -66,7 +58,14 @@ func TestEmbedShipLandsInBucket(t *testing.T) {
 		reEmbedN = 100
 	)
 
-	mgr := segmentdist.NewManager(bucketTestCaller{}, t.TempDir(), 0)
+	mgr := segmentdist.NewManager(t.TempDir(), 0)
+	// Every graph this manager touches lazily constructs an engine, and every engine
+	// starts a merger goroutine that only Close stops — segmentdist's own
+	// TestManagerCloseStopsEveryEngineMerger pins exactly that. Without this the
+	// merger outlives the test on a mergeTickInterval ticker for the rest of the test
+	// BINARY, which is invisible per-test and is what this package's goleak gate
+	// caught.
+	t.Cleanup(mgr.Close)
 
 	// FIXTURE: the prior corpus, written and consolidated the way the production
 	// path does it — every batch force-sealed, durability taken by the tick.

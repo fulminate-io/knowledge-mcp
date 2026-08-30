@@ -23,7 +23,7 @@ type Backend struct {
 // New constructs a production Linear Backend reading the Linear key via
 // config.LinearAPIKey — the [credentials].linear_api_key field in
 // ~/.knowledge/config if set, otherwise the LINEAR_API_KEY env var.
-// Provider in domains/backends/provider.go calls this when Enabled()
+// Provider in internal/backends/provider/provider.go calls this when Enabled()
 // returns true.
 func New() *Backend {
 	return &Backend{Client: NewClient()}

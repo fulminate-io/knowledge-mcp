@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // write_context_links.go — the single client-side home for the write-side
-// context-linking enablers shared by the finding / research / rule
-// mutate-create paths and record_decision. It lowers the optional
-// ticket_id / session / links pass-through params onto a create_batch so a
-// session-produced node is BORN linked to the active ticket, grouped under its
-// session, and related to the touched code/knowledge nodes — using only the
-// existing edge vocabulary (contains / relates-to).
+// context-linking enablers. Its consumers are the type-keyed mutate-create
+// handlers, record_decision, the think path, and the type-blind create arm that
+// serves every remaining node type:
+// every knowledge-graph create routes the context-link trio, and it routes it
+// through here. The helper lowers the optional ticket_id / session / links
+// pass-through params onto a create_batch so a session-produced node is BORN
+// linked to the active ticket, grouped under its session, and related to the
+// touched code/knowledge nodes — using only the existing edge vocabulary
+// (contains / relates-to).
 //
 // FAIL-TOLERANCE IS THE CONTRACT (the crux): a context link must NEVER
 // block the write it decorates. applyCreate (engine_mutate_apply.go) resolves
@@ -138,8 +141,12 @@ func (cl *contextLinks) classifyLinks(ctx context.Context, gc GraphCaller, links
 	if ex != nil {
 		graphs, _ = crossgraph.ListForeignGraphs(ctx, ex)
 	}
-	for _, id := range links {
+	for i, id := range links {
 		if id == "" {
+			// DROP AND WARN, like every other drop path in this helper. The entry
+			// is still dropped and the create still succeeds; the index is named
+			// so a caller can find which entry of their array was empty.
+			cl.warnings = append(cl.warnings, fmt.Sprintf("links[%d] was empty — the relates-to link was dropped (the node was still created)", i))
 			continue
 		}
 		// (a) Knowledge hit → knowledge target rides the batch as relates-to.

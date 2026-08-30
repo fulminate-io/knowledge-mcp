@@ -85,11 +85,11 @@ func pdfminerBoxes(t *testing.T, fixturePath string) ([]referenceBox, error) {
 	scanner.Buffer(make([]byte, 0, 1<<20), 1<<20)
 	for scanner.Scan() {
 		line := scanner.Text()
-		tabIdx := strings.IndexByte(line, '\t')
-		if tabIdx < 0 {
+		head, tail, ok := strings.Cut(line, "\t")
+		if !ok {
 			continue
 		}
-		fields := strings.Split(line[:tabIdx], ",")
+		fields := strings.Split(head, ",")
 		if len(fields) != 5 {
 			continue
 		}
@@ -99,7 +99,7 @@ func pdfminerBoxes(t *testing.T, fixturePath string) ([]referenceBox, error) {
 		b.y0, _ = strconv.ParseFloat(fields[2], 64)
 		b.x1, _ = strconv.ParseFloat(fields[3], 64)
 		b.y1, _ = strconv.ParseFloat(fields[4], 64)
-		b.text = line[tabIdx+1:]
+		b.text = tail
 		boxes = append(boxes, b)
 	}
 	return boxes, scanner.Err()
@@ -135,7 +135,6 @@ func TestPdfminerXval(t *testing.T) {
 			clonePath, clonePath, clonePath)
 	}
 	for _, fixture := range fixturePicks {
-		fixture := fixture
 		t.Run(fixture, func(t *testing.T) {
 			refBoxes, err := pdfminerBoxes(t, fixture)
 			if err != nil {

@@ -34,8 +34,9 @@ func withHTTPClient(t *testing.T, c *http.Client) {
 
 // withVersion overrides bootstrap.Version (the running knowledge
 // binary's version) and restores on Cleanup. Tests use this to
-// drive resolveReleaseTag — Version=="dev" → /releases/latest,
-// anything else → /releases/tags/<version>.
+// drive resolveReleaseTag — a dev build ("dev", or any "dev-"-prefixed
+// local stamp) → /releases/latest, anything else →
+// /releases/tags/<version>.
 func withVersion(t *testing.T, v string) {
 	t.Helper()
 	prev := Version
@@ -184,7 +185,7 @@ func newReleaseServer(t *testing.T, s releaseStub) *httptest.Server {
 		_, _ = w.Write(s.checksums)
 	})
 	srv = httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 	return srv
 }
 

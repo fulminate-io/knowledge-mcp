@@ -14,7 +14,6 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/backends"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
-	"github.com/fulminate-io/knowledge-mcp/internal/projects"
 )
 
 // compileUpdateForTest compiles a mutate(update) args JSON through the same
@@ -135,17 +134,9 @@ func TestTypedUpdate_FindingSourceInMetadata_ResearchSourceToField(t *testing.T)
 	})
 }
 
-// (c) re-derived-when-absent: a criterion update changing command WITHOUT
-// summary forwards set_fields.summary == DeriveCriterionSummary(effectiveType,
-// effectiveDescription, newCommand).
-func TestTypedUpdate_RederiveSummaryWhenAbsent(t *testing.T) {
-	node := nodeOf(t, "c1", "criterion", "the suite is green", "the suite is green", map[string]string{"type": "automated"})
-	fc, handled := runTypedUpdate(t, node, mutateArgs{Operation: "update", ID: "c1", Command: "go test ./..."})
-	require.True(t, handled)
-	m := lastUpdatePlan(t, fc)
-	want := projects.DeriveCriterionSummary("automated", "the suite is green", "go test ./...")
-	assert.Equal(t, want, m.GetSetFields()["summary"])
-}
+// A criterion update that supplies no summary preserves the stored one — see
+// TestTypedUpdate_CriterionSummaryPreservedWhenAbsent in the sibling
+// intercept_mutate_update_summary_test.go.
 
 // (c) caller-wins: a criterion update changing command AND passing summary
 // forwards the caller's summary verbatim (no re-derivation).
@@ -166,6 +157,22 @@ func TestTypedUpdate_CriterionRestampNameFromDescription(t *testing.T) {
 		require.True(t, handled)
 		m := lastUpdatePlan(t, fc)
 		assert.Equal(t, "new desc", m.GetSetFields()["name"])
+	})
+	// The clamp: a MULTI-LINE description re-stamps the name with its first line
+	// only, while the description itself is forwarded whole. The single-line case
+	// above is the compatibility control — both live in this test so a clamp that
+	// also truncated single-line names, or one that clamped the description, is
+	// caught here rather than in the corpus.
+	t.Run("criterion re-stamps name with the description's FIRST LINE", func(t *testing.T) {
+		const desc = "the reconcile leaves no orphan rows\n\nRun: make test\nWhy: the sweep gate."
+		node := nodeOf(t, "c1", "criterion", "old desc", "old desc", map[string]string{"type": "manual"})
+		fc, handled := runTypedUpdate(t, node, mutateArgs{Operation: "update", ID: "c1", Description: desc})
+		require.True(t, handled)
+		m := lastUpdatePlan(t, fc)
+		assert.Equal(t, "the reconcile leaves no orphan rows", m.GetSetFields()["name"],
+			"the re-stamped name is the first line, not the whole description block")
+		assert.Equal(t, desc, m.GetSetFields()["description"],
+			"the description is written whole — only the NAME is clamped")
 	})
 	t.Run("finding does NOT re-stamp name", func(t *testing.T) {
 		node := nodeOf(t, "f1", "finding", "old name", "old desc", nil)

@@ -19,8 +19,14 @@ import (
 // have a dedicated renderer.
 //
 // Ported from cmd/knowledge-server/tools/tools_assemble_extra.go:80
-// with the store reads swapped for wire-shape FetchNode + IterEdges
-// calls.
+// with the store reads swapped for wire-shape calls. Every peer named by an
+// edge is hydrated in ONE bulk read rather than one read per edge, and the
+// rendering loops walk the EDGE slices — never the hydrated map, whose
+// iteration order is undefined and would reorder these sections at random.
+//
+// AN UNRESOLVED PEER STILL RENDERS ITS SHORTER RAW-ID LINE. The condition used
+// to be a FetchNode error and is now a miss in the hydrated map; the two output
+// shapes, resolved and unresolved, both survive.
 func assembleFallback(ctx context.Context, gc GraphCaller, node *knowledgev1.Node) kgtools.ToolResult {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "# %s: %s\n", node.Type, node.SymbolName)
@@ -30,11 +36,22 @@ func assembleFallback(ctx context.Context, gc GraphCaller, node *knowledgev1.Nod
 	fmt.Fprintf(&sb, "ID: %s%s\n", node.Id, updatedSuffix(node))
 
 	outEdges, _ := IterEdges(ctx, gc, node.Id, kgwire.OutgoingEdges)
+	inEdges, _ := IterEdges(ctx, gc, node.Id, kgwire.IncomingEdges)
+
+	peerIDs := make([]string, 0, len(outEdges)+len(inEdges))
+	for _, e := range outEdges {
+		peerIDs = append(peerIDs, e.ToId)
+	}
+	for _, e := range inEdges {
+		peerIDs = append(peerIDs, e.FromId)
+	}
+	peers, truncated, _ := FetchNodesByIDs(ctx, gc, peerIDs)
+
 	if len(outEdges) > 0 {
 		fmt.Fprintf(&sb, "\n## Outgoing Edges\n\n")
 		for _, e := range outEdges {
-			tgt, err := FetchNode(ctx, gc, e.ToId)
-			if err != nil || tgt == nil {
+			tgt, ok := peers[e.ToId]
+			if !ok {
 				fmt.Fprintf(&sb, "- [%s] → %s\n", e.Type, e.ToId)
 				continue
 			}
@@ -42,17 +59,19 @@ func assembleFallback(ctx context.Context, gc GraphCaller, node *knowledgev1.Nod
 		}
 	}
 
-	inEdges, _ := IterEdges(ctx, gc, node.Id, kgwire.IncomingEdges)
 	if len(inEdges) > 0 {
 		fmt.Fprintf(&sb, "\n## Incoming Edges\n\n")
 		for _, e := range inEdges {
-			src, err := FetchNode(ctx, gc, e.FromId)
-			if err != nil || src == nil {
+			src, ok := peers[e.FromId]
+			if !ok {
 				fmt.Fprintf(&sb, "- [%s] ← %s\n", e.Type, e.FromId)
 				continue
 			}
 			fmt.Fprintf(&sb, "- [%s] ← [%s] %s (ID: %s)\n", e.Type, src.Type, src.SymbolName, src.Id)
 		}
 	}
-	return kgtools.TextResult(sb.String())
+	// This arm renders no contains tree, so the bulk hydrate's verdict is the
+	// only one it ever receives. A clamped hydrate would turn resolved peers
+	// into raw-id lines without saying so.
+	return AppendTruncationNotice(kgtools.TextResult(sb.String()), truncated, len(peers))
 }

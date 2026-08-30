@@ -5,9 +5,9 @@ package bootstrap
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -179,26 +179,34 @@ func TestServerBinaryNotFoundError_RecoveryMessage_NamesInstall(t *testing.T) {
 	}
 }
 
+// TestWaitForServer_Healthy drives the readiness wait against a live h2c stub.
+//
+// THE STUB IS AN httptest.Server RATHER THAN A HAND-ROLLED http.Server, and the
+// difference is a leak rather than a style preference. h2c.NewHandler HIJACKS
+// the connection to hand it to http2.Server, and http.Server.Close() does not
+// track hijacked connections — so the hand-rolled form's Close() could not reap
+// the x/net/http2 serve goroutine. waitForServer does release its own client
+// (`defer gc.CloseIdleConnections()` in lifecycle.go), but that only closes a
+// connection the transport already considers IDLE, and the health round trip
+// has only just completed when it runs; when it loses that race the client
+// connection stays up, the peer's serve goroutine stays with it, and both
+// outlive the test. Nothing in this test could see that: the goroutine is
+// charged to the package's suite-level goleak gate at the END of the suite, so
+// it surfaces as the whole package failing after every test has PASSED.
+//
+// httptest.Server.CloseClientConnections closes the underlying connections
+// directly, which ends the server's serve loop and the client's read loop
+// regardless of who won that race — the same teardown every other h2c stub in
+// this package already uses.
 func TestWaitForServer_Healthy(t *testing.T) {
-	port := pickFreePort(t)
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer ln.Close()
-
 	mux := http.NewServeMux()
 	path, handler := knowledgev1connect.NewHealthServiceHandler(&fakeHealthHandler{})
 	mux.Handle(path, handler)
 
-	srv := &http.Server{
-		Handler:           h2c.NewHandler(mux, &http2.Server{}),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-	go func() { _ = srv.Serve(ln) }()
-	defer srv.Close()
+	srv := httptest.NewServer(h2c.NewHandler(mux, &http2.Server{}))
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 
-	if err := waitForServer(port, 3*time.Second); err != nil {
+	if err := waitForServer(portFromURL(t, srv.URL), 3*time.Second); err != nil {
 		t.Fatalf("waitForServer: %v", err)
 	}
 }
@@ -247,8 +255,8 @@ func TestWaitForServer_TCPOnlyNoCheck(t *testing.T) {
 // with a Check that always succeeds.
 type fakeHealthHandler struct{}
 
-func (fakeHealthHandler) Check(_ context.Context, _ *connect.Request[knowledgev1.HealthCheckRequest]) (*connect.Response[knowledgev1.HealthCheckResponse], error) {
-	return connect.NewResponse(&knowledgev1.HealthCheckResponse{}), nil
+func (fakeHealthHandler) Check(_ context.Context, _ *connect.Request[knowledgev1.CheckRequest]) (*connect.Response[knowledgev1.CheckResponse], error) {
+	return connect.NewResponse(&knowledgev1.CheckResponse{}), nil
 }
 func (fakeHealthHandler) Status(_ context.Context, _ *connect.Request[knowledgev1.StatusRequest]) (*connect.Response[knowledgev1.StatusResponse], error) {
 	return connect.NewResponse(&knowledgev1.StatusResponse{}), nil

@@ -5,6 +5,7 @@ package recipe
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -159,5 +160,47 @@ func (sv *sourceView) edgesFrom(id, edgeType string, dir edgeDirection) []string
 			}
 		}
 	}
+	return out
+}
+
+// childEdgesOrdered returns the outgoing edges of the given type from id, in
+// DOCUMENT ORDER rather than materialization order.
+//
+// It exists beside edgesFrom rather than replacing it because edgesFrom
+// projects every edge down to a neighbor ID, which puts the edge's own
+// Evidence — where the position lives — structurally out of reach. edgesFrom is
+// left exactly as it was: the concat builtins, the ancestor check and the
+// traversal rule all depend on its current behaviour.
+//
+// THE POSITION COMES FROM THE EDGE, NOT THE NODE, and that is the only choice
+// that covers both raw collectors. Both stamp a position on every contains edge
+// they emit. On the NODE, the web collector's content nodes carry a position
+// key but its section nodes do not, and pdf nodes carry no position key at all —
+// so the edge is the single source that covers every node of either source.
+//
+// ORDERING RULE: ascending by parsed position; an edge whose Evidence yields no
+// parseable position sorts AFTER every positioned edge and keeps materialization
+// order among its unpositioned peers. The sort is stable, so a fixed source
+// graph renders in a fixed order across runs — which matters because extract
+// output is read by people who compare one run against another.
+func (sv *sourceView) childEdgesOrdered(id, edgeType string) []*knowledgev1.Edge {
+	all := sv.outEdges[id]
+	out := make([]*knowledgev1.Edge, 0, len(all))
+	for _, e := range all {
+		if e.Type == edgeType {
+			out = append(out, e)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		pi, oki := positionFromEvidence(out[i].Evidence)
+		pj, okj := positionFromEvidence(out[j].Evidence)
+		if oki != okj {
+			return oki // a positioned edge precedes an unpositioned one
+		}
+		if !oki {
+			return false // both unpositioned: stable sort keeps their order
+		}
+		return pi < pj
+	})
 	return out
 }

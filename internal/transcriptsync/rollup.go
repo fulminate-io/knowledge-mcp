@@ -3,14 +3,15 @@
 // rollup.go — the pure-Go, in-memory per-session usage-rollup compute. It runs INSIDE
 // prepareFile (run.go) over the []transcripts.Row already resident in RAM at conversion
 // time and produces the unexported wire DTOs (wire.go) that ride on the confirm-batch
-// POST. It is genuinely-new client code: the daemon-local transcriptanalytics engine is
-// a DuckDB corpus-wide query engine with the OPPOSITE baseline (it ALWAYS excludes
-// synthetic-model + is_meta rows, whereas this rollup ships them verbatim for the sync
-// backend to filter at read time) and its global DuckDB thread/memory settings would
-// serialize the NumCPU-parallel producer pipeline — so a single O(n) map pass here is
-// both correct AND sub-ms for a median ~200-record session. It imports NEITHER
-// database/sql, the duckdb driver, NOR transcriptanalytics; the only thing borrowed is
-// the idle-guard SEMANTICS (mirrored below) and the transcripts.Row field contract.
+// POST. It is genuinely-new client code: the daemon-local transcriptanalytics engine is a
+// pure-Go corpus-wide fold with the OPPOSITE baseline (it ALWAYS excludes synthetic-model
+// + is_meta rows, whereas this rollup ships them verbatim for the sync backend to filter
+// at read time), and importing it would pull internal/llm, github.com/cloudwego/eino/schema
+// and internal/config into a pure-CPU per-session pass that needs none of them — so a
+// single O(n) map pass here is both correct AND sub-ms for a median ~200-record session.
+// It imports NEITHER database/sql, the duckdb driver, NOR transcriptanalytics; the only
+// things borrowed are the idle-guard and idle-gap SEMANTICS (both mirrored below) and the
+// transcripts.Row field contract.
 
 package transcriptsync
 
@@ -54,6 +55,28 @@ func durationBucket(ms int64) int {
 	return b
 }
 
+// rollupActiveMs sums the inter-event gaps strictly below rollupSubagentIdleGapMs over an
+// agent's record instants, which is its working time with the pauses taken out. The
+// instants are sorted first because rows arrive in file order, not timestamp order. Fewer
+// than two instants means no gap exists, so the result is 0 — a MEASURED zero. Gaps are
+// measured on the floor-epoch millisecond so active and span stay comparable. Hand-
+// mirrored from the daemon-local analyzer's activeMsFromInstants
+// (transcriptanalytics/corpus_finalize.go) — the two MUST move together, and a shared
+// fixture asserts both produce the same numbers.
+func rollupActiveMs(instants []time.Time) int64 {
+	if len(instants) < 2 {
+		return 0
+	}
+	sort.Slice(instants, func(i, j int) bool { return instants[i].Before(instants[j]) })
+	var active int64
+	for i := 1; i < len(instants); i++ {
+		if gap := instants[i].UnixMilli() - instants[i-1].UnixMilli(); gap < rollupSubagentIdleGapMs {
+			active += gap
+		}
+	}
+	return active
+}
+
 // factKey is the (day × full 12-dimension tuple) grain the fact rows aggregate on. All
 // fields are comparable so the struct is a valid map key.
 type factKey struct {
@@ -61,6 +84,11 @@ type factKey struct {
 	isSidechain, isMeta                                  bool
 	mcpServer, mcpTool, skill, serviceTier, stopReason   string
 }
+
+// agentDayKey is the (agent_id × day) grain the active-time instants are collected on.
+// The whole-life per-agent total is reduced from the concatenation of an agent's day
+// slices, so this one map serves both grains.
+type agentDayKey struct{ agentID, day string }
 
 // histKey is the sparse latency-histogram grain (is_meta joins it per the frozen
 // contract).
@@ -110,6 +138,7 @@ type rollupAgg struct {
 	firstTS, lastTS  time.Time
 	tsInit           bool
 	chainAgents      map[string]struct{} // distinct subagent ids among sidechain rows
+	agentDayInstants map[agentDayKey][]time.Time
 	factAccs         map[factKey]*factAcc
 	histCounts       map[histKey]int64
 	slowByTool       map[string][]slowCallRow
@@ -120,6 +149,7 @@ type rollupAgg struct {
 func newRollupAgg() *rollupAgg {
 	return &rollupAgg{
 		chainAgents:      map[string]struct{}{},
+		agentDayInstants: map[agentDayKey][]time.Time{},
 		factAccs:         map[factKey]*factAcc{},
 		histCounts:       map[histKey]int64{},
 		slowByTool:       map[string][]slowCallRow{},
@@ -134,6 +164,14 @@ func (a *rollupAgg) add(r transcripts.Row) {
 	trust := rollupTrustworthy(r)
 	a.addSession(r)
 	a.addFact(r, day, trust)
+	// The active-time population is the daemon's own: a row contributes its instant only
+	// when it is a SIDECHAIN row AND carries a non-empty agent_id. Collection and
+	// denormalization apply the identical predicate, so the set of rows carrying a value
+	// is exactly the set of rows whose instants were counted.
+	if r.IsSidechain && r.AgentID != "" {
+		k := agentDayKey{agentID: r.AgentID, day: day}
+		a.agentDayInstants[k] = append(a.agentDayInstants[k], r.RecordTS)
+	}
 	if trust && r.ToolName != "" {
 		a.addTrustworthyTool(r, day) // latency hist + slow-call candidate.
 	}
@@ -282,6 +320,40 @@ func (a *rollupAgg) addDuplicate(r transcripts.Row, day string, trust bool) {
 	}
 }
 
+// applyActive reduces the collected instants into both active grains and denormalizes them
+// onto the fact rows of the agents they belong to. The whole-life value is NOT the sum of
+// the per-day values: a gap spanning midnight belongs to neither day's instant list, so
+// the per-day buckets are a lower bound and only the whole-life value carries the exact
+// daemon-parity claim.
+//
+// One *int64 is allocated per agent and one per (agent, day), then SHARED across every row
+// of that grain — the same value repeated, never split, which is why the reader takes MAX
+// at each field's own grain and never SUM. The denormalization predicate is the collection
+// predicate, so a qualifying row ALWAYS receives non-nil pointers (possibly to a measured
+// 0) and every other row keeps both nil, which is what keeps unmeasured legible.
+func (a *rollupAgg) applyActive() {
+	dayActive := make(map[agentDayKey]*int64, len(a.agentDayInstants))
+	byAgent := make(map[string][]time.Time, len(a.agentDayInstants))
+	for k, instants := range a.agentDayInstants {
+		v := rollupActiveMs(instants)
+		dayActive[k] = &v
+		// Concatenating the already-sorted day slices is not globally sorted, which is
+		// fine: rollupActiveMs sorts what it is handed.
+		byAgent[k.agentID] = append(byAgent[k.agentID], instants...)
+	}
+	wholeLife := make(map[string]*int64, len(byAgent))
+	for agentID, instants := range byAgent {
+		v := rollupActiveMs(instants)
+		wholeLife[agentID] = &v
+	}
+	for _, fa := range a.factAccs {
+		if fa.row.IsSidechain && fa.row.AgentID != "" {
+			fa.row.ActiveMs = wholeLife[fa.row.AgentID]
+			fa.row.DayActiveMs = dayActive[agentDayKey{agentID: fa.row.AgentID, day: fa.row.Day}]
+		}
+	}
+}
+
 // finish materializes the accumulated grains into the wire rollupPayload.
 func (a *rollupAgg) finish() rollupPayload {
 	payload := rollupPayload{SchemaVersion: rollupSchemaVersion}
@@ -292,6 +364,7 @@ func (a *rollupAgg) finish() rollupPayload {
 	a.sess.AgentChainDepth = int64(len(a.chainAgents))
 	payload.Session = a.sess
 
+	a.applyActive() // must run BEFORE the fact rows are copied into the payload.
 	for _, fa := range a.factAccs {
 		fa.row.MinRecordTS = fa.minTS.Format(time.RFC3339Nano)
 		fa.row.MaxRecordTS = fa.maxTS.Format(time.RFC3339Nano)

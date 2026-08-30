@@ -177,7 +177,6 @@ func TestApplyDefaults(t *testing.T) {
 	if filled.UserAgent != defaultUserAgent {
 		t.Errorf("UserAgent: got %q, want %q", filled.UserAgent, defaultUserAgent)
 	}
-
 	// Explicit values not clobbered.
 	set := CrawlOptions{
 		Source: "s", SeedURLs: []string{"u"},

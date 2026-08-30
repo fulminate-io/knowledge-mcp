@@ -8,9 +8,10 @@
 // calling [llm.NewClient] with a Config whose Provider is ProviderAnthropic.
 //
 // One Generate call maps to one POST against /v1/messages — there is no
-// outer tool-use loop here. Higher-level loops (like the dream-worker tool
-// agent in domains/store) drive the loop themselves by issuing successive
-// Generate calls and wiring tool_result back in as user-role messages.
+// outer tool-use loop here. A caller that needs one drives it itself by
+// issuing successive Generate calls and wiring tool_result back in as
+// user-role messages; no caller in this repo does so today — every
+// Generate call site is single-shot.
 package anthropic
 
 import (
@@ -60,7 +61,7 @@ func resolveMaxTokens(requested int) int {
 }
 
 // init registers Anthropic's factory at package import time. Test code can
-// rely on a side-effect import (`_ "github.com/.../domains/llm/anthropic"`)
+// rely on a side-effect import (`_ ".../cmd/knowledge/internal/llm/anthropic"`)
 // to make the provider visible to llm.NewClient.
 func init() {
 	llm.RegisterProvider(llm.ProviderAnthropic, newClientFromConfig)

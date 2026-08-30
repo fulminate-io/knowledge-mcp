@@ -10,9 +10,10 @@ import (
 
 // mutateArgs is the compile-local view of the `mutate` tool's wire shape,
 // covering the reducible operations (create/create_batch/update/update_batch/
-// delete/link/unlink). It mirrors the server-side mutateRequestArgs
-// (tools_mutate.go:90) for the fields the reducible path consumes, plus the
-// create_batch nodes[]/edges[] and update_batch items[] sub-shapes.
+// delete/link/unlink). It mirrors the mutate tool's declared wire shape
+// (MutateToolDef, cmd/knowledge/internal/tools) for the fields the reducible
+// path consumes, plus the create_batch nodes[]/edges[] and update_batch items[]
+// sub-shapes.
 type mutateArgs struct {
 	Operation   string   `json:"operation"`
 	Type        string   `json:"type"`
@@ -77,8 +78,9 @@ type mutateArgs struct {
 	ThoughtParent  string   `json:"thought_parent"`
 
 	// Edge-metadata carrier (the LINK arm). Canonical wire json tags mirror the
-	// server-side mutateRequestArgs (tools_mutate.go:146-186) the LLM already
-	// uses for edge metadata on mutate(link). The existing Weight field (above,
+	// edge-metadata params MutateToolDef declares (weight, confidence, method,
+	// edge_evidence, last_validated), which the LLM already uses for edge
+	// metadata on mutate(link). The existing Weight field (above,
 	// json:"weight") is REUSED as the edge weight on the LINK arm — no second
 	// weight-tagged field. compileMutateByIDLinkUnlink (compile_mutate_link.go)
 	// threads these onto the EdgeSpec; the UNLINK arm leaves them zero.
@@ -88,7 +90,7 @@ type mutateArgs struct {
 	LastValidated string  `json:"last_validated"` // RFC3339 (accepts fractional seconds)
 }
 
-// nodeBody mirrors create_batch's nodeCreateItem (tools_mutate_create_batch.go:52)
+// nodeBody mirrors the create_batch nodes[] item MutateToolDef declares
 // — the seven body fields plus id + source (the proto NodeBody field-8/field-9
 // carriers the engine now honors). Keywords stays deliberately omitted (matching
 // engine.proto's NodeBody, which mirrors nodeCreateItem — the client builds the
@@ -110,7 +112,7 @@ type nodeBody struct {
 	Source string `json:"source"`
 }
 
-// edgeBody mirrors create_batch's edgeCreateItem (tools_mutate_create_batch.go:69).
+// edgeBody mirrors the create_batch edges[] item MutateToolDef declares.
 // from_idx/to_idx default to -1 (the "use the string ID" sentinel) when absent,
 // matching the batch-edge build-carrier contract — see the UnmarshalJSON below.
 type edgeBody struct {
@@ -131,9 +133,9 @@ type edgeBody struct {
 }
 
 // UnmarshalJSON treats absent from_idx/to_idx as -1 (the explicit "no slot ref,
-// use the string ID" sentinel), mirroring edgeCreateItem.UnmarshalJSON
-// (tools_mutate_create_batch.go:84). Without this, the Go zero value 0 would
-// collide with slot index 0.
+// use the string ID" sentinel), which is the from_idx/to_idx default
+// MutateToolDef declares. Without this, the Go zero value 0 would collide with
+// slot index 0.
 func (e *edgeBody) UnmarshalJSON(data []byte) error {
 	type raw struct {
 		FromIdx       *int    `json:"from_idx"`
@@ -166,19 +168,23 @@ func (e *edgeBody) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// batchItem mirrors update_batch's mutateUpdateBatchItem
-// (tools_mutate_update_batch.go:57). The pointer fields preserve the set/unset
-// distinction. Heterogeneous per-item bodies (summary/keywords/binary_vector/
+// batchItem mirrors the update_batch items[] shape MutateToolDef declares
+// (id, summary, keywords, binary_vector, metadata). The pointer fields preserve
+// the set/unset distinction. Heterogeneous per-item bodies (summary/keywords/binary_vector/
 // metadata/status) are expressible — compileMutateUpdateBatch lowers them
 // onto the MUTATION_KIND_UPDATE_ITEMS arm (each batchItem → a distinct proto
 // UpdateItem).
+// EmbedIdentity states what BinaryVector's bytes ARE. It rides the same
+// per-item body because it is a claim ABOUT that item's vector: an identity on
+// an item carrying no vector claims nothing and is ignored server-side.
 type batchItem struct {
-	ID           string            `json:"id"`
-	Summary      *string           `json:"summary"`
-	Keywords     *string           `json:"keywords"`
-	BinaryVector []byte            `json:"binary_vector"`
-	Metadata     map[string]string `json:"metadata"`
-	Status       *string           `json:"status"`
+	ID            string                     `json:"id"`
+	Summary       *string                    `json:"summary"`
+	Keywords      *string                    `json:"keywords"`
+	BinaryVector  []byte                     `json:"binary_vector"`
+	Metadata      map[string]string          `json:"metadata"`
+	Status        *string                    `json:"status"`
+	EmbedIdentity *knowledgev1.EmbedIdentity `json:"embed_identity"`
 }
 
 // compileMutate translates a reducible `mutate` op into a MutationPlan. Returns
@@ -446,48 +452,6 @@ const transformersBucketName = "recipes"
 func mutationRequest(plan *knowledgev1.MutationPlan, a mutateArgs) *knowledgev1.ExecuteRequest {
 	return &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-		Target: buildTarget(a.Graph, a.Repo, a.Account, mutateTargetName(a.Graph, a.Name), a.Language, ""),
+		Target: mutateTarget(a.Graph, a.Repo, a.Account, a.Name, a.Language, ""),
 	}
-}
-
-// nameBlindGraphFamilies are the families whose server-side resolution arm does
-// not read GraphSelector.Name, so a name on one of them is a field the resolver
-// cannot honor. The two SINGLETONS (knowledge — which the empty string also
-// means — and linkage) hold exactly one graph and have no instance to pick; code,
-// cloud, cicd and practice carry their instance on Repo, Account and Language.
-//
-// This mirrors the server's own declared-vs-consumed partition
-// (selectorFieldPolicies, cmd/knowledge-server/internal/tools/
-// tools_graph_routing_selector.go). The client cannot import that table — no
-// shared hand-written packages outside gen/ proto — so the set is duplicated
-// here, the same way transformersBucketName duplicates the server's bucket
-// literal. Keep the two in step: a family that stops consuming Name server-side
-// belongs in this set.
-var nameBlindGraphFamilies = map[string]bool{
-	"": true, "knowledge": true, "linkage": true,
-	"code": true, "cloud": true, "cicd": true, "practice": true,
-}
-
-// mutateTargetName returns the graph-INSTANCE name a mutation's Target may carry.
-// For a name-blind family it is empty — dropping a value that family's resolver
-// would reject, whichever of the param's two meanings the caller intended. For
-// transformers it is the pinned bucket literal. For every remaining
-// name-addressed family (logs, web, pdf, and registered custom types) the
-// caller's name rides through, which is what keeps the pipeline write-back's
-// cross-graph routing working.
-//
-// ONE RULE, EVERY ARM. All four Target-building sites route through this helper
-// rather than re-deriving it: mutationRequest (create/upsert/by-id update/link/
-// unlink), compileMutateUpdateBatch and compileMutateBulkMetadata
-// (compile_mutate_batch.go), and deleteRequest (compile_delete.go). A family
-// added to the rule therefore cannot land on some arms and miss others — which
-// is exactly how the node-name mis-mapping survived a transformers-only fix.
-func mutateTargetName(graph, name string) string {
-	if graph == "transformers" {
-		return transformersBucketName
-	}
-	if nameBlindGraphFamilies[graph] {
-		return ""
-	}
-	return name
 }

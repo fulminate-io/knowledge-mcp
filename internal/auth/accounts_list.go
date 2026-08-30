@@ -9,8 +9,8 @@ import (
 	"net/http"
 )
 
-// mePathPrefix is the caller-scoped route prefix. Unlike /v1/sync/* and
-// /v1/segments/*, routes under it are bearer-gated but NOT tier-gated.
+// mePathPrefix is the caller-scoped route prefix. Unlike /v1/sync/*, routes
+// under it are bearer-gated but NOT tier-gated.
 const mePathPrefix = "/v1/me/"
 
 // jsonAccept is the Accept value for routes returning JSON. The bytes routes
@@ -21,8 +21,8 @@ const jsonAccept = "application/json"
 // the raw 2xx JSON body verbatim.
 //
 // Raw bytes rather than a decoded struct is this package's established
-// convention — SyncControlJSON and SegmentControlJSON do the same, and their
-// DTOs live in the consuming packages.
+// convention — SyncControlJSON does the same, and its DTOs live in the
+// consuming packages.
 //
 // THIS ROUTE BYPASSES THE KNOWN-INVALID REFUSAL, deliberately, and that
 // asymmetry must not be "fixed": a user whose selection has been rejected by

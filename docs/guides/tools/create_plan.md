@@ -58,13 +58,14 @@ intended. For the full field reference, run `help("create_plan")`.
 | `name` | string | yes |  | Plan name |
 | `no_patterns_reason` | string |  |  | Audited escape hatch when no pattern applies (trivial doc edit, scaffolding, etc.). Persisted as plan-node metadata `no_patterns_reason`. Exactly one of pattern_ids, no_patterns_reason, or proposed_patterns must be supplied. |
 | `open_questions` | array of object |  |  | Open questions that need user input before implementation can proceed. Creates question nodes (status: open) linked to the plan. |
-| `open_questions[]` | object |  |  | Question object: {"question":"...","context":"why this question matters and what options exist"} |
+| `open_questions[]` | object |  |  | Question object: {"question":"...","summary":"...","context":"why this question matters and what options exist"} |
 | `open_questions[].context` | string |  |  | Why this question matters and what options exist |
 | `open_questions[].question` | string |  |  | The open question to surface for user input |
+| `open_questions[].summary` | string |  |  | Required search-optimized one-line summary of the open question, max 500 chars. Over-cap values are clamped at a word boundary with a warning. (max length: 500) |
 | `pattern_ids` | array of string |  |  | Canonical pattern node IDs this plan extends. Wired as plan→pattern uses edges. Exactly one of pattern_ids, no_patterns_reason, or proposed_patterns must be supplied. Broken/unknown IDs produce a non-fatal warning surfaced in the response (under a `## Warnings` section), not an error — v1 tolerates patterns that have not yet been encoded. |
 | `pattern_ids[]` | string |  |  | Pattern node ID |
-| `phases` | array of object | yes |  | Ordered list of phases. Each phase REQUIRES name and summary; each step REQUIRES name, description, and summary (handler enforces). |
-| `phases[]` | object |  |  | Phase object: {"name":"...","overview":"...","summary":"required search-optimized one-line summary, max 500 chars","steps":[{"name":"...","description":"...","summary":"required search-optimized one-line summary, max 500 chars","file_paths":"...","criteria":[{"description":"...","command":"...","type":"automated\|manual"}]}]} |
+| `phases` | array of object | yes |  | Ordered list of phases. Each phase REQUIRES name and summary; each step REQUIRES name, description, and summary (handler enforces); and each criterion REQUIRES description and summary (handler enforces). |
+| `phases[]` | object |  |  | Phase object: {"name":"...","overview":"...","summary":"required search-optimized one-line summary, max 500 chars","steps":[{"name":"...","description":"...","summary":"required search-optimized one-line summary, max 500 chars","file_paths":"...","criteria":[{"description":"...","summary":"required search-optimized one-line summary, max 500 chars","command":"...","type":"automated\|manual"}]}]} |
 | `phases[].name` | string |  |  | Phase name (required) |
 | `phases[].overview` | string |  |  | Phase overview |
 | `phases[].steps` | array of object |  |  | Ordered list of steps in this phase. |
@@ -73,6 +74,7 @@ intended. For the full field reference, run `help("create_plan")`.
 | `phases[].steps[].criteria[]` | object |  |  | Criterion object |
 | `phases[].steps[].criteria[].command` | string |  |  | Verification command (for automated criteria) |
 | `phases[].steps[].criteria[].description` | string |  |  | What the criterion verifies |
+| `phases[].steps[].criteria[].summary` | string |  |  | Required search-optimized one-line summary, max 500 chars (max length: 500) |
 | `phases[].steps[].criteria[].type` | string |  | automated, manual | Criterion type: automated or manual |
 | `phases[].steps[].description` | string |  |  | Step description (required) |
 | `phases[].steps[].file_paths` | string |  |  | Comma-separated file paths this step touches |
@@ -83,6 +85,7 @@ intended. For the full field reference, run `help("create_plan")`.
 | `proposed_patterns[]` | object |  |  | Proposed pattern object |
 | `proposed_patterns[].name` | string |  |  | Proposed pattern name |
 | `proposed_patterns[].sketch` | string |  |  | Interface sketch / pseudocode describing the proposed pattern shape (optional) |
+| `proposed_patterns[].summary` | string |  |  | Required search-optimized one-line summary of the proposed pattern, max 500 chars. (max length: 500) |
 | `research_id` | string |  |  | Research project ID that informed this plan (optional — creates informed-by edge) |
 | `summary` | string | yes |  | Required search-optimized one-line summary, max 500 chars (handler enforces). (max length: 500) |
 | `ticket_id` | string |  |  | Ticket node ID to link this plan under (optional) |

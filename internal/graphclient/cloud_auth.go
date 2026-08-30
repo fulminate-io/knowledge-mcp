@@ -61,8 +61,6 @@ func NewCloudGraphClient(baseURL string, ts auth.TokenSource) *GraphClient {
 	// deployment that reads the per-tag metrics — so the stamper is installed
 	// here as well as on the local client. The health client gets it too and is
 	// unaffected: its request messages carry no client_context field.
-	// The session stamper rides here too: the cloud is the deployment that reads
-	// the harness session-id off the wire to key a hive member.
 	//
 	// The freshness observer is PREPENDED for the same reason it is on the local
 	// client: connect composes interceptors first-in-slice OUTERMOST, so it sees
@@ -77,7 +75,6 @@ func NewCloudGraphClient(baseURL string, ts auth.TokenSource) *GraphClient {
 	stamp := connect.WithInterceptors(
 		newFreshnessObserver(gens),
 		newOperationInterceptor(),
-		newSessionInterceptor(),
 		newAccountInterceptor(sel),
 	)
 	return &GraphClient{

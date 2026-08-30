@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
@@ -134,12 +133,62 @@ type collector struct {
 	// (test fakes / no runtime wired) reads as "no collect in flight", so the gate
 	// is inert by default.
 	collectInFlight func() bool
+
+	// collectEpoch reads the monotonic count of collects into THIS collector's
+	// graph that have ENDED. Built per-(gt,name) by RegisterGraph from a
+	// bootstrap-supplied hook, exactly as collectInFlight is.
+	//
+	// NIL MEANS NO EPOCH SOURCE, AND THAT IS NOT ZERO. quiescentBothAxes declines
+	// to answer rather than treating absent stamps as agreement — see its comment
+	// for why a nil-reads-zero would silently disable the staleness expiry the
+	// stamps exist for, on the router-less client specifically.
+	collectEpoch func() uint64
+
+	// summaryDrainedAtEpoch / embedDrainedAtEpoch record ONE-PLUS the collect epoch
+	// at which this axis last observed a COMPLETE, EMPTY gap set with nothing in
+	// flight. ZERO means this axis has not reported a drain. The one-plus is what
+	// lets zero be an unambiguous sentinel while epoch 0 — no collect has finished
+	// yet — stays a legal observation.
+	//
+	// THEY ARE EPOCH-STAMPED RATHER THAN BOOLEAN because a bool GOES STALE ACROSS A
+	// COLLECT, and the consumer's firing point is exactly post-collect. The write
+	// site sits downstream of the loop's `continue` paths, and a drained axis is by
+	// construction on the longest idle sleep — so a collect can complete without
+	// the drained axis's loop body running at all, leaving a bool asserting a
+	// pre-collect truth about a post-collect corpus.
+	//
+	// THEY ARE STRUCT FIELDS rather than loop-locals precisely because the two axis
+	// loops must observe EACH OTHER. They are OBSERVATIONS, not latches: they carry
+	// no once-per-collect semantics and nothing consumes them. Do NOT convert
+	// healArmed or pendingSinceFlush to fields to match — those are per-loop latches
+	// whose consumption semantics decide when the heal and flush fire.
+	//
+	// CONCURRENCY: one writer per field, both read by either loop, plus one epoch
+	// read. Atomics are sufficient and no cross-field ordering guarantee is needed
+	// — the predicate is advisory, re-evaluated every tick, and every disagreement
+	// resolves conservatively to not-quiescent. Do not add a lock.
+	summaryDrainedAtEpoch atomic.Uint64
+	embedDrainedAtEpoch   atomic.Uint64
+
+	// balanceAtQuiescence forms the EXACT per-arm balance verdict for this graph, over
+	// the same closure seam flush and healIfSegmentless use so the collector keeps NO
+	// segmentdist/tools dependency. nil (unwired) → the balance edge no-ops.
+	// balanceEvaluatedAtEpoch records ONE-PLUS the collect epoch it last ran at, so it
+	// fires ONCE PER COLLECT rather than once per tick. See maybeBalanceAtQuiescence
+	// (collector_heal.go) for both gates and for why the edge seals before it reads.
+	balanceAtQuiescence     func(ctx context.Context) error
+	balanceEvaluatedAtEpoch atomic.Uint64
+
+	// bm25 is the third axis's whole per-collector state, grouped into ONE struct
+	// declared in collector_bm25.go so this file stays inside its 500-line gate.
+	// A disabled arm starts no loop.
+	bm25 bm25Arm
 }
 
 // newCollector constructs a collector. The actual goroutine launch is
 // done by Pipeline.RegisterGraph so the WaitGroup accounting stays
 // centralized.
-func newCollector(gt kgtypes.GraphType, name string, cfg Config, summaryCh chan<- SummaryWork, embedCh chan<- EmbedWork, metrics *metricsState, client WireClient, baseTick, idleTick time.Duration, flush func(ctx context.Context) error, healIfSegmentless func(ctx context.Context) error, summaryEnabled, embedEnabled bool, genSnapshot func(key graphKey) (summary, embed uint64, ok bool), collectInFlight func() bool) *collector {
+func newCollector(gt kgtypes.GraphType, name string, cfg Config, summaryCh chan<- SummaryWork, embedCh chan<- EmbedWork, metrics *metricsState, client WireClient, baseTick, idleTick time.Duration, flush func(ctx context.Context) error, healIfSegmentless func(ctx context.Context) error, summaryEnabled, embedEnabled bool, genSnapshot func(key graphKey) (summary, embed uint64, ok bool), collectInFlight func() bool, collectEpoch func() uint64) *collector {
 	return &collector{
 		gt:                gt,
 		name:              name,
@@ -158,6 +207,7 @@ func newCollector(gt kgtypes.GraphType, name string, cfg Config, summaryCh chan<
 		embedWake:         make(chan struct{}, 1),
 		genSnapshot:       genSnapshot,
 		collectInFlight:   collectInFlight,
+		collectEpoch:      collectEpoch,
 	}
 }
 
@@ -184,6 +234,11 @@ func (c *collector) run(ctx context.Context) {
 	if c.embedEnabled {
 		wg.Go(func() { c.runEmbedLoop(ctx) })
 	}
+	// The BM25 arm is gated on its own enabled flag rather than on an LLM axis: it
+	// is deterministic and needs neither summarizer nor embedder.
+	if c.bm25.enabled {
+		wg.Go(func() { c.runBM25Loop(ctx) })
+	}
 	wg.Wait()
 }
 
@@ -197,73 +252,6 @@ func (c *collector) run(ctx context.Context) {
 // the only cost of a low value is an occasional redundant scan during a long
 // legitimate drain. At the cloud base of 5s, 12 skips ≈ 60s recovery.
 const maxDrainSkips = 12
-
-// loopAxis bundles the per-axis wiring the shared discovery loop needs so the
-// summary and embed loops share ONE implementation of the drain-gate (#2),
-// idle-backoff (#1), and scan-error backoff (#3). Duplicating that control
-// flow per axis is exactly how the two loops drift apart, so they don't.
-type loopAxis struct {
-	axis    string          // "summary" | "embed" — the pipeline_scan axis
-	lastGen *atomic.Uint64  // per-axis dirty-gen cache (c.lastSummaryGen / lastEmbedGen)
-	relSize int             // release-channel buffer
-	backoff *errBackoff     // #3 per-axis scan-error gate (separate from the worker LLM gate)
-	wake    <-chan struct{} // collect-fired wake (c.summaryWake / embedWake) — cuts the idle sleep short
-	// push sends one item's Work onto the axis channel, returning false on
-	// ctx cancel (caller exits the loop). The axis-specific Work struct +
-	// target channel live here so runLoop stays axis-agnostic.
-	push func(ctx context.Context, item *knowledgev1.PipelineScanItem, release chan<- string) bool
-}
-
-// runSummaryLoop is the summary-axis discovery cycle (shared runLoop with the
-// summary wiring). No client-side graph-type gate: the server returns
-// empty items for non-summarizable graph types, so a redundant client gate
-// would only duplicate that decision.
-func (c *collector) runSummaryLoop(ctx context.Context) {
-	c.runLoop(ctx, loopAxis{
-		axis:    "summary",
-		lastGen: &c.lastSummaryGen,
-		relSize: c.cfg.SummaryChannelSizeOrDefault(),
-		backoff: newErrBackoff(c.cfg.ErrBackoffBaseOrDefault(), c.cfg.ErrBackoffMaxOrDefault()),
-		wake:    c.summaryWake,
-		push: func(ctx context.Context, item *knowledgev1.PipelineScanItem, release chan<- string) bool {
-			select {
-			case <-ctx.Done():
-				return false
-			case c.summaryCh <- SummaryWork{
-				GraphType: c.gt, GraphName: item.GetGraphName(), NodeID: item.GetNodeId(),
-				SummarizeText: item.GetSummarizeText(), Release: release, Backend: c.client,
-			}:
-				return true
-			}
-		},
-	})
-}
-
-// runEmbedLoop is the embed-axis discovery cycle (shared runLoop with the embed
-// wiring). The graph-type note above applies identically (NodeIDsByEmbedGap
-// short-circuits server-side).
-func (c *collector) runEmbedLoop(ctx context.Context) {
-	c.runLoop(ctx, loopAxis{
-		axis:    "embed",
-		lastGen: &c.lastEmbedGen,
-		relSize: c.cfg.EmbedChannelSizeOrDefault(),
-		backoff: newErrBackoff(c.cfg.ErrBackoffBaseOrDefault(), c.cfg.ErrBackoffMaxOrDefault()),
-		wake:    c.embedWake,
-		push: func(ctx context.Context, item *knowledgev1.PipelineScanItem, release chan<- string) bool {
-			select {
-			case <-ctx.Done():
-				return false
-			case c.embedCh <- EmbedWork{
-				GraphType: c.gt, GraphName: item.GetGraphName(), NodeID: item.GetNodeId(),
-				EmbedText:  item.GetEmbedText(),
-				Bm25Fields: bm25FieldsFromProto(item.GetBm25Fields()),
-				Release:    release, Backend: c.client,
-			}:
-				return true
-			}
-		},
-	})
-}
 
 // runLoop is the shared stoplight discovery cycle for one axis. Each iteration:
 // drain releases, then — unless a prior batch is still in flight (#2) — scan,
@@ -313,6 +301,14 @@ func (c *collector) runLoop(ctx context.Context, ax loopAxis) {
 	var gatedSince time.Time
 
 	for {
+		// CLEAR FIRST, BEFORE drainReleases AND BEFORE EVERY GATE. This is what makes
+		// each `continue` path below — drain-before-rescan, the collect gate, the
+		// scan-error backoff — leave this axis reported as NOT drained without any of
+		// them needing to know the stamp exists, and it stays correct when a fourth
+		// continue path is added later. Without it, an axis that stamped a drain and
+		// then started failing its scans would keep reporting the old drain forever.
+		ax.drainedAtEpoch.Store(0)
+
 		drainReleases(release, inFlight)
 
 		// #2 drain-before-rescan: a prior batch is still draining — don't issue
@@ -354,7 +350,7 @@ func (c *collector) runLoop(ctx context.Context, ax loopAxis) {
 			continue
 		}
 
-		items, err := c.discover(ctx, ax.axis, ax.lastGen)
+		items, setComplete, err := c.discover(ctx, ax.axis, ax.lastGen)
 		if err != nil {
 			// #3 scan-error backoff (insurance): a rate-limit / transient scan
 			// failure backs off on the axis gate rather than re-firing at the
@@ -387,6 +383,20 @@ func (c *collector) runLoop(ctx context.Context, ax loopAxis) {
 		// staged before Flush seals.
 		pendingSinceFlush = c.maybeQuiescenceFlush(ctx, ax, len(items), len(inFlight), pendingSinceFlush)
 
+		// STAMP THIS AXIS'S DRAIN, after the flush and before the heal. The position
+		// is load-bearing rather than incidental: ResidentDocCount counts the SEALED
+		// set only, so any consumer reading resident state off this stamp must be
+		// looking at a post-flush corpus or it reads short by the whole unsealed
+		// sub-threshold tail.
+		//
+		// THE setComplete CONJUNCT IS THE POINT. `len(items) == 0` alone means "this
+		// PAGE was empty", which a page whose SQL filled its budget with rows the Go
+		// gate then refused also produces. Only the server's gap-set-complete flag
+		// distinguishes "no work left" from "no work on this page".
+		if len(items) == 0 && len(inFlight) == 0 && setComplete && c.collectEpoch != nil {
+			ax.drainedAtEpoch.Store(c.collectEpoch() + 1)
+		}
+
 		// Auto-heal: consume the collect-armed healArmed latch on the SAME
 		// embed drain edge. Stays armed while work is present; on the armed embed
 		// drain edge it runs the cheap zero-segments + coverage-ratio probe and (on
@@ -394,6 +404,11 @@ func (c *collector) runLoop(ctx context.Context, ax loopAxis) {
 		// collect. Independent of pendingSinceFlush: the already-embedded case has
 		// zero embed work so only this collect-driven latch fires for it.
 		healArmed = c.maybeHealCheck(ctx, ax, len(items), len(inFlight), healArmed)
+
+		// THE EXACT BALANCE VERDICT, at the CROSS-AXIS quiescence edge. It sits after
+		// the heal check and reads the drain stamps this iteration just wrote, so both
+		// axes' latest observations are in hand.
+		c.maybeBalanceAtQuiescence(ctx)
 
 		// #1 idle-backoff: work found → fast base cadence; empty → grow toward
 		// idleMax so a fully-drained graph costs ~one scan per idleMax. The idle
@@ -410,17 +425,9 @@ func (c *collector) runLoop(ctx context.Context, ax loopAxis) {
 			return
 		}
 		// A collect-wake on the embed axis arms the auto-heal check; the next embed
-		// drain edge consumes it (maybeHealCheck above). A breaker-disarmed graph
-		// (healDisarmed latched) stops re-arming so the closure is no longer invoked
-		// per wake — ending the self-sustaining heal re-fire.
-		if byWake && ax.axis == "embed" && !c.healDisarmed.Load() {
-			// Re-fire observability (kept): every embed-wake re-arm is one turn of the
-			// auto-heal cadence. Logging it makes the re-fire source (organic gen-advance
-			// wake vs the heal/flush's own writes waking the loop) visible per cycle.
-			slog.Debug("pipeline.collector: embed-wake re-armed auto-heal latch",
-				"graph_type", c.gt, "name", c.name)
-			healArmed = true
-		}
+		// drain edge consumes it (maybeHealCheck above). The arming half lives beside
+		// that consuming half in collector_heal.go.
+		healArmed = c.noteWakeRearm(ax, byWake, healArmed)
 	}
 }
 

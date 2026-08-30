@@ -138,10 +138,14 @@ func installSinkTimingTap(t *testing.T, label string, deleted int) {
 		if tap.t.SawAccepted && tap.t.SawDone {
 			tap.t.TailMS = tap.t.FinalizeDoneMS - tap.t.FinalizeAcceptMS
 		}
-		require.NoError(t, os.MkdirAll(leaseTailDir, 0o755))
+		require.NoError(t, os.MkdirAll(leaseTailDir, 0o750))
 		blob, err := json.MarshalIndent(tap.t, "", "  ")
 		require.NoError(t, err)
-		out := filepath.Join(leaseTailDir, leaseSlug(label)+".json")
+		// filepath.Base over the slug: leaseSlug already reduces a run label to
+		// [A-Za-z0-9-], so no separator can survive it, but the write below takes
+		// a path built from caller-supplied text and the sanitisation is stated at
+		// the write rather than inferred from a helper further down the file.
+		out := filepath.Join(leaseTailDir, filepath.Base(leaseSlug(label)+".json"))
 		require.NoError(t, os.WriteFile(out, append(blob, '\n'), 0o600))
 		t.Logf("lease split [%s]: deleted_from_tree=%d chunks=%d chunk_max=%dms "+
 			"accepted=%dms done=%dms TAIL=%dms -> %s",
@@ -189,8 +193,8 @@ func recordDeletionSets(t *testing.T, label string, removedFromTree, namedOnFina
 		RemovedNotNamed []string `json:"removed_not_named"`
 	}{label, len(removed), len(named), removed, named, gap}, "", "  ")
 	require.NoError(t, err)
-	require.NoError(t, os.MkdirAll(leaseTailDir, 0o755))
-	out := filepath.Join(leaseTailDir, leaseSlug(label)+".deletion-sets.json")
+	require.NoError(t, os.MkdirAll(leaseTailDir, 0o750))
+	out := filepath.Join(leaseTailDir, filepath.Base(leaseSlug(label)+".deletion-sets.json"))
 	require.NoError(t, os.WriteFile(out, append(blob, '\n'), 0o600))
 	t.Logf("deletion sets [%s]: removed_from_tree=%d named_on_finalize=%d removed_not_named=%d -> %s",
 		label, len(removed), len(named), len(gap), out)

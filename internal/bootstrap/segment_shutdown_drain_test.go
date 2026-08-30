@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
 
 // TestShutdownDrainsSegmentBacklog closes the non-crash half of the silent-drop
@@ -23,34 +24,41 @@ func TestShutdownDrainsSegmentBacklog(t *testing.T) {
 	const (
 		repo    = "shutdownRepo"
 		corpusN = 128 // clears the resident backstop floor
-		batchN  = 20
+		// THE BATCH MUST BE BIG ENOUGH TO SEAL. The observable is now DURABLE .seg ids
+		// rather than a publish-call count, and a sub-threshold batch leaves its
+		// documents in an unsealed tail that no export carries — the drain runs, writes
+		// nothing, and the assertion reads a no-op as a missing drain.
+		batchN = 1024 // searchengine.DefaultMinSegmentDocs — enough to seal a new segment
 	)
 
 	// seedPendingBacklog builds a client whose segment manager holds a published
 	// corpus plus an UNDRAINED batch — the state a clean stop finds between ticks —
-	// and returns it with the backend's publish count at that moment.
-	seedPendingBacklog := func(t *testing.T) (*client, *fakeSegBackend, int) {
+	// and returns it with the DURABLE segment count at that moment. The publish count
+	// it used to return counted manifest swaps on a control plane that no longer
+	// exists; what "the backlog was drained" means locally is that its blobs reached
+	// the cache.
+	seedPendingBacklog := func(t *testing.T) (*client, string, int) {
 		t.Helper()
 		ctx := opCtx()
-		c, _, backend := buildReconcileClientWithSeg(t, 100, repo)
+		c, _, dir := buildReconcileClientWithDir(t, 100, repo)
 
 		require.NoError(t, c.segmentMgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, repo, fastloadVecDocs(repo, corpusN)))
 		require.NoError(t, c.segmentMgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, repo))
 
 		// Queue work and deliberately leave it queued.
 		require.NoError(t, c.segmentMgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, repo, fastloadVecDocs("shutdownBatch", batchN)))
-		return c, backend, backend.publishCount()
+		return c, dir, len(l2SegmentIDs(t, dir, repo, hnsw.New().Name()))
 	}
 
 	t.Run("drains_pending_backlog", func(t *testing.T) {
-		c, backend, before := seedPendingBacklog(t)
+		c, dir, before := seedPendingBacklog(t)
 		// The drain is gated on the pipeline readiness flag — the same flag that
 		// tells the shutdown closure a segment manager was ever wired.
 		c.markPipelineReady()
 
 		c.drainOnShutdown()
 
-		require.Greater(t, backend.publishCount(), before,
+		require.Greater(t, len(l2SegmentIDs(t, dir, repo, hnsw.New().Name())), before,
 			"a clean shutdown must ship the queued backlog; no publish means the drain is "+
 				"either absent from drainOnShutdown or placed after the pipeline Stop that takes the producer away")
 	})
@@ -61,11 +69,11 @@ func TestShutdownDrainsSegmentBacklog(t *testing.T) {
 	// runs the identical fixture with the shutdown closure never invoked and
 	// requires the count to sit exactly where seeding left it.
 	t.Run("control_undrained_stays_pending", func(t *testing.T) {
-		_, backend, before := seedPendingBacklog(t)
+		_, dir, before := seedPendingBacklog(t)
 
 		// No drainOnShutdown call — the pre-fix behavior.
 
-		require.Equal(t, before, backend.publishCount(),
+		require.Len(t, l2SegmentIDs(t, dir, repo, hnsw.New().Name()), before,
 			"without the shutdown drain the seeded batch must still be PENDING; if this rises on its "+
 				"own, the fixture is not holding a real backlog and the positive case proves nothing")
 	})

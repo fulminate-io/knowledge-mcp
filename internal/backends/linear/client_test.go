@@ -16,7 +16,7 @@ import (
 )
 
 // captured is the test fixture for inspecting the request the fake Linear
-// server received. Mirrors domains/llm/anthropic/anthropic_test.go:22.
+// server received. Mirrors internal/llm/anthropic/anthropic_test.go:22.
 type captured struct {
 	method  string
 	path    string
@@ -26,7 +26,7 @@ type captured struct {
 
 // newFakeServer stands up an httptest.Server that records each request and
 // replies with respBody under respStatus. Mirrors
-// domains/llm/anthropic/anthropic_test.go:33 newFakeServer.
+// internal/llm/anthropic/anthropic_test.go:33 newFakeServer.
 func newFakeServer(t *testing.T, respStatus int, respBody string) (*httptest.Server, *captured) {
 	t.Helper()
 	cap := &captured{}

@@ -37,7 +37,7 @@ func TestTombstonedPendingWriteIDs(t *testing.T) {
 
 	t.Run("reports_write_after_delete", func(t *testing.T) {
 		const name = "reportAfterDelete"
-		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
+		mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 		docs := bothFormatDocs(2, "recreate-")
 		victim := docs[0]
@@ -56,7 +56,7 @@ func TestTombstonedPendingWriteIDs(t *testing.T) {
 		// A write can land on one engine and fail on the other, because the field-engine
 		// call is best-effort at its production call site.
 		const name = "reportFieldOnly"
-		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
+		mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 		docs := bothFormatDocs(2, "fieldonly-")
 		victim := docs[0]
@@ -76,7 +76,7 @@ func TestTombstonedPendingWriteIDs(t *testing.T) {
 		// cannot fail for the three routes that tombstone without purging, which is
 		// exactly why the next two subtests exist.
 		const name = "reportPurged"
-		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
+		mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 		docs := bothFormatDocs(2, "purged-")
 		victim := docs[0]
@@ -95,7 +95,7 @@ func TestTombstonedPendingWriteIDs(t *testing.T) {
 		// DeleteFromBuckets when the id was already in the record — so only the stamp can
 		// tell the reporter that the queued write is now stale.
 		const name = "reportRedelete"
-		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
+		mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 		docs := bothFormatDocs(2, "redelete-")
 		victim := docs[0]
@@ -116,7 +116,7 @@ func TestTombstonedPendingWriteIDs(t *testing.T) {
 		// document is dropped by the drain and consumed from the backlog — the ticket's
 		// headline scenario, defeated by its own fix.
 		const name = "reportUnrelated"
-		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
+		mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 		docs := bothFormatDocs(2, "unrelated-")
 		victim, bystander := docs[0], docs[1]
@@ -143,7 +143,7 @@ func TestTombstonedPendingWriteIDs(t *testing.T) {
 		// middle. Driven directly here rather than with goroutines, so the interleaving
 		// is exact rather than hoped for.
 		const name = "reportSealRace"
-		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
+		mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 		docs := bothFormatDocs(2, "sealrace-")
 		victim := docs[0]
@@ -174,8 +174,8 @@ func TestDrainKeepsRecreatedNodeAfterUntombstone(t *testing.T) {
 	t.Run("record_and_engine_agree", func(t *testing.T) {
 		const name = "recreateAgree"
 		dir := t.TempDir()
-		_, gc := newSegmentHarness(t)
-		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc)))
+
+		mgr := closeOnCleanup(t, NewManager(dir, 0))
 
 		docs := bothFormatDocs(deleteFixtureN, "recreate-")
 		require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, docs))
@@ -183,7 +183,7 @@ func TestDrainKeepsRecreatedNodeAfterUntombstone(t *testing.T) {
 		require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, gt, name))
 
 		victim := docs[0]
-		require.True(t, residentInFreshEngine(t, ctx, gc, dir, gt, name, victim),
+		require.True(t, residentInFreshEngine(t, ctx, dir, gt, name, victim),
 			"PRECONDITION: the node must be in the shipped corpus before the delete")
 
 		const seededWatermark = int64(555000111)
@@ -192,7 +192,7 @@ func TestDrainKeepsRecreatedNodeAfterUntombstone(t *testing.T) {
 		mgr.NoteDeletedIDs(gt, name, []searchengine.ExternalID{victim.ID})
 		mgr.SetGraphTombstones(gt, name, []searchengine.ExternalID{victim.ID})
 		require.NoError(t, mgr.DeleteFromBuckets(ctx, gt, name, []searchengine.ExternalID{victim.ID}))
-		require.False(t, residentInFreshEngine(t, ctx, gc, dir, gt, name, victim),
+		require.False(t, residentInFreshEngine(t, ctx, dir, gt, name, victim),
 			"PRECONDITION: the delete must have removed it from the shipped corpus")
 
 		recreated := reEmbeddedDocs([]searchengine.Document{victim}, "recreated")
@@ -208,9 +208,9 @@ func TestDrainKeepsRecreatedNodeAfterUntombstone(t *testing.T) {
 
 		require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, gt, name))
 
-		require.True(t, residentInFreshEngine(t, ctx, gc, dir, gt, name, recreated[0]),
+		require.True(t, residentInFreshEngine(t, ctx, dir, gt, name, recreated[0]),
 			"the re-created document must survive the drain and reach the shipped corpus")
-		require.True(t, residentInFreshEngine(t, ctx, gc, dir, gt, name, docs[1]),
+		require.True(t, residentInFreshEngine(t, ctx, dir, gt, name, docs[1]),
 			"CONTROL: an untouched neighbor is still shipped")
 	})
 
@@ -222,8 +222,8 @@ func TestDrainKeepsRecreatedNodeAfterUntombstone(t *testing.T) {
 		// this fails.
 		const name = "recreateSuperset"
 		dir := t.TempDir()
-		_, gc := newSegmentHarness(t)
-		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc)))
+
+		mgr := closeOnCleanup(t, NewManager(dir, 0))
 
 		docs := bothFormatDocs(deleteFixtureN, "superset-")
 		require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, docs))
@@ -232,12 +232,18 @@ func TestDrainKeepsRecreatedNodeAfterUntombstone(t *testing.T) {
 
 		victim, extra := docs[0], docs[1]
 
+		require.NoError(t, mgr.DeleteFromBuckets(ctx, gt, name, []searchengine.ExternalID{victim.ID}))
+
 		// ENGINE holds both; RECORD holds only `extra`. That asymmetry is exactly what a
-		// rebuild leaves behind.
+		// rebuild leaves behind — the driver seeds the engines with the full carried
+		// union while the finalize persists only the retained subset — so it is
+		// established HERE, after the delete, rather than before it. A delete now seals
+		// its own ids into the record (manager_bucket_delete_seal.go), so building the
+		// divergence first and then deleting through it would have the delete repair the
+		// very asymmetry this leg exists to drive.
 		require.NoError(t, mgr.SaveRebuildState(gt, name, 42, []searchengine.ExternalID{extra.ID}))
 		mgr.NoteDeletedIDs(gt, name, []searchengine.ExternalID{victim.ID, extra.ID})
 		mgr.SetGraphTombstones(gt, name, []searchengine.ExternalID{victim.ID, extra.ID})
-		require.NoError(t, mgr.DeleteFromBuckets(ctx, gt, name, []searchengine.ExternalID{victim.ID}))
 
 		recreated := reEmbeddedDocs([]searchengine.Document{victim}, "superset-again")
 		require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, recreated))
@@ -253,7 +259,7 @@ func TestDrainKeepsRecreatedNodeAfterUntombstone(t *testing.T) {
 
 		require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, gt, name))
 
-		require.True(t, residentInFreshEngine(t, ctx, gc, dir, gt, name, recreated[0]),
+		require.True(t, residentInFreshEngine(t, ctx, dir, gt, name, recreated[0]),
 			"the re-created document must reach the shipped corpus even with no record intersection")
 	})
 }
@@ -277,10 +283,10 @@ func TestDeleteRecreateLifecycleStaysCoherent(t *testing.T) {
 	gt := kgtypes.GraphKnowledge
 
 	dir := t.TempDir()
-	_, gc := newSegmentHarness(t)
+
 	// A real cache root, so the REAL persisted record file is exercised rather than an
 	// in-memory stand-in.
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(dir, 0))
 
 	// 1. Write and drain a corpus on both formats.
 	docs := bothFormatDocs(deleteFixtureN, "lifecycle-")
@@ -289,7 +295,7 @@ func TestDeleteRecreateLifecycleStaysCoherent(t *testing.T) {
 	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, gt, name))
 
 	victim, neighbor := docs[0], docs[1]
-	require.True(t, residentInFreshEngine(t, ctx, gc, dir, gt, name, victim),
+	require.True(t, residentInFreshEngine(t, ctx, dir, gt, name, victim),
 		"PRECONDITION: the node must be in the shipped corpus before the delete")
 
 	// 2. Persist the delete the way the delta consumer does.
@@ -299,7 +305,7 @@ func TestDeleteRecreateLifecycleStaysCoherent(t *testing.T) {
 	mgr.NoteDeletedIDs(gt, name, []searchengine.ExternalID{victim.ID})
 	mgr.SetGraphTombstones(gt, name, []searchengine.ExternalID{victim.ID})
 	require.NoError(t, mgr.DeleteFromBuckets(ctx, gt, name, []searchengine.ExternalID{victim.ID}))
-	require.False(t, residentInFreshEngine(t, ctx, gc, dir, gt, name, victim),
+	require.False(t, residentInFreshEngine(t, ctx, dir, gt, name, victim),
 		"PRECONDITION: the delete must have removed it from the shipped corpus")
 
 	// 3. Re-create it. THE ORDER MATTERS AND MUST NOT BE REARRANGED: these writes are
@@ -320,9 +326,9 @@ func TestDeleteRecreateLifecycleStaysCoherent(t *testing.T) {
 	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, gt, name))
 
 	// 6. The five claims the grouping exists to prove.
-	require.True(t, residentInFreshEngine(t, ctx, gc, dir, gt, name, recreated[0]),
+	require.True(t, residentInFreshEngine(t, ctx, dir, gt, name, recreated[0]),
 		"the re-created document must be searchable and durable again")
-	require.True(t, residentInFreshEngine(t, ctx, gc, dir, gt, name, neighbor),
+	require.True(t, residentInFreshEngine(t, ctx, dir, gt, name, neighbor),
 		"CONTROL: an untouched neighbor is still shipped")
 
 	watermark, retained, lerr := mgr.LoadRebuildState(gt, name)

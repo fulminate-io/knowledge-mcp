@@ -129,7 +129,7 @@ func TestPropagationLoop_StopIdempotent(t *testing.T) {
 
 // waitForGoroutineCount polls runtime.NumGoroutine until it reaches at
 // most max or deadline expires. Mirrors the helper in
-// domains/store/registry_saver_test.go — the OS-thread Park bookkeeping
+// cmd/knowledge-server/internal/store/registry_saver_test.go — the OS-thread Park bookkeeping
 // behind NumGoroutine takes a tick to settle after a goroutine returns.
 func waitForGoroutineCount(max int, deadline time.Duration) int {
 	end := time.Now().Add(deadline)

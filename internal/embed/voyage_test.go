@@ -31,7 +31,12 @@ func TestVoyageEmbedder_HTTP429IsTransient(t *testing.T) {
 		BaseURL: server.URL,
 		Model:   "voyage-3",
 		APIKey:  "test",
-		client:  http.DefaultClient,
+		// The dtype is supplied even though this test is about the HTTP status
+		// taxonomy: the arm translates the config dtype into Voyage's
+		// output_dtype vocabulary and REFUSES one it has no observed spelling
+		// for, so an arm left at the zero value never reaches the transport.
+		Dtype:  voyageDtypeUbinary,
+		client: http.DefaultClient,
 	}
 	_, err := e.EmbedBinaryBatch(context.Background(), []string{"hello"})
 	require.Error(t, err)
@@ -55,7 +60,12 @@ func TestVoyageEmbedder_HTTP500IsTransient(t *testing.T) {
 		BaseURL: server.URL,
 		Model:   "voyage-3",
 		APIKey:  "test",
-		client:  http.DefaultClient,
+		// The dtype is supplied even though this test is about the HTTP status
+		// taxonomy: the arm translates the config dtype into Voyage's
+		// output_dtype vocabulary and REFUSES one it has no observed spelling
+		// for, so an arm left at the zero value never reaches the transport.
+		Dtype:  voyageDtypeUbinary,
+		client: http.DefaultClient,
 	}
 	_, err := e.EmbedBinaryBatch(context.Background(), []string{"hello"})
 	require.Error(t, err)
@@ -74,7 +84,12 @@ func TestVoyageEmbedder_HTTP400IsTerminal(t *testing.T) {
 		BaseURL: server.URL,
 		Model:   "voyage-3",
 		APIKey:  "test",
-		client:  http.DefaultClient,
+		// The dtype is supplied even though this test is about the HTTP status
+		// taxonomy: the arm translates the config dtype into Voyage's
+		// output_dtype vocabulary and REFUSES one it has no observed spelling
+		// for, so an arm left at the zero value never reaches the transport.
+		Dtype:  voyageDtypeUbinary,
+		client: http.DefaultClient,
 	}
 	_, err := e.EmbedBinaryBatch(context.Background(), []string{"hello"})
 	require.Error(t, err)
@@ -122,7 +137,7 @@ func TestVoyageEmbedder_PacksByTokenBudget(t *testing.T) {
 	server := echoServer(t, &sizes, nil)
 	defer server.Close()
 
-	e := &voyageEmbedder{BaseURL: server.URL, Model: "voyage-3", APIKey: "test", client: http.DefaultClient}
+	e := &voyageEmbedder{BaseURL: server.URL, Model: "voyage-3", APIKey: "test", Dtype: voyageDtypeUbinary, client: http.DefaultClient}
 
 	// Three texts estimating ~40k tokens each: two fit under the 100k budget,
 	// the third starts a second pack.
@@ -156,7 +171,7 @@ func TestVoyageEmbedder_BisectsOnBatchTokenOverflow(t *testing.T) {
 	})
 	defer server.Close()
 
-	e := &voyageEmbedder{BaseURL: server.URL, Model: "voyage-3", APIKey: "test", client: http.DefaultClient}
+	e := &voyageEmbedder{BaseURL: server.URL, Model: "voyage-3", APIKey: "test", Dtype: voyageDtypeUbinary, client: http.DefaultClient}
 
 	vecs, err := e.EmbedBinaryBatch(context.Background(), []string{"a", "b", "c", "d"})
 	require.NoError(t, err)
@@ -178,7 +193,7 @@ func TestVoyageEmbedder_GenericBadRequestDoesNotBisect(t *testing.T) {
 	})
 	defer server.Close()
 
-	e := &voyageEmbedder{BaseURL: server.URL, Model: "voyage-3", APIKey: "test", client: http.DefaultClient}
+	e := &voyageEmbedder{BaseURL: server.URL, Model: "voyage-3", APIKey: "test", Dtype: voyageDtypeUbinary, client: http.DefaultClient}
 
 	_, err := e.EmbedBinaryBatch(context.Background(), []string{"a", "b", "c"})
 	require.Error(t, err)

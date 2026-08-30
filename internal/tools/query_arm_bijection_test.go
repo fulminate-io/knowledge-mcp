@@ -9,7 +9,7 @@ package tools
 //
 // WHY A BIJECTION AND NOT A COUNT. A count is satisfied by a registry that
 // declares one arm per claim point and wires the gate at the wrong one — the
-// arms would still be 47 and the call sites still 47. Set equality plus a
+// arms would still be 48 and the call sites still 48. Set equality plus a
 // once-each multiplicity check is what makes an omitted gate name the specific
 // armID that lost it, which is the failure a later reader can act on.
 //
@@ -66,13 +66,15 @@ var queryEntryPointArmFloors = []struct {
 		},
 	},
 	{
-		// Exceeds its floor by one: the practice language:"all" scatter-gather
-		// fan-out is a distinct read set the floor folded into "practice search".
+		// Exceeds its floor by two: the practice language:"all" scatter-gather
+		// fan-out is a distinct read set the floor folded into "practice search",
+		// and the text-less practice browse is a second.
 		entryPoint: "InterceptQueryPracticeLinkage", floor: 8,
 		arms: []armID{
-			armPracticeListGraphs, armPracticeStats, armPracticeSearchFanOut, armPracticeSearch,
+			armPracticeListGraphs, armPracticeStats, armPracticeBrowse,
+			armPracticeSearchFanOut, armPracticeSearch,
 			armLinkageListGraphs, armLinkageStats, armLinkageGetNode, armLinkageSearchRetired,
-			armWebPDFSearchRetired,
+			armWebPDFSearch, armWebPDFStats,
 		},
 	},
 	{
@@ -137,8 +139,8 @@ func TestQueryArmGateCallSites_BijectWithRegistry(t *testing.T) {
 
 	// The total is an ASSERT, not a require, so a shortfall does not abort before
 	// the per-arm subtest below runs. That subtest is what NAMES the arm that
-	// lost its gate; failing here first would report only "46 != 47", which tells
-	// an operator that something is wrong but not what to fix. Verified by
+	// lost its gate; failing here first would report only a bare count mismatch,
+	// which tells an operator that something is wrong but not what to fix. Verified by
 	// removing one gate call and observing the run name armEvidence.
 	total := 0
 	for _, n := range wired {

@@ -66,8 +66,10 @@ func LinearAPIKey() string {
 // Anthropic/OpenAI/Gemini key (via [credentials] or env var); the
 // substrate never resells credentials.
 //
-// This function lives in domains/config (rather than domains/store) so the
-// dream Runner can resolve the key without importing the store package.
+// This function lives in the config package so its callers — today the
+// agent-flow synthesizer in
+// cmd/knowledge/internal/transcriptanalytics/synthesis.go — resolve the key
+// straight off the loaded config with no further dependency.
 func APIKeyForProvider(p Provider) string {
 	cr := credentials()
 	switch p {

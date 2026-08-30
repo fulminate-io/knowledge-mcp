@@ -14,28 +14,56 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 )
 
-// assembleResearch renders a NodeResearch: header + RenderTree walk +
+// assembleResearch renders a NodeResearch: header + subtree walk +
 // per-question Findings section + Resulting Decisions section.
 //
 // Ported from cmd/knowledge-server/tools/tools_assemble.go:287 with
-// store reads swapped for wire-shape FetchNode + IterEdges calls.
+// store reads swapped for wire-shape calls. The tree and the question
+// nodes both come out of AssembleSubtree's single traversal, so neither
+// costs a per-node fetch.
 func assembleResearch(ctx context.Context, gc GraphCaller, node *knowledgev1.Node) kgtools.ToolResult {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "# Research: %s\n\n", node.SymbolName)
-	RenderTree(ctx, gc, &sb, node, 0, 3)
+	childIndex, byID, dependsOn, truncated := AssembleSubtree(ctx, gc, node.Id, 3)
+	RenderTreeFromIndex(&sb, node, 0, 3, childIndex, dependsOn)
 
-	// For each question, find findings via reverse EdgeAnswers.
-	qEdges, _ := IterEdges(ctx, gc, node.Id, kgwire.OutgoingEdges, kgtypes.EdgeKGContains)
-	var hasFinding bool
-	for _, e := range qEdges {
-		qn, err := FetchNode(ctx, gc, e.ToId)
-		if err != nil || qn == nil || kgtypes.NodeType(qn.Type) != kgtypes.NodeQuestion {
-			continue
+	// The questions are the node's contains children, already hydrated by the
+	// traversal. Their findings arrive via reverse EdgeAnswers — ONE set-form
+	// edge read over every question id rather than one read per question, and
+	// one bulk hydrate over every finding rather than one fetch per edge.
+	var questions []*knowledgev1.Node
+	for _, qn := range childIndex[node.Id] {
+		if kgtypes.NodeType(qn.Type) == kgtypes.NodeQuestion {
+			questions = append(questions, qn)
 		}
-		// EdgeAnswers: finding → question. Walk incoming edges on
-		// the question to find findings.
-		findingEdges, _ := IterEdges(ctx, gc, qn.Id, kgwire.IncomingEdges, kgtypes.EdgeAnswers)
-		if len(findingEdges) == 0 {
+	}
+	questionIDs := make([]string, 0, len(questions))
+	for _, qn := range questions {
+		questionIDs = append(questionIDs, qn.Id)
+	}
+	// EdgeAnswers: finding → question, so the edge ENTERS the question.
+	answerEdges, _ := IterEdgesFor(ctx, gc, questionIDs, kgwire.IncomingEdges, kgtypes.EdgeAnswers)
+	findingsByQuestion := make(map[string][]string, len(questions))
+	findingIDs := make([]string, 0, len(answerEdges))
+	for _, e := range answerEdges {
+		findingsByQuestion[e.ToId] = append(findingsByQuestion[e.ToId], e.FromId)
+		findingIDs = append(findingIDs, e.FromId)
+	}
+
+	// Decisions linked via EdgeInformedBy (incoming to this research node).
+	inEdges, _ := IterEdges(ctx, gc, node.Id, kgwire.IncomingEdges, kgtypes.EdgeInformedBy)
+	decisionIDs := make([]string, 0, len(inEdges))
+	for _, e := range inEdges {
+		decisionIDs = append(decisionIDs, e.FromId)
+	}
+
+	linked, linkedTruncated, _ := FetchNodesByIDs(ctx, gc, append(findingIDs, decisionIDs...))
+	truncated = truncated || linkedTruncated
+
+	var hasFinding bool
+	for _, qn := range questions {
+		fids := findingsByQuestion[qn.Id]
+		if len(fids) == 0 {
 			continue
 		}
 		if !hasFinding {
@@ -43,9 +71,9 @@ func assembleResearch(ctx context.Context, gc GraphCaller, node *knowledgev1.Nod
 			hasFinding = true
 		}
 		fmt.Fprintf(&sb, "### Q: %s\n", qn.SymbolName)
-		for _, fe := range findingEdges {
-			fn, err := FetchNode(ctx, gc, fe.FromId)
-			if err != nil || fn == nil {
+		for _, fid := range fids {
+			fn, ok := linked[fid]
+			if !ok {
 				continue
 			}
 			fmt.Fprintf(&sb, "  - [%s] %s — ID: %s\n", fn.Type, fn.SymbolName, fn.Id)
@@ -55,12 +83,9 @@ func assembleResearch(ctx context.Context, gc GraphCaller, node *knowledgev1.Nod
 		}
 	}
 
-	// Decisions linked via EdgeInformedBy (incoming to this research node).
-	inEdges, _ := IterEdges(ctx, gc, node.Id, kgwire.IncomingEdges, kgtypes.EdgeInformedBy)
 	var decisions []*knowledgev1.Node
-	for _, e := range inEdges {
-		dn, err := FetchNode(ctx, gc, e.FromId)
-		if err == nil && dn != nil && kgtypes.NodeType(dn.Type) == kgtypes.NodeDecision {
+	for _, did := range decisionIDs {
+		if dn, ok := linked[did]; ok && kgtypes.NodeType(dn.Type) == kgtypes.NodeDecision {
 			decisions = append(decisions, dn)
 		}
 	}
@@ -73,5 +98,5 @@ func assembleResearch(ctx context.Context, gc GraphCaller, node *knowledgev1.Nod
 			}
 		}
 	}
-	return kgtools.TextResult(sb.String())
+	return AppendTruncationNotice(kgtools.TextResult(sb.String()), truncated, len(byID)+len(linked))
 }

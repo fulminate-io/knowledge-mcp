@@ -211,3 +211,53 @@ func TestCompileDelete_HardFlag(t *testing.T) {
 		}
 	})
 }
+
+// TestCompileDelete_SingularIDAlias covers the spelling trap that made a working
+// capability read as a missing one.
+//
+// Every other single-node mutate op names its target with `id`, so an author
+// deleting one node reaches for `id`. Before the alias, that payload carried no
+// `ids`, fell through to the prune-by-age branch, failed its selection and denied
+// the compile — and the resulting message said `mutate` was "not a recognized
+// engine-reducible shape". That names neither the field nor the fix, so it reads
+// as "delete is unsupported on this graph" rather than "say ids".
+//
+// THE LAST ARM IS THE CONTROL that keeps the alias honest: `id` and `ids` must
+// select the SAME target set, not route to different arms, so supplying both is
+// additive rather than a conflict to adjudicate.
+func TestCompileDelete_SingularIDAlias(t *testing.T) {
+	t.Run("singular id compiles to the by-ids selection", func(t *testing.T) {
+		req, ok := compileMutate(json.RawMessage(
+			`{"operation":"delete","graph":"checks","id":"chk-1"}`))
+		require.True(t, ok, "a singular-id delete must compile rather than deny into an opaque message")
+		assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_DELETE, req.GetMutation().GetKind())
+		assert.Equal(t, []string{"chk-1"}, req.GetMutation().GetSelection().GetIds())
+		assert.Equal(t, "checks", req.GetTarget().GetGraph())
+	})
+
+	t.Run("plural ids still compiles identically", func(t *testing.T) {
+		// The known-positive that predates the alias: without it, a green first
+		// arm could not be distinguished from a compiler that now accepts
+		// anything.
+		req, ok := compileMutate(json.RawMessage(
+			`{"operation":"delete","graph":"checks","ids":["chk-1"]}`))
+		require.True(t, ok)
+		assert.Equal(t, []string{"chk-1"}, req.GetMutation().GetSelection().GetIds())
+	})
+
+	t.Run("both spellings union rather than conflict", func(t *testing.T) {
+		req, ok := compileMutate(json.RawMessage(
+			`{"operation":"delete","graph":"checks","ids":["a"],"id":"b"}`))
+		require.True(t, ok)
+		assert.ElementsMatch(t, []string{"a", "b"}, req.GetMutation().GetSelection().GetIds(),
+			"the alias is a second spelling of the same axis, so the two sets union")
+	})
+
+	t.Run("a singular id does not bypass the dry-run deny", func(t *testing.T) {
+		// The destructive-safety leg: the alias must not open a path that skips
+		// the guard every other delete shape passes through.
+		_, ok := compileMutate(json.RawMessage(
+			`{"operation":"delete","graph":"checks","id":"chk-1","dry_run":true}`))
+		assert.False(t, ok, "a dry-run must never lower to a real DELETE, alias or not")
+	})
+}

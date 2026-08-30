@@ -13,7 +13,9 @@ to frame the open questions you need answered. Pass `ticket_id` to link the
 research under the ticket it informs.
 
 Required fields: `name`, `goal`, `summary`, and `questions`. Each question carries
-`question` text and optional `context` explaining why it matters.
+`question` text, an optional `context` explaining why it matters, and an optional
+`summary` — omit the per-question summary and the handler derives one from
+`question` + `context`.
 
 ```jsonc
 create_research({
@@ -38,11 +40,11 @@ with evidence. For the full field reference, run `help("create_research")`.
 | `format` | string |  |  | Output format: 'text' (default, walks the tree) or 'json' (structured: {id, name, question_ids}). |
 | `goal` | string | yes |  | What this research aims to answer |
 | `name` | string | yes |  | Research project name |
-| `questions` | array of object | yes |  | Ordered list of research questions. Each question REQUIRES a summary (search-optimized rendering of the question itself, distinct from context which is background). |
+| `questions` | array of object | yes |  | Ordered list of research questions. Each question's summary is REQUIRED (a search-optimized one-line rendering of the question itself, distinct from context which is background): nothing composes one for you. |
 | `questions[]` | object |  |  | Question object: {"question":"...","summary":"required search-optimized one-line summary, max 500 chars","context":"why this question matters"} |
 | `questions[].context` | string |  |  | Why this question matters (background) |
 | `questions[].question` | string |  |  | The research question (required) |
-| `questions[].summary` | string |  |  | Required search-optimized one-line summary, max 500 chars (max length: 500) |
+| `questions[].summary` | string |  |  | Required search-optimized one-line summary, max 500 chars, written by you: an omitted or empty one is refused under the indexed field path questions[i].summary. It is what makes the question findable later, so state the concept in plain terms rather than restating the question verbatim. An over-cap one is clamped at a word boundary with a warning, never rejected. (max length: 500) |
 | `summary` | string | yes |  | Required search-optimized one-line summary, max 500 chars (handler enforces). (max length: 500) |
 | `ticket_id` | string |  |  | Ticket node ID to link this research under (optional) |
 <!-- END GENERATED: params -->

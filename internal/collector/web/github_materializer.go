@@ -35,8 +35,8 @@ package web
 //        The materializer never enters the codesync write flow.
 //        Verdict: SAFE.
 //
-//   (3) Generic graph-keyed dispatch in domains/store
-//       (proxy.go, registry_saver.go, search_index_bm25.go). These case
+//   (3) Generic graph-keyed dispatch in cmd/knowledge-server/internal/store
+//       (proxy.go, registry_saver.go). These case
 //       on GraphCode for proxy resolution / saver routing / index
 //       enumeration. They enumerate graphs registered AS GraphCode.
 //       Materializer output lands in GraphWebRaw graphs (web/<source-slug>)

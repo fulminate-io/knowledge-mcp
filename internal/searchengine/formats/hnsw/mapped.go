@@ -39,8 +39,9 @@ type mappedGraph struct {
 	// layerOffsets and idDir are TYPED VIEWS over the blob, taken once at open
 	// after their sections are bounds-checked. The node directory is
 	// deliberately NOT a view: its 16-byte entries are read field-by-field with
-	// binary.LittleEndian, which needs no cast and keeps the unsafe surface at
-	// exactly two sites.
+	// binary.LittleEndian, which needs no cast and keeps the unsafe surface to
+	// the three view constructors — u32sAt, f32sAt and idView — rather than
+	// spreading a cast per accessor.
 	layerOffsets []uint32
 	idDir        []uint32
 }
@@ -67,6 +68,40 @@ func u32sAt(b []byte, off, n int) []uint32 {
 	}
 	//nolint:gosec // the zero-copy read this format exists for; off is 4-aligned and bounded by checkSection
 	return unsafe.Slice((*uint32)(unsafe.Pointer(&b[off])), n)
+}
+
+// f32sAt returns n float32s at off as a zero-copy view.
+//
+// THE 4-ALIGNMENT IS A PROPERTY OF THE EMISSION ORDER, NOT AN ACCIDENT, and that
+// is what makes this cast legal on a mapped blob. encodeGraphV3 places the vector
+// block at vectorsOff = idDirOff + nodeCount*4, and idDirOff is itself produced by
+// align(_, 4) — so the block starts 4-aligned for any node count. openGraphV3
+// re-checks it anyway through checkSection at the dtype's required alignment,
+// because the writer's guarantee is about blobs THIS tree wrote and the reader
+// must also survive a corrupt or foreign one.
+//
+// Zero-copy by construction, like u32sAt: this returns a view over the mapping,
+// never a decode, which is the in-place read the v3 layout exists for.
+//
+// THE off PARAMETER IS UNIFORM HERE AND THAT IS DELIBERATE, the same shape
+// mirror align() records against formats/bm25. Every current caller passes a
+// slice that already begins at the value it wants and so passes 0; u32sAt, whose
+// signature this one is written to match, is genuinely polymorphic in off. The
+// mirror is what keeps the two view constructors readable as one idiom, and the
+// signature is the one this format's layout vocabulary declares.
+//
+// WHAT RETIRES THE DIRECTIVE BELOW: a caller that takes a float32 view at a
+// non-zero offset into a larger buffer — for instance scoring a sub-range of the
+// vector block without reslicing it first. At that point the parameter is
+// genuinely exercised and the nolint must be DELETED rather than kept.
+//
+//nolint:unparam // uniform here, load-bearing as the u32sAt mirror — see above
+func f32sAt(b []byte, off, n int) []float32 {
+	if n == 0 {
+		return nil
+	}
+	//nolint:gosec // the zero-copy read this format exists for; off is 4-aligned and bounded by checkSection
+	return unsafe.Slice((*float32)(unsafe.Pointer(&b[off])), n)
 }
 
 // idView returns the id at [off, off+length) as a string sharing the blob's
@@ -100,10 +135,15 @@ func openGraphV3(b []byte) (*mappedGraph, error) {
 	if len(b) < v3HeaderSize {
 		return nil, fmt.Errorf("hnsw open: blob is %d bytes, shorter than the %d-byte header", len(b), v3HeaderSize)
 	}
-	if v := b[v3HdrVersion]; v != serialVersionOffsets {
+	// THIS READER ACCEPTS BOTH VERSIONS — it is the build that understands both
+	// vector encodings, so it reads everything. The version byte exists to stop
+	// OLDER readers, which know only serialVersionOffsets, from accepting a
+	// float32 blob and ranking it as ubinary.
+	version := b[v3HdrVersion]
+	if version != serialVersionOffsets && version != serialVersionFloat32 {
 		return nil, fmt.Errorf(
-			"hnsw open: unsupported serial version %d (want %d); this segment predates the offset-addressed layout and has no converter — rebuild it from source",
-			v, serialVersionOffsets)
+			"hnsw open: unsupported serial version %d (want %d for ubinary or %d for float32); this segment was written by a layout this build does not know and has no converter — rebuild it from source",
+			version, serialVersionOffsets, serialVersionFloat32)
 	}
 	if declared := int(le32(b, v3HdrBlobLen)); declared != len(b) {
 		return nil, fmt.Errorf("hnsw open: header declares %d bytes but the blob is %d", declared, len(b))
@@ -130,6 +170,18 @@ func openGraphV3(b []byte) (*mappedGraph, error) {
 		nodes:          int(le32(b, v3HdrNodeCount)),
 	}
 	g.vecBytes = int(le32(b, v3HdrVecBytes))
+
+	// The dtype tag and the serial version are ONE FACT RECORDED TWICE, validated
+	// together in dtype.go — see dtypeFromHeader for why neither is believed on
+	// its own.
+	tag, err := dtypeFromHeader(b[v3HdrDtype], version)
+	if err != nil {
+		return nil, err
+	}
+	// setDtype rather than a bare assignment: it resolves this segment's metrics
+	// once, here, so the traversal never branches on the tag. vecBytes is already
+	// set above, which the float32 arms need to derive their dim.
+	g.setDtype(tag)
 
 	g.nodeDirOff = int(le32(b, v3HdrNodeDir))
 	idBytesOff := int(le32(b, v3HdrIDBytes))
@@ -163,7 +215,12 @@ func openGraphV3(b []byte) (*mappedGraph, error) {
 	if err := checkSection("id directory", len(b), idDirOff, g.nodes*4, 4); err != nil {
 		return nil, err
 	}
-	if err := checkSection("vectors", len(b), vectorsOff, g.nodes*g.vecBytes, 1); err != nil {
+	// THE ALIGNMENT COMES FROM THE DTYPE, not from a literal. A ubinary block is a
+	// plain byte array and needs none; a float32 block is handed to f32sAt and
+	// must be 4-aligned or the typed view is illegal. Keeping the call on ONE LINE
+	// is deliberate — a criterion extracts this line and asserts it no
+	// longer ends `, 1)`, and a wrapped argument list makes that token unfindable.
+	if err := checkSection("vectors", len(b), vectorsOff, g.nodes*g.vecBytes, dtypeVecAlign(g.dtype)); err != nil {
 		return nil, err
 	}
 

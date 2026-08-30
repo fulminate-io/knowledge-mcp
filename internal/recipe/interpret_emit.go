@@ -20,8 +20,13 @@ import (
 // On the client, EVERY run accumulates Nodes + TranslatedFrom edges into
 // result.Nodes / result.Lineage and records the new ID in the in-run emitted
 // set — there is no target DB write here; RunRecipe ships the Result through the
-// collector Sink afterwards (skipping the write on DryRun). opts is unused here
-// because DryRun is honored by RunRecipe, not by the interpreter.
+// collector Sink afterwards (skipping the write on DryRun). DryRun itself is
+// honored by RunRecipe rather than here.
+//
+// EXTRACT MODE CHANGES NOTHING ABOUT EMIT. Nodes, Lineage and every Stats
+// counter accumulate exactly as they always have; extract only ALSO captures
+// each row for the caller to read, and only RunRecipe's decision not to write
+// differs.
 func evalEmit(
 	ctx context.Context,
 	env *Env,
@@ -29,11 +34,12 @@ func evalEmit(
 	sv *sourceView,
 	target TargetSpec,
 	sourceSlug string,
-	_ Options,
+	opts Options,
 	result *Result,
 	emitted map[string]bool,
 ) error {
 	targetKey := TargetKey(target)
+	rowCap := effectiveMaxRows(opts)
 	for i := range env.Rows {
 		row := &env.Rows[i]
 		fields, err := evalEmitFields(ctx, env, row, r.Fields, sv)
@@ -63,6 +69,15 @@ func evalEmit(
 		result.Nodes = append(result.Nodes, node)
 		result.Lineage = append(result.Lineage, edge)
 		emitted[nodeID] = true
+
+		if opts.Extract {
+			if result.Extract == nil {
+				result.Extract = &ExtractResult{}
+			}
+			// The SAME anchor the lineage edge above uses, so an extract row and
+			// the translated-from edge a real run would write name one source node.
+			recordExtractRow(result.Extract, rowCap, r.NodeType, anchor, fields)
+		}
 
 		result.Stats.NodesEmitted++
 		env.rememberEmit(r.As, row.NodeID, nodeID, row)

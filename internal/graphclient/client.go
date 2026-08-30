@@ -88,6 +88,26 @@ func NewGraphClient(port int) *GraphClient {
 // to point a GraphClient at an httptest.Server. The h2c-aware transport and
 // the reconnect interceptor are wired identically to NewGraphClient — only
 // the base URL differs. Production code stays on the port-shaped form.
+// CloseIdleConnections releases the connections this client is holding idle in its
+// transport pool, mirroring http.Client.CloseIdleConnections.
+//
+// WHY IT EXISTS. A GraphClient owns an http2.Transport, and an HTTP/2 connection
+// kept alive in that pool keeps the SERVER's serve goroutine alive with it — an
+// httptest server's Close does not unwind a connection the client still holds. In
+// the daemon that is exactly right and nothing needs this: the pool outliving any
+// one request is the point of a pool, and process exit ends it. It matters for any
+// caller that creates clients repeatedly inside ONE process — test binaries above
+// all — where each abandoned client otherwise pins a connection and a goroutine for
+// the life of the process.
+//
+// It is safe to call more than once and on a nil client.
+func (c *GraphClient) CloseIdleConnections() {
+	if c == nil || c.httpClient == nil {
+		return
+	}
+	c.httpClient.CloseIdleConnections()
+}
+
 func NewGraphClientForURL(baseURL string) *GraphClient {
 	httpClient := &http.Client{
 		Transport: &http2.Transport{
@@ -123,7 +143,7 @@ func NewGraphClientForURL(baseURL string) *GraphClient {
 	// response finally returned to the caller. Inside the reconnect interceptor
 	// it would instead record a retried attempt's intermediate response.
 	gens := &atomic.Uint64{}
-	retry := connect.WithInterceptors(newFreshnessObserver(gens), newOperationInterceptor(), newSessionInterceptor(), newReconnectInterceptor())
+	retry := connect.WithInterceptors(newFreshnessObserver(gens), newOperationInterceptor(), newReconnectInterceptor())
 	return &GraphClient{
 		baseURL:      baseURL,
 		httpClient:   httpClient,
@@ -191,21 +211,6 @@ func (c *GraphClient) Index(
 	req *knowledgev1.IndexRequest,
 ) (*knowledgev1.IndexResponse, error) {
 	resp, err := c.engine.Index(ctx, connect.NewRequest(req))
-	if err != nil {
-		return nil, err
-	}
-	return resp.Msg, nil
-}
-
-// Hive issues one EngineService.Hive RPC and returns the typed response. Thin
-// connect-client passthrough mirroring Index. The OSS server fails loud on every
-// hive op (CodeUnimplemented); the cloud server dispatches it to the per-account
-// work-queue persistence layer.
-func (c *GraphClient) Hive(
-	ctx context.Context,
-	req *knowledgev1.HiveRequest,
-) (*knowledgev1.HiveResponse, error) {
-	resp, err := c.engine.Hive(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}
@@ -313,7 +318,7 @@ func (c *GraphClient) HealthyCtx(ctx context.Context) bool {
 	if c == nil {
 		return false
 	}
-	_, err := c.probe.Check(ctx, connect.NewRequest(&knowledgev1.HealthCheckRequest{}))
+	_, err := c.probe.Check(ctx, connect.NewRequest(&knowledgev1.CheckRequest{}))
 	return err == nil
 }
 

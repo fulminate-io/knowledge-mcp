@@ -112,6 +112,28 @@ func TestShouldReupload_RollupVersion(t *testing.T) {
 		assert.False(t, shouldReupload(st, wm, true, false, 1, now),
 			"a same-version unchanged session short-circuits")
 	})
+
+	// The two subtests above pin the MECHANISM against hardcoded versions and stay valid
+	// whatever the live constant is. The two below tie the same property to the LIVE
+	// rollupSchemaVersion, spelled version-agnostically so the next bump inherits the gate
+	// rather than silently outgrowing it.
+	t.Run("live constant: a previous-version watermark re-ships", func(t *testing.T) {
+		wm := Watermark{
+			Size: 8192, Mtime: time.Unix(0, 2_000_000).UnixNano(),
+			RollupSchemaVersion: rollupSchemaVersion - 1,
+		}
+		assert.True(t, shouldReupload(st, wm, true, false, rollupSchemaVersion, now),
+			"a session watermarked at the previous schema version re-derives and re-ships whole")
+	})
+
+	t.Run("live constant: a current-version watermark still short-circuits", func(t *testing.T) {
+		wm := Watermark{
+			Size: 8192, Mtime: time.Unix(0, 2_000_000).UnixNano(),
+			RollupSchemaVersion: rollupSchemaVersion,
+		}
+		assert.False(t, shouldReupload(st, wm, true, false, rollupSchemaVersion, now),
+			"the bump does not turn into a permanent re-ship loop for unchanged sessions")
+	})
 }
 
 // TestWriteSessionTempParquet_WritesAndCleans proves the temp-parquet helper writes a

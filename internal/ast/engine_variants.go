@@ -195,6 +195,19 @@ func compilePatternVariants(ctx context.Context, pat Pattern, cfg LangConfig, pi
 		return nil, nil, fmt.Errorf("%w (tried %s; %s)",
 			errCompileNoWrapper, strings.Join(names, ","), strings.Join(rejects, "; "))
 	}
+	// A placeholder that landed inside a span-gap literal is an AUTHORING fault,
+	// not a per-wrapper rejection, so it aborts the whole compile rather than
+	// joining rejects: no other wrapper could express what the caller wrote, and
+	// falling through would leave a pattern that compiles and then counts zero
+	// forever. Checked over every surviving candidate because hosting can root two
+	// wrappers at different nodes, and a fault visible in only one of them still
+	// makes that variant unmatchable.
+	for i := range variants {
+		if err := checkNoPlaceholderInsideOpaqueText(variants[i].Tree, placeholderRanges, pat.Source); err != nil {
+			closeVariants(variants)
+			return nil, nil, err
+		}
+	}
 	// The keyword narrowing runs BETWEEN the dedupe and the pin, for the two
 	// reasons the pin already needs the same position: the full enumeration must
 	// have happened so variants can be compared against each other, and every

@@ -4,10 +4,11 @@
 // OpenAI /v1/chat/completions API (and any OpenAI-compatible gateway: vLLM,
 // Ollama, LiteLLM, OpenRouter, Azure OpenAI, etc.).
 //
-// Knowledge intentionally does NOT depend on the openai-go SDK. The existing
-// summarize_openai.go pipeline (domains/store) uses hand-rolled HTTP calls
-// against /v1/chat/completions; this provider follows the same pattern so we
-// keep one wire-format target across the codebase.
+// Knowledge intentionally does NOT depend on the openai-go SDK: this provider
+// issues hand-rolled HTTP calls against /v1/chat/completions, so the codebase
+// keeps ONE wire-format target rather than one per SDK. The pattern was
+// inherited from an earlier hand-rolled summarizer pipeline, since removed —
+// the rule outlived it, and this provider is now where it is defined.
 //
 // Translation map (RequestOptions → wire fields) lives in translate.go. Fields
 // the OpenAI Chat Completions API does not honor are documented as comments

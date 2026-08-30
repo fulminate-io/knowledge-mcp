@@ -17,7 +17,8 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/collectorwire"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/postpopulate"
@@ -37,9 +38,9 @@ func TestCollectWaitOrDetach_EarlyReturn(t *testing.T) {
 
 	done := make(chan kgtools.ToolResult, 1)
 	go func() {
-		done <- collectWaitOrDetach(rt, "code\x00/repo", "code /repo", "", detachSuccessText, func() error {
+		done <- collectWaitOrDetach(rt, "code\x00/repo", "code /repo", "", detachSuccessText, func() (string, error) {
 			<-release
-			return nil
+			return "", nil
 		})
 	}()
 	select {
@@ -58,7 +59,7 @@ func TestCollectWaitOrDetach_EarlyReturn(t *testing.T) {
 func TestCollectWaitOrDetach_SubThresholdByteIdentical(t *testing.T) {
 	rt := NewCollectRuntime()
 	rt.detachAfter = time.Hour // completion always wins the race
-	res := collectWaitOrDetach(rt, "code\x00/repo", "code /repo", "", detachSuccessText, func() error { return nil })
+	res := collectWaitOrDetach(rt, "code\x00/repo", "code /repo", "", detachSuccessText, func() (string, error) { return "", nil })
 	assert.False(t, res.IsError)
 	assert.Equal(t, detachSuccessText, resultText(res))
 }
@@ -68,8 +69,8 @@ func TestCollectWaitOrDetach_SubThresholdByteIdentical(t *testing.T) {
 func TestCollectWaitOrDetach_ErrorPassthrough(t *testing.T) {
 	rt := NewCollectRuntime()
 	rt.detachAfter = time.Hour
-	res := collectWaitOrDetach(rt, "code\x00/repo", "code /repo", "", detachSuccessText, func() error {
-		return errors.New("collect code: boom")
+	res := collectWaitOrDetach(rt, "code\x00/repo", "code /repo", "", detachSuccessText, func() (string, error) {
+		return "", errors.New("collect code: boom")
 	})
 	assert.True(t, res.IsError)
 	assert.Contains(t, resultText(res), "collect code: boom")
@@ -87,9 +88,9 @@ func TestCollectWaitOrDetach_CoalesceMessage(t *testing.T) {
 	// it settles after release closes at test end.
 	firstDone := make(chan kgtools.ToolResult, 1)
 	go func() {
-		firstDone <- collectWaitOrDetach(rt, "code\x00/repo", "code /repo", "", detachSuccessText, func() error {
+		firstDone <- collectWaitOrDetach(rt, "code\x00/repo", "code /repo", "", detachSuccessText, func() (string, error) {
 			<-release
-			return nil
+			return "", nil
 		})
 	}()
 	require.Eventually(t, func() bool {
@@ -97,7 +98,7 @@ func TestCollectWaitOrDetach_CoalesceMessage(t *testing.T) {
 		return len(snap) == 1 && snap[0].State == "running"
 	}, 2*time.Second, 5*time.Millisecond, "first run should register as running")
 
-	res := collectWaitOrDetach(rt, "code\x00/repo", "code /repo", "", detachSuccessText, func() error { return nil })
+	res := collectWaitOrDetach(rt, "code\x00/repo", "code /repo", "", detachSuccessText, func() (string, error) { return "", nil })
 	body := resultText(res)
 	assert.Contains(t, body, "already running")
 	assert.Contains(t, body, "not starting a duplicate")
@@ -143,20 +144,17 @@ type detachFullDeps struct {
 	wake atomic.Int32
 }
 
-func (d *detachFullDeps) CollectRuntime() *CollectRuntime              { return d.rt }
-func (d *detachFullDeps) CollectRunSnapshot() []CollectRunStatus       { return d.rt.Snapshot() }
-func (d *detachFullDeps) WakePipeline()                                { d.wake.Add(1) }
-func (d *detachFullDeps) LocalLiveness() LocalLiveness                 { return nil }
-func (d *detachFullDeps) Sink() collector.Sink                         { return noopSink{} }
-func (d *detachFullDeps) RootDir() string                              { return "" }
-func (d *detachFullDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
-func (d *detachFullDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
-func (d *detachFullDeps) WorkerReady() bool                            { return true }
-func (d *detachFullDeps) PropReady() bool                              { return true }
-func (d *detachFullDeps) PipelineReady() bool                          { return true }
-func (d *detachFullDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
-func (d *detachFullDeps) BanSet() *hivemonitor.BanSet                  { return nil }
-func (d *detachFullDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d *detachFullDeps) CollectRuntime() *CollectRuntime        { return d.rt }
+func (d *detachFullDeps) CollectRunSnapshot() []CollectRunStatus { return d.rt.Snapshot() }
+func (d *detachFullDeps) WakePipeline()                          { d.wake.Add(1) }
+func (d *detachFullDeps) LocalLiveness() LocalLiveness           { return nil }
+func (d *detachFullDeps) Sink() collector.Sink                   { return noopSink{} }
+func (d *detachFullDeps) RootDir() string                        { return "" }
+func (d *detachFullDeps) UsageAnalyzer() UsageAnalyzerAPI        { return nil }
+
+func (d *detachFullDeps) PropReady() bool     { return true }
+func (d *detachFullDeps) PipelineReady() bool { return true }
+
 func (d *detachFullDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
 func (d *detachFullDeps) Embedder() embed.BinaryEmbedder               { return nil }
 func (d *detachFullDeps) BackendResolver() BackendResolver             { return nil }
@@ -263,4 +261,55 @@ func TestInterceptCollect_DetachedCompletionRunsTail(t *testing.T) {
 
 	assert.Equal(t, int32(1), ppFired.Load(), "postpopulate hook fired AFTER the detached completion")
 	assert.GreaterOrEqual(t, deps.wake.Load(), int32(1), "WakePipeline fired AFTER the detached completion (proving the linker step before it also ran)")
+}
+
+// --- Composition on the collect success text ---------------------------------
+
+// compositionStubType is the unique stub collector type driven through the full
+// InterceptCollect SUB-THRESHOLD path to observe the success text.
+const compositionStubType = "composition-text-test"
+
+var compositionStubOnce sync.Once
+
+// compositionStubCollector emits a KNOWN node mix so the rendered composition in
+// the success text is a fixed expectation rather than whatever a real crawl
+// happened to produce.
+type compositionStubCollector struct{}
+
+func (compositionStubCollector) Name() string { return compositionStubType }
+
+func (compositionStubCollector) Collect(_ context.Context, _ string, _ collector.CollectOptions) (*collectorwire.CollectResult, error) {
+	return &collectorwire.CollectResult{
+		GraphType: kgtypes.GraphCloud,
+		GraphName: "composition-smoke",
+		Nodes: []*knowledgev1.Node{
+			{Type: "page"},
+			{Type: "paragraph"},
+			{Type: "paragraph"},
+			{Type: "paragraph"},
+			{Type: "section"},
+			{Type: "section"},
+		},
+	}, nil
+}
+
+// TestInterceptCollect_SuccessTextCarriesComposition drives a SUB-THRESHOLD
+// collect through the full InterceptCollect path and asserts the caller is told
+// what the harvest produced: the existing success line, then the rendered
+// node-type composition of the known mix above.
+func TestInterceptCollect_SuccessTextCarriesComposition(t *testing.T) {
+	compositionStubOnce.Do(func() { collector.Register(compositionStubCollector{}) })
+
+	rt := NewCollectRuntime()
+	rt.detachAfter = time.Hour // completion always wins the race
+	deps := &detachFullDeps{rt: rt, gc: &fakeGraphCaller{}}
+
+	args := json.RawMessage(`{"type":"` + compositionStubType + `","id":"composition-id","force":true}`)
+	_, res := InterceptCollect(opCtx(), deps, kgtools.CallToolParams{Name: "collect", Arguments: args})
+
+	require.False(t, res.IsError, resultText(res))
+	assert.Equal(t,
+		"Collected "+compositionStubType+" composition-id — streamed to server. "+
+			"nodes 6 (paragraph 3, section 2, page 1), edges 0",
+		resultText(res))
 }

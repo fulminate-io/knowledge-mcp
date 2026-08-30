@@ -14,16 +14,36 @@ import (
 
 // deleteArgs is the compile-local view of the standalone `delete` tool's wire
 // shape — the by-ids form ({ids:[...]}) AND the prune-by-age form
-// ({older_than, type, session_id, dry_run}). It mirrors the server-side
-// handlePruneHistory args (tools_prune.go:26) plus the by-id ids[] carrier.
+// ({older_than, type, session_id, dry_run}). It mirrors the delete tool's
+// declared wire shape (DeleteToolDef, cmd/knowledge/internal/tools) plus the
+// by-id ids[] carrier.
 type deleteArgs struct {
-	IDs       []string `json:"ids"`
-	OlderThan string   `json:"older_than"`
-	Type      string   `json:"type"`
-	SessionID string   `json:"session_id"`
-	DryRun    bool     `json:"dry_run"`
-	Graph     string   `json:"graph"`
-	Language  string   `json:"language"`
+	IDs []string `json:"ids"`
+	// ID is the SINGULAR spelling, accepted as an alias for a one-element IDs.
+	// Every other single-node mutate op (update, answer, link endpoints) names
+	// its target with `id`, so an author deleting one node reaches for it — and
+	// before this alias existed that call carried no ids, fell through to the
+	// prune-by-age branch, failed its selection and denied the compile. The
+	// resulting message said the tool was "not a recognized engine-reducible
+	// shape", which names neither the field nor the fix: a caller reads it as
+	// "delete is unsupported on this graph" rather than "say ids".
+	//
+	// It is an ALIAS, never a second selection axis: the two spellings are
+	// unioned below, so supplying both is additive rather than a conflict to
+	// adjudicate.
+	ID        string `json:"id"`
+	OlderThan string `json:"older_than"`
+	Type      string `json:"type"`
+	SessionID string `json:"session_id"`
+	DryRun    bool   `json:"dry_run"`
+	Graph     string `json:"graph"`
+	Language  string `json:"language"`
+	// Repo and Account are the graph-INSTANCE selectors for the collected
+	// families, carried on exactly the terms Language already is: repo names a
+	// code graph, account names a cloud/cicd one. mutateTarget projects whichever
+	// one the target family consumes onto the Target and drops the rest.
+	Repo    string `json:"repo"`
+	Account string `json:"account"`
 	// Hard opts into PERMANENT removal. Deletes are SOFT (tombstone, hidden
 	// from normal reads, recoverable) by default. Raw so the parse is lenient
 	// (true/false and the string forms — stale caller schemas coerce unknown
@@ -78,8 +98,8 @@ func parseHardFlag(raw json.RawMessage) (hard, ok bool) {
 // as a delete. A dry_run that somehow reached this compiler would deny rather
 // than delete (the ok=false fall-through), which is the safe failure direction.
 // compileDelete is the entry point for BOTH the standalone `delete` tool
-// (compile.go switch) AND the id-less mutate(operation:delete) fall-through
-// (compileMutateByIDDelete).
+// (compile.go switch) AND every mutate(operation:delete), which compileMutate's
+// `case "delete"` routes here for the by-ids and prune-by-age shapes alike.
 func compileDelete(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 	var a deleteArgs
 	if err := json.Unmarshal(args, &a); err != nil {
@@ -95,15 +115,22 @@ func compileDelete(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 	if !ok {
 		return nil, false // malformed hard flag → deny rather than guess on a destructive op.
 	}
-	if len(a.IDs) > 0 {
-		// By-ids: the literal write target set. Mirrors compileMutateByIDDelete's
-		// by-id branch (compile_mutate.go).
+	// Fold the singular alias into the by-ids set BEFORE the branch below reads
+	// it, so `id` and `ids` select the same write target set rather than routing
+	// to different arms.
+	ids := a.IDs
+	if a.ID != "" {
+		ids = append(append([]string(nil), ids...), a.ID)
+	}
+	if len(ids) > 0 {
+		// By-ids: the literal write target set, reached from compileMutate's
+		// `case "delete"` as well as from the standalone tool.
 		plan := &knowledgev1.MutationPlan{
 			Kind:       knowledgev1.MutationPlan_MUTATION_KIND_DELETE,
-			Selection:  &knowledgev1.Selection{Ids: a.IDs},
+			Selection:  &knowledgev1.Selection{Ids: ids},
 			HardDelete: hard,
 		}
-		return deleteRequest(plan, a.Graph, a.Language), true
+		return deleteRequest(plan, a.Graph, a.Repo, a.Account, a.Language), true
 	}
 
 	sel, selOK := pruneSelection(a)
@@ -115,7 +142,7 @@ func compileDelete(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 		Selection:  sel,
 		HardDelete: hard,
 	}
-	return deleteRequest(plan, a.Graph, a.Language), true
+	return deleteRequest(plan, a.Graph, a.Repo, a.Account, a.Language), true
 }
 
 // pruneSelection builds the prune-by-age Selection (NodeType=alias + a created_at
@@ -141,8 +168,8 @@ func pruneSelection(a deleteArgs) (*knowledgev1.Selection, bool) {
 		},
 	}
 	if a.SessionID != "" {
-		// Mirror handlePruneHistory's session_id metadata == SessionID guard
-		// (tools_prune.go:51) as an exact-match metadata predicate.
+		// The prune form's session_id narrows to nodes whose session_id
+		// metadata equals it — carried here as an exact-match predicate.
 		sel.MetadataPredicates = []*knowledgev1.MetadataPredicate{
 			{Key: "session_id", Op: knowledgev1.MetadataPredicate_OP_EQ, Value: a.SessionID},
 		}
@@ -154,16 +181,23 @@ func pruneSelection(a deleteArgs) (*knowledgev1.Selection, bool) {
 // graph selector (the delete tool, like prune, targets the knowledge graph by
 // default — an empty graph is the engine's knowledge default).
 //
-// The delete surface carries NO instance name of its own, so it hands
-// mutateTargetName an empty one: every family but transformers then gets an empty
-// Target name (unchanged — this path always passed ""), and transformers gets the
-// pinned canonical "recipes" bucket so a recipe delete lands where RunRecipe's
-// loader reads. The server previously defaulted an empty transformers name to
-// "recipes" on its own, so the pin is hardening rather than a routing change.
-func deleteRequest(plan *knowledgev1.MutationPlan, graph, language string) *knowledgev1.ExecuteRequest {
+// repo and account ride on exactly the terms language always has: mutateTarget
+// PROJECTS all three through graphsel.InstanceValueOf, so the Target carries only
+// the one instance field the target family consumes — repo for code, account for
+// cloud/cicd, language for practice. The server REFUSES a selector field the
+// family does not consume rather than ignoring it, which is why the projection
+// rather than a verbatim copy is what routes here.
+//
+// The `name` argument stays empty: the delete surface declares no name param, so
+// every family but transformers gets an empty Target name (unchanged — this path
+// always passed ""), and transformers gets the pinned canonical "recipes" bucket
+// so a recipe delete lands where RunRecipe's loader reads. The server previously
+// defaulted an empty transformers name to "recipes" on its own, so the pin is
+// hardening rather than a routing change.
+func deleteRequest(plan *knowledgev1.MutationPlan, graph, repo, account, language string) *knowledgev1.ExecuteRequest {
 	return &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-		Target: buildTarget(graph, "", "", mutateTargetName(graph, ""), language, ""),
+		Target: mutateTarget(graph, repo, account, "", language, ""),
 	}
 }
 

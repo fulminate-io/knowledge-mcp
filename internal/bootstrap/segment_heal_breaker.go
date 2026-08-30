@@ -3,39 +3,41 @@
 package bootstrap
 
 import (
-	"context"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
-	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
 
 // segment_heal_breaker.go is the per-(graphType, name) auto-heal circuit breaker and
 // the strict no-progress/progress classifier for the two AUTO heal triggers (the
 // embed-drain buildHealFactory closure and the periodic reconcileSegmentCoverage).
 // It lives in bootstrap because everything the classifier reads — the segment
-// manager's shipped-completeness probes, IsL2Authoritative, and the RebuildSegments
-// result counts — is bootstrap-local; pipeline/ has none of it.
+// manager and the RebuildSegments result counts — is bootstrap-local; pipeline/ has
+// none of it.
 //
 // The breaker mirrors the pipeline/circuit_breaker.go latch idiom (latch-after-K, NO
 // self-heal, NO auto-probe) but is NOT reused: that breaker is ErrClass/LLM-coupled
 // and axis-scoped, while this one keys per graph and trips on heal no-progress. The
 // two are deliberately independent.
 //
-// ENGINE DISTINCTION (governs every progress judgment here): a from-scratch PG
-// RebuildSegments writes the DETERMINISTIC engine and ships to the server; it can
-// NEVER raise the READ engine's resident doc count. So progress is judged ONLY by
-// shipped-completeness (a fresh ShippedManifestSnapshot re-probe) or the
-// scanned/partial counts — NEVER by read-engine coverage, which a rebuild cannot move.
+// PROGRESS IS JUDGED BY THE SCANNED/PARTIAL COUNTS, and by nothing else. It used to
+// have a second judge — a re-probe of shipped completeness against a fresh server
+// manifest — and that judge is gone with the manifest. The remaining rule is
+// correspondingly coarser and is stated plainly rather than implied: a rebuild that
+// scans nodes counts as progress even when it ships a content-hash no-op.
+//
+// The engine distinction that once motivated the split no longer holds either. A
+// rebuild used to write a SECOND, deterministic engine and could never raise the READ
+// engine's resident count; the reset now swaps its layer into the very engine the
+// read observes, so read-engine coverage IS movable by a rebuild.
 
 // healBreakerTripThreshold is the number of CONSECUTIVE no-progress heal passes that
-// latches a graph's auto-heal disarmed. It is separate from and named independently
-// of segmentdist.coverageSkipMaxStreak (the publish-retry bound) — different mechanism
-// (rebuild trigger vs publish retry), different reset policy: this breaker LATCHES
-// until a manual rebuild_segments op or a restart clears it (no self-heal), whereas
-// the publish bound auto-re-arms on a resident rise.
+// latches a graph's auto-heal disarmed. It is the ONLY no-progress bound left in this
+// package — it was once named independently of a publish-retry bound in segmentdist,
+// and that bound died with the publish. This breaker LATCHES until a manual
+// rebuild_segments op or a restart clears it; there is no self-heal.
 const healBreakerTripThreshold = 2
 
 // The disarm sentinel the trigger-1 (embed-drain) heal closure returns when the
@@ -156,7 +158,7 @@ func (b *segmentHealBreaker) ClearHealLatch(gt kgtypes.GraphType, name string) {
 // 0 when the breaker is not latched — so a caller can render how long a graph has been
 // stalled without a second membership question. It is the stall stamp's heal-breaker
 // half; the publish coverage gate owns the other half
-// (segmentdist.Manager.CoverageSuppressedSince).
+// (a publish-suppression stamp on the segment manager).
 //
 // It reads the map WITHOUT the lazy entryLocked allocation Allow uses, deliberately:
 // its caller is the manage(status) coverage table, which asks about every eligible
@@ -179,21 +181,25 @@ func (b *segmentHealBreaker) LatchedSince(gt kgtypes.GraphType, name string) int
 //   - scanned==0 → NO-PROGRESS (loud terminal WARN + RecordNoProgress). This is the
 //     live loop's signal: a rebuild that scans zero nodes with retrievable vectors
 //     ships nothing and can never raise coverage.
-//   - scanned>0 on the OSS/L2 path (IsL2Authoritative) → PROGRESS, judged ONLY by
-//     scanned (no completeness sub-case: L2 snapshots stamp DocCount=0, so the
-//     completeness probe would anyUnknown-disarm anyway).
-//   - scanned>0 on the CLOUD path → PROGRESS unless the pure-read post-pass re-probe
-//     (HasShippedFromSnapshot + segmentPoolDegenerate over a FRESH ShippedManifestSnapshot)
-//     shows shipped-completeness did NOT improve, in which case NO-PROGRESS. Everything
-//     else — explicitly including scanned>0 && built==0 && partial>0 (a sub-1024
-//     tail-only rebuild is a real ship) — is PROGRESS.
+//   - scanned>0 → PROGRESS, judged ONLY by scanned. A real scan is progress.
+//     Everything else — explicitly including a rebuild that built nothing and shipped
+//     only a sub-1024 tail, which is a real ship — is PROGRESS.
 //
-// The re-probe is DELIBERATELY the two pure reads (HasShippedFromSnapshot +
-// segmentPoolDegenerate over a fresh snapshot) — NEVER a wholesale healNeedsRebuild
-// call, which re-runs ReconcileResidentDegenerate → load()+recoverIfDegenerate and
-// mutates the very recovery state the breaker accounts over.
+// THE SHIPPED-COMPLETENESS SUB-CASE IS GONE, not merely unreachable. It re-probed a
+// FRESH server manifest snapshot to ask whether shipped completeness had improved;
+// with no server manifest there is nothing to re-probe against, and the local
+// alternative would compare the L2 cache against itself. The classifier is
+// correspondingly coarser: a rebuild that scans nodes but ships a content-hash
+// no-op now reads as PROGRESS and does not advance the breaker toward its latch.
+//
+// IT NO LONGER TAKES THE built AND partial COUNTS. They were the operands of exactly
+// that departed sub-case, and once it went they were passed by every caller and read
+// by none — a signature promising a judgement this function does not make. The counts
+// still exist on the RebuildSegments outcome the callers hold; nothing here consumes
+// them. Re-introducing a completeness rule means re-introducing the parameters WITH
+// the code that reads them, never a parameter on its own.
 func (c *client) classifyHealOutcome(
-	ctx context.Context, gt kgtypes.GraphType, name string, ran bool, scanned, built, partial int,
+	gt kgtypes.GraphType, name string, ran bool, scanned int,
 ) {
 	if !ran {
 		// ran==false is a benign coalesce (another rebuild already in flight) or a
@@ -206,39 +212,6 @@ func (c *client) classifyHealOutcome(
 		c.healBreaker.RecordNoProgress(gt, name)
 		return
 	}
-	// scanned>0. The OSS/L2 path judges ONLY by scanned — a real scan is progress.
-	if c.segmentMgr.IsL2Authoritative(gt, name) {
-		c.healBreaker.RecordProgress(gt, name)
-		return
-	}
-	// Cloud path: a real scan is progress UNLESS the shipped-completeness re-probe shows
-	// the pool is still absent/degenerate (the content-hash no-op re-ship case).
-	if c.healCompletenessImproved(ctx, gt, name) {
-		c.healBreaker.RecordProgress(gt, name)
-		return
-	}
-	slog.Warn("bootstrap: auto-heal ran (scanned>0) but shipped completeness did not improve — no-progress heal",
-		"graph_type", gt, "name", name, "scanned", scanned, "built", built, "partial", partial)
-	c.healBreaker.RecordNoProgress(gt, name)
-}
-
-// healCompletenessImproved is the CLOUD-path post-pass re-probe: it reports whether
-// the shipped corpus is now present AND non-degenerate over a FRESH ShippedManifestSnapshot.
-// It uses ONLY the two pure reads (HasShippedFromSnapshot + segmentPoolDegenerate) —
-// NEVER healNeedsRebuild, whose ReconcileResidentDegenerate leg would mutate recovery
-// state. A probe error is treated CONSERVATIVELY as improved (progress): an inability
-// to measure must not latch the breaker on a transient List failure.
-func (c *client) healCompletenessImproved(ctx context.Context, gt kgtypes.GraphType, name string) bool {
-	snapshot, err := c.segmentMgr.ShippedManifestSnapshot(ctx, gt, name, hnsw.New().Name())
-	if err != nil {
-		return true // conservative: cannot measure → do not trip.
-	}
-	if !c.segmentMgr.HasShippedFromSnapshot(snapshot) {
-		return false // still nothing shipped — completeness did not improve.
-	}
-	degenerate, err := c.segmentPoolDegenerate(ctx, gt, name, snapshot)
-	if err != nil {
-		return true // conservative: probe error → do not trip.
-	}
-	return !degenerate // improved iff the pool is present AND covers enough.
+	// scanned>0 — a real scan is progress.
+	c.healBreaker.RecordProgress(gt, name)
 }

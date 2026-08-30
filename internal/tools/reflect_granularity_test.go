@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
 )
@@ -79,17 +79,14 @@ func reflectGranularityDeps(gc *reflectFakeCaller) reflectTestDeps {
 	return reflectTestDeps{gc: gc, clusters: clusters, profile: profile}
 }
 
-func (d reflectTestDeps) LocalLiveness() LocalLiveness                 { return nil }
-func (d reflectTestDeps) Sink() collector.Sink                         { return nil }
-func (d reflectTestDeps) RootDir() string                              { return "" }
-func (d reflectTestDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
-func (d reflectTestDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
-func (d reflectTestDeps) WorkerReady() bool                            { return true }
-func (d reflectTestDeps) PropReady() bool                              { return true }
-func (d reflectTestDeps) PipelineReady() bool                          { return true }
-func (d reflectTestDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
-func (d reflectTestDeps) BanSet() *hivemonitor.BanSet                  { return nil }
-func (d reflectTestDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d reflectTestDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d reflectTestDeps) Sink() collector.Sink            { return nil }
+func (d reflectTestDeps) RootDir() string                 { return "" }
+func (d reflectTestDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+
+func (d reflectTestDeps) PropReady() bool     { return true }
+func (d reflectTestDeps) PipelineReady() bool { return true }
+
 func (d reflectTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
 func (d reflectTestDeps) Embedder() embed.BinaryEmbedder               { return nil }
 func (d reflectTestDeps) BackendResolver() BackendResolver             { return nil }

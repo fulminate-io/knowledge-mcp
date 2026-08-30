@@ -310,7 +310,11 @@ func spawnServer(args SpawnArgs) (int, error) {
 func waitForServer(port int, deadline time.Duration) error {
 	end := time.Now().Add(deadline)
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	// Readiness-poll client only — the caller's real client is constructed
+	// separately, so nothing else ever reuses this connection. Releasing it on
+	// the way out keeps the h2 read/write loops from outliving the wait.
 	gc := graphclient.NewGraphClient(port)
+	defer gc.CloseIdleConnections()
 
 	for time.Now().Before(end) {
 		conn, err := dialWithTimeout(addr, 200*time.Millisecond)

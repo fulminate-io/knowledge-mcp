@@ -34,6 +34,26 @@ func killSuperseded[Q, S any](set *segmentSet[Q, S], superseded []ExternalID) {
 	}
 }
 
+// KillSuperseded is ReplaceBucketGroup's step (2) made callable WITHOUT the rebuild
+// behind it: it clears the live bits of the named ids across the current snapshot and
+// does nothing else. A caller that defers the partition re-emit therefore removes those
+// documents from search exactly as a caller performing the re-emit does — the kill is
+// the whole of what a delete's user-visible contract needs, and the reconstruction
+// behind it is scheduling.
+//
+// IT DELEGATES AND MUST STAY A DELEGATE. Re-implementing the route-then-kill walk here
+// would let the two copies drift, and the point of this method is that they cannot.
+//
+// IT DOES NOT SIGNAL THE MERGER, and that is deliberate rather than an omission.
+// SegmentedIndex.Delete fires signalMerge PER ID, so a several-hundred-id delete would
+// poke the background merger once per id from the caller's own goroutine — into the same
+// per-partition graph reconstruction that deferring the re-emit exists to take off that
+// path. The dead documents this leaves behind are worked off by the bounded deferred
+// re-emit, and by the merger's own dead-ratio trigger in its own time.
+func (e *SegmentedIndex[Q, S]) KillSuperseded(ids []ExternalID) {
+	killSuperseded(e.set.Load(), ids)
+}
+
 // SealResult is what a seal-and-supersede reports: the segment now ANSWERING for the
 // batch, and whether that segment was CREATED by this call or merely named by it.
 //
@@ -217,22 +237,6 @@ func (e *SegmentedIndex[Q, S]) LiveMembersOutside(ids []SegmentID, covered map[E
 	return out
 }
 
-// BucketConstituents reports which resident segments hold members of the given
-// bucket, in the set's own order. It returns nil when no resident segment holds
-// any member of that bucket.
-//
-// The bucket is DERIVED from membership rather than stored: every member of a
-// bucket-aligned segment hashes to the same bucket, so the segment's bucket is
-// recoverable from any one of its members. Nothing about the partition is
-// persisted or carried in a segment's metadata.
-//
-// The scan stops at an entry's first matching member, which is what keeps this
-// cheap: an aligned segment matches immediately, so the walk costs one probe per
-// segment rather than a pass over the corpus. Only a segment holding none of the
-// bucket's members is scanned in full.
-//
-// More than one id comes back while a partition is split across segments — the
-// state a partial re-emit leaves behind — and the caller consolidates them.
 // SegmentSpans reports, for every resident segment, the DISTINCT partitions it
 // holds members of under the supplied count. It is the all-partitions form of
 // BucketConstituents and answers the question that one cannot: not "who holds
@@ -274,6 +278,27 @@ func (e *SegmentedIndex[Q, S]) SegmentSpans(bucketCount int) map[SegmentID][]int
 	}
 	return out
 }
+
+// BucketConstituents reports which resident segments hold members of the given
+// bucket, in the set's own order. It returns nil when no resident segment holds
+// any member of that bucket.
+//
+// The bucket is DERIVED from membership rather than stored: every member of a
+// bucket-aligned segment hashes to the same bucket, so the segment's bucket is
+// recoverable from any one of its members. Nothing about the partition is
+// persisted or carried in a segment's metadata.
+//
+// The scan stops at an entry's first matching member, which is what keeps this
+// cheap: an aligned segment matches immediately, so the walk costs one probe per
+// segment rather than a pass over the corpus. Only a segment holding none of the
+// bucket's members is scanned in full.
+//
+// More than one id comes back while a partition is split across segments — the
+// state a partial re-emit leaves behind — and the caller consolidates them.
+//
+// A CALLER REBUILDING SEVERAL PARTITIONS SHOULD PREFER SegmentSpans. Each call
+// here walks the resident set looking for ONE partition, so asking per partition
+// costs O(partitions x corpus); SegmentSpans answers every partition in one pass.
 func (e *SegmentedIndex[Q, S]) BucketConstituents(bucket, bucketCount int) []SegmentID {
 	set := e.set.Load()
 	var out []SegmentID

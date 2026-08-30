@@ -18,9 +18,10 @@ import (
 // and kgwire.BatchEdge suitable for handing to a batch create. The root
 // node is a "page" node; every section/content record becomes a node
 // with an EdgeContains from its parent carrying a zero-based `position`
-// metadata key. Internal links become EdgeReferences edges from the
-// page; external cites become EdgeReferences edges with rel="external"
-// metadata.
+// metadata key. One "raw_html" node per page holds the retained response
+// bytes and is contained by the page after its last section. Internal links
+// become EdgeReferences edges from the page; external cites become
+// EdgeReferences edges with rel="external" metadata.
 //
 // Node IDs are deterministic: sha256(page_url || kind || path || idx)
 // truncated to 16 hex chars. Re-running the emitter on the same
@@ -33,43 +34,54 @@ func emitFromPage(p *pageRecord) ([]*knowledgev1.Node, []kgwire.BatchEdge) {
 	e := newEmitter(p)
 	e.emitPageNode()
 	for i, sec := range p.TopSections {
-		e.emitSection(e.pageID, "", sec, i)
+		e.emitSection(e.pageID, "", sec, i, e.pageURI)
 	}
+	// Appended LAST, at position len(TopSections), so the retained-HTML node
+	// arrives without shifting any section's contains-position.
+	e.emitRawHTML(len(p.TopSections))
 	e.emitLinks()
 	return e.nodes, e.edges
 }
 
 // emitter carries shared state across per-record emission: the node/edge
-// accumulators plus the page URL used to derive stable IDs.
+// accumulators, the page URL used to derive stable IDs, and pageURI — the
+// address the content was served from after redirects, which every emitted
+// node carries under the `uri` metadata key.
 type emitter struct {
-	page   *pageRecord
-	pageID string
-	nodes  []*knowledgev1.Node
-	edges  []kgwire.BatchEdge
+	page    *pageRecord
+	pageID  string
+	pageURI string
+	nodes   []*knowledgev1.Node
+	edges   []kgwire.BatchEdge
 }
 
 func newEmitter(p *pageRecord) *emitter {
 	return &emitter{
-		page:   p,
-		pageID: stableID(p.URL, "page", "", 0),
+		page:    p,
+		pageID:  stableID(p.URL, "page", "", 0),
+		pageURI: p.FinalURL,
 	}
 }
 
 // emitPageNode appends the root page node with page-level metadata.
 //
-// Description is populated by flattening TopSections' paragraph + list-item
-// text into a single body string capped at pageDescriptionCap. Without this,
-// recipes translating page → pattern (azure-patterns, hohpe-eip, etc.) only
-// see the bare title — the resulting practice nodes carry no body content,
-// so BM25 and HNSW indexes have nothing to match query tokens against and
-// the patterns silently drop out of search. The flattened body is the
-// minimum semantic content needed for downstream search to function.
+// Description is an UNTRUNCATED flatten of TopSections' paragraph +
+// list-item text into a single body string. Without it, recipes translating
+// page → pattern (azure-patterns, hohpe-eip, etc.) only see the bare title —
+// the resulting practice nodes carry no body content, so BM25 and HNSW
+// indexes have nothing to match query tokens against and the patterns
+// silently drop out of search.
+//
+// The flatten's content-type skips (code blocks, tables, images, quotes) are
+// PROJECTION DESIGN — a choice about which record kinds belong in a prose
+// summary — not a length limit. Nothing here bounds the Description's size.
 func (e *emitter) emitPageNode() {
 	md := map[string]string{
 		"url":          e.page.URL,
 		"final_url":    e.page.FinalURL,
 		"http_status":  strconv.Itoa(e.page.HTTPStatus),
 		"content_hash": e.page.ContentHash,
+		"uri":          e.pageURI,
 	}
 	if e.page.Title != "" {
 		md["title"] = e.page.Title
@@ -88,48 +100,33 @@ func (e *emitter) emitPageNode() {
 		Id:          e.pageID,
 		Type:        "page",
 		SymbolName:  e.page.Title,
-		Description: flattenPageBody(e.page.TopSections, pageDescriptionCap),
+		Description: flattenPageBody(e.page.TopSections),
 		Source:      "web-collect",
 		Metadata:    md,
 	})
 }
 
-// pageDescriptionCap bounds the flattened page body so a long article doesn't
-// blow past the rerank doc-text or BM25 field budgets when downstream
-// recipes copy page.description into a pattern node. ~8KB covers a typical
-// reference-doc page (Azure pattern pages average ~6KB of prose) without
-// over-stuffing.
-const pageDescriptionCap = 8000
-
 // flattenPageBody walks sections in document order and concatenates
-// paragraph + list-item text with section headings as separators, capped
-// at maxLen. Keeps headings inline ("## Heading\nbody...") so the
-// cross-encoder reads the structure as natural documentation. Code blocks,
-// tables, images, and quotes are skipped — they're typically shape rather
-// than the searchable text the body summary needs to surface.
-func flattenPageBody(sections []*sectionRecord, maxLen int) string {
+// paragraph + list-item text with section headings as separators. Keeps
+// headings inline ("## Heading\nbody...") so the cross-encoder reads the
+// structure as natural documentation. Code blocks, tables, images, and
+// quotes are skipped — they're typically shape rather than the searchable
+// text the body summary needs to surface.
+func flattenPageBody(sections []*sectionRecord) string {
 	if len(sections) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	for _, sec := range sections {
-		appendSectionBody(&b, sec, maxLen)
-		if b.Len() >= maxLen {
-			break
-		}
+		appendSectionBody(&b, sec)
 	}
-	out := strings.TrimSpace(b.String())
-	if len(out) > maxLen {
-		out = out[:maxLen]
-	}
-	return out
+	return strings.TrimSpace(b.String())
 }
 
 // appendSectionBody writes one section's heading + content to b, recursing
-// into nested sections. Stops appending once b crosses maxLen so the caller
-// loop's bound check has a tight upper bound.
-func appendSectionBody(b *strings.Builder, sec *sectionRecord, maxLen int) {
-	if sec == nil || b.Len() >= maxLen {
+// into nested sections.
+func appendSectionBody(b *strings.Builder, sec *sectionRecord) {
+	if sec == nil {
 		return
 	}
 	if sec.Heading != "" {
@@ -142,24 +139,18 @@ func appendSectionBody(b *strings.Builder, sec *sectionRecord, maxLen int) {
 		b.WriteByte('\n')
 	}
 	for _, child := range sec.Children {
-		if b.Len() >= maxLen {
-			return
-		}
 		switch r := child.(type) {
 		case paragraphRecord:
 			b.WriteString(r.Text)
 			b.WriteByte('\n')
 		case listRecord:
 			for _, item := range r.Items {
-				if b.Len() >= maxLen {
-					return
-				}
 				b.WriteString("- ")
 				b.WriteString(item.Text)
 				b.WriteByte('\n')
 			}
 		case nestedSectionRecord:
-			appendSectionBody(b, r.Section, maxLen)
+			appendSectionBody(b, r.Section)
 		}
 	}
 }
@@ -167,15 +158,26 @@ func appendSectionBody(b *strings.Builder, sec *sectionRecord, maxLen int) {
 // emitSection emits a section node plus every child record in document
 // order. path threads through deterministic ID derivation so sibling
 // sections at the same position don't collide.
-func (e *emitter) emitSection(parentID, path string, sec *sectionRecord, idx int) {
+//
+// uri is the enclosing scope's address. A section carrying its own heading
+// anchor addresses itself from the page base, so its fragment REPLACES any
+// inherited one; an anchorless section inherits its parent's uri unchanged.
+// Either way the resulting uri is stamped on this section's node and threaded
+// down to every child record.
+func (e *emitter) emitSection(parentID, path string, sec *sectionRecord, idx int, uri string) {
 	if sec == nil {
 		return
 	}
 	myPath := extendPath(path, "section", idx)
 	id := stableID(e.page.URL, "section", myPath, idx)
+	myURI := uri
+	if sec.Anchor != "" {
+		myURI = e.pageURI + "#" + sec.Anchor
+	}
 	md := map[string]string{
 		"heading": sec.Heading,
 		"depth":   strconv.Itoa(sec.Depth),
+		"uri":     myURI,
 	}
 	if sec.Anchor != "" {
 		md["anchor"] = sec.Anchor
@@ -191,29 +193,30 @@ func (e *emitter) emitSection(parentID, path string, sec *sectionRecord, idx int
 	e.addContains(parentID, id, idx)
 
 	for i, child := range sec.Children {
-		e.emitContent(id, myPath, child, i)
+		e.emitContent(id, myPath, child, i, myURI)
 	}
 }
 
-// emitContent dispatches a contentRecord to its kind-specific helper.
-func (e *emitter) emitContent(parentID, path string, rec contentRecord, idx int) {
+// emitContent dispatches a contentRecord to its kind-specific helper,
+// forwarding the enclosing section's uri so every emitted node carries it.
+func (e *emitter) emitContent(parentID, path string, rec contentRecord, idx int, uri string) {
 	switch r := rec.(type) {
 	case nestedSectionRecord:
-		e.emitSection(parentID, path, r.Section, idx)
+		e.emitSection(parentID, path, r.Section, idx, uri)
 	case paragraphRecord:
-		e.emitParagraph(parentID, path, r, idx)
+		e.emitParagraph(parentID, path, r, idx, uri)
 	case codeBlockRecord:
-		e.emitCodeBlock(parentID, path, r, idx)
+		e.emitCodeBlock(parentID, path, r, idx, uri)
 	case listRecord:
-		e.emitList(parentID, path, r, idx)
+		e.emitList(parentID, path, r, idx, uri)
 	case tableRecord:
-		e.emitTable(parentID, path, r, idx)
+		e.emitTable(parentID, path, r, idx, uri)
 	case linkRecord:
-		e.emitLink(parentID, path, r, idx)
+		e.emitLink(parentID, path, r, idx, uri)
 	case imageRecord:
-		e.emitImage(parentID, path, r, idx)
+		e.emitImage(parentID, path, r, idx, uri)
 	case quoteRecord:
-		e.emitQuote(parentID, path, r, idx)
+		e.emitQuote(parentID, path, r, idx, uri)
 	}
 }
 

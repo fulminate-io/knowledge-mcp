@@ -21,35 +21,45 @@ import (
 // pass. Against a loop with no nudge case the observable never moves and the
 // Eventually times out.
 //
-// The suppression is driven through the REAL publish path rather than injected: a
-// graph with a shipped corpus on the server and a sub-floor resident force-seals a
-// tail, so every publish attempt is coverage-skipped and the streak crosses its
-// suppression bound. The recording is made BEFORE the loop starts on purpose — the
-// wake channel is buffered, so the queued wake is delivered as soon as the loop
-// reaches its select, which removes any ordering race from the assertion.
+// THE NUDGE IS DRIVEN THROUGH A REAL RECORDER, and which recorder that is has
+// changed. It used to be the publish coverage gate: a graph with a shipped corpus on
+// a server and a sub-floor resident force-sealed a tail, every publish attempt was
+// coverage-skipped, and the skip streak crossing its bound recorded the wake. There
+// is no publish, no coverage gate and no skip streak, so that recorder cannot be
+// reached from any input. Two recorders survive — a backlog crossing the 64 MiB
+// re-emit byte cap, and a SEARCH on the graph — and the search is the one a test can
+// drive honestly: the cap would need tens of megabytes of fixture documents to trip,
+// which measures the fixture's size rather than the loop's wiring.
+//
+// The recording is made BEFORE the loop starts on purpose — the wake channel is
+// buffered, so the queued wake is delivered as soon as the loop reaches its select,
+// which removes any ordering race from the assertion.
 func TestReconcileLoopWakesOnNudge(t *testing.T) {
 	t.Cleanup(resetBM25HealProgress)
 	const repo = "nudgeLoopRepo"
-	// embedded=300 arms the shipped-completeness gate for the woken pass: the shipped
-	// corpus (128) is genuinely incomplete against it, so the pass reaches
-	// RebuildSegments and pages PipelineScan — the observable that a pass ran.
-	c, eng, backend := buildReconcileClientWithSeg(t, 300, repo)
+	// embedded=300 against a LOST pool arms the woken pass: nothing is resident, so the
+	// pass reaches RebuildSegments and pages PipelineScan — the observable that a pass
+	// ran. A PARTIAL corpus would arm nothing here, because the ratio band is retired
+	// for the HNSW arm and this periodic loop is not the quiescence edge.
+	c, eng, _ := buildReconcileClientWithDir(t, 300, repo)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	shipHNSW(t, backend, repo, 64, 64)
 	eng.scanItems[repo] = makeReconcileScanPage(repo, 10)
 
-	// Force-seal a sub-floor tail against that shipped corpus, then re-fire the
-	// publish until the coverage-skip streak crosses its suppression bound. Each
-	// Flush re-reads the SAME sub-ratio resident and skips again; the skip that
-	// passes the bound records the graph for an earlier reconcile look.
-	require.NoError(t, c.segmentMgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, repo, fastloadVecDocs(repo, 10)))
-	for range 4 {
-		require.NoError(t, c.segmentMgr.Flush(ctx, kgtypes.GraphCode, repo))
-	}
+	// Record the wake through the search recorder — one search on this graph asks the
+	// reconcile loop to pull its delta now rather than at its next tick.
+	probe := fastloadVecDocs(repo, 1)[0]
+	_, err := c.segmentMgr.Search(ctx, kgtypes.GraphCode, repo, "token", probe.Vector, 5)
+	require.NoError(t, err)
+	// Observed WITHOUT draining: TakeReconcileNudges empties the set, so calling it
+	// here would consume the very wake the loop is supposed to act on. The buffered
+	// wake channel's length is the non-destructive read.
+	require.NotEmpty(t, c.segmentMgr.ReconcileNudge(),
+		"PRE: the search must have QUEUED a wake — otherwise the loop below has nothing "+
+			"to wake on and the Eventually would be timing out on a fixture that never signaled")
 	require.Equal(t, 0, eng.scanCallCount(repo),
-		"PRE: the publish path alone runs no reconcile pass")
+		"PRE: recording a nudge alone runs no reconcile pass")
 
 	done := make(chan struct{})
 	go func() {

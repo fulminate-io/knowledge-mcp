@@ -25,20 +25,29 @@ type gateFormat struct {
 	failAt  int           // 1-based Merge call to fail; 0 disables
 }
 
-func (g *gateFormat) Merge(segs []Segment[mockQuery, mockStats], accept []func(ExternalID) bool) (Segment[mockQuery, mockStats], error) {
+// MergeTo MUST BE DECLARED HERE. gateFormat embeds mockFormat, so without this
+// declaration it would silently PROMOTE mockFormat.MergeTo — whose receiver is
+// the embedded value, so the call counter never advances and neither the blockAt
+// hold nor the failAt injection fires. The engine calls MergeTo, so every gate
+// this double exists to impose would evaporate while every test using it still
+// COMPILED and, worse, still passed:
+// TestGroupSwapPublishesNothingOnPartialFailure would see call 2 succeed and the
+// group publish. That is the failure this declaration prevents, and it is the
+// reason the promotion is called out here rather than left to be noticed.
+func (g *gateFormat) MergeTo(dst MergeSink, segs []Segment[mockQuery, mockStats], accept []func(ExternalID) bool) (int64, error) {
 	g.mu.Lock()
 	g.calls++
 	n := g.calls
 	g.mu.Unlock()
 
 	if g.failAt == n {
-		return nil, fmt.Errorf("injected merge failure on call %d", n)
+		return 0, fmt.Errorf("injected merge failure on call %d", n)
 	}
 	if g.blockAt == n {
 		close(g.entered)
 		<-g.release
 	}
-	return g.mockFormat.Merge(segs, accept)
+	return g.mockFormat.MergeTo(dst, segs, accept)
 }
 
 // groupIDsFor returns n ids that hash into the given partition under count 2.
@@ -118,15 +127,19 @@ func TestGroupSwapIsAtomicAcrossPartitions(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := e.ReplaceBucketGroup(2, []SegmentID{shared}, []BucketWork{
+		_, _, err := e.ReplaceBucketGroup(2, []SegmentID{shared}, []BucketWork{
 			{Bucket: 0}, {Bucket: 1},
 		})
 		done <- err
 	}()
 
 	<-fmtGate.entered
-	// Partition 0's merge has completed; partition 1's is held. Nothing may be
-	// visible yet.
+	// One partition's merge is HELD here while the other has been admitted. WHICH
+	// partition is which is timing-dependent now that the harvest runs on a bounded
+	// pool — both start together and gateFormat's mutex decides which call is
+	// numbered 2 — and that is deliberately not asserted. The property under test is
+	// unaffected either way: nothing the group produces may be visible until its
+	// single CAS, so the read below must still find the original set.
 	held := residentSnapshot(e)
 	if len(held) != len(before) {
 		t.Fatalf("mid-group read saw %d segments, want the original %d — a partition published before the group completed", len(held), len(before))
@@ -169,7 +182,7 @@ func TestGroupSwapPublishesNothingOnPartialFailure(t *testing.T) {
 	shared := sealSegment(t, e, spanning, "alpha")
 	before := residentSnapshot(e)
 
-	if _, err := e.ReplaceBucketGroup(2, []SegmentID{shared}, []BucketWork{
+	if _, _, err := e.ReplaceBucketGroup(2, []SegmentID{shared}, []BucketWork{
 		{Bucket: 0}, {Bucket: 1},
 	}); err == nil {
 		t.Fatal("a failed partition build must return an error, not a partial publish")
@@ -218,7 +231,7 @@ func TestGroupReclaimSparesEveryPublishedID(t *testing.T) {
 	p0b := sealSegment(t, e, groupIDsFor(t, 0, 12)[6:], "beta")
 	p1 := sealSegment(t, e, groupIDsFor(t, 1, 6), "gamma")
 
-	published, err := e.ReplaceBucketGroup(2, []SegmentID{p0a, p0b, p1}, []BucketWork{
+	published, _, err := e.ReplaceBucketGroup(2, []SegmentID{p0a, p0b, p1}, []BucketWork{
 		{Bucket: 0}, {Bucket: 1},
 	})
 	if err != nil {

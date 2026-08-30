@@ -43,7 +43,7 @@ func TestResolveRepoDir(t *testing.T) {
 		dirY := filepath.Join(parent, "knowledge")
 		require.NoError(t, os.MkdirAll(dirY, 0o750))
 		deps := astTestDeps{rootDir: dirY, rootDirSet: true}
-		got, err := resolveRepoDir(ctx, deps, "")
+		got, err := resolveRepoDir(ctx, deps, "ast", "")
 		require.NoError(t, err)
 		assert.Equal(t, dirY, got)
 	})
@@ -53,7 +53,7 @@ func TestResolveRepoDir(t *testing.T) {
 		dirY := filepath.Join(parent, "knowledge")
 		require.NoError(t, os.MkdirAll(dirY, 0o750))
 		deps := astTestDeps{rootDir: dirY}
-		got, err := resolveRepoDir(ctx, deps, "knowledge")
+		got, err := resolveRepoDir(ctx, deps, "ast", "knowledge")
 		require.NoError(t, err)
 		assert.Equal(t, dirY, got)
 	})
@@ -78,14 +78,14 @@ func TestResolveRepoDir(t *testing.T) {
 		wantY, err := filepath.EvalSymlinks(dirY)
 		require.NoError(t, err)
 
-		got, err := resolveRepoDir(ctx, deps, "")
+		got, err := resolveRepoDir(ctx, deps, "ast", "")
 		require.NoError(t, err)
 		assert.True(t, filepath.IsAbs(got), "a relative root must be anchored to an absolute path, got %q", got)
 		gotEval, err := filepath.EvalSymlinks(got)
 		require.NoError(t, err)
 		assert.Equal(t, wantY, gotEval)
 
-		got2, err := resolveRepoDir(ctx, deps, "knowledge")
+		got2, err := resolveRepoDir(ctx, deps, "ast", "knowledge")
 		require.NoError(t, err)
 		got2Eval, err := filepath.EvalSymlinks(got2)
 		require.NoError(t, err)
@@ -106,7 +106,7 @@ func TestResolveRepoDir(t *testing.T) {
 		require.NoError(t, os.MkdirAll(dirY, 0o750))
 		require.NoError(t, os.MkdirAll(dirX, 0o750))
 		deps := astTestDeps{rootDir: dirY}
-		got, err := resolveRepoDir(ctx, deps, "agent")
+		got, err := resolveRepoDir(ctx, deps, "ast", "agent")
 		require.Error(t, err)
 		assert.Empty(t, got)
 		assert.NotEqual(t, dirX, got, "a cross-repo NAME must never resolve to a guessed sibling dir")
@@ -125,7 +125,7 @@ func TestResolveRepoDir(t *testing.T) {
 		require.NoError(t, os.MkdirAll(dirY, 0o750))
 		// Deliberately do NOT create parent/agent.
 		deps := astTestDeps{rootDir: dirY}
-		got, err := resolveRepoDir(ctx, deps, "agent")
+		got, err := resolveRepoDir(ctx, deps, "ast", "agent")
 		require.Error(t, err)
 		assert.Empty(t, got)
 		assert.NotEqual(t, dirY, got, "fail-loud floor must NEVER silently return the cwd tree for a cross-repo arg")
@@ -142,7 +142,7 @@ func TestResolveRepoDir(t *testing.T) {
 		require.NoError(t, os.MkdirAll(dirX, 0o750))
 		require.NoError(t, m.Record("agent", dirX))
 		deps := astTestDeps{rootDir: dirY}
-		got, err := resolveRepoDir(ctx, deps, "agent")
+		got, err := resolveRepoDir(ctx, deps, "ast", "agent")
 		require.NoError(t, err)
 		assert.Equal(t, dirX, got, "a manifest-recorded cross-repo name must resolve to its recorded dir")
 	})
@@ -157,7 +157,7 @@ func TestResolveRepoDir(t *testing.T) {
 		goneDir := filepath.Join(parent, "agent-was-here")
 		require.NoError(t, m.Record("agent", goneDir)) // recorded but never created
 		deps := astTestDeps{rootDir: dirY}
-		got, err := resolveRepoDir(ctx, deps, "agent")
+		got, err := resolveRepoDir(ctx, deps, "ast", "agent")
 		require.Error(t, err)
 		assert.Empty(t, got)
 	})
@@ -170,7 +170,7 @@ func TestResolveRepoDir(t *testing.T) {
 		require.NoError(t, os.MkdirAll(dirY, 0o750))
 		absTarget := t.TempDir() // an unrelated existing absolute dir
 		deps := astTestDeps{rootDir: dirY}
-		got, err := resolveRepoDir(ctx, deps, absTarget)
+		got, err := resolveRepoDir(ctx, deps, "ast", absTarget)
 		require.NoError(t, err)
 		assert.Equal(t, absTarget, got, "an existing absolute path must be walked directly")
 	})
@@ -183,14 +183,14 @@ func TestResolveRepoDir(t *testing.T) {
 		require.NoError(t, os.MkdirAll(dirY, 0o750))
 		missing := filepath.Join(t.TempDir(), "does-not-exist")
 		deps := astTestDeps{rootDir: dirY}
-		got, err := resolveRepoDir(ctx, deps, missing)
+		got, err := resolveRepoDir(ctx, deps, "ast", missing)
 		require.Error(t, err)
 		assert.Empty(t, got)
 	})
 
 	t.Run("empty_root_errors", func(t *testing.T) {
 		deps := astTestDeps{rootDir: ""}
-		_, err := resolveRepoDir(ctx, deps, "")
+		_, err := resolveRepoDir(ctx, deps, "ast", "")
 		require.Error(t, err)
 	})
 
@@ -200,7 +200,7 @@ func TestResolveRepoDir(t *testing.T) {
 		// than silently walking the daemon's process cwd. This carries the
 		// defaulted-"." coverage the reframed relative_root subtest used to imply.
 		deps := astTestDeps{rootDir: ".", rootDirSet: false}
-		got, err := resolveRepoDir(ctx, deps, "")
+		got, err := resolveRepoDir(ctx, deps, "ast", "")
 		require.Error(t, err)
 		assert.Empty(t, got)
 		assert.Contains(t, err.Error(), "project root")
@@ -212,7 +212,7 @@ func TestResolveRepoDir(t *testing.T) {
 		// session cwd — the was-set bit alone keeps the walk.
 		realDir := t.TempDir()
 		deps := astTestDeps{rootDir: realDir, rootDirSet: true}
-		got, err := resolveRepoDir(ctx, deps, "")
+		got, err := resolveRepoDir(ctx, deps, "ast", "")
 		require.NoError(t, err)
 		assert.Equal(t, realDir, got)
 	})
@@ -229,7 +229,7 @@ func TestResolveRepoDir(t *testing.T) {
 		realDir := t.TempDir()
 		ctx := session.ContextWithWorkspaceCwd(context.Background(), realDir)
 		deps := astTestDeps{rootDir: ".", rootDirSet: false}
-		got, err := resolveRepoDir(ctx, deps, "")
+		got, err := resolveRepoDir(ctx, deps, "ast", "")
 		require.NoError(t, err)
 		assert.Equal(t, realDir, got)
 	})

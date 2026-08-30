@@ -58,10 +58,8 @@ func TestHNSWResetRoutesThroughReplaceLayer(t *testing.T) {
 		"the fixture must cross a bucket-count boundary: %d docs derive %d buckets, %d docs derive %d",
 		corpusA, bucketsA, corpusB, bucketsB)
 
-	svc, view := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	gt, name := kgtypes.GraphCode, "hnsw-replace-route"
-	target := graphSelector(gt, name)
 
 	// Run A — the prior layer, so run B has something to replace.
 	stageRebuildRun(t, ctx, mgr, gt, name, vecContentDocs(corpusA))
@@ -69,7 +67,7 @@ func TestHNSWResetRoutesThroughReplaceLayer(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, resA.Swapped, "run A's publish must LAND — a skipped publish also returns a nil error")
 
-	layerA := writerManifest(svc, target, "", hnswFormatName)
+	layerA := l2IDsFor(mgr.cacheDir, name, hnswFormatName)
 	require.Len(t, layerA, bucketsA, "run A publishes one hnsw segment per bucket it built")
 
 	servingDM := mgr.managerFor(gt, name)
@@ -78,7 +76,6 @@ func TestHNSWResetRoutesThroughReplaceLayer(t *testing.T) {
 		"the SERVING engine holds run A's layer — the reset finalizes here, so this is what run B must replace")
 
 	// Run B — the run under test.
-	swapsBefore := servingDM.completedSwapCount()
 	stageRebuildRun(t, ctx, mgr, gt, name, vecContentDocs(corpusB))
 	resB, err := mgr.FinalizeRebuild(ctx, gt, name)
 	require.NoError(t, err)
@@ -98,8 +95,13 @@ func TestHNSWResetRoutesThroughReplaceLayer(t *testing.T) {
 	// (2) ONE CAS. The whole layer changes hands in a single swap; a per-partition
 	// finalize would raise the counter once per bucket and open a window between them in
 	// which the corpus is half-replaced.
-	require.Equal(t, uint64(1), servingDM.completedSwapCount()-swapsBefore,
-		"the reset lands exactly ONE manifest swap on the serving engine, not one per partition")
+	// THE ONE-CAS ASSERTION WAS DROPPED HERE, with its reason. It counted publish-gate
+	// swaps to prove the layer changed hands ONCE rather than once per partition. That
+	// counter is deleted with the gate, and the per-partition finalize it guarded
+	// against is no longer expressible: FinalizeRebuild is a single call returning a
+	// single result for the whole layer, so "one swap, not N" is now structural rather
+	// than measurable. What remains observable is that the swap LANDED, asserted here.
+	require.True(t, resB.Swapped, "run B's rebuild must actually publish, not defer")
 
 	// (3) NO STAGING ADD — asserted where it is still observable. That there is no
 	// SECOND HNSW engine is now structural (the type holds one map per format, so a
@@ -119,7 +121,7 @@ func TestHNSWResetRoutesThroughReplaceLayer(t *testing.T) {
 
 	// (5) the published manifest agrees with what the engine serves — the retirement
 	// reached the server rather than only the local set.
-	layerB := writerManifest(svc, target, "", hnswFormatName)
+	layerB := l2IDsFor(mgr.cacheDir, name, hnswFormatName)
 	require.Len(t, layerB, bucketsB, "the published hnsw manifest holds exactly run B's partitions")
 	require.NotEmpty(t, resB.HNSWSuperseded, "the finalize must REPORT what it retired")
 	for _, id := range resB.HNSWSuperseded {
@@ -151,10 +153,8 @@ func TestFinalizeReportsPerFormatRetirement(t *testing.T) {
 	ctx := context.Background()
 	const corpus = 1025
 
-	svc, view := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	gt, name := kgtypes.GraphCode, "per-format-retire"
-	target := graphSelector(gt, name)
 
 	docs := vecContentDocs(corpus)
 
@@ -164,7 +164,7 @@ func TestFinalizeReportsPerFormatRetirement(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, resA.Swapped, "run A's publish must LAND")
 
-	priorBM25 := writerManifest(svc, target, "", bm25FormatName)
+	priorBM25 := l2IDsFor(mgr.cacheDir, name, bm25FormatName)
 	require.NotEmpty(t, priorBM25, "run A must publish a bm25 layer for run B to retire")
 
 	// Run B — the SAME vectors (a content-hash no-op for HNSW) with CHANGED field
@@ -197,7 +197,7 @@ func TestFinalizeReportsPerFormatRetirement(t *testing.T) {
 
 	// The server agrees: run A's field blobs are gone from the published manifest.
 	nowBM25 := map[string]struct{}{}
-	for _, id := range writerManifest(svc, target, "", bm25FormatName) {
+	for _, id := range l2IDsFor(mgr.cacheDir, name, bm25FormatName) {
 		nowBM25[id] = struct{}{}
 	}
 	for _, id := range priorBM25 {
@@ -229,8 +229,8 @@ func TestInvalidateLocalEvictsFromTheServingCache(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	_, view := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view)))
+
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	gt, name := kgtypes.GraphCode, "invalidate-serving"
 
 	// Seed a published corpus through the embed path: its blobs land in the SERVING

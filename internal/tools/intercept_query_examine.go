@@ -5,6 +5,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
@@ -37,7 +38,9 @@ import (
 const examineAncestryMaxHops = 5
 
 // InterceptQueryExamine claims query(mode:examine). Returns (false,_) for any
-// other tool or mode so the next chain step takes over with the original params.
+// other tool or mode so the next chain step takes over with the original
+// params. A non-knowledge GRAPH is claimed too, and answered with the refusal
+// below — see the graph gate for why that is not a decline.
 func InterceptQueryExamine(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
@@ -49,14 +52,34 @@ func InterceptQueryExamine(ctx context.Context, deps ClientDeps, params kgtools.
 	if a.Mode != "examine" {
 		return false, kgtools.ToolResult{}
 	}
-	// Graph gate: the server handleInspectNode is hard-coded to store.Store()
-	// (knowledge graph). For non-knowledge graphs the server routeQueryByMode
-	// falls through to handleGenericGraphQuery against the per-source DB — keep
-	// that fall-through by only claiming knowledge/default here. This mirrors the
-	// InterceptQueryExamineProjects graph gate (it runs first for project-domain
-	// node types; this general intercept claims every OTHER knowledge node type).
+	// Graph gate: this composer targets the knowledge/default graph, so it claims
+	// only graph unset / "knowledge". Every other value is REFUSED here rather
+	// than declined back to the chain. There is NO server-side examine handler
+	// behind a decline — examine is a specialized mode, and per engine's
+	// reducibleQueryModes a specialized mode is either claimed by a client
+	// intercept or meets the generic engine deny (TestDefaultDeny_SpecializedShapes
+	// pins that floor). Declining therefore answered a plausible command with
+	// "not a recognized engine-reducible shape", which names neither examine, nor
+	// the graphs examine serves, nor a way forward.
+	//
+	// WHICH GRAPHS REACH THIS LINE is narrower than the condition reads, and the
+	// message is worded for them. cloud, cicd and linkage are claimed by
+	// InterceptQueryCloudCICD / InterceptQueryPracticeLinkage, code by
+	// InjectRepoIfCodeGraph, and logs by InterceptLogsQuery — all of which run
+	// EARLIER in bootstrap/dream.go than the rendering cluster that holds this
+	// arm, so an examine naming one of those never arrives. What does arrive is
+	// practice, web, pdf, and any other graph string — a custom graph name or an
+	// unrecognized one, neither of which any arm claims for a mode-bearing call.
+	// Driven end-to-end in
+	// TestQueryDispatchParity_ExamineNonKnowledgeGraphIsRefusedByName.
+	//
+	// THE REFUSAL IS A CLAIM, so chain order is load-bearing: this arm runs AFTER
+	// InterceptQueryExamineProjects, which must keep winning for project-domain
+	// types. It does — the refusal fires only on graph values that arm already
+	// declines, and TestQueryDispatchParity_ExamineProjectDomainStillWins is the
+	// control that the claim did not move in front of it.
 	if a.Graph != "" && a.Graph != "knowledge" {
-		return false, kgtools.ToolResult{}
+		return true, errorResult(examineGraphRefusal(a.Graph))
 	}
 	id := a.ID
 	if id == "" {
@@ -78,10 +101,39 @@ func InterceptQueryExamine(ctx context.Context, deps ClientDeps, params kgtools.
 		return true, errorResult("node " + id + " not found")
 	}
 
+	// examine is an intercept, so it never reaches engine.Render and picks up no
+	// notice there. Both arms disclose for themselves on the hydrate's verdict: the
+	// JSON payload carries the `truncated` key and both formats carry the trailing
+	// prose block. The two artifacts answer different questions and both stay.
+	// The EDGE read contributes nothing here — it is complete-or-error, so a notice
+	// keyed on it would be a false statement about a complete union.
 	if a.Format == "json" {
-		return true, jsonResult(buildInspectJSON(data))
+		return true, engine.WithTruncationNoticeFor(
+			jsonResult(buildInspectJSON(data)), data.Truncated, len(data.Edges))
 	}
-	return true, textResult(engine.RenderInspectNode(data))
+	return true, engine.WithTruncationNoticeFor(
+		textResult(engine.RenderInspectNode(data)), data.Truncated, len(data.Edges))
+}
+
+// examineGraphRefusal is the message the graph gate returns for a graph this
+// arm does not serve. It follows the promote_metadata graph refusals
+// (intercept_manage_promote.go), which name the accepted vocabulary and say
+// plainly what is not supported here rather than leaving the caller with a
+// message about engine internals.
+//
+// The alternative it recommends was DRIVEN, not assumed: dropping the mode and
+// issuing a by-id read reaches the engine's ById lowering for practice (with
+// and without language), web, pdf and an arbitrary graph name alike — one
+// Execute RPC each, against the bootstrap parity fixture.
+func examineGraphRefusal(graph string) string {
+	return fmt.Sprintf(
+		"examine: graph %q is not supported. query(mode:\"examine\") composes the ancestry and "+
+			"edge neighborhood of a KNOWLEDGE-graph node only (graph unset or \"knowledge\"). "+
+			"To read a node in another graph, drop the mode and ask for it by id: "+
+			"query({\"graph\":%q,\"id\":\"<id>\"}) — adding that graph's own selector where it "+
+			"takes one (language for practice, name for web/pdf/logs, account for cloud/cicd) — "+
+			"and traverse({\"graph\":%q,\"start\":\"<id>\"}) for its edges.",
+		graph, graph, graph)
 }
 
 // composeInspectData runs the bounded composition described on
@@ -111,6 +163,20 @@ func composeInspectData(ctx context.Context, exec engine.ExecuteFn, id string) (
 	// enforces, the cap is what the drain uses to notice it was enforced. One
 	// without the other yields a drain that never detects truncation, or one
 	// that splits on a threshold nobody applies.
+	// THE EDGE READ IS COMPLETE OR THIS CALL FAILS, which is why it contributes no
+	// truncation verdict. paging.DrainPivotEdges never ACCEPTS a saturated page: it
+	// halves the pivot set, re-reads a single pivot as a from_id band tiling,
+	// splits a saturating band at its median interior id, and only a pivot no band
+	// can divide returns an error naming the pivot and the ceiling — which
+	// propagates out of this function and renders as an error result. Capturing an
+	// intermediate page's flag and reporting it as "this result may be incomplete"
+	// would be a FALSE statement about a provably complete union.
+	//
+	// THAT IS TRUE OF THE EDGES AND NOT OF THE COMPOSITION. Step (4) below ends in
+	// one unbounded bulk hydrate over this union's peer set, which the server DOES
+	// clamp — see examineBulkHydrate. Its verdict is what InspectData.Truncated
+	// carries. An earlier revision of this comment certified the whole examine read
+	// complete-or-loud on the strength of the edge drain alone.
 	rawEdges, err := paging.DrainPivotEdges([]string{id}, paging.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
 		func(idPage []string, fromIDGte, fromIDLt string) ([]knowledgev1.Edge, bool, error) {
 			edgesResp, rerr := exec(ctx, &knowledgev1.ExecuteRequest{
@@ -147,10 +213,11 @@ func composeInspectData(ctx context.Context, exec engine.ExecuteFn, id string) (
 	}
 
 	// (4) ONE bulk ids[] hydrate over the combined set.
-	peers, err := examineBulkHydrate(ctx, exec, idSet)
+	peers, peersTruncated, err := examineBulkHydrate(ctx, exec, idSet)
 	if err != nil {
 		return engine.InspectData{}, false, err
 	}
+	data.Truncated = peersTruncated
 
 	data.Edges = shapeInspectEdges(rawEdges, id, peers)
 	data.Ancestry = shapeInspectAncestry(ancestorIDs, peers)
@@ -256,9 +323,19 @@ func shapeInspectAncestry(ancestorIDs []string, peers map[string]*knowledgev1.No
 
 // examineBulkHydrate issues ONE Execute (QueryPlan{Ids:...}) over the combined
 // peer+ancestor id set and returns an id→Node map. Empty set → no Execute.
-func examineBulkHydrate(ctx context.Context, exec engine.ExecuteFn, idSet map[string]struct{}) (map[string]*knowledgev1.Node, error) {
+//
+// THE SECOND RETURN IS THE SERVER'S TRUNCATION VERDICT, and it is the one read in
+// this composition that can actually be clamped. The plan carries NO Limit, and
+// the id set is unbounded by construction: it is the peer set of a drained edge
+// union, and the drain's band split exists precisely to serve a pivot above the
+// 50,000-row edge cap. executeTruncation flags
+// `len(p.GetIds()) > maxExecuteNodeRows` (10,000) on the REQUEST alone. Every
+// unreturned id then renders with an empty name/type — for an edge peer,
+// indistinguishable from a peer that genuinely has none; for an ancestry row, an
+// empty rung in the chain.
+func examineBulkHydrate(ctx context.Context, exec engine.ExecuteFn, idSet map[string]struct{}) (map[string]*knowledgev1.Node, bool, error) {
 	if len(idSet) == 0 {
-		return map[string]*knowledgev1.Node{}, nil
+		return map[string]*knowledgev1.Node{}, false, nil
 	}
 	ids := make([]string, 0, len(idSet))
 	for id := range idSet {
@@ -268,17 +345,17 @@ func examineBulkHydrate(ctx context.Context, exec engine.ExecuteFn, idSet map[st
 		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{Ids: ids}},
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	nodes, derr := examineDecodeNodes(resp)
 	if derr != nil {
-		return nil, derr
+		return nil, false, derr
 	}
 	out := make(map[string]*knowledgev1.Node, len(nodes))
 	for _, n := range nodes {
 		out[n.Id] = n
 	}
-	return out, nil
+	return out, resp.GetTruncated(), nil
 }
 
 // examineDecodeNodes / examineDecodeEdges / examineDecodeTraversal decode the
@@ -325,6 +402,18 @@ func buildInspectJSON(data engine.InspectData) map[string]any {
 	if len(node.Metadata) > 0 {
 		out["metadata"] = node.Metadata
 	}
+	// UNCONDITIONAL, so a consumer never special-cases this arm: an absent key is
+	// indistinguishable from an old binary, and `truncated: false` is a positive
+	// statement of completeness.
+	//
+	// THE VALUE IS LIVE, read from the composition's own reads rather than pinned.
+	// An earlier revision emitted a constant false on the grounds that the edge
+	// drain is complete-or-loud. That is true of the EDGE read and was never true
+	// of the composition: the bulk peer+ancestor hydrate is an unbounded
+	// QueryPlan{Ids} the server clamps above 10,000 ids, and a clamped hydrate
+	// leaves peers and ancestry rows with empty names — the exact silent narrowing
+	// this key exists to make visible. InspectData.Truncated carries that verdict.
+	out["truncated"] = data.Truncated
 
 	type ancestorRow struct {
 		ID         string `json:"id"`

@@ -16,10 +16,10 @@ import (
 
 // render_explain_timeline.go ports the GENERIC (graph-neutral) explain and
 // timeline renderers the InterceptQueryExplainTimeline composer
-// (cmd/knowledge/internal/tools) consumes. Direct ports of the server
-// formatExplainEdges (tools_query_explain.go) and the generic timeline body
-// writers formatGenericTimelineFlat / formatGenericTimelineBucketed +
-// extractNodeTime (tools_query_timeline.go / tools_query_timeline_extract.go).
+// (cmd/knowledge/internal/tools) consumes. Direct ports of the server's
+// formatExplainEdges and the generic timeline body writers
+// formatGenericTimelineFlat / formatGenericTimelineBucketed + extractNodeTime,
+// all removed from the server when the render moved client-side.
 // Operate over *knowledgev1.Node/knowledgev1.Edge — NOT the log-engine renderers.
 
 // RenderExplainEdges ports formatExplainEdges: the "## Explain — <label>" header

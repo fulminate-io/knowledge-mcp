@@ -114,7 +114,7 @@ func TestRecallParitySegmentedVsSingleGraph(t *testing.T) {
 
 	for _, ef := range []int{50, 100, 200} {
 		// Single big-graph baseline at this ef.
-		baseline := buildBinaryHNSWSerialDeterministic(items, defaultVecBytes, defaultM, defaultEfConstruction)
+		baseline := buildBinaryHNSWSerialDeterministic(items, defaultVecBytes, dtypeUbinary, defaultM, defaultEfConstruction)
 		baseline.setEfSearch(ef)
 
 		// Multi-segment set at the same ef.
@@ -191,7 +191,7 @@ func TestRecallNoRegressionAcrossMerge(t *testing.T) {
 	for i, s := range segs {
 		ifaceSegs[i] = s
 	}
-	mergedIface, err := Format{}.Merge(ifaceSegs, accept)
+	mergedIface, err := mergeSegments(t, ifaceSegs, accept)
 	if err != nil {
 		t.Fatalf("Merge: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestRecallNoRegressionAcrossMerge(t *testing.T) {
 
 	// From-scratch single-graph build over the SAME vectors — the oracle for "merge
 	// re-insertion is as good as a fresh build".
-	fresh := buildBinaryHNSWSerialDeterministic(items, defaultVecBytes, defaultM, defaultEfConstruction)
+	fresh := buildBinaryHNSWSerialDeterministic(items, defaultVecBytes, dtypeUbinary, defaultM, defaultEfConstruction)
 	fresh.setEfSearch(ef)
 
 	var mergedRecall, freshRecall float64
@@ -237,4 +237,182 @@ func searchHitIDs(hits []searchengine.Hit) []string {
 		ids[i] = h.ID
 	}
 	return ids
+}
+
+// --- the pre-restructure traversal, kept as a TEST ORACLE --------------------
+//
+// These three functions are the one-at-a-time traversal exactly as it stood
+// before the fused gather was wired in: the distance is computed INSIDE the
+// admission loop, one candidate at a time, with no collection pass and no
+// batched scorer.
+//
+// WHY AN ORACLE AND NOT A SUBSTITUTION. The obvious cheaper move — swap
+// vectorBlock.batchScore for a per-id loop — does NOT isolate the batching,
+// because both arms would still run through scoreCollected and the shared
+// collect-then-score machinery. Measured, not supposed: with that shape in place
+// a deliberately injected tail bug in scoreCollected corrupted BOTH arms
+// identically and the parity assertion passed. An oracle that reproduces the
+// prior ALGORITHM is the only reference that can detect a change in it.
+//
+// The oracle mirrors prior behavior rather than the current implementation, so
+// it does not agree with the batched path by construction — which is precisely
+// what makes the comparison worth making.
+
+func greedyClosestOracle(vb *vectorBlock, ns neighborSource, q *preparedQuery, ep uint32, layer int) uint32 {
+	curr := ep
+	currDist := vb.distance(q, vb.nodeVector(curr))
+	for {
+		changed := false
+		for _, nb := range ns.neighborsAt(curr, layer) {
+			if d := vb.distance(q, vb.nodeVector(nb)); d < currDist {
+				curr, currDist, changed = nb, d, true
+			}
+		}
+		if !changed {
+			return curr
+		}
+	}
+}
+
+func searchLayerOracle(vb *vectorBlock, ns neighborSource, q *preparedQuery, entryPoints []uint32, ef, layer int) maxHeap {
+	var visited bitset
+	visited.grow(ns.nodeCount())
+	visited.clearAll()
+	var candidates minHeap
+	var results maxHeap
+
+	for _, ep := range entryPoints {
+		if visited.has(ep) {
+			continue
+		}
+		visited.set(ep)
+		d := vb.distance(q, vb.nodeVector(ep))
+		candidates.push(heapItem{id: ep, dist: d})
+		results.push(heapItem{id: ep, dist: d})
+	}
+	for candidates.Len() > 0 {
+		nearest := candidates.pop()
+		if results.Len() >= ef && nearest.dist > results.peek().dist {
+			break
+		}
+		for _, nb := range ns.neighborsAt(nearest.id, layer) {
+			if visited.has(nb) {
+				continue
+			}
+			visited.set(nb)
+			d := vb.distance(q, vb.nodeVector(nb))
+			if results.Len() < ef || d < results.peek().dist {
+				candidates.push(heapItem{id: nb, dist: d})
+				results.push(heapItem{id: nb, dist: d})
+				if results.Len() > ef {
+					results.pop()
+				}
+			}
+		}
+	}
+	return results
+}
+
+func searchTopKOracle(g *mappedGraph, query []byte, ef, k int) []string {
+	vb := &g.vectorBlock
+	if g.nodeCount() == 0 || k <= 0 {
+		return nil
+	}
+	q := vb.prepareQuery(query)
+	if k > ef {
+		ef = k
+	}
+	ep := g.entryPoint
+	for l := g.maxLevel; l > 0; l-- {
+		ep = greedyClosestOracle(vb, g, &q, ep, l)
+	}
+	results := searchLayerOracle(vb, g, &q, []uint32{ep}, ef, 0)
+
+	items := make([]heapItem, results.Len())
+	copy(items, results)
+	sort.Slice(items, func(i, j int) bool { return items[i].dist < items[j].dist })
+
+	out := make([]string, 0, k)
+	for _, it := range items {
+		if len(out) >= k {
+			break
+		}
+		out = append(out, g.externalIDAt(it.id))
+	}
+	return out
+}
+
+// TestBatchedRankingMatchesUnbatched is the correctness half of the batching
+// change: scoring a whole neighbor run at once must rank EXACTLY as scoring the
+// run one candidate at a time did.
+//
+// RANKING, NOT RECALL, IS THE ASSERTION. A batching bug that reorders candidates
+// within a run — or drops the tail of one — changes which ids come back and in
+// what order while barely moving an aggregate recall number, so a threshold test
+// would pass through it. Identical ordered id lists is the property that cannot.
+//
+// The comparison is made on THE SAME GRAPH, so topology, entry point and beam
+// width are held fixed and the only variable is how the distances were computed.
+func TestBatchedRankingMatchesUnbatched(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		dtype byte
+	}{
+		{"float32", dtypeFloat32},
+		{"ubinary", dtypeUbinary},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			const dim = 64
+			items := float32Items(400, dim)
+			blob, err := encodeGraphV3(
+				buildBinaryHNSWSerialDeterministic(items, dim*4, tc.dtype, defaultM, defaultEfConstruction))
+			if err != nil {
+				t.Fatalf("encode: %v", err)
+			}
+
+			// ONE reader: the shipped batched path. The unbatched side is the
+			// oracle above, which walks the SAME graph through the prior
+			// algorithm.
+			g, err := openGraphV3(blob)
+			if err != nil {
+				t.Fatalf("open: %v", err)
+			}
+
+			for _, ef := range []int{10, 50, 200} {
+				g.setEfSearch(ef)
+
+				for qi := range 40 {
+					q := items[qi].vec
+					gotB := hitIDs(g.search(q, 25, nil))
+					gotU := searchTopKOracle(g, q, ef, 25)
+
+					if len(gotB) == 0 {
+						t.Fatalf("control: ef=%d query %d returned nothing, so equality below "+
+							"would be vacuous", ef, qi)
+					}
+					if !slicesEqual(gotB, gotU) {
+						t.Fatalf("ef=%d query %d: batched ranking %v differs from the "+
+							"one-at-a-time oracle %v — the fused gather changed results, not "+
+							"just their cost", ef, qi, gotB, gotU)
+					}
+				}
+			}
+		})
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

@@ -37,6 +37,7 @@ const DefaultPort = 15021
 var (
 	mu          sync.Mutex
 	serverUp    bool
+	server      *http.Server // non-nil exactly while serverUp; the handle Stop closes
 	cpuActive   bool
 	cpuBuf      *bytes.Buffer // in-progress capture; nil when idle
 	lastCapture []byte        // bytes of the most recent completed capture
@@ -84,7 +85,30 @@ func ensureServerLocked() {
 			slog.Error("pprof server exited", "error", err)
 		}
 	}()
+	server = srv
 	serverUp = true
+}
+
+// Stop shuts the pprof endpoint down, releasing the port and unwinding the
+// Serve goroutine plus any connections still open on it. Idempotent — a no-op
+// when nothing is running — and a later EnsureServer binds again.
+//
+// Close rather than Shutdown: /debug/pprof/profile and /debug/pprof/trace are
+// long-poll handlers (30s by default), and a graceful drain would hold the
+// caller for that whole window. The daemon calls this LAST in its shutdown
+// drain, so the endpoint stays reachable for the duration of every other
+// subsystem's stop — a wedged drain is exactly when a goroutine dump is worth
+// having.
+func Stop() {
+	mu.Lock()
+	srv := server
+	server = nil
+	serverUp = false
+	mu.Unlock()
+	if srv == nil {
+		return
+	}
+	_ = srv.Close()
 }
 
 // StartCPU begins a CPU profile into an in-memory buffer, lazily starting

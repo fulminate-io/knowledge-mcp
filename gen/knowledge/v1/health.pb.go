@@ -23,26 +23,26 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type HealthCheckRequest struct {
+type CheckRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *HealthCheckRequest) Reset() {
-	*x = HealthCheckRequest{}
+func (x *CheckRequest) Reset() {
+	*x = CheckRequest{}
 	mi := &file_knowledge_v1_health_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *HealthCheckRequest) String() string {
+func (x *CheckRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*HealthCheckRequest) ProtoMessage() {}
+func (*CheckRequest) ProtoMessage() {}
 
-func (x *HealthCheckRequest) ProtoReflect() protoreflect.Message {
+func (x *CheckRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_knowledge_v1_health_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -54,31 +54,31 @@ func (x *HealthCheckRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use HealthCheckRequest.ProtoReflect.Descriptor instead.
-func (*HealthCheckRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use CheckRequest.ProtoReflect.Descriptor instead.
+func (*CheckRequest) Descriptor() ([]byte, []int) {
 	return file_knowledge_v1_health_proto_rawDescGZIP(), []int{0}
 }
 
-type HealthCheckResponse struct {
+type CheckResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *HealthCheckResponse) Reset() {
-	*x = HealthCheckResponse{}
+func (x *CheckResponse) Reset() {
+	*x = CheckResponse{}
 	mi := &file_knowledge_v1_health_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *HealthCheckResponse) String() string {
+func (x *CheckResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*HealthCheckResponse) ProtoMessage() {}
+func (*CheckResponse) ProtoMessage() {}
 
-func (x *HealthCheckResponse) ProtoReflect() protoreflect.Message {
+func (x *CheckResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_knowledge_v1_health_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -90,8 +90,8 @@ func (x *HealthCheckResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use HealthCheckResponse.ProtoReflect.Descriptor instead.
-func (*HealthCheckResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use CheckResponse.ProtoReflect.Descriptor instead.
+func (*CheckResponse) Descriptor() ([]byte, []int) {
 	return file_knowledge_v1_health_proto_rawDescGZIP(), []int{1}
 }
 
@@ -297,9 +297,9 @@ var File_knowledge_v1_health_proto protoreflect.FileDescriptor
 
 const file_knowledge_v1_health_proto_rawDesc = "" +
 	"\n" +
-	"\x19knowledge/v1/health.proto\x12\fknowledge.v1\"\x14\n" +
-	"\x12HealthCheckRequest\"\x15\n" +
-	"\x13HealthCheckResponse\"\x0f\n" +
+	"\x19knowledge/v1/health.proto\x12\fknowledge.v1\"\x0e\n" +
+	"\fCheckRequest\"\x0f\n" +
+	"\rCheckResponse\"\x0f\n" +
 	"\rStatusRequest\"\xa5\x04\n" +
 	"\x0eStatusResponse\x12\x10\n" +
 	"\x03pid\x18\x01 \x01(\x03R\x03pid\x12\x14\n" +
@@ -317,9 +317,9 @@ const file_knowledge_v1_health_proto_rawDesc = "" +
 	"\fembed_queued\x18\v \x01(\x03R\vembedQueued\x12#\n" +
 	"\rembed_running\x18\f \x01(\x03R\fembedRunning\x12'\n" +
 	"\x0fembed_succeeded\x18\r \x01(\x03R\x0eembedSucceeded\x12!\n" +
-	"\fembed_failed\x18\x0e \x01(\x03R\vembedFailed2\xa2\x01\n" +
-	"\rHealthService\x12L\n" +
-	"\x05Check\x12 .knowledge.v1.HealthCheckRequest\x1a!.knowledge.v1.HealthCheckResponse\x12C\n" +
+	"\fembed_failed\x18\x0e \x01(\x03R\vembedFailed2\x96\x01\n" +
+	"\rHealthService\x12@\n" +
+	"\x05Check\x12\x1a.knowledge.v1.CheckRequest\x1a\x1b.knowledge.v1.CheckResponse\x12C\n" +
 	"\x06Status\x12\x1b.knowledge.v1.StatusRequest\x1a\x1c.knowledge.v1.StatusResponseB@Z>github.com/fulminate-io/knowledge/gen/knowledge/v1;knowledgev1b\x06proto3"
 
 var (
@@ -336,15 +336,15 @@ func file_knowledge_v1_health_proto_rawDescGZIP() []byte {
 
 var file_knowledge_v1_health_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_knowledge_v1_health_proto_goTypes = []any{
-	(*HealthCheckRequest)(nil),  // 0: knowledge.v1.HealthCheckRequest
-	(*HealthCheckResponse)(nil), // 1: knowledge.v1.HealthCheckResponse
-	(*StatusRequest)(nil),       // 2: knowledge.v1.StatusRequest
-	(*StatusResponse)(nil),      // 3: knowledge.v1.StatusResponse
+	(*CheckRequest)(nil),   // 0: knowledge.v1.CheckRequest
+	(*CheckResponse)(nil),  // 1: knowledge.v1.CheckResponse
+	(*StatusRequest)(nil),  // 2: knowledge.v1.StatusRequest
+	(*StatusResponse)(nil), // 3: knowledge.v1.StatusResponse
 }
 var file_knowledge_v1_health_proto_depIdxs = []int32{
-	0, // 0: knowledge.v1.HealthService.Check:input_type -> knowledge.v1.HealthCheckRequest
+	0, // 0: knowledge.v1.HealthService.Check:input_type -> knowledge.v1.CheckRequest
 	2, // 1: knowledge.v1.HealthService.Status:input_type -> knowledge.v1.StatusRequest
-	1, // 2: knowledge.v1.HealthService.Check:output_type -> knowledge.v1.HealthCheckResponse
+	1, // 2: knowledge.v1.HealthService.Check:output_type -> knowledge.v1.CheckResponse
 	3, // 3: knowledge.v1.HealthService.Status:output_type -> knowledge.v1.StatusResponse
 	2, // [2:4] is the sub-list for method output_type
 	0, // [0:2] is the sub-list for method input_type

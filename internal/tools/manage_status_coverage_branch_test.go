@@ -196,10 +196,10 @@ func TestCoverageRows_BranchNoSegProbe(t *testing.T) {
 	assert.Equal(t, DispositionNoSegments, branch.SegDisposition,
 		"the honest band is the dash: every named band asserts an arm is servicing this graph, and none is")
 
-	assert.NotContains(t, seg.probed, "code/agent@launch-fixes",
+	assert.NotContains(t, seg.probedKeys(), "code/agent@launch-fixes",
 		"the branch key must never be probed — the production reader lazily constructs a manager "+
 			"and a directory for whatever key it is handed")
-	assert.Contains(t, seg.probed, "code/agent",
+	assert.Contains(t, seg.probedKeys(), "code/agent",
 		"the BASE key is still probed, so the branch row's silence is a declined probe rather than a dead reader")
 
 	// KNOWN POSITIVE on the same measurement: the base row reports the real pool the

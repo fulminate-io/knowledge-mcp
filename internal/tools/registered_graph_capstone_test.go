@@ -47,8 +47,15 @@ func TestCapstone_RegisteredGraphBothToolsReturnHits(t *testing.T) {
 		gc, handler := newInterceptHarnessWithHandler(t, &execHits, cannedNodesResp(
 			&knowledgev1.Node{Id: hitID, Type: "fact", SymbolName: hitSymbol},
 		))
+		// The capstone is about a graph that EXISTS: the type is registered and
+		// (hellograph, demo) has been collected, so the selector gate resolves and
+		// the two arms are what the subtests are actually exercising.
+		handler.graphNames = []string{customName}
 		mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: hitID, Score: 0.9}}}
-		return &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}, mgr, handler
+		return &interceptDeps{
+			gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr,
+			gtCRUD: registeredGraphTypes(customGraph),
+		}, mgr, handler
 	}
 
 	t.Run("search tool returns the seeded content via the client engine", func(t *testing.T) {

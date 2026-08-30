@@ -13,149 +13,6 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/tools"
 )
 
-// segmentGraphRef names one segment-bearing graph instance. It is the key the
-// reconcile pass enumerates and the key the per-graph delta horizons are held under.
-type segmentGraphRef struct {
-	gt   kgtypes.GraphType
-	name string
-}
-
-// mergePending is what one delta pull produced and what the caller must commit ONLY
-// after the drain that made it durable.
-type mergePending struct {
-	// Horizon is the server-served horizon this window was pulled up to.
-	Horizon int64
-	// Merged is how many live items were handed to the local segments.
-	Merged int
-	// Pull reports whether a pull happened at all this pass. A graph with no horizon
-	// of any kind pulls nothing, and a commit must not advance anything for it.
-	Pull bool
-}
-
-// consumeSegmentDelta pulls one graph's bounded delta window and lands BOTH halves —
-// the deletes on the local pool and the live items into the local segments — unless
-// deltaScope excludes it this pass (see reconcileSegmentCoverageScoped).
-//
-// WHERE THE HORIZON COMES FROM, in order:
-//  1. the in-memory horizon carried by this process;
-//  2. otherwise the DURABLE merge horizon;
-//  3. otherwise the durable REBUILD watermark;
-//  4. otherwise NO PULL AT ALL.
-//
-// CLAUSE 4 IS THE LOAD RULE AND IT IS DELIBERATE. A zero-watermark scan of this axis
-// is the full vectored corpus, so seeding an unseeded graph from zero would make
-// every process pay one full-corpus read per such graph, and merging that window
-// would be the whole-corpus rebuild this path exists to replace. An unseeded graph
-// therefore pulls nothing and waits for the coverage backstop's rotation, which seeds
-// its horizon on both of that arm's writing exits — bounded at one rotation, once per
-// machine, against a full-corpus read on EVERY boot today.
-//
-// THE CONSEQUENCE, stated rather than hidden: until a graph's horizon is seeded it
-// learns no server-side deletes from this feed either. Hard deletes never rode this
-// feed at all, so nothing about that story changes.
-//
-// Best-effort throughout, like every other arm of this pass: a failure WARNs and the
-// pass moves on. A window that does not land this tick lands on the next one, because
-// the caller only commits the horizon after a successful drain.
-func (c *client) consumeSegmentDelta(
-	ctx context.Context, g segmentGraphRef, deltaScope map[segmentGraphRef]struct{},
-) mergePending {
-	if deltaScope != nil {
-		if _, signaled := deltaScope[g]; !signaled {
-			return mergePending{}
-		}
-	}
-	scanner := c.PipelineScanner()
-	if scanner == nil {
-		return mergePending{} // degraded client — no scan seam to read the feed through.
-	}
-
-	since, ok := c.mergeHorizonFor(g)
-	if !ok {
-		slog.Debug("bootstrap: segment delta has no horizon for this graph yet — pulling nothing until the backstop seeds one",
-			"graph_type", g.gt, "name", g.name)
-		return mergePending{}
-	}
-
-	out, err := tools.MergeSegmentDelta(
-		ctx, scanner, c.SegmentShipper(), c.segmentMgr, c.segmentMgr, g.gt, g.name, since)
-	if err != nil {
-		slog.Warn("bootstrap: segment delta merge failed (continuing; the horizon is not advanced, so the window is re-read next pass)",
-			"graph_type", g.gt, "name", g.name, "error", err)
-		return mergePending{}
-	}
-	if out.Learned > 0 {
-		slog.Info("bootstrap: segment delta landed server-side deletes on the local pool",
-			"graph_type", g.gt, "name", g.name, "learned", out.Learned, "carried", out.Carried)
-	}
-	if out.Merged > 0 {
-		slog.Info("bootstrap: segment delta merged co-worker updates into the local segments",
-			"graph_type", g.gt, "name", g.name, "merged", out.Merged, "since", since)
-	}
-	return mergePending{Horizon: out.Horizon, Merged: out.Merged, Pull: true}
-}
-
-// mergeHorizonFor resolves the window's start for one graph, walking the three seed
-// sources in order. ok=false is clause 4 — no horizon of any kind, so no pull.
-func (c *client) mergeHorizonFor(g segmentGraphRef) (int64, bool) {
-	c.deltaHorizonMu.Lock()
-	since, carried := c.deltaHorizon[g]
-	c.deltaHorizonMu.Unlock()
-	if carried {
-		return since, true
-	}
-
-	// The durable merge horizon: what the last landed merge for this graph was
-	// scanned up to, which survives a restart precisely so the next process re-merges
-	// one bounded window rather than the corpus.
-	if h, err := c.segmentMgr.LoadMergeWatermark(g.gt, g.name); err != nil {
-		slog.Warn("bootstrap: segment delta could not read the merge horizon (skipping this graph this pass)",
-			"graph_type", g.gt, "name", g.name, "error", err)
-		return 0, false
-	} else if h > 0 {
-		return h, true
-	}
-
-	// The durable rebuild watermark: the last horizon a landed rebuild published up
-	// to. A graph that has landed one has a genuine bound to read from.
-	w, _, err := c.segmentMgr.LoadRebuildState(g.gt, g.name)
-	if err != nil {
-		slog.Warn("bootstrap: segment delta could not read the rebuild state to seed its horizon (skipping this graph this pass)",
-			"graph_type", g.gt, "name", g.name, "error", err)
-		return 0, false
-	}
-	if w > 0 {
-		return w, true
-	}
-	return 0, false
-}
-
-// commitMergeWatermark is part TWO of the merge's two-part commit, and the caller
-// runs it ONLY on the branch where the drain that shipped the merge succeeded. A
-// skipped commit leaves the horizon where it was, so the same window is re-pulled next
-// tick and the same items are re-merged — idempotent, because the add is keyed by id.
-func (c *client) commitMergeWatermark(g segmentGraphRef, pending mergePending) {
-	if !pending.Pull || pending.Horizon <= 0 {
-		return
-	}
-	c.deltaHorizonMu.Lock()
-	if c.deltaHorizon == nil {
-		c.deltaHorizon = make(map[segmentGraphRef]int64)
-	}
-	advanced := pending.Horizon > c.deltaHorizon[g]
-	if advanced {
-		c.deltaHorizon[g] = pending.Horizon
-	}
-	c.deltaHorizonMu.Unlock()
-	if !advanced {
-		return
-	}
-	if err := c.segmentMgr.SaveMergeWatermark(g.gt, g.name, pending.Horizon); err != nil {
-		slog.Warn("bootstrap: segment delta could not persist the merge horizon (continuing; the window is re-read next process)",
-			"graph_type", g.gt, "name", g.name, "error", err)
-	}
-}
-
 // reconcileSegmentCoverage is the startup + periodic read-side reconcile: it walks
 // the graphs this client has interacted with that carry rebuildable segments (see
 // segmentBearingGraphs — a local working-set read, no enumeration RPC), probes each
@@ -175,11 +32,11 @@ func (c *client) commitMergeWatermark(g segmentGraphRef, pending mergePending) {
 // healthy-graph continue — so it has its own detector, its own log line and its own
 // placement, and only the rebuild entry point and the breaker are shared.
 //
-// It is the recovery lever the prior two fixes left a gap for: the read-side
-// recoverIfDegenerate only runs lazily inside a Search, and the write-side
-// auto-heal only fires on the collect-armed embed-drain edge — neither event fires
-// for a graph that is fully embedded and never re-collected, so its empty pool had
-// no trigger to repopulate. This reconcile is INDEPENDENT of both events.
+// It is the recovery lever the prior two fixes left a gap for. The write-side
+// auto-heal fires only on the collect-armed embed-drain edge, so a graph that is
+// fully embedded and never re-collected has no trigger to repopulate an empty pool.
+// A second lever once sat beside it — a read-side degeneracy backstop running lazily
+// inside a Search — and it is GONE, making this reconcile the only independent one.
 //
 // Best-effort throughout: a nil segment manager (headless/--no-llm-pipeline) is a
 // no-op; a per-graph probe or rebuild error WARNs and continues to the next graph,
@@ -213,10 +70,9 @@ func (c *client) reconcileSegmentCoverage(ctx context.Context) {
 //
 // FILTERING THE WALK RATHER THAN FORKING THE BODY is deliberate. Running only the
 // merge and drain arms for nudged graphs would be cheaper still, but it would
-// silently retire the arms the other recorders exist to reach: a
-// coverage-suppression nudge fires precisely when the read engine is stuck below
-// the publish coverage ratio, and what unsticks it is the manifest-completeness arm
-// and the degeneracy → heal → rebuild chain, neither of which is the drain.
+// silently retire the arms the other recorders exist to reach: a search nudge fires
+// precisely when a user is reading a graph, and what unsticks a graph whose read pool
+// has collapsed is the degeneracy → heal → rebuild chain, which is not the drain.
 // Filtering keeps every recorder's lever intact and keeps reconcileOneGraph's body
 // byte-identical.
 //
@@ -424,7 +280,8 @@ const segmentReconcileBootDelay = 30 * time.Second
 // a graph left degenerate after the L2-first load (cold/partial local L2 while the
 // server holds the full corpus), which would otherwise wait up to the full
 // segmentReconcileInterval for the periodic loop's first tick. Spawned with `go` from
-// wirePipelineRuntime so the delay is awaited HERE, never on the wiring path. Exits
+// spawnBootSegmentPasses (client_segment_balance_startup.go), which wirePipelineRuntime
+// calls, so the delay is awaited HERE and never on the wiring path. Exits
 // promptly on ctx.Done (no leak); best-effort (reconcileSegmentCoverage swallows
 // per-graph errors).
 func (c *client) bootDelayReconcile(ctx context.Context) {
@@ -489,9 +346,11 @@ func (c *client) runSegmentReconcileLoop(ctx context.Context, interval time.Dura
 			for _, n := range nudged {
 				scope[segmentGraphRef{gt: n.GraphType, name: n.Name}] = struct{}{}
 			}
-			// The message names the MECHANISM rather than any one recorder: three
-			// different conditions reach this wake, so naming one of them would
-			// misattribute the other two.
+			// The message names the MECHANISM rather than any one recorder: THREE
+			// different conditions reach this wake — a backlog crossing the re-emit byte
+			// cap, a search on the graph, and the server's segment cheap tick reporting
+			// changes past the stamp this client last poked on — so naming one would
+			// misattribute the others.
 			slog.Debug("bootstrap: segment reconcile woken by nudge",
 				"graphs", len(nudged))
 			c.reconcileSegmentCoverageScoped(ctx, scope)

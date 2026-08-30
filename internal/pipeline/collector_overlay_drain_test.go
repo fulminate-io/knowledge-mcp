@@ -61,7 +61,17 @@ func (f *statefulEmbedGapFake) PipelineScan(_ context.Context, req *knowledgev1.
 			break
 		}
 	}
-	return &knowledgev1.PipelineScanResponse{Items: items, DirtyGen: f.gen}, nil
+	// GAP-SET-COMPLETE MIRRORS THE SERVER'S OWN RULE rather than being hardcoded
+	// true: the page is the whole admissible set exactly when it did NOT fill the
+	// budget it was given. A fake that always claimed complete would let a drain
+	// stamp fire on a truncated page, which is the distinction the flag exists to
+	// draw — so the fixture has to reproduce it or every consumer test measures a
+	// server that never truncates.
+	return &knowledgev1.PipelineScanResponse{
+		Items:          items,
+		DirtyGen:       f.gen,
+		GapSetComplete: !(limit > 0 && len(items) >= limit),
+	}, nil
 }
 
 // markWritten records a node's vector as written back — the event that drops it
@@ -134,6 +144,7 @@ func TestCollectorRunLoop_OverlayBacklogDrainsAcrossWavesAndQuiesces(t *testing.
 		cfg.Tick, cfg.Tick, nil, nil, false, true, // summaryEnabled=false, embedEnabled=true: this test drives runEmbedLoop directly
 		nil, // nil genSnapshot: no central gen-poll in this test → discover always scanGaps (the pre-two-phase drain path this test exercises)
 		nil, // nil collectInFlight: no collect runtime wired → the collect-gate is inert and every scan proceeds
+		nil, // nil collectEpoch: no epoch source → this collector stamps no drain and quiescentBothAxes declines, which this drain test does not exercise
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())

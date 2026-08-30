@@ -22,12 +22,13 @@ import (
 // quantile_cont (3000 / 1000).
 func TestDetectors_AllFamilies(t *testing.T) {
 	svc := newDetectorFixture(t)
-	c, err := svc.loadCorpus(context.Background())
+	c, err := svc.loadCorpus(context.Background(), Filters{})
 	require.NoError(t, err)
 
 	t.Run("duplicate commands (time-only, session-scoped)", func(t *testing.T) {
-		got := c.duplicateCommands()
+		got, total := c.duplicateCommands()
 		require.Len(t, got, 1, "only the twice-run Bash/h1 command qualifies")
+		assert.Equal(t, int64(1), total, "pre-cap group total; this fixture is far under the cap")
 		assert.Equal(t, "S1", got[0].SessionID)
 		assert.Equal(t, "Bash", got[0].ToolName)
 		assert.Equal(t, "h1", got[0].ToolInputHash)
@@ -91,14 +92,17 @@ func TestDetectors_AllFamilies(t *testing.T) {
 	})
 
 	t.Run("subagent wall time", func(t *testing.T) {
-		got := c.subagentWallTime()
+		got, total := c.subagentWallTime()
 		require.Len(t, got, 2)
+		assert.Equal(t, int64(2), total, "pre-cap agent total")
 		assert.Equal(t, "agent-1", got[0].AgentID)
 		assert.Equal(t, "researcher", got[0].SubagentType)
-		assert.Equal(t, int64(120000), got[0].WallMs)
+		assert.Equal(t, int64(120000), got[0].SpanMs)
+		assert.Equal(t, int64(120000), got[0].ActiveMs, "agent-1's single 120s gap is below the idle threshold, so active == span")
 		assert.Equal(t, int64(500), got[0].InputTokens)
 		assert.Equal(t, "agent-2", got[1].AgentID)
-		assert.Equal(t, int64(60000), got[1].WallMs)
+		assert.Equal(t, int64(60000), got[1].SpanMs)
+		assert.Equal(t, int64(60000), got[1].ActiveMs)
 	})
 
 	t.Run("agent-chain over-orchestration proxy", func(t *testing.T) {
@@ -107,8 +111,10 @@ func TestDetectors_AllFamilies(t *testing.T) {
 		assert.Equal(t, "S1", got[0].SessionID)
 		assert.Equal(t, int64(2), got[0].SubagentCount)
 		assert.Equal(t, int64(2), got[0].SubagentTypeDiversity)
-		assert.Equal(t, int64(180000), got[0].TotalSubagentWallMs)
-		assert.Equal(t, int64(120000), got[0].MaxSubagentWallMs)
+		assert.Equal(t, int64(180000), got[0].TotalSubagentSpanMs)
+		assert.Equal(t, int64(120000), got[0].MaxSubagentSpanMs)
+		assert.Equal(t, int64(180000), got[0].TotalSubagentActiveMs, "every gap in this fixture is below the idle threshold")
+		assert.Equal(t, int64(120000), got[0].MaxSubagentActiveMs)
 	})
 
 	t.Run("waste summary (incl. max_tokens truncation + is_meta exclusion)", func(t *testing.T) {

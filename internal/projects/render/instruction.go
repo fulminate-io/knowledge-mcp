@@ -16,7 +16,7 @@ import (
 
 // assembleInstruction renders a NodeAgent / NodeSkill / NodeToolGuide:
 // header + Content (the authoritative spec, typically markdown
-// frontmatter + body) + RenderTree walk + Tool Guides (via EdgeUses)
+// frontmatter + body) + subtree walk + Tool Guides (via EdgeUses)
 // + Constraining Rules (via incoming EdgeConstrains) + Used Skills
 // (for NodeAgent, via EdgeUses to NodeSkill).
 //
@@ -39,18 +39,36 @@ func assembleInstruction(ctx context.Context, gc GraphCaller, node *knowledgev1.
 		sb.WriteString(c)
 		sb.WriteString("\n\n")
 	}
-	RenderTree(ctx, gc, &sb, node, 0, 3)
+	childIndex, byID, dependsOn, truncated := AssembleSubtree(ctx, gc, node.Id, 3)
+	RenderTreeFromIndex(&sb, node, 0, 3, childIndex, dependsOn)
 
 	outEdges, _ := IterEdges(ctx, gc, node.Id, kgwire.OutgoingEdges)
+	inEdges, _ := IterEdges(ctx, gc, node.Id, kgwire.IncomingEdges, kgtypes.EdgeConstrains)
 
-	// Follow EdgeUses to tool_guides.
-	var guides []*knowledgev1.Node
+	// ONE hydrate covers the uses targets and the constrains sources. The uses
+	// targets are read twice below — once as tool guides, once as an agent's
+	// skills — and hydrating them once here is what removes the duplicate
+	// fetch renderAgentSkills used to issue over this same edge slice.
+	peerIDs := make([]string, 0, len(outEdges)+len(inEdges))
 	for _, e := range outEdges {
 		if kgtypes.EdgeType(e.Type) == kgtypes.EdgeUses {
-			gn, err := FetchNode(ctx, gc, e.ToId)
-			if err == nil && gn != nil {
-				guides = append(guides, gn)
-			}
+			peerIDs = append(peerIDs, e.ToId)
+		}
+	}
+	for _, e := range inEdges {
+		peerIDs = append(peerIDs, e.FromId)
+	}
+	peers, peersTruncated, _ := FetchNodesByIDs(ctx, gc, peerIDs)
+	truncated = truncated || peersTruncated
+
+	// Follow EdgeUses to tool_guides. Walk the edge slice, not the map.
+	var guides []*knowledgev1.Node
+	for _, e := range outEdges {
+		if kgtypes.EdgeType(e.Type) != kgtypes.EdgeUses {
+			continue
+		}
+		if gn, ok := peers[e.ToId]; ok {
+			guides = append(guides, gn)
 		}
 	}
 	if len(guides) > 0 {
@@ -60,12 +78,10 @@ func assembleInstruction(ctx context.Context, gc GraphCaller, node *knowledgev1.
 		}
 	}
 
-	// Find constraining rules via inbound EdgeConstrains.
-	inEdges, _ := IterEdges(ctx, gc, node.Id, kgwire.IncomingEdges, kgtypes.EdgeConstrains)
+	// Constraining rules via inbound EdgeConstrains.
 	var rules []*knowledgev1.Node
 	for _, e := range inEdges {
-		rn, err := FetchNode(ctx, gc, e.FromId)
-		if err == nil && rn != nil {
+		if rn, ok := peers[e.FromId]; ok {
 			rules = append(rules, rn)
 		}
 	}
@@ -81,21 +97,23 @@ func assembleInstruction(ctx context.Context, gc GraphCaller, node *knowledgev1.
 
 	// For agents: also follow EdgeUses to skills.
 	if kgtypes.NodeType(node.Type) == kgtypes.NodeAgent {
-		renderAgentSkills(ctx, gc, &sb, outEdges)
+		renderAgentSkills(&sb, outEdges, peers)
 	}
-	return kgtools.TextResult(sb.String())
+	return AppendTruncationNotice(kgtools.TextResult(sb.String()), truncated, len(byID)+len(peers))
 }
 
 // renderAgentSkills writes the `## Used Skills` section by walking
 // the outgoing-EdgeUses targets and keeping only NodeSkill nodes.
-// Verbatim port of cmd/knowledge-server/tools/tools_assemble.go:415
-// with the store reads swapped for FetchNode calls.
-func renderAgentSkills(ctx context.Context, gc GraphCaller, sb *strings.Builder, outEdges []*knowledgev1.Edge) {
+// Ported from cmd/knowledge-server/tools/tools_assemble.go:415.
+//
+// It takes the caller's already-hydrated peer map rather than a graph caller:
+// the caller reads these same uses targets for its Tool Guides section, so
+// hydrating them here as well would fetch every one of them twice.
+func renderAgentSkills(sb *strings.Builder, outEdges []*knowledgev1.Edge, peers map[string]*knowledgev1.Node) {
 	var skills []*knowledgev1.Node
 	for _, e := range outEdges {
 		if kgtypes.EdgeType(e.Type) == kgtypes.EdgeUses {
-			sn, err := FetchNode(ctx, gc, e.ToId)
-			if err == nil && sn != nil && kgtypes.NodeType(sn.Type) == kgtypes.NodeSkill {
+			if sn, ok := peers[e.ToId]; ok && kgtypes.NodeType(sn.Type) == kgtypes.NodeSkill {
 				skills = append(skills, sn)
 			}
 		}

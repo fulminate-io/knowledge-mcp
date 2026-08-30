@@ -11,6 +11,31 @@ const (
 	defaultEfSearch       = 50  // query-time beam width
 )
 
+// DefaultVecBytes is the CLIENT MODULE'S SINGLE VECTOR-WIDTH AUTHORITY, exported
+// so the one other client package that needs the width reads it instead of
+// declaring its own copy.
+//
+// THERE WERE THREE DECLARATIONS AND NOW THERE IS ONE. thought/centroid.go
+// carried its own bit-count and byte-count literals beside this file's
+// defaultVecBytes — three literals for one fact, which is three places for a
+// width change to be applied in two. They now derive from this constant, and a
+// criterion counts the surviving numeric declarations and requires exactly one.
+// (That criterion greps RAW lines, not comment-stripped ones, so this comment
+// deliberately describes the retired constants instead of reproducing them.)
+//
+// IT IS ONE PER MODULE, NOT ONE GLOBALLY, and that is the architecture invariant
+// rather than an oversight: AGENTS.md forbids any hand-written package shared
+// between cmd/knowledge and cmd/knowledge-server, so the server keeps its own
+// binaryVectorBytes in store/graph_keys.go. Two authorities, one per side of a
+// boundary whose only shared contract is generated protobuf.
+//
+// THE EXPORTED SPELLING IS DELIBERATE: a landed gate greps the whole tree for
+// the exported form of the SERVER's binary-vector-bytes constant name and reds
+// on any line containing it — including a comment, since the gate is a plain
+// substring scan rather than a symbol lookup. This name shares no such
+// substring, and this paragraph is worded so as not to reintroduce one.
+const DefaultVecBytes = defaultVecBytes
+
 // graphHit is the graph's neutral result: an external ID and a higher-is-better
 // similarity score. The format adapter (format.go) maps it to searchengine.Hit.
 type graphHit struct {

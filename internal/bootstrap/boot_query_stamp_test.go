@@ -14,10 +14,9 @@ import (
 
 // boot_query_stamp_test.go is the ONE-SHOT half of the query-origin completeness
 // gate. The other gates cannot reach this call: TestOperationEntryPoints scopes
-// to tool dispatch by design, and hive_loops_stamp_test.go covers the recurring
-// background loops. What is left is the one query a daemon still issues while
-// booting — the instruction-bootstrap seed — which is precisely the residual
-// client.unstamped bucket observed in production.
+// to tool dispatch by design. What is left is the one query a daemon still
+// issues while booting — the instruction-bootstrap seed — which is precisely
+// the residual client.unstamped bucket observed in production.
 
 // TestInstructionBootstrapStampsOperation asserts BOTH graph calls the
 // instruction bootstrap issues carry the instruction.bootstrap operation. The

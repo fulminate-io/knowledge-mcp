@@ -14,19 +14,19 @@ var falseValue = false
 // AllToolSchemas returns the complete client-owned MCP tool catalog.
 //
 // The MCP tool catalog is client-owned: the client is the single source of truth
-// for the tools/list surface. Both loadSchemas (the tools/list responder) and the
-// dream worker's BuildAllowedTools compose from this one builder so the advertised
-// surface and the worker allowlist can never drift apart.
+// for the tools/list surface. loadSchemas (the tools/list responder) composes
+// from this one builder, so the advertised surface has exactly one definition
+// site.
 //
-// The catalog is a static set of 23 pure schema literals; building it is
+// The catalog is a static set of 22 pure schema literals; building it is
 // constant-time and never fails, so callers can treat it as a plain value.
 //
 // Grouping mirrors the historical composition:
 //   - generic primitives (query/traverse/mutate/delete/manage)
 //   - sync (the bidirectional Fulminate Cloud sync tool)
 //   - first-class tools (thoughts/search/file_symbols/collect)
-//   - the remaining client-owned tools (worker/ast/help/record_decision +
-//     the create_* batch creators + assemble)
+//   - the remaining client-owned tools (custom_collector/ast/help/record_decision +
+//     manage_checks + the create_* batch creators + assemble)
 //
 // pipeline_scan + pipeline_list_graphs are NOT advertised. They are
 // index-gap-discovery infra, never LLM-facing tool calls — pipeline_scan rides its
@@ -53,20 +53,17 @@ func AllToolSchemas() []kgtools.MCPTool {
 		CollectToolDef(),
 
 		// Remaining client-owned tools.
-		WorkerToolDef(),
 		GraphTypeToolDef(),
 		AstToolDef(),
 		HelpToolDef(),
 		RecordDecisionToolDef(),
 		AnalyzeUsageToolDef(),
+		ManageChecksToolDef(),
 		CreatePlanToolDef(),
 		CreateTicketToolDef(),
 		CreateProjectToolDef(),
 		CreateResearchToolDef(),
 		CreateTestPlanToolDef(),
 		AssembleToolDef(),
-
-		// Cloud work-queue (agent ops only; daemon ops absent from the schema).
-		HiveToolDef(),
 	}
 }

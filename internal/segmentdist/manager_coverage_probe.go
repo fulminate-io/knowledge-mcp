@@ -6,11 +6,9 @@
 // manager_owner.go.
 //
 // They are grouped because they answer ONE question from different sides — how
-// much of this graph is actually covered — and because each is the STANDALONE
-// wrapper kept for a caller that probes one graph in isolation; the shared-snapshot
-// heal path uses the FromSnapshot forms in manager_snapshot.go instead. Every one
-// of them is source-aware (OSS L2-resident vs cloud manifest), which is the detail
-// a caller reading only the name will otherwise get wrong.
+// much of this graph is actually covered. Every one of them reads a LOCAL operand:
+// the L2-resident set and the engine's own resident counts. There is no second,
+// remote authority to be source-aware about any more.
 
 package segmentdist
 
@@ -20,93 +18,59 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
-	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/bm25"
 )
 
-// HasShippedSegments is the CHEAP zero-shipped-segments presence probe the
-// auto-heal arm uses: ONE ShippedManifestSnapshot read for the graph, returning true
-// when it holds at least one segment meta. The snapshot is login-gated (cloud →
-// the GCS agent manifest/read; OSS not-logged-in → the L2-local source's set), so
-// this probe follows whichever source the graph runs on. It does NOT Fetch any blob
-// and does NOT touch the per-graph engines/maps, so it is safe to call on the embed
-// drain edge without disturbing resident state — strictly the presence list.
+// ShippedSegmentDocCount is the coverage-ratio probe's data source: the
+// segment-covered HNSW doc count for one graph, which is the L2 RESIDENT HNSW doc
+// count (LoadResidentDocCount).
 //
-// Standalone wrapper for callers that probe presence ALONE (no co-located doc-count
-// probe to share a snapshot with). The shared-snapshot heal path uses
-// ShippedManifestSnapshot + HasShippedFromSnapshot to collapse its reads. It probes
-// the HNSW format; taking no format of its own is deliberate, so this wrapper's
-// callers are unaffected by the snapshot API being format-parameterized.
-func (m *Manager) HasShippedSegments(ctx context.Context, gt kgtypes.GraphType, name string) (bool, error) {
-	snapshot, err := m.ShippedManifestSnapshot(ctx, gt, name, hnsw.New().Name())
-	if err != nil {
-		return false, err
-	}
-	return m.HasShippedFromSnapshot(snapshot), nil
-}
-
-// ShippedSegmentDocCount is the coverage-ratio probe's data source: it reports the
-// "segment-covered docs" count for the graph's HNSW coverage. It returns:
+// ONLY THE HNSW DIMENSION IS COUNTED. BM25 metas index the SAME nodes, so counting
+// both would double-count; HNSW is the per-node vector coverage that mirrors the
+// binary_vector_count denominator the coverage ratio compares against.
 //
-//   - covered: the segment-covered HNSW doc count. On the cloud path it is the
-//     summed HNSW meta.DocCount from the GCS manifest snapshot; on the OSS path it is
-//     the L2 resident HNSW doc count. ONLY the HNSW dimension is counted: BM25 metas
-//     index the SAME nodes, so counting both would double-count; HNSW is the
-//     per-node vector coverage that mirrors the graph's binary_vector_count
-//     denominator the coverage ratio compares against.
-//   - anyUnknown: true when ANY summed HNSW meta has DocCount==0 (cloud path only).
-//     A zero doc count means that segment predates the doc_count wire plumbing (an
-//     old blob written before the field existed), so its real coverage is UNKNOWN.
-//     The coverage probe treats anyUnknown as the conservative-unknown signal and
-//     DISARMS the ratio trigger (falling back to the zero-only heal) — without this
-//     guard a fleet mid-migration, whose every shipped meta still reports
-//     doc_count=0, would read covered=0 on every graph and trigger a fleet-wide
-//     rebuild storm. The OSS/L2 path never returns anyUnknown (the resident count is
-//     always a real, known denominator).
+// IT RETURNS NO CONSERVATIVE-UNKNOWN FLAG, AND THAT SIGNAL IS GONE RATHER THAN
+// ALWAYS-FALSE. The second return meant "at least one segment predates the doc_count
+// wire plumbing, so its real coverage is unknowable", and it disarmed the ratio so a
+// fleet mid-migration would not read covered=0 on every healthy graph and storm a
+// fleet-wide rebuild. It could only ever be true while the count was summed from
+// manifest doc counts. That reading is deleted, the count now comes from the engine's
+// own resident tally, and no engine reports the pre-doc_count sentinel — so the flag
+// was permanently false. A permanently-false bool is the
+// stub-returning-hardcoded-values shape, and every caller branching on it had dead
+// code behind that branch, so the return is removed rather than pinned to false.
 //
-// It is SOURCE-AWARE, mirroring the heal path's healNeedsRebuildLocal split:
-//
-//   - OSS / L2-authoritative (not logged in): there is no server/GCS manifest, and
-//     the local source's List stamps DocCount=0 (so the snapshot would report
-//     covered=0/anyUnknown=true and wrongly disarm). Instead the covered count is
-//     the L2 RESIDENT HNSW doc count (LoadResidentDocCount) — the same L2 numerator
-//     the OSS heal decision uses. anyUnknown is false: the resident count is a real,
-//     known denominator, never the pre-doc_count sentinel.
-//   - CLOUD (logged-in): the GCS manifest carries real per-digest doc_counts, so the
-//     covered count is summed from the ShippedManifestSnapshot (the prior behavior).
-//
-// The OSS branch loads the read engine (idempotent, L2-only); the cloud branch does
-// NOT touch the per-graph engines/maps (one manifest read, no blob fetch).
-//
-// Standalone wrapper preserved for the external coverage seam
-// (tools.SegmentCoverageReader → manage(status)), which probes ONE graph's doc count
-// in isolation. The shared-snapshot heal path uses ShippedDocCountFromSnapshot.
+// THE NAME IS NOW A LEGACY ONE. Nothing is "shipped" anywhere; this counts what the
+// local engine holds. It is kept because it is the tools-side SegmentCoverageReader
+// seam's method name and renaming it is a wider sweep than this step owns.
 func (m *Manager) ShippedSegmentDocCount(
 	ctx context.Context, gt kgtypes.GraphType, name string,
-) (covered int, anyUnknown bool, err error) {
-	if m.IsL2Authoritative(gt, name) {
-		// OSS path: the L2 resident HNSW doc count is the covered denominator (the
-		// local source's List stamps DocCount=0, so the manifest snapshot cannot
-		// supply it). Known count → anyUnknown is always false.
-		resident, err := m.LoadResidentDocCount(ctx, gt, name)
-		if err != nil {
-			return 0, false, err
-		}
-		return resident, false, nil
+) (covered int, err error) {
+	return m.LoadResidentDocCount(ctx, gt, name)
+}
+
+// CachedSegmentCount reports how many segments one graph's per-format L2 cache
+// HOLDS ON DISK. It is the PRESENCE operand: "has this graph ever produced a corpus
+// for this format", answered from the store rather than from the engine.
+//
+// IT IS DELIBERATELY NOT A RESIDENT COUNT. A resident count reads 0 for an EVICTED
+// pool — the residency budget unloaded it while every byte stayed on disk — so using
+// one as a presence signal reports a graph with a complete corpus as never having
+// shipped. This reads the cache's in-memory index only: no disk read, no load, no
+// materialization of an evicted pool, and recency-neutral so asking the question does
+// not perturb the LRU ordering the budget sorts on.
+func (m *Manager) CachedSegmentCount(gt kgtypes.GraphType, name, format string) int {
+	if format == bm25.New().Name() {
+		return len(m.bm25ManagerFor(gt, name).cache.Keys())
 	}
-	hnswFormat := hnsw.New().Name()
-	snapshot, err := m.ShippedManifestSnapshot(ctx, gt, name, hnswFormat)
-	if err != nil {
-		return 0, false, err
-	}
-	covered, anyUnknown = m.ShippedDocCountFromSnapshot(snapshot, hnswFormat)
-	return covered, anyUnknown, nil
+	return len(m.managerFor(gt, name).cache.Keys())
 }
 
 // ResidentDocCount returns the LIVE in-memory HNSW engine resident doc count for
 // one graph: the summed sealed-segment DocCount currently imported into the
 // searchable set. It is the read-side coverage operand the degeneracy probe
 // compares against the server's shipped doc count (the SAME operand
-// recoverIfDegenerate uses internally) — distinct from ShippedSegmentDocCount,
+// the reconcile probe reads) — distinct from ShippedSegmentDocCount,
 // which reads the SERVER's shipped count. A graph that has never been searched or
 // loaded returns 0 (the lazily-constructed engine's set is empty). It is a single
 // atomic snapshot (SegmentedIndex.ResidentDocCount) with no RPC and no load — the
@@ -114,65 +78,6 @@ func (m *Manager) ShippedSegmentDocCount(
 // column reads raw current resident).
 func (m *Manager) ResidentDocCount(gt kgtypes.GraphType, name string) int {
 	return m.managerFor(gt, name).engine.ResidentDocCount()
-}
-
-// IsL2Authoritative reports whether (gt, name) runs on the OSS-local L2-only source
-// (the not-logged-in path) — reading the HNSW embed manager's l2Authoritative flag.
-// The flag is uniform per graph across formats (both formats derive it from the same
-// caller gate), so the HNSW manager's value is representative. The bootstrap heal
-// path calls this to route the OSS degeneracy collapse: an L2-authoritative graph
-// heals from resident-vs-embedded locally, with NO server presence probe.
-func (m *Manager) IsL2Authoritative(gt kgtypes.GraphType, name string) bool {
-	return m.managerFor(gt, name).l2Authoritative
-}
-
-// CoverageSuppressedSince reports when this graph's publish coverage gate became
-// unsatisfiable — the EARLIEST non-zero suppression stamp across the graph's engines
-// — and 0 when no engine is suppressed. A caller pairs it with the bootstrap heal
-// breaker's LatchedSince to answer "since when has this graph been unable to heal",
-// which is the two-owner span the manage(status) stuck band renders.
-//
-// HOW MANY ENGINES, read off the struct rather than off prose: the Manager holds
-// exactly two per-graph distManager maps — managers (HNSW) and bm25Managers (BM25),
-// manager_owner.go — each keyed by the bare graphKey with no engine discriminator, so
-// a graph has two engines that can reach the publish coverage gate and each keeps its
-// OWN skip streak. The EARLIEST is the honest answer: the graph has been unable to
-// publish complete coverage since the first of its engines gave up.
-//
-// It reads the maps DIRECTLY rather than through managerFor/bm25ManagerFor, which
-// lazily CONSTRUCT an engine (cache directory, segment source, possibly a transport
-// build). Its caller asks about every graph in the account, so constructing on a read
-// would build engines for graphs this client does not maintain. A graph with no
-// constructed engine has never published and so has never been suppressed: 0.
-//
-// AND IT DOES NOT WAIT ON THE CONSTRUCTION GATE, which is a deliberate exemption
-// rather than a missed site. It calls only coverageSuppressedSince(), a plain
-// accessor — it never calls load(), so it cannot latch anything on a half-seeded
-// engine. Its answer is identical either way: an engine still being seeded has
-// never published, so it has never been suppressed, which is the same 0 this doc
-// already documents for a graph with no engine at all. Waiting would put an
-// account-wide read behind some other graph's corpus copy, which is precisely the
-// coupling the off-the-lock seed placement exists to avoid.
-func (m *Manager) CoverageSuppressedSince(gt kgtypes.GraphType, name string) int64 {
-	k := graphKey{graphType: gt, graphName: name}
-	m.mu.Lock()
-	hnswGate, hasHNSW := m.managers[k]
-	bm25Gate, hasBM25 := m.bm25Managers[k]
-	m.mu.Unlock()
-
-	earliest := int64(0)
-	consider := func(at int64) {
-		if at != 0 && (earliest == 0 || at < earliest) {
-			earliest = at
-		}
-	}
-	if hasHNSW {
-		consider(hnswGate.dm.coverageSuppressedSince())
-	}
-	if hasBM25 {
-		consider(bm25Gate.dm.coverageSuppressedSince())
-	}
-	return earliest
 }
 
 // LoadResidentDocCount loads the graph's HNSW engine (idempotent; L2-only on the OSS
@@ -238,6 +143,42 @@ func (m *Manager) LoadLiveResidentDocCount(ctx context.Context, gt kgtypes.Graph
 		return 0, nil
 	}
 	return dm.engine.LiveResidentCount(), nil
+}
+
+// LoadSegmentDocCounts answers BOTH resident counts for one graph — the SUMMING
+// shipped count and the DISTINCT live one — from a single observation of one
+// engine. It is the pair manage(status) renders as "shipped N · live M".
+//
+// IT EXISTS BECAUSE THE PAIR IS ONE MEASUREMENT, NOT TWO. Calling
+// LoadResidentDocCount and LoadLiveResidentDocCount in sequence takes two snapshots
+// of the same engine at two instants, and a ship, merge or reclaim landing between
+// them moves one operand and not the other. Their DIFFERENCE is the duplication
+// signal, so a skew of one between the two reads is indistinguishable from one
+// genuinely duplicated document — and a skew in the other direction produces a
+// negative difference, which is not a negative duplication but a disagreement
+// between two readers of one engine. This is the same single-snapshot rule
+// tools.GraphCoverageCounts applies to the vector count and the failure count, for
+// the same reason: consumers of the pair have zero tolerance.
+//
+// IT IS THE DECIDER FORM. loadIfResident does NOT resurrect an evicted pool, so an
+// evicted graph reports skipped=true rather than a fabricated pair of zeros; a
+// caller must decline on skipped rather than read the zeros as a measurement. The
+// residency read lock spans the load AND both counts, so an eviction can no more
+// land between the two reads than it can between a search's load and its query.
+func (m *Manager) LoadSegmentDocCounts(
+	ctx context.Context, gt kgtypes.GraphType, name string,
+) (shipped, live int, skipped bool, err error) {
+	dm := m.managerFor(gt, name)
+	dm.residencyMu.RLock()
+	defer dm.residencyMu.RUnlock()
+	evicted, err := dm.loadIfResident(ctx)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	if evicted {
+		return 0, 0, true, nil
+	}
+	return dm.engine.ResidentDocCount(), dm.engine.LiveResidentCount(), false, nil
 }
 
 // UncoveredMembers reports, PER FORMAT, which of ids are not live-searchable in the

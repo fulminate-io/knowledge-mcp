@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Table Shape Cases</title>
+</head>
+<body>
+
+<div id="t-role-presentation">
+  <table role="presentation">
+    <tr><td>Left column of a two column page</td><td>Right column of a two column page</td></tr>
+    <tr><td>Second banded row, left</td><td>Second banded row, right</td></tr>
+  </table>
+</div>
+
+<div id="t-role-none">
+  <table role="none">
+    <tr><td>Sidebar slot</td><td>Body slot</td></tr>
+    <tr><td>Footer slot</td><td>Notice slot</td></tr>
+  </table>
+</div>
+
+<div id="t-th">
+  <table>
+    <tr><th>Release</th><th>Status</th></tr>
+    <tr><td>Spring</td><td>Supported</td></tr>
+    <tr><td>Autumn</td><td>Retired</td></tr>
+  </table>
+</div>
+
+<div id="t-thead">
+  <table>
+    <thead><tr><td>Region</td><td>Capacity</td></tr></thead>
+    <tbody>
+      <tr><td>North</td><td>Twelve units</td></tr>
+      <tr><td>South</td><td>Nine units</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div id="t-caption">
+  <table>
+    <caption>Measured throughput by queue depth</caption>
+    <tr><td>Depth one</td><td>Baseline</td></tr>
+    <tr><td>Depth four</td><td>Saturated</td></tr>
+  </table>
+</div>
+
+<div id="t-uniform-2x2">
+  <table>
+    <tr><td class="label">Languages</td><td class="value"><div>Server-side scripting runtimes</div></td></tr>
+    <tr><td class="label">Prevalence</td><td class="value"><div>Reported often in review</div></td></tr>
+  </table>
+</div>
+
+<div id="t-uniform-4x2">
+  <table>
+    <tr><td class="label">Usage</td><td class="value"><div>Allowed for mapping a report</div></td></tr>
+    <tr><td class="label">Reason</td><td class="value"><div>Names one bounded mistake</div></td></tr>
+    <tr><td class="label">Rationale</td><td class="value"><div>Specific enough to act on</div></td></tr>
+    <tr><td class="label">Comments</td><td class="value"><div>Prefer a narrower child entry</div></td></tr>
+  </table>
+</div>
+
+<div id="t-ragged-block">
+  <table>
+    <tr>
+      <td><p>A navigation rail sits in the first cell of the first row.</p></td>
+      <td></td>
+      <td><p>A promotional rail sits in the third cell of the first row.</p></td>
+    </tr>
+    <tr>
+      <td><p>The whole body of the page lives in the single cell of the second row, which is what makes this shape a layout wrapper rather than a grid of data.</p></td>
+    </tr>
+  </table>
+</div>
+
+<div id="t-single-row-wrapper">
+  <table>
+    <tr>
+      <td><h1>A Pattern Page Title</h1></td>
+      <td><div>Home &rsaquo; Patterns &rsaquo; This Page</div></td>
+    </tr>
+  </table>
+</div>
+
+<div id="t-phrasing-only">
+  <table>
+    <tr><td>Sender</td><td>Receiver</td></tr>
+    <tr><td>Producer</td><td>Consumer</td></tr>
+  </table>
+</div>
+
+<div id="t-ragged-phrasing-only">
+  <table>
+    <tr><td>One</td><td>Two</td><td>Three</td></tr>
+    <tr><td>Four</td><td><span>Five</span></td></tr>
+  </table>
+</div>
+
+<div id="t-nested-data-in-layout">
+  <table>
+    <tr>
+      <td>
+        <div>The outer table is a wrapper whose only cell holds flow content.</div>
+        <table>
+          <tr><th>Nature</th><th>Identifier</th></tr>
+          <tr><td>ChildOf</td><td>Seventy seven</td></tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</div>
+
+</body>
+</html>

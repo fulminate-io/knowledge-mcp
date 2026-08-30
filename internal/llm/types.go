@@ -4,7 +4,7 @@ import "github.com/fulminate-io/knowledge-mcp/internal/config"
 
 // Provider identifies an LLM provider that backs a Client.
 //
-// The canonical type + constants live in domains/config since "which LLM
+// The canonical type + constants live in internal/config since "which LLM
 // does the user want?" is fundamentally a config-validation concern. This
 // alias re-exports the type so existing llm.Provider / llm.ProviderXxx
 // call sites continue to compile.

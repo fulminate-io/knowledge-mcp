@@ -5,7 +5,10 @@ package render
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+
+	"connectrpc.com/connect"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
@@ -107,6 +110,20 @@ func FetchNode(ctx context.Context, gc GraphCaller, nodeID string) (*knowledgev1
 // FetchNodeIn is FetchNode with an explicit cross-graph Target (graphType +
 // graphName). Empty graphType targets the knowledge/default graph. Returns nil
 // (no error) when the node is not found.
+//
+// ABSENCE ARRIVES TWO WAYS AND BOTH MEAN nil. A by-id read can answer with an
+// empty node carrier, or the engine can answer NOT_FOUND — which arm a backend
+// takes is its own business, and callers are written to the documented contract
+// rather than to either spelling. Every one of this helper's callers branches on
+// node == nil; none inspects the error to ask whether the id existed. So a
+// leaked NOT_FOUND is not a caller-visible distinction, it is a second dialect
+// of "absent" that each caller would have to learn separately — and the one that
+// did not learn it read a create-shaped upsert as a hard failure.
+//
+// A TRANSPORT OR PERMISSION FAILURE IS STILL AN ERROR. Only CodeNotFound is
+// folded into nil; everything else propagates, because "the read did not happen"
+// and "the read happened and found nothing" are the distinction this helper
+// exists to preserve.
 func FetchNodeIn(ctx context.Context, gc GraphCaller, nodeID, graphType, graphName string) (*knowledgev1.Node, error) {
 	if gc == nil || nodeID == "" {
 		return nil, nil
@@ -120,6 +137,10 @@ func FetchNodeIn(ctx context.Context, gc GraphCaller, nodeID, graphType, graphNa
 		Target: graphTarget(graphType, graphName),
 	})
 	if err != nil {
+		var ce *connect.Error
+		if errors.As(err, &ce) && ce.Code() == connect.CodeNotFound {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("fetch node %q: %w", nodeID, err)
 	}
 	nodes := decodeCarrierNodes(resp)
@@ -187,11 +208,41 @@ func IterEdgesIn(
 	return filterEdges(rawEdges, nodeID, direction, edgeTypes), nil
 }
 
-// filterEdges applies the direction + edge-type filters over the raw edges. An
-// edge's direction relative to nodeID: FromId==nodeID → outgoing, else incoming.
+// filterEdges applies the direction + edge-type filters over the raw edges for a
+// SINGLE pivot: FromId==nodeID → outgoing, ToId==nodeID → incoming. It delegates
+// to the set form with a one-element pivot set so there is ONE direction rule in
+// this file rather than two that can drift apart. The drain that feeds it
+// returns only edges incident to nodeID, so "not outgoing" and "incoming" name
+// the same edges — apart from a self-edge, which the set rule correctly reports
+// as both.
+func filterEdges(rawEdges []knowledgev1.Edge, nodeID string, direction kgwire.EdgeDirection, edgeTypes []kgtypes.EdgeType) []*knowledgev1.Edge {
+	return filterEdgesForSet(rawEdges, map[string]struct{}{nodeID: {}}, direction, edgeTypes)
+}
+
+// filterEdgesForSet applies the direction + edge-type filters over the raw edges
+// for a SET of pivots.
+//
+// DIRECTION IS DECIDED PER PIVOT, NOT ONCE GLOBALLY. An edge is OUTGOING when
+// its FromId is a pivot and INCOMING when its ToId is a pivot, evaluated
+// independently. That independence is the whole point of the set form: an edge
+// joining TWO pivots is genuinely both — it leaves one and enters the other — so
+// a rule that decided direction once and for all would report one of those two
+// nodes' incoming edge as its outgoing one.
+//
+// The two consequences worth naming, because both are asserted in the tests.
+// A two-pivot edge appears under BOTH direction filters. And a self-edge, whose
+// FromId and ToId are the same pivot, is likewise both rather than outgoing
+// only — the single-pivot rule this replaces called it outgoing purely because
+// it tested one endpoint.
+//
 // Returns pointers into the rawEdges backing array (stable for the slice's
 // lifetime) so no knowledgev1.Edge value is copied.
-func filterEdges(rawEdges []knowledgev1.Edge, nodeID string, direction kgwire.EdgeDirection, edgeTypes []kgtypes.EdgeType) []*knowledgev1.Edge {
+func filterEdgesForSet(
+	rawEdges []knowledgev1.Edge,
+	pivots map[string]struct{},
+	direction kgwire.EdgeDirection,
+	edgeTypes []kgtypes.EdgeType,
+) []*knowledgev1.Edge {
 	typeFilter := make(map[kgtypes.EdgeType]struct{}, len(edgeTypes))
 	for _, et := range edgeTypes {
 		typeFilter[et] = struct{}{}
@@ -199,14 +250,15 @@ func filterEdges(rawEdges []knowledgev1.Edge, nodeID string, direction kgwire.Ed
 	out := make([]*knowledgev1.Edge, 0, len(rawEdges))
 	for i := range rawEdges {
 		e := &rawEdges[i]
-		outgoing := e.FromId == nodeID
+		_, leavesPivot := pivots[e.FromId]
+		_, entersPivot := pivots[e.ToId]
 		switch direction {
 		case kgwire.OutgoingEdges:
-			if !outgoing {
+			if !leavesPivot {
 				continue
 			}
 		case kgwire.IncomingEdges:
-			if outgoing {
+			if !entersPivot {
 				continue
 			}
 		case kgwire.BothEdges:
@@ -279,4 +331,124 @@ func FetchDependsOnEdges(ctx context.Context, gc GraphCaller, nodeIDs []string) 
 		dependsOn[e.FromId] = e.ToId
 	}
 	return dependsOn, nil
+}
+
+// FetchNodesByIDs hydrates many nodes in one bounded read against the
+// knowledge/default graph, replacing a per-id FetchNode loop. It returns the
+// nodes keyed by id, the read's truncation verdict, and any error.
+func FetchNodesByIDs(ctx context.Context, gc GraphCaller, ids []string) (map[string]*knowledgev1.Node, bool, error) {
+	return FetchNodesByIDsIn(ctx, gc, ids, "", "")
+}
+
+// FetchNodesByIDsIn is FetchNodesByIDs with an explicit cross-graph Target.
+// Empty graphType targets the knowledge/default graph. The pair mirrors
+// FetchNode/FetchNodeIn and IterEdges/IterEdgesIn so there is one paging body
+// rather than two, and IncludeTombstones is set for the same reason FetchNodeIn
+// sets it: a single-target hydrate and a bulk hydrate must answer identically.
+//
+// PAGED, AND THE SECOND RETURN IS WHY. The server flags truncation off the
+// REQUEST — an id list longer than its row ceiling is clamped before any row is
+// read — so an unpaged bulk hydrate of a large id set comes back short with the
+// missing nodes silently absent. Draining in pages keeps each request under that
+// ceiling, and the verdict is returned rather than dropped so a caller that is
+// clamped anyway renders a short list as short rather than as complete.
+//
+// A REQUESTED ID MISSING FROM THE RESULT MAP MEANS THE NODE WAS NOT FOUND, which
+// is the same thing FetchNodeIn expresses by returning a nil node. Callers that
+// treated a per-target fetch error as "skip this target" branch on the map miss
+// instead.
+func FetchNodesByIDsIn(
+	ctx context.Context,
+	gc GraphCaller,
+	ids []string,
+	graphType, graphName string,
+) (map[string]*knowledgev1.Node, bool, error) {
+	if gc == nil || len(ids) == 0 {
+		return map[string]*knowledgev1.Node{}, false, nil
+	}
+	ex, err := asExecutor(gc)
+	if err != nil {
+		return nil, false, err
+	}
+	out := make(map[string]*knowledgev1.Node, len(ids))
+	truncated := false
+	for start := 0; start < len(ids); start += paging.BrowsePageSize {
+		end := min(start+paging.BrowsePageSize, len(ids))
+		resp, rerr := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
+			Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
+				Ids:               ids[start:end],
+				IncludeTombstones: true,
+			}},
+			Target: graphTarget(graphType, graphName),
+		})
+		if rerr != nil {
+			var ce *connect.Error
+			if errors.As(rerr, &ce) && ce.Code() == connect.CodeNotFound {
+				continue
+			}
+			return nil, false, fmt.Errorf("fetch nodes by ids: %w", rerr)
+		}
+		if resp.GetTruncated() {
+			truncated = true
+		}
+		for _, n := range decodeCarrierNodes(resp) {
+			if n == nil || n.Id == "" {
+				continue
+			}
+			out[n.Id] = n
+		}
+	}
+	return out, truncated, nil
+}
+
+// IterEdgesFor is the node-SET form of IterEdges: one bounded pivot drain over
+// every id in nodeIDs, with the direction and edge-type filters applied over the
+// union. It replaces a per-node IterEdges loop.
+//
+// DIRECTION IS COMPUTED PER PIVOT, which is the one thing this cannot borrow
+// from the single-node form. An edge joining two pivots is OUTGOING for the
+// pivot it leaves and INCOMING for the pivot it enters; a set-form read that
+// reused the single-pivot rule would classify such an edge once, globally, and
+// so report one of the two nodes' incoming edge as its outgoing one.
+func IterEdgesFor(
+	ctx context.Context,
+	gc GraphCaller,
+	nodeIDs []string,
+	direction kgwire.EdgeDirection,
+	edgeTypes ...kgtypes.EdgeType,
+) ([]*knowledgev1.Edge, error) {
+	if gc == nil || len(nodeIDs) == 0 {
+		return nil, nil
+	}
+	ex, err := asExecutor(gc)
+	if err != nil {
+		return nil, err
+	}
+	// The plan Limit and the drain's edgeCap are the same number twice on
+	// purpose: the Limit is what the server enforces, the cap is what the drain
+	// uses to notice it was enforced.
+	rawEdges, err := paging.DrainPivotEdges(nodeIDs, paging.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
+		func(idPage []string, fromIDGte, fromIDLt string) ([]knowledgev1.Edge, bool, error) {
+			resp, rerr := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
+				Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
+					Ids:               idPage,
+					ReturnMode:        knowledgev1.ReturnMode_RETURN_MODE_EDGES,
+					IncludeTombstones: true,
+					Limit:             int32(engine.CorrelationsEdgeScanCap),
+					EdgeFromBand:      paging.EdgeFromBandOrNil(fromIDGte, fromIDLt),
+				}},
+			})
+			if rerr != nil {
+				return nil, false, fmt.Errorf("iter edges for %d pivots: %w", len(idPage), rerr)
+			}
+			return decodeCarrierEdges(resp), resp.GetTruncated(), nil
+		})
+	if err != nil {
+		return nil, err
+	}
+	pivots := make(map[string]struct{}, len(nodeIDs))
+	for _, id := range nodeIDs {
+		pivots[id] = struct{}{}
+	}
+	return filterEdgesForSet(rawEdges, pivots, direction, edgeTypes), nil
 }

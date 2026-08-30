@@ -23,18 +23,21 @@ import (
 func TestManagerVectorByIDResolvesShippedVector(t *testing.T) {
 	t.Parallel()
 
-	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 
 	docs, targetID, targetVec, _ := searchCorpus(11)
 
-	// Ship the HNSW segment with one manager.
-	shipper := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	// Write the HNSW segment with one manager.
+	cacheDir := t.TempDir()
+	shipper := closeOnCleanup(t, NewManager(cacheDir, 0))
 	seedShipped(t, ctx, shipper, kgtypes.GraphKnowledge, "kg", docs)
 
-	// Resolve on a FRESH manager that has never searched — it must pull the shipped
-	// segments cache-first via dm.load(ctx) before the by-id read.
-	fresh := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	// Resolve on a FRESH manager that has never searched — it must pull the segments
+	// cache-first via dm.load(ctx) before the by-id read. It is rooted at the SAME
+	// cache dir as the writer, which is now the only thing the two share: the blobs
+	// live in L2 and nowhere else, so a manager over a different dir would resolve
+	// nothing however correct the write was.
+	fresh := closeOnCleanup(t, NewManager(cacheDir, 0))
 
 	vec, ok, err := fresh.VectorByID(ctx, kgtypes.GraphKnowledge, "kg", targetID)
 	require.NoError(t, err)
@@ -55,10 +58,9 @@ func TestManagerVectorByIDResolvesShippedVector(t *testing.T) {
 func TestManagerVectorByIDEmptyGraph(t *testing.T) {
 	t.Parallel()
 
-	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	got, ok, err := mgr.VectorByID(ctx, kgtypes.GraphKnowledge, "never-shipped", "anything")
 	require.NoError(t, err)
 	require.False(t, ok)

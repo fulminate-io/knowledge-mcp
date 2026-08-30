@@ -114,12 +114,22 @@ func (s *githubMaterializerState) abort(key githubKey) {
 // parentPageID is the ID of the page node that contained the github
 // link. When empty (seed URL with no parent), only the warning node is
 // emitted, no edge.
-func emitMaterializerWarning(parentPageID string, info githubURLInfo, w *materializerWarning) (*knowledgev1.Node, []kgwire.BatchEdge) {
+//
+// sourceURL and w.URL are TWO DIFFERENT FACTS and both are recorded.
+// sourceURL is the github URL the crawl was given — this node's own address,
+// stamped as md["uri"] like every other node the web collector emits. w.URL
+// is the codeload tarball URL that was actually being downloaded when the cap
+// was hit, kept as md["url"] because that is the diagnostic a reader of a
+// size-cap warning wants. Never stamp uri from w.URL: for a test fixture it is
+// an ephemeral 127.0.0.1 address, and in production it is a codeload endpoint
+// rather than anything a recipe would address the node by.
+func emitMaterializerWarning(parentPageID, sourceURL string, info githubURLInfo, w *materializerWarning) (*knowledgev1.Node, []kgwire.BatchEdge) {
 	id := "gh-warn:" + info.Owner + "/" + info.Repo + "@" + info.Ref + ":" + w.Reason + ":" + stableSuffix(w.URL)
 	md := map[string]string{
 		"materialization_skipped": w.Reason,
 		"reason":                  w.Reason,
 		"url":                     w.URL,
+		"uri":                     sourceURL,
 		"bytes_seen":              strconv.FormatInt(w.BytesSeen, 10),
 		"cap_bytes":               strconv.FormatInt(w.Cap, 10),
 		"owner":                   info.Owner,

@@ -148,11 +148,11 @@ func TestSetup_GuidedReconfigure_PreservesVoyage(t *testing.T) {
 }
 
 // TestSetup_GuidedReconfigure_CustomizationLoss: an
-// active [dream] section fires the customization-loss warning + a y/n
+// active [summarizer] section fires the customization-loss warning + a y/n
 // confirm; 'n'/empty aborts byte-identical, 'y' rewrites. A
 // [default]/[credentials]-only config prints NO warning.
 func TestSetup_GuidedReconfigure_CustomizationLoss(t *testing.T) {
-	dreamCfg := "schema_version = 1\n[default]\nprovider = \"anthropic\"\nmodel = \"claude-haiku-4-5-20251001\"\n[dream]\nprovider = \"anthropic\"\nmodel = \"claude-opus-4-7\"\n"
+	customCfg := "schema_version = 1\n[default]\nprovider = \"anthropic\"\nmodel = \"claude-haiku-4-5-20251001\"\n[summarizer]\nprovider = \"anthropic\"\nmodel = \"claude-opus-4-7\"\n"
 
 	t.Run("empty answer aborts byte-identical", func(t *testing.T) {
 		cfgPath := setupHome(t)
@@ -161,7 +161,7 @@ func TestSetup_GuidedReconfigure_CustomizationLoss(t *testing.T) {
 		emptyPATH(t)
 		forceTTY(t, true)
 		_ = spySelfUpdate(t, "")
-		seedConfig(t, cfgPath, dreamCfg)
+		seedConfig(t, cfgPath, customCfg)
 		before, _ := os.ReadFile(cfgPath) //nolint:gosec // temp
 		withScriptedStdin(t, "\n")        // empty confirm → abort
 		out := captureStdout(t, func() {
@@ -185,7 +185,7 @@ func TestSetup_GuidedReconfigure_CustomizationLoss(t *testing.T) {
 		emptyPATH(t)
 		forceTTY(t, true)
 		_ = spySelfUpdate(t, "")
-		seedConfig(t, cfgPath, dreamCfg)
+		seedConfig(t, cfgPath, customCfg)
 		before, _ := os.ReadFile(cfgPath)          //nolint:gosec // temp
 		withScriptedStdin(t, "y\nanthropic\n\n\n") // confirm, provider, voyage, linear
 		_ = captureStdout(t, func() {
@@ -198,13 +198,13 @@ func TestSetup_GuidedReconfigure_CustomizationLoss(t *testing.T) {
 			t.Fatalf("'y' confirm must rewrite the config")
 		}
 		// The regenerated config carries only the template's COMMENTED
-		// [dream] example, not an active section — Parse proves it.
+		// [summarizer] example, not an active section — Parse proves it.
 		cfg, perr := config.Parse(after)
 		if perr != nil {
 			t.Fatalf("parse rewritten config: %v", perr)
 		}
-		if cfg.Dream != nil {
-			t.Fatalf("rewrite regenerates from template — the active [dream] section should be gone")
+		if cfg.Summarizer != nil {
+			t.Fatalf("rewrite regenerates from template — the active [summarizer] section should be gone")
 		}
 	})
 

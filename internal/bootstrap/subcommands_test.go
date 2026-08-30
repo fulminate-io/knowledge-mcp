@@ -7,8 +7,7 @@
 // These tests pin behavior that needs NO live graph server or daemon: the
 // client line always prints, the probe degrades to ("", false) when nothing
 // is listening, and against an in-process h2c stub serving the documented MCP
-// initialize shape the probe reads serverInfo.version back. The withArgs
-// helper is reused from worker_subcommand_test.go (same package).
+// initialize shape the probe reads serverInfo.version back.
 
 package bootstrap
 
@@ -17,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -26,6 +26,16 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 )
+
+// withArgs swaps os.Args for the test body and restores on cleanup.
+// RunSubcommand reads os.Args directly, so we set the slice and assert the
+// boolean return without spawning a subprocess.
+func withArgs(t *testing.T, args []string) {
+	t.Helper()
+	prev := os.Args
+	os.Args = args
+	t.Cleanup(func() { os.Args = prev })
+}
 
 // captureStdout (install_test.go) is reused here to capture the version print.
 
@@ -82,7 +92,7 @@ func TestProbeDaemonVersion(t *testing.T) {
 		// (HTTP/1.1 off), exactly like the real daemon endpoint. Mirrors the
 		// startCountingEngine idiom (router_e2e_test.go:156).
 		srv := httptest.NewServer(h2c.NewHandler(mux, &http2.Server{}))
-		t.Cleanup(srv.Close)
+		t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 
 		port := portFromURL(t, srv.URL)
 		v, ok := probeDaemonVersion(port)

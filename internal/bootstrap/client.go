@@ -11,11 +11,9 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
-	"github.com/fulminate-io/knowledge-mcp/internal/dream"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphtypecrud"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/pipeline"
 	"github.com/fulminate-io/knowledge-mcp/internal/segmentdist"
@@ -23,7 +21,6 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/tools"
 	"github.com/fulminate-io/knowledge-mcp/internal/transcriptanalytics"
 	"github.com/fulminate-io/knowledge-mcp/internal/transcriptsync"
-	"github.com/fulminate-io/knowledge-mcp/internal/workercrud"
 	"github.com/fulminate-io/knowledge-mcp/internal/workingset"
 )
 
@@ -78,15 +75,10 @@ type client struct {
 
 	mcpClient *graphclient.MCPClient // MCP dispatch client (built by the serve daemon, daemon.go)
 	sink      collector.Sink         // remote upload sink for client-side collection
-	// runtime is the client-side dream.Runner. Wired in buildClient (daemon.go)
-	// via wireWorkerRuntime; nil in test harnesses that build *client
-	// directly. Phase H narrows the WorkerRuntime() accessor to a
-	// tools.WorkerRuntimeAPI interface — for now the field stays concrete.
-	runtime *dream.Runner
 
-	// workerReady / propReady / pipelineReady are the per-subsystem readiness
+	// propReady / pipelineReady are the per-subsystem readiness
 	// flags that distinguish the background-wiring window (Bind-first startup: the daemon
-	// binds the HTTP MCP listener first, then wires worker/propagation/pipeline
+	// binds the HTTP MCP listener first, then wires the propagation/pipeline
 	// runtimes in a background goroutine) from a permanent boot degrade. Each is
 	// Stored true at the END of its wiring stage in wireRuntimesBackground
 	// (daemon.go) — whether that stage wired a live runtime or degraded to nil —
@@ -98,7 +90,6 @@ type client struct {
 	// The atomic Store also provides the happens-before edge that safely
 	// publishes the subsystem handle written immediately before it (see the
 	// mark*Ready call sites in wireRuntimesBackground).
-	workerReady   atomic.Bool
 	propReady     atomic.Bool
 	pipelineReady atomic.Bool
 
@@ -114,15 +105,13 @@ type client struct {
 	wireCancel context.CancelFunc
 	wireDone   chan struct{}
 
-	// workerCRUD / graphTypeCRUD are the client-side CRUD clients used by
-	// InterceptWorker and InterceptGraphType. Both are wired in
-	// constructClient against the login-aware c.router (Execute routes
-	// per-call to cloud when logged in / local otherwise) so a cloud-only
-	// daemon serves worker + graph-type CRUD from cloud instead of dialing
-	// :15022; nil in test harnesses that build *client directly, where the
-	// WorkerCRUD() / GraphTypeCRUD() accessors return an untyped nil
+	// graphTypeCRUD is the client-side CRUD client used by
+	// InterceptGraphType. It is wired in constructClient against the
+	// login-aware c.router (Execute routes per-call to cloud when logged in /
+	// local otherwise) so a cloud-only daemon serves graph-type CRUD from cloud
+	// instead of dialing :15022; nil in test harnesses that build *client
+	// directly, where the GraphTypeCRUD() accessor returns an untyped nil
 	// interface so the intercept nil-check fires.
-	workerCRUD    *workercrud.Client
 	graphTypeCRUD *graphtypecrud.Client
 
 	// embedder is the client-side BinaryEmbedder used by InterceptSearch /
@@ -139,6 +128,18 @@ type client struct {
 	// set OR config provides neither summarizer nor embedder. The deferred
 	// p.Stop call in buildClient's cleanup closure (daemon.go) handles nil safely.
 	pipeline *pipeline.Pipeline
+
+	// serverSegmentStamp reads the per-graph SERVER change stamp the bulk gen poll
+	// last sampled — the maximum of the server's vector-write and erasure-append
+	// times, in unix nanos — plus whether that graph has been sampled at all.
+	// Wired from the pipeline beside it; see fuseCaughtUp, its only consumer.
+	//
+	// A FUNC FIELD RATHER THAN A DIRECT PIPELINE CALL, following the same injection
+	// idiom localPresence and the collect-gate factory use. The operand then comes
+	// from whoever holds it, and the predicate stays answerable without standing up
+	// a poll loop. NIL MEANS NO READER, which fuseCaughtUp declines on — never
+	// treating an absent operand as "caught up".
+	serverSegmentStamp func(gt kgtypes.GraphType, name string) (int64, bool)
 
 	// freshness is the activity hook's state: the account freshness watermark
 	// last observed on a response, plus the cool-off window that bounds how
@@ -160,6 +161,44 @@ type client struct {
 	// and miss the producer's loaded segments.
 	segmentMgr  *segmentdist.Manager
 	healBreaker segmentHealBreaker // per-(graphType,name) auto-heal circuit breaker; zero value usable — see segment_heal_breaker.go
+
+	// startupBalance holds the ONE boot-time balance verdict per segment-bearing
+	// graph, so a pool that was already pathological when this daemon started is
+	// readable on the status surface and not only in a log line nobody tailed. Zero
+	// value usable; process-scoped and never refreshed — see
+	// client_segment_balance_startup.go.
+	startupBalance startupBalance
+
+	// reaper removes dead vectors server-side when the quiescence-edge balance verdict
+	// observes an imbalance the reap can repair. It is a FIELD rather than a direct
+	// call so a test can install a counting double for the DEPENDENCY while the
+	// ordering logic under test — reap, then RE-READ, then conclude — stays real.
+	//
+	// NIL IS A REAL STATE: a client whose graph caller carries no Index seam gets no
+	// reaper, and the verdict then REPORTS an imbalance instead of concluding one,
+	// because an unhealed gap is not evidence of a defect.
+	reaper ReapInvoker
+
+	// rebuild repairs a shortfall the reap could not close, by rebuilding the graph's
+	// segments from its already-embedded nodes. A FIELD for the reason reaper is one:
+	// the verdict's contract is expressed in INVOCATION COUNTS — a gap the reap closes
+	// drives ZERO rebuilds, a surviving one drives exactly one — which a package-level
+	// call cannot express to a test.
+	//
+	// NIL IS A REAL STATE: the surviving deficit is then reported and not repaired,
+	// which is honest rather than degraded — nothing is silently swallowed.
+	rebuild rebuildDriver
+
+	// repairArm runs the BOUNDED repair over a graph whose deficit survived the reap,
+	// ahead of the reset rebuild. A FIELD for the reason rebuild is one: the verdict's
+	// contract is expressed in INVOCATION COUNTS — a deficit the bounded arm closes
+	// drives ONE repair and ZERO rebuilds — which a package-level call cannot express
+	// to a test.
+	//
+	// NIL IS A REAL STATE: the routing is skipped and the surviving deficit goes
+	// straight to the reset rebuild, which is exactly what every edge did before this
+	// arm was wired. Honest rather than degraded — nothing is silently swallowed.
+	repairArm repairDriver
 
 	// deltaHorizon is the tombstone-delta consumer's per-graph read progress: the
 	// server-served horizon the last successful consume read up to, so the next one
@@ -194,7 +233,10 @@ type client struct {
 	//                              costs at most one full-corpus scan.
 	//   segmentRepairSeen        — graphs offered the slot so far in THIS pass; compared
 	//                              against the cursor to pick the tick's graph.
-	//   segmentRepairTickClaimed — whether this pass has already granted its slot.
+	//   segmentRepairTickGranted — whether this pass has already GRANTED its slot. The
+	//                              name says GRANTED rather than claimed because the
+	//                              rotation offers a graph a turn and spends the grant
+	//                              only once one passes every gate that can decline.
 	//
 	// ALL of them are guarded by segmentRepairMu, the counters and the flag alike: the
 	// boot-delay reconcile goroutine and the periodic ticker can both be inside a pass.
@@ -203,21 +245,21 @@ type client struct {
 	segmentRepairFailures    map[segmentGraphRef]int
 	segmentRepairCursor      int
 	segmentRepairSeen        int
-	segmentRepairTickClaimed bool
+	segmentRepairTickGranted bool
 	// segmentBackstopSeeded records the graphs whose DECLINED-graph seed this process
 	// has already attempted, so a graph whose record write keeps failing does not
 	// re-issue the horizon probe on every rotation forever. Guarded by the same mutex.
 	segmentBackstopSeeded map[segmentGraphRef]struct{}
-
-	// claimRegistry + banSet are the client-side hive monitor state, created in
-	// constructClient and shared (SAME instance) with the daemon Monitor:
-	// claimRegistry maps MCP session → its work claims (InterceptHive Binds on
-	// claim / Clears on ack; the Monitor renews them); banSet holds the
-	// harness-id ban keys + the Mcp→harness resolver the Monitor populates and
-	// the InterceptHive gate consults. Both nil in test harnesses that build
-	// *client directly; their accessors + methods are nil-safe.
-	claimRegistry *hivemonitor.Registry
-	banSet        *hivemonitor.BanSet
+	// segmentFloorRecovered records the graphs whose UNREADABLE-RETENTION-FLOOR
+	// recovery rebuild this process has already attempted. Guarded by the same mutex.
+	//
+	// THE GATE IS REQUIRED, not cautious. If the state path is UNWRITABLE rather than
+	// corrupt, the recovery rebuild runs and publishes and its state write then fails
+	// with a WARN and a nil error — so the rebuild reports success, the heal breaker
+	// never latches, the record is still unreadable, and the next pass would drive
+	// another full-corpus rebuild. Forever. Neither an error check nor the breaker
+	// bounds that; only this claim does.
+	segmentFloorRecovered map[segmentGraphRef]struct{}
 
 	// propLoop is the client-side reflective-surface goroutine that
 	// hourly re-detects thought clusters and propagates valence /
@@ -275,9 +317,10 @@ type client struct {
 	schemaDone bool
 
 	// usageAnalyzer is the lazily-constructed client-side agent-flow analyzer
-	// (embedded DuckDB over the local transcript parquet cache) the analyze_usage
-	// intercept dispatches through. Built once on first use under usageAnalyzerMu;
-	// it needs no router/network (reads the local cache only).
+	// (the pure-Go transcriptanalytics engine over the local transcript parquet
+	// cache) the analyze_usage intercept dispatches through. Built once on first
+	// use under usageAnalyzerMu; it needs no router/network (reads the local
+	// cache only).
 	usageAnalyzerMu   sync.Mutex
 	usageAnalyzer     *transcriptanalytics.Service
 	usageAnalyzerDone bool

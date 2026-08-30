@@ -14,12 +14,13 @@ import (
 )
 
 // pinnedColumns is the AUTHORITATIVE transcript-parquet column contract. It is the
-// SOLE schema source: the agent has no Go row DTO (its transcripts package was
-// deleted) and reads these columns BY NAME via read_parquet, so this client-pinned
-// list — not any agent-side struct — is the cross-repo contract, and the agent's
-// TestClientGoldenParquetQueryParity proves it holds against a client-written
-// golden. The two repos cannot share a Go package (AGENTS.md NO-shared-packages
-// invariant). record_ts is a STRING (ByteArray) column — NOT a native TIMESTAMP.
+// SOLE schema source: this client-pinned list — not any struct on the receiving
+// side — defines the column set, because nothing over there parses the uploaded
+// parquet's contents. What IS live across the boundary is a name correspondence
+// for the breakdown dimensions, so ADDING a column is additive while RENAMING one
+// is a coordinated change. The two sides cannot share a Go package (AGENTS.md
+// NO-shared-packages invariant). record_ts is a STRING (ByteArray) column — NOT a
+// native TIMESTAMP.
 var pinnedColumns = []struct {
 	parquetTag string
 	kind       string // "int64" | "bool" | "" (string/ByteArray)
@@ -60,6 +61,10 @@ var pinnedColumns = []struct {
 	{"mcp_server", ""},
 	{"mcp_tool", ""},
 	{"skill", ""},
+	{"tool_result_bytes", "int64"},
+	{"tool_result_images", "int64"},
+	{"tool_result_spilled", "bool"},
+	{"run_in_background", "bool"},
 }
 
 // TestRowToParquetRecordTSMatchesJSON proves rowToParquet carries record_ts as the

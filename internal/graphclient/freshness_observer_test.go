@@ -58,9 +58,9 @@ func TestFreshnessObserverNonZeroOnly(t *testing.T) {
 	})
 
 	t.Run("field_less_message_is_a_no_op", func(t *testing.T) {
-		// HealthCheckResponse declares no freshness_gen at all — the uncovered
+		// CheckResponse declares no freshness_gen at all — the uncovered
 		// case the by-name descriptor lookup has to survive without panicking.
-		_, err := driveObserver(t, sink, connect.NewResponse(&knowledgev1.HealthCheckResponse{}), nil)
+		_, err := driveObserver(t, sink, connect.NewResponse(&knowledgev1.CheckResponse{}), nil)
 		require.NoError(t, err)
 		assert.Equal(t, uint64(7), sink.Load(), "a message without the field must leave the sink untouched")
 	})

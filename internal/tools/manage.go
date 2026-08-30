@@ -14,7 +14,6 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	clientlinker "github.com/fulminate-io/knowledge-mcp/internal/linker"
 	"github.com/fulminate-io/knowledge-mcp/internal/pipeline"
-	"github.com/fulminate-io/knowledge-mcp/internal/profiling"
 	"github.com/fulminate-io/knowledge-mcp/internal/transcriptsync"
 )
 
@@ -79,15 +78,12 @@ type cloudStatusInfo interface {
 // tool (or `make collect`) which calls codegraph.Sync / SyncBranch against
 // RemoteUploadSink.
 func InterceptManage(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
-	if params.Name != "manage" {
+	a, claimed, refusal := decodeManageCall(params)
+	if !claimed {
 		return false, kgtools.ToolResult{}
 	}
-	if err := rejectUndeclaredParams("manage", "", ManageToolDef().InputSchema.Properties, params.Arguments); err != nil {
-		return true, errorResult(err.Error())
-	}
-	var a manageArgs
-	if err := json.Unmarshal(params.Arguments, &a); err != nil {
-		return false, kgtools.ToolResult{}
+	if refusal != nil {
+		return true, *refusal
 	}
 	switch a.Operation {
 	case "status":
@@ -98,6 +94,8 @@ func InterceptManage(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 		return true, handlePprofStop()
 	case "link":
 		return true, handleClientLinker(ctx, deps, a)
+	case "migrate_embed_identity":
+		return true, handleMigrateEmbedIdentity(ctx, deps, a)
 	case "promote_metadata":
 		return true, handleManagePromoteMetadata(ctx, deps, a, params.Arguments)
 	case "clear_llm_failures":
@@ -175,29 +173,6 @@ func handleClientLinker(ctx context.Context, deps ClientDeps, a manageArgs) kgto
 		total, res.ImageLinks, res.HelmLinks, res.DockerfileLinks, res.WorkloadIdentityLinks, len(res.Errors)))
 }
 
-// handlePprofStart begins a CPU profile of the client process and lazily
-// brings up the loopback pprof endpoint so the result is fetchable.
-func handlePprofStart() kgtools.ToolResult {
-	addr, err := profiling.StartCPU()
-	if err != nil {
-		return errorResult("pprof_start: " + err.Error())
-	}
-	return textResult(fmt.Sprintf(
-		"CPU profile started. Reproduce the slow operation now, then call manage(operation:\"pprof_stop\"). pprof endpoint: http://%s/debug/pprof/",
-		addr))
-}
-
-// handlePprofStop stops the CPU profile and reports where to pull it.
-func handlePprofStop() kgtools.ToolResult {
-	url, size, err := profiling.StopCPU()
-	if err != nil {
-		return errorResult("pprof_stop: " + err.Error())
-	}
-	return textResult(fmt.Sprintf(
-		"CPU profile stopped (%d bytes). Fetch + open it:\n  go tool pprof %s\nor save a copy:\n  curl -s %s -o cpu.pprof",
-		size, url, url))
-}
-
 // manageArgs covers the fields the client-side manage intercepts read,
 // including the log-backend + log-graph management fields. The
 // configure_log_backend / list_log_backends / list_logs / discard_logs
@@ -215,6 +190,13 @@ type manageArgs struct {
 	AuthType    string `json:"auth_type"`
 	Credential  string `json:"credential"`
 	KubeContext string `json:"kube_context"`
+	// Profile names the embedder profile migrate_embed_identity migrates a graph
+	// TO. It is a profile NAME rather than four inline identity fields so a
+	// migration cannot name an embedder no profile describes — the client that
+	// must construct that embedder for a query resolves its credential from the
+	// profile, and an identity with no profile behind it has nowhere to get one.
+	Profile string `json:"profile"`
+
 	// promote_metadata flags read by the client-side
 	// intercept to gate batch-narrative emission and re-marshal the
 	// payload with format=json forced.

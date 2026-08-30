@@ -6,16 +6,15 @@ package tools
 // drive, plus its per-call failure knobs. Split out of backend_lookup_test.go
 // (which keeps the backend-lookup and batch-guard tests) to keep both files
 // inside the repo's file-length gate; the RETURN_MODE_GRAPH_NAMES serving
-// helpers live in the fake_graph_caller_graphnames_test.go sibling.
+// helpers live in the fake_graph_caller_graphnames_test.go sibling, and the
+// call-log carrier plus its guarded appenders in fake_graph_caller_record_test.go.
+// The ordinal knob's own self-test lives in fake_graph_caller_ordinal_test.go,
+// moved there so this file stays inside that gate.
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"testing"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"sync"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
@@ -24,6 +23,12 @@ import (
 )
 
 type fakeGraphCaller struct {
+	// recordMu guards the CALL LOGS below (calls, execRequests, execMutations,
+	// statsReqs) and nothing else — this fake is driven by composers that fan their
+	// reads out concurrently. See fake_graph_caller_record_test.go, which holds the
+	// appenders every seam method records through.
+	recordMu sync.Mutex
+
 	queryResponses map[string]kgtools.ToolResult
 	queryErrors    map[string]error
 	mutateResult   kgtools.ToolResult
@@ -64,6 +69,12 @@ type fakeGraphCaller struct {
 	// from-root id → the descendant nodes, encoded into the typed traversal_results
 	// carrier. Purely additive; absent root → empty traversal.
 	traversalByRoot map[string][]*knowledgev1.Node
+
+	// traversalEdgesByRoot answers the traversal_edges carrier a
+	// RETURN_MODE_TRAVERSAL read populates when IncludeEdgeMetadata is set,
+	// keyed by the from-root id. Absent root or an edge-blind read leaves the
+	// carrier empty, which is the shape the nodes-only traversal already sees.
+	traversalEdgesByRoot map[string][]knowledgev1.Edge
 
 	// traversalErr forces a RETURN_MODE_TRAVERSAL read to ERROR, leaving every
 	// other Execute successful. The blanket execErr cannot express this: a caller
@@ -142,14 +153,10 @@ type fakeGraphCaller struct {
 	calls []recordedCall
 }
 
-type recordedCall struct {
-	tool string
-	args json.RawMessage
-}
-
 // graphKey is the (graphType, graphName) lookup key for the name-aware fake
 // maps. graphName is the Target's Language (practice), Repo (code), Account
-// (cloud/cicd) or Name (everything else); an empty Target → ("knowledge", "").
+// (cloud/cicd) or Name (everything else, including the checks singleton, whose
+// name is empty); an empty Target → ("knowledge", "").
 type graphKey struct {
 	Type string
 	Name string
@@ -158,7 +165,9 @@ type graphKey struct {
 // targetGraphKey extracts the (type,name) key from an Execute Target, mirroring
 // the SERVER's selector contract (not the client helper): practice carries its
 // name in Language, code in Repo, cloud and cicd in Account, every other type in
-// Name; an empty Target defaults to knowledge. The code and cloud/cicd arms
+// Name; an empty Target defaults to knowledge. checks is a SINGLETON whose
+// selector policy rejects a set name, so it lands in the Name arm with an empty
+// name — mirroring the server, which would refuse anything else. The code and cloud/cicd arms
 // exist because the server's resolvers reject a name-keyed selector for those
 // families before any lookup (resolveCode requires Repo, resolveAccountGraph
 // errors with "graph=cloud requires account"), so a Target with only Name set
@@ -181,7 +190,7 @@ func targetGraphKey(target *knowledgev1.GraphSelector) graphKey {
 }
 
 func (f *fakeGraphCaller) Call(_ context.Context, tool string, args json.RawMessage) (kgtools.ToolResult, error) {
-	f.calls = append(f.calls, recordedCall{tool: tool, args: append(json.RawMessage(nil), args...)})
+	f.recordCall(recordedCall{tool: tool, args: append(json.RawMessage(nil), args...)})
 	if tool == "pipeline_list_graphs" && f.listGraphsResult != nil {
 		return *f.listGraphsResult, nil
 	}
@@ -215,20 +224,19 @@ func (f *fakeGraphCaller) Execute(_ context.Context, req *knowledgev1.ExecuteReq
 	if f.execErr != nil {
 		return nil, f.execErr
 	}
-	f.execRequests = append(f.execRequests, req)
+	f.recordExec(req)
 	// Mutation carrier path (PersistBatch / LinkOne / UpdateBatchStatus): record
 	// the MutationPlan and return the seeded Ids + an affected_count. When
 	// mutateIDs is unset, fall back to the ids embedded in the seeded
 	// mutateResult {ids:[...]} body (the shape most create-* tests seed) so the
 	// carrier path returns the same IDs the legacy Call path used to.
 	if m := req.GetMutation(); m != nil {
-		f.execMutations = append(f.execMutations, m)
-		f.calls = append(f.calls, recordedCall{tool: "mutate"})
+		mutationOrdinal := f.recordMutation(m)
 		// Ordinal error: fail ONLY the Nth Mutation Execute. Consulted BEFORE the
 		// coarser knobs below — an explicitly ordinal-targeted failure should win.
-		// execMutations was appended above, so its length is this call's 1-based
-		// ordinal.
-		if nthErr, ok := f.mutateErrOnNth[len(f.execMutations)]; ok && nthErr != nil {
+		// recordMutation returned this call's 1-based ordinal from inside the same
+		// critical section as the append, so it names this call and no other.
+		if nthErr, ok := f.mutateErrOnNth[mutationOrdinal]; ok && nthErr != nil {
 			return nil, nthErr
 		}
 		// Per-target error: fail ONLY the named graph (by its resolved name
@@ -258,6 +266,17 @@ func (f *fakeGraphCaller) Execute(_ context.Context, req *knowledgev1.ExecuteReq
 		affected := f.mutateAffected
 		if affected == 0 {
 			affected = int64(len(ids))
+			// AN UPDATE OVER A NAMED ID-SET REPORTS THAT SET'S SIZE, mirroring the
+			// server rather than this fake's created-id carrier. `ids` above is the
+			// CREATED-node list a PersistBatch returns, which is empty for an UPDATE —
+			// so without this arm every UPDATE answered affected_count 0 while the real
+			// server answers len(Selection.Ids) (asserted server-side by
+			// TestExecuteMutation_ByIDUpdate). A caller that reads the count to confirm
+			// its write would have been testing the fake's omission, not its own logic.
+			// mutateAffected stays the override, which is how a test drives a shortfall.
+			if m.GetKind() == knowledgev1.MutationPlan_MUTATION_KIND_UPDATE {
+				affected = int64(len(m.GetSelection().GetIds()))
+			}
 		}
 		return &knowledgev1.ExecuteResponse{Ids: ids, AffectedCount: affected, SkippedCount: f.mutateSkipped}, nil
 	}
@@ -270,7 +289,7 @@ func (f *fakeGraphCaller) Execute(_ context.Context, req *knowledgev1.ExecuteReq
 		// listGraphsResult seeding keep working across the Call→Execute repoint.
 		// Record a "query" call so call-shape assertions (the linker's graph-list
 		// read used to ride a query) still observe it.
-		f.calls = append(f.calls, recordedCall{tool: "query"})
+		f.recordCall(recordedCall{tool: "query"})
 		// overlay_of read: serve the seeded overlay keys for that base when
 		// configured (the clear_llm_failures overlay fan-out path).
 		if base := q.GetOverlayOf(); base != "" {
@@ -279,7 +298,7 @@ func (f *fakeGraphCaller) Execute(_ context.Context, req *knowledgev1.ExecuteReq
 		return f.execGraphNames(req.GetTarget().GetGraph())
 	}
 	id := q.GetById()
-	f.calls = append(f.calls, recordedCall{tool: "query", args: json.RawMessage(`{"id":"` + id + `"}`)})
+	f.recordCall(recordedCall{tool: "query", args: json.RawMessage(`{"id":"` + id + `"}`)})
 	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_TRAVERSAL {
 		if f.traversalErr != nil {
 			return nil, f.traversalErr
@@ -287,16 +306,25 @@ func (f *fakeGraphCaller) Execute(_ context.Context, req *knowledgev1.ExecuteReq
 		// Serve seeded descendants (TraverseDescendants) keyed by the from-root id,
 		// encoded into the typed traversal_results carrier.
 		roots := q.GetSelection().GetFromId()
+		resp := &knowledgev1.ExecuteResponse{}
 		if len(roots) > 0 {
 			if nodes, ok := f.traversalByRoot[roots[0]]; ok {
 				results := make([]engine.TraversalResult, len(nodes))
 				for i, n := range nodes {
 					results[i] = engine.TraversalResult{Distance: 1, Node: n}
 				}
-				return &knowledgev1.ExecuteResponse{TraversalResults: traversalResultsToProtoForTest(results)}, nil
+				resp.TraversalResults = traversalResultsToProtoForTest(results)
+			}
+			// The structure-edge carrier fills ONLY for an edge-aware read, mirroring
+			// the server: an edge-blind traversal leaves TraversalEdges nil, which is
+			// byte-for-byte what every existing traversal test already observes.
+			if q.GetIncludeEdgeMetadata() {
+				if edges, ok := f.traversalEdgesByRoot[roots[0]]; ok {
+					resp.TraversalEdges = edgePtrsForTest(edges)
+				}
 			}
 		}
-		return &knowledgev1.ExecuteResponse{}, nil
+		return resp, nil
 	}
 	// PLURAL-Ids arms. Both sit behind this guard so every existing single-id
 	// path is untouched. Without them the charge readout is unobservable in
@@ -377,7 +405,7 @@ func (f *fakeGraphCaller) Execute(_ context.Context, req *knowledgev1.ExecuteReq
 // seam: returns the seeded stats+override response (or the seeded error). Records
 // a "metadata_stats" call so dispatch-order assertions can observe it.
 func (f *fakeGraphCaller) MetadataStats(_ context.Context, _ *knowledgev1.MetadataStatsRequest) (*knowledgev1.MetadataStatsResponse, error) {
-	f.calls = append(f.calls, recordedCall{tool: "metadata_stats"})
+	f.recordCall(recordedCall{tool: "metadata_stats"})
 	if f.metadataStatsErr != nil {
 		return nil, f.metadataStatsErr
 	}
@@ -391,8 +419,7 @@ func (f *fakeGraphCaller) MetadataStats(_ context.Context, _ *knowledgev1.Metada
 // returns the seeded GraphStats (or the seeded error) and records the request.
 // Records a "stats" call so dispatch-order assertions can observe it.
 func (f *fakeGraphCaller) Stats(_ context.Context, req *knowledgev1.StatsRequest) (*knowledgev1.StatsResponse, error) {
-	f.statsReqs = append(f.statsReqs, req)
-	f.calls = append(f.calls, recordedCall{tool: "stats"})
+	f.recordStats(req)
 	if f.statsErr != nil {
 		return nil, f.statsErr
 	}
@@ -433,65 +460,4 @@ func (f *fakeGraphCaller) execBulkHydrate(ids []string) (*knowledgev1.ExecuteRes
 	return enginetest.ResponseWithNodes(nodes...), nil
 }
 
-// decodeSeededNode turns one seeded JSON body into a Node. Factored out of
-// encodeNodeResult so the single-id and bulk paths share ONE decode — two copies
-// would be free to drift on exactly the metadata round-trip the charge property
-// fold depends on.
-func decodeSeededNode(res kgtools.ToolResult) (*knowledgev1.Node, bool) {
-	var body string
-	if len(res.Content) > 0 {
-		body = res.Content[0].Text
-	}
-	var n knowledgev1.Node
-	if uerr := json.Unmarshal([]byte(body), &n); uerr != nil {
-		return nil, false
-	}
-	return &n, true
-}
-
-// encodeNodeResult decodes a seeded single-node JSON body into a knowledgev1.Node and
-// re-emits it as the nodes_json carrier ([]knowledgev1.Node), the shape render.Fetch-
-// NodeIn decodes. A malformed seed surfaces as not-found.
-func (f *fakeGraphCaller) encodeNodeResult(res kgtools.ToolResult) (*knowledgev1.ExecuteResponse, error) {
-	n, decoded := decodeSeededNode(res)
-	if !decoded {
-		return &knowledgev1.ExecuteResponse{}, nil
-	}
-	return enginetest.ResponseWithNodes(n), nil
-}
-
-func nodeResultJSON(t *testing.T, id, typ string, metadata map[string]string) kgtools.ToolResult {
-	t.Helper()
-	payload := map[string]any{
-		"id":       id,
-		"type":     typ,
-		"metadata": metadata,
-	}
-	b, err := json.MarshalIndent(payload, "", "  ")
-	require.NoError(t, err)
-	return kgtools.ToolResult{Content: []kgtools.ContentBlock{{Type: "text", Text: string(b)}}}
-}
-
-// TestFakeGraphCaller_MutateErrOnNth_FailsOnlyNamedCall makes the ordinal knob's
-// own semantics falsifiable rather than inferred from whatever downstream test
-// happens to use it. The knob exists because the coarser knobs cannot express
-// "fail the second of two writes": a blanket error fails both, and keying on
-// MutationKind or Target cannot separate two writes that share both.
-func TestFakeGraphCaller_MutateErrOnNth_FailsOnlyNamedCall(t *testing.T) {
-	wantErr := errors.New("second write failed")
-	fc := &fakeGraphCaller{mutateErrOnNth: map[int]error{2: wantErr}}
-	plan := &knowledgev1.MutationPlan{Kind: knowledgev1.MutationPlan_MUTATION_KIND_UPDATE}
-
-	_, firstErr := fc.Execute(context.Background(), &knowledgev1.ExecuteRequest{
-		Plan: &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-	})
-	require.NoError(t, firstErr, "the first Mutation Execute must succeed")
-
-	_, secondErr := fc.Execute(context.Background(), &knowledgev1.ExecuteRequest{
-		Plan: &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-	})
-	require.Error(t, secondErr, "the second Mutation Execute must fail")
-	assert.Equal(t, wantErr, secondErr, "the seeded error must surface verbatim")
-
-	assert.Len(t, fc.execMutations, 2, "both mutations are recorded — the failing call is still observed")
-}
+// The seeded-node decode/encode helpers live in fake_graph_caller_seed_test.go.

@@ -13,11 +13,33 @@ import (
 // handler. Returns true when the element was handled (and thus its
 // children were processed by the handler); false signals walk() to
 // recurse into children itself.
+//
+// THE HEADING DISPATCH IS THREE ARMS AND THE ORDER IS THE REQUIREMENT:
+// native h1-h6, then ARIA role="heading" with an explicit aria-level, then
+// the calibrated presentation heuristic. Each arm runs only where the ones
+// above it found no signal, which is this walker's form of the PDF
+// classifier's `if blocks[i].HeadingLevel != 0 { continue }`
+// (collector/pdf/classify/classify_heading.go:204): an upstream
+// authoritative level is preserved, never overwritten by a heuristic one.
+//
+// Three arms is three pairwise orderings and each has its OWN subtest,
+// because stating the order here gates none of them:
+// native_heading_wins_over_aria_level, native_heading_wins_over_the_heuristic
+// and aria_level_wins_over_the_heuristic.
 func (w *walker) handleStructural(n *html.Node) bool {
-	switch n.DataAtom {
-	case atom.H1, atom.H2, atom.H3, atom.H4, atom.H5, atom.H6:
-		w.handleHeading(n)
+	if isNativeHeading(n.DataAtom) {
+		w.handleHeading(n, headingDepth(n.DataAtom))
 		return true
+	}
+	if depth, ok := ariaHeadingLevel(n); ok {
+		w.handleHeading(n, depth)
+		return true
+	}
+	if depth, ok := w.heuristic[n]; ok {
+		w.handleHeading(n, depth)
+		return true
+	}
+	switch n.DataAtom {
 	case atom.P:
 		w.handleParagraph(n)
 		return true
@@ -31,6 +53,13 @@ func (w *walker) handleStructural(n *html.Node) bool {
 		w.handleDL(n)
 		return true
 	case atom.Table:
+		// A LAYOUT table is page furniture: recurse into its subtree so the
+		// content it wraps is walked rather than swallowed. A DATA table
+		// keeps producing exactly the record it produced before.
+		if isLayoutTable(n) {
+			w.walkChildren(n)
+			return true
+		}
 		w.handleTable(n)
 		return true
 	case atom.Img:
@@ -43,18 +72,34 @@ func (w *walker) handleStructural(n *html.Node) bool {
 		w.handleBlockquote(n)
 		return true
 	case atom.A:
-		// Bare <a> outside of prose: still record the link.
+		// HTML's content model for <a> is TRANSPARENT — an anchor may wrap
+		// flow content. When it does, record the link AND walk the subtree,
+		// so a masthead anchor wrapping an <h1> and a <p> yields a section
+		// and a paragraph rather than one swallowed link. handleAnchor does
+		// not recurse, so calling it first emits the link record without
+		// double-walking. A bare <a> outside of prose takes the same path it
+		// always did.
+		if w.isBlockLevel(n) {
+			w.handleAnchor(n)
+			w.walkChildren(n)
+			return true
+		}
 		w.handleAnchor(n)
 		return true
 	}
 	return false
 }
 
-// handleHeading converts an h1–h6 into a new sectionRecord and pushes it
-// onto the stack. The section's heading text is the concatenated inline
-// text; anchor id comes from the heading element's id attribute.
-func (w *walker) handleHeading(n *html.Node) {
-	depth := headingDepth(n.DataAtom)
+// handleHeading converts a heading element into a new sectionRecord and
+// pushes it onto the stack. The section's heading text is the concatenated
+// inline text; anchor id comes from the element's id attribute.
+//
+// depth is supplied by the caller rather than derived here, because the
+// element is no longer necessarily an h1-h6: it may equally be an element
+// carrying role="heading" with an explicit aria-level, or a presentation
+// marker the heuristic pre-pass promoted. All three arms therefore inherit
+// Anchor, Attrs and the firstH1 title fallback uniformly.
+func (w *walker) handleHeading(n *html.Node, depth int) {
 	text := collectProseText(n)
 	anchor := getAttr(n, "id")
 

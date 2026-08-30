@@ -153,8 +153,9 @@ const helpRecipes = "# Recipe DSL\n" +
 	"### lookup\n" +
 	"`lookup pattern by page.name as $rel` — compute the StableID that a\n" +
 	"prior emit WOULD have produced for the same (target, sourceSlug,\n" +
-	"NodeType, identity) tuple, verify the node exists in the target\n" +
-	"graph (in-memory ByID check), and bind the resulting ID to $rel.\n" +
+	"NodeType, identity) tuple, verify that node was EMITTED EARLIER IN\n" +
+	"THIS RUN (an in-run emitted-set check, never a target-graph read),\n" +
+	"and bind the resulting ID to $rel.\n" +
 	"\n" +
 	"- No write. No translated-from edge. No NodesEmitted increment.\n" +
 	"- If the identity expression resolves to empty OR the node is\n" +
@@ -171,8 +172,9 @@ const helpRecipes = "# Recipe DSL\n" +
 	"returns a string.\n" +
 	"\n" +
 	"- Empty endpoint (unbound $var) → silent skip, Stats.LinkMisses++.\n" +
-	"- Non-empty endpoint that doesn't exist in the target graph → silent\n" +
-	"  skip, Stats.LinkMisses++ (ByID verification is automatic).\n" +
+	"- Endpoint not emitted earlier in THIS run → silent skip,\n" +
+	"  Stats.LinkMisses++. The check is the same in-run emitted set\n" +
+	"  `lookup` consults; the interpreter never reads the target graph.\n" +
 	"- No unique-edge enforcement at the DSL level — the underlying\n" +
 	"  target DB dedups equal (from, to, type) edges.\n" +
 	"\n" +
@@ -198,8 +200,13 @@ const helpRecipes = "# Recipe DSL\n" +
 	"  `page.<key>` also falls through to metadata when `<key>` isn't a\n" +
 	"  well-known field).\n" +
 	"- `page.url` — sugar for `page.metadata.url` (same fall-through).\n" +
-	"- `$var.name` — read the hydrated-target node's name via a\n" +
-	"  previously-bound var. `$var` alone returns the ID.\n" +
+	"- `$var` — the bound value, which for an emit binding is the emitted\n" +
+	"  node's ID.\n" +
+	"- `$var.anything` — returns the SAME bound ID regardless of the\n" +
+	"  trailing path: bindings hold scalars, not node handles, so a dotted\n" +
+	"  var path does NOT read a field off the bound node. To read a field\n" +
+	"  after a traverse, use the bare traverse alias — after\n" +
+	"  `traverse contains out as $file`, write `file.symbol_name`.\n" +
 	"\n" +
 	"### Operators\n" +
 	"- `lhs ~= /pattern/` — regex match. Returns the matched substring\n" +
@@ -209,16 +216,46 @@ const helpRecipes = "# Recipe DSL\n" +
 	"  Use this on `where` / `filter` predicates to drop rows.\n" +
 	"\n" +
 	"### Built-in functions\n" +
+	"\n" +
+	"String:\n" +
 	"- `concat(a, b, c, ...)` — string concatenation.\n" +
 	"- `trim(s)` — strip leading/trailing whitespace.\n" +
 	"- `lower(s)` / `upper(s)` — case conversion.\n" +
+	"- `length(s)` — byte length, returned as a string.\n" +
+	"- `slice(s, start, end)` — byte-offset substring, bounds clamped.\n" +
+	"- `match_group(s, pattern, n)` — the nth capture group, 1-indexed.\n" +
+	"\n" +
+	"Graph:\n" +
 	"- `has_edge(edge_type, direction)` — true (sentinel non-empty) if\n" +
 	"  the current row's node has at least one matching edge. Direction\n" +
 	"  is `in` | `out` | `both`.\n" +
+	"- `children_concat(edge_type, field, sep)` — read a field off every\n" +
+	"  neighbor across an outgoing edge, joined.\n" +
+	"- `ancestors_concat(edge_type, field, sep)` — the same over incoming\n" +
+	"  edges.\n" +
+	"- `has_ancestor(edge_type, field, pattern)` — walk upward and test a\n" +
+	"  field against a regex.\n" +
 	"\n" +
-	"No arithmetic, no length, no boolean AND/OR, no ternaries. If the\n" +
-	"predicate needs more logic, compose alternations in the regex\n" +
-	"(`/^A|^B|^C/`) or split into multiple `filter` rules.\n" +
+	"Boolean:\n" +
+	"- `and(a, b)` / `or(a, b)` / `not(a)` — truthiness composition over\n" +
+	"  the empty-is-false rule.\n" +
+	"\n" +
+	"Render — these two walk document SHAPE rather than reading one field:\n" +
+	"- `heading_path(edge_type, field, sep)` — walk UPWARD and join each\n" +
+	"  ancestor's field root-first. The row's own field is not included and\n" +
+	"  empty values are skipped.\n" +
+	"  SINGLE-PARENT ASSUMPTION: the edge type comes from you, and the walk\n" +
+	"  follows the FIRST parent at each hop, so it is meaningful only on an\n" +
+	"  edge type that forms a tree. The builtin cannot check that for you.\n" +
+	"- `subtree_concat(edge_type, field, sep, max_depth)` — walk DOWNWARD,\n" +
+	"  visiting each level's children in document order, and join their\n" +
+	"  fields. max_depth \"1\" is the ordered immediate children; a larger\n" +
+	"  value renders the whole subtree. A non-integer max_depth errors and\n" +
+	"  names the offending value.\n" +
+	"\n" +
+	"No arithmetic and no ternaries. If a predicate needs more logic,\n" +
+	"compose alternations in the regex (`/^A|^B|^C/`), use `and` / `or` /\n" +
+	"`not`, or split into multiple `filter` rules.\n" +
 	"\n" +
 	"## Cross-emit bindings — how `$var` works through traverse\n" +
 	"\n" +
@@ -282,14 +319,14 @@ const helpRecipes = "# Recipe DSL\n" +
 	"    select section where section.heading ~= /.+/\n" +
 	"    emit idiom { type := \"idiom\", name := section.heading } as $id\n" +
 	"\n" +
-	"### Hierarchical emit with parent link\n" +
+	"### Hierarchical emit with a parent-child link\n" +
 	"\n" +
 	"    select page\n" +
 	"    emit document { type := \"document\", name := page.name } as $doc\n" +
 	"    traverse contains out\n" +
 	"    filter page.type ~= /^section$/\n" +
 	"    emit section { type := \"section\", name := page.name } as $sec\n" +
-	"    link $sec --[contained-by]--> $doc\n" +
+	"    link $doc --[contains]--> $sec\n" +
 	"\n" +
 	"### Cross-reference via lookup (see canonical shape above)\n" +
 	"\n" +
@@ -339,4 +376,119 @@ const helpRecipes = "# Recipe DSL\n" +
 	"`dry_run:true` computes and returns the projection's stats without\n" +
 	"writing; `force:true` deletes prior emissions from the same source\n" +
 	"slug before re-emitting.\n" +
+	"\n" +
+	"A recipe run REPLAYS THE ALREADY-COLLECTED raw graph. The recipe\n" +
+	"dispatch returns before any crawl options are applied, so nothing is\n" +
+	"fetched and no page is re-requested: iterating a recipe against a\n" +
+	"document you already collected is zero network cost. Collect the\n" +
+	"document once, then iterate the extraction as many times as you like.\n" +
+	"\n" +
+	"## Extract mode — see what a recipe pulls out, without writing\n" +
+	"\n" +
+	"`extract: true` runs the recipe and returns the emitted ROWS instead\n" +
+	"of writing anything. Nothing reaches a target graph, so it is safe to\n" +
+	"iterate on a recipe until it says what you meant.\n" +
+	"\n" +
+	"    collect({ type: \"web\", id: \"hohpe-eip\", transformer: \"recipe\",\n" +
+	"              recipe: \"eip-to-design-patterns\", extract: true })\n" +
+	"\n" +
+	"`recipe_body:` supplies an INLINE body instead of naming a saved\n" +
+	"recipe. The two are mutually exclusive, and an inline body REQUIRES\n" +
+	"extract mode — a write target comes from a saved recipe node's\n" +
+	"metadata, so there is nowhere for an inline run to write to.\n" +
+	"\n" +
+	"    collect({ type: \"web\", id: \"hohpe-eip\", transformer: \"recipe\",\n" +
+	"              extract: true, recipe_body: \"select section\\nemit ...\" })\n" +
+	"\n" +
+	"### Freezing an extraction\n" +
+	"\n" +
+	"To freeze an inline body you are happy with, SAVE it as a recipe node\n" +
+	"and run it by name — the same mutate route the authoring section\n" +
+	"above describes. Saving is what gives an extraction a name, a target\n" +
+	"and an authoring trail; there is deliberately no way to write from an\n" +
+	"unsaved body.\n" +
+	"\n" +
+	"### Output shape and the two ceilings\n" +
+	"\n" +
+	"    extract: recipe=<name|inline> source=<type>/<slug> rows=<n>/<m> bytes=<b>\n" +
+	"    --- row 0 type=<T> src=<source node>\n" +
+	"    <field>: <value>\n" +
+	"\n" +
+	"Fields render in sorted key order, so two runs over one document are\n" +
+	"comparable. `rows=` reports rows RETURNED over rows MATCHED, so a\n" +
+	"bounded extract is never mistaken for a short one.\n" +
+	"\n" +
+	"`max_rows` caps rows (default 200) and `max_bytes` caps the rendered\n" +
+	"response (default 65536). NEITHER CAP IS SILENT: when one fires the\n" +
+	"output carries a line beginning `TRUNCATED by`, naming the cap, its\n" +
+	"value, the returned and matched counts, and what to do about it. The\n" +
+	"byte cap cuts at ROW BOUNDARIES only, so a value is never clipped\n" +
+	"mid-string; when even the first row does not fit, the disclosure says\n" +
+	"so and names that row's size so you can pick a cap that works.\n" +
+	"\n" +
+	"`extract` cannot be combined with `force`: force hard-deletes prior\n" +
+	"nodes in a target graph, and extract has no target.\n" +
+	"\n" +
+	"## Bare field-path heads are checked when the recipe is parsed\n" +
+	"\n" +
+	"A bare head — the part before the first dot, with no `$` — must name\n" +
+	"something the current row can be. Legal heads are the type named by\n" +
+	"the most recent `select`, plus any `traverse ... as` alias declared\n" +
+	"since it, plus group and node. Each `select` RESETS the set, so an\n" +
+	"alias from before a second select stops being legal at it.\n" +
+	"\n" +
+	"`node` is the universal alias for the current row and names no type\n" +
+	"at all, which is why no select ever removes it. `group` is the\n" +
+	"group-by rule's namespace, as in `group.keys`.\n" +
+	"\n" +
+	"A head outside that set is a PARSE ERROR naming the head and listing\n" +
+	"the legal set, so a recipe can be repaired from the message alone.\n" +
+	"There are two repairs: rename the head to the selected type, or — if\n" +
+	"the access happens after a traverse — to that traverse alias.\n" +
+	"\n" +
+	"This is the ONE place the DSL refuses instead of degrading. An unknown\n" +
+	"metadata KEY still reads as empty, because source graphs legitimately\n" +
+	"differ in what they stamp; a wrong HEAD is a typo that would otherwise\n" +
+	"emit a whole run of blank fields and look like an empty document.\n" +
+	"\n" +
+	"## Where the body text lives: web-collect vs pdf-collect\n" +
+	"\n" +
+	"The two raw collectors disagree about which field carries a node's\n" +
+	"text, and `node.source` tells you which one you are reading:\n" +
+	"\n" +
+	"- web-collect — paragraphs, list items, blockquotes and code blocks\n" +
+	"  carry their text in `content`; a page carries a FLATTENED body in\n" +
+	"  `description` that deliberately EXCLUDES code blocks, tables, images\n" +
+	"  and quotes; a section carries neither, only its heading.\n" +
+	"- pdf-collect — every chunk carries its text in `description` and\n" +
+	"  never sets `content`; only sections carry a symbol name.\n" +
+	"\n" +
+	"`body` is a virtual field that resolves this: it returns `content`\n" +
+	"when set, otherwise `description`. One field name therefore reaches\n" +
+	"the text on either source, and every field-taking builtin gets it too.\n" +
+	"\n" +
+	"ONE ASYMMETRY SURVIVES and is worth knowing: on a pdf section the text\n" +
+	"and the heading are the same string, so `section.body` returns the\n" +
+	"heading; on a web section it returns empty. Section BODIES on both\n" +
+	"sources come from `subtree_concat` over the section's children, never\n" +
+	"from `body` on the section itself.\n" +
+	"\n" +
+	"## Canned section renders\n" +
+	"\n" +
+	"A heading path plus the section subtree, which together are what turns\n" +
+	"a document graph into readable patterns. Both work unchanged on web\n" +
+	"and pdf sources, because `body` absorbs the field difference:\n" +
+	"\n" +
+	"    select section\n" +
+	"    filter section.symbol_name ~= /^[A-Z]/\n" +
+	"    emit pattern {\n" +
+	"        name := section.symbol_name\n" +
+	"        path := heading_path(\"contains\", \"symbol_name\", \" > \")\n" +
+	"        body := subtree_concat(\"contains\", \"body\", \"\\n\\n\", \"4\")\n" +
+	"    }\n" +
+	"\n" +
+	"The section subtree render walks EVERY child node type, so it includes\n" +
+	"the code blocks, tables and quotes a page's own flattened description\n" +
+	"leaves out. Use max_depth \"1\" instead for just the ordered immediate\n" +
+	"children.\n" +
 	""

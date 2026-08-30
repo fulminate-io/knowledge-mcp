@@ -5,16 +5,17 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/collectorwire"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -57,17 +58,14 @@ type recipeDeps struct {
 	gc   GraphCaller
 }
 
-func (d *recipeDeps) LocalLiveness() LocalLiveness                 { return nil }
-func (d *recipeDeps) Sink() collector.Sink                         { return d.sink }
-func (d *recipeDeps) RootDir() string                              { return "" }
-func (d *recipeDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
-func (d *recipeDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
-func (d *recipeDeps) WorkerReady() bool                            { return true }
-func (d *recipeDeps) PropReady() bool                              { return true }
-func (d *recipeDeps) PipelineReady() bool                          { return true }
-func (d *recipeDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
-func (d *recipeDeps) BanSet() *hivemonitor.BanSet                  { return nil }
-func (d *recipeDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d *recipeDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d *recipeDeps) Sink() collector.Sink            { return d.sink }
+func (d *recipeDeps) RootDir() string                 { return "" }
+func (d *recipeDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+
+func (d *recipeDeps) PropReady() bool     { return true }
+func (d *recipeDeps) PipelineReady() bool { return true }
+
 func (d *recipeDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
 func (d *recipeDeps) Embedder() embed.BinaryEmbedder               { return nil }
 func (d *recipeDeps) BackendResolver() BackendResolver             { return nil }
@@ -153,4 +151,103 @@ func TestInterceptCollect_RecipeTypeMismatch_Errors(t *testing.T) {
 	assert.Contains(t, msg, "pdf")
 	assert.Contains(t, msg, "web")
 	assert.Empty(t, sink.results, "a mismatch writes nothing")
+}
+
+// extractCollectParams builds a collect payload with the extract params merged
+// over the working recipe payload.
+func extractCollectParams(t *testing.T, extra map[string]any) kgtools.CallToolParams {
+	t.Helper()
+	args := map[string]any{
+		"type":        "web",
+		"id":          "hohpe-eip",
+		"transformer": "recipe",
+		"recipe":      "eip",
+	}
+	maps.Copy(args, extra)
+	raw, err := json.Marshal(args)
+	require.NoError(t, err)
+	return kgtools.CallToolParams{Name: "collect", Arguments: raw}
+}
+
+// TestInterceptCollect_Extract_Rows proves a successful extract returns rows in
+// the response and writes nothing.
+func TestInterceptCollect_Extract_Rows(t *testing.T) {
+	sink := &recipeCaptureSink{}
+	deps := &recipeDeps{sink: sink, gc: recipeHandlerCaller()}
+
+	handled, res := InterceptCollect(opCtx(), deps, extractCollectParams(t, map[string]any{"extract": true}))
+	require.True(t, handled)
+	require.False(t, res.IsError, "expected a successful extract, got: %s", resultText(res))
+
+	body := resultText(res)
+	assert.Contains(t, body, "extract:", "the response leads with the extract header")
+	assert.Contains(t, body, "Message Router", "the emitted field value is in the response")
+	assert.Empty(t, sink.results, "extract must write nothing")
+}
+
+// TestInterceptCollect_Extract_Inline runs an inline body with NO recipe node
+// present, which also exercises the inline manifest the dispatch builds.
+func TestInterceptCollect_Extract_Inline(t *testing.T) {
+	sink := &recipeCaptureSink{}
+	// A caller serving the source graph only — no transformers bucket at all.
+	caller := &recipeRoutingCaller{nodesByGraph: map[string][]*knowledgev1.Node{
+		string(kgtypes.GraphWebRaw): {{Id: "s1", Type: "section", SymbolName: "Message Router"}},
+	}}
+	deps := &recipeDeps{sink: sink, gc: caller}
+
+	handled, res := InterceptCollect(opCtx(), deps, extractCollectParams(t, map[string]any{
+		"extract": true, "recipe": "", "recipe_body": recipeHandlerBody,
+	}))
+	require.True(t, handled)
+	require.False(t, res.IsError, "expected a successful inline extract, got: %s", resultText(res))
+
+	body := resultText(res)
+	assert.Contains(t, body, "recipe=inline", "the header names the inline body")
+	assert.Contains(t, body, "Message Router")
+	assert.Empty(t, sink.results, "inline extract must write nothing")
+}
+
+// TestInterceptCollect_Extract_RefusesForce proves the refusal surfaces as an
+// error result and is still handled, never forwarded as (false, _).
+func TestInterceptCollect_Extract_RefusesForce(t *testing.T) {
+	sink := &recipeCaptureSink{}
+	deps := &recipeDeps{sink: sink, gc: recipeHandlerCaller()}
+
+	handled, res := InterceptCollect(opCtx(), deps, extractCollectParams(t, map[string]any{
+		"extract": true, "force": true,
+	}))
+	require.True(t, handled, "a refusal is still handled client-side")
+	require.True(t, res.IsError)
+	msg := resultText(res)
+	assert.Contains(t, msg, "force")
+	assert.Contains(t, msg, "extract")
+	assert.Empty(t, sink.results)
+}
+
+// TestInterceptCollect_Extract_ParamsNeedRecipe proves each of the four params
+// is refused BY NAME when supplied without transformer=recipe, rather than
+// accepted and dropped.
+func TestInterceptCollect_Extract_ParamsNeedRecipe(t *testing.T) {
+	for name, value := range map[string]any{
+		"extract":     true,
+		"recipe_body": "select section",
+		"max_rows":    5,
+		"max_bytes":   1024,
+	} {
+		t.Run(name, func(t *testing.T) {
+			args, err := json.Marshal(map[string]any{
+				"type": "web", "id": "hohpe-eip", name: value,
+			})
+			require.NoError(t, err)
+
+			sink := &recipeCaptureSink{}
+			deps := &recipeDeps{sink: sink, gc: recipeHandlerCaller()}
+			handled, res := InterceptCollect(opCtx(), deps,
+				kgtools.CallToolParams{Name: "collect", Arguments: args})
+			require.True(t, handled)
+			require.True(t, res.IsError, "%s without transformer=recipe must be refused, not dropped", name)
+			assert.Contains(t, resultText(res), name, "the refusal must name the offending param")
+			assert.Empty(t, sink.results)
+		})
+	}
 }

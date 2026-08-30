@@ -273,7 +273,7 @@ func TestInterceptMutate_Answer_HappyPath(t *testing.T) {
 	deps := interceptTestDeps{gc: fc}
 	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
-		Arguments: json.RawMessage(`{"operation":"answer","id":"q-1","conclusion":"the answer"}`),
+		Arguments: json.RawMessage(`{"operation":"answer","id":"q-1","summary":"the fixture question is concluded","conclusion":"the answer"}`),
 	})
 	require.True(t, handled)
 	require.False(t, res.IsError, "happy path: %s", toolResultText(res))
@@ -283,11 +283,12 @@ func TestInterceptMutate_Answer_HappyPath(t *testing.T) {
 }
 
 // TestInterceptMutate_Answer_RoutesMetadata_RejectsBodyFields pins the answer
-// arm's accounting. Caller metadata now rides the update beside the derived
-// conclusion key instead of vanishing. The body fields stay rejected for two
-// distinct reasons the errors must state: the operation writes status and
-// summary itself, so routing a caller value would fight its own derivation;
-// name/description/content are ordinary body edits belonging on mutate(update).
+// arm's accounting. Caller metadata rides the update beside the conclusion key
+// instead of vanishing. The remaining body fields stay rejected for two distinct
+// reasons the errors must state: the operation writes status itself, so routing
+// a caller value would fight its own write; name/description/content are
+// ordinary body edits belonging on mutate(update). `summary` is NO LONGER in
+// either class — it is consumed, because the answer composes none.
 func TestInterceptMutate_Answer_RoutesMetadata_RejectsBodyFields(t *testing.T) {
 	researchGc := func(t *testing.T) *fakeGraphCaller {
 		t.Helper()
@@ -317,7 +318,7 @@ func TestInterceptMutate_Answer_RoutesMetadata_RejectsBodyFields(t *testing.T) {
 		fc := researchGc(t)
 		handled, res := InterceptMutate(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
 			Name: "mutate",
-			Arguments: json.RawMessage(`{"operation":"answer","id":"q-1","conclusion":"the answer",` +
+			Arguments: json.RawMessage(`{"operation":"answer","id":"q-1","summary":"the fixture question is concluded","conclusion":"the answer",` +
 				`"metadata":{"owner":"me"}}`),
 		})
 		require.True(t, handled, "the answer arm claims the call")
@@ -332,24 +333,24 @@ func TestInterceptMutate_Answer_RoutesMetadata_RejectsBodyFields(t *testing.T) {
 		callerMeta := map[string]string{"owner": "me", "conclusion": "caller-loses"}
 		fc := researchGc(t)
 		res := handleClientMutateAnswer(context.Background(), interceptTestDeps{gc: fc}, withRawArgs(mutateArgs{
-			Operation: "answer", ID: "q-1", Conclusion: "the answer", Metadata: callerMeta,
-		}, `{"operation":"answer","id":"q-1","conclusion":"the answer",`+
+			Operation: "answer", ID: "q-1", Summary: "the fixture question is concluded",
+			Conclusion: "the answer", Metadata: callerMeta,
+		}, `{"operation":"answer","id":"q-1","summary":"the fixture question is concluded","conclusion":"the answer",`+
 			`"metadata":{"owner":"me","conclusion":"caller-loses"}}`))
 		require.False(t, res.IsError, "answer must succeed: %s", toolResultText(res))
 		require.GreaterOrEqual(t, len(fc.execMutations), 1)
 		m := fc.execMutations[len(fc.execMutations)-1]
 		assert.Equal(t, "me", m.GetSetMetadata()["owner"], "caller metadata must persist")
 		assert.Equal(t, "the answer", m.GetSetMetadata()["conclusion"],
-			"the derived conclusion key must win on a collision with caller metadata")
+			"the operation's conclusion key must win on a collision with caller metadata")
 		assert.Equal(t, map[string]string{"owner": "me", "conclusion": "caller-loses"}, callerMeta,
-			"the caller's map must be byte-identical — never gaining the derived conclusion")
+			"the caller's map must be byte-identical — never gaining the operation's conclusion")
 	})
 
 	// Each param is checked against the reason its own class carries, so a
 	// justification wired to the wrong key cannot pass.
 	for param, wantReason := range map[string]string{
-		"status":      "sets status and summary itself",
-		"summary":     "sets status and summary itself",
+		"status":      "sets status itself",
 		"name":        "body edit",
 		"description": "body edit",
 		"content":     "body edit",
@@ -359,7 +360,8 @@ func TestInterceptMutate_Answer_RoutesMetadata_RejectsBodyFields(t *testing.T) {
 			handled, res := InterceptMutate(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
 				Name: "mutate",
 				Arguments: json.RawMessage(
-					`{"operation":"answer","id":"q-1","conclusion":"the answer","` + param + `":"x"}`),
+					`{"operation":"answer","id":"q-1","summary":"the fixture question is concluded",` +
+						`"conclusion":"the answer","` + param + `":"x"}`),
 			})
 			require.True(t, handled, "a rejected param must be claimed, not fall through")
 			require.True(t, res.IsError)
@@ -376,7 +378,7 @@ func TestInterceptMutate_Answer_MissingNode_Errors(t *testing.T) {
 	deps := interceptTestDeps{gc: fc}
 	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
-		Arguments: json.RawMessage(`{"operation":"answer","id":"missing","conclusion":"x"}`),
+		Arguments: json.RawMessage(`{"operation":"answer","id":"missing","summary":"the missing question is concluded","conclusion":"x"}`),
 	})
 	require.True(t, handled)
 	require.True(t, res.IsError)

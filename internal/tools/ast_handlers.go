@@ -55,6 +55,13 @@ func handleAstReplace(ctx context.Context, deps ClientDeps, a astArgs) kgtools.T
 		return errorResult(kerr.Error())
 	}
 
+	// Same reasoning one leaf over, and it pays hardest here for the reason
+	// above: an unanswerable flows_to leaf would make a replace report zero
+	// rewrites with no error.
+	if ferr := ast.ValidateWhereFlowArms(where, lang); ferr != nil {
+		return errorResult(ferr.Error())
+	}
+
 	if perr := validateContextPin(a.Context, lang); perr != nil {
 		return errorResult(perr.Error())
 	}
@@ -65,7 +72,7 @@ func handleAstReplace(ctx context.Context, deps ClientDeps, a astArgs) kgtools.T
 		return errorResult(terr.Error())
 	}
 
-	repoDir, derr := resolveRepoDir(ctx, deps, a.Repo)
+	repoDir, derr := resolveRepoDir(ctx, deps, "ast", a.Repo)
 	if derr != nil {
 		return errorResult(derr.Error())
 	}

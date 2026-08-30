@@ -87,7 +87,7 @@ func TestNegationProofParams_DeclaredInEverySchema(t *testing.T) {
 }
 
 // TestNegationProofParams_ClassifiedOnEveryArm proves the two params are
-// accounted on all 21 dispatch arms, and that the CONSUMED set is exactly the
+// accounted on all 22 dispatch arms, and that the CONSUMED set is exactly the
 // arms a negation call can select. An unclassified (arm, param) pair is the
 // silent-drop shape the accounting gate exists to close: a key with no cell can
 // never be rejected, so it is accepted and dropped.

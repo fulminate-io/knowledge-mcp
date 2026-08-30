@@ -12,8 +12,9 @@ import (
 // VERBATIM from cmd/knowledge-server/internal/index/bm25/tokenizer.go (the
 // authoritative server algorithm) so the client-built BM25 segments produce
 // byte-identical token+frequency maps to what the server indexes. The only
-// change is the store.ToLowerASCII dependency, which is inlined as the local
-// toLowerASCII (the engine subpackage stays import-clean: stdlib + own subpkgs).
+// change is the server store's ToLowerASCII dependency, which is inlined as the
+// local toLowerASCII — now the sole copy, the server's having been removed as
+// dead code (the engine subpackage stays import-clean: stdlib + own subpkgs).
 //
 // Rules:
 //   - Split on whitespace and punctuation (/, ., (, ), {, }, etc.)

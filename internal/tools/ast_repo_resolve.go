@@ -59,10 +59,41 @@ type rootDirSourcer interface{ RootDirSet() bool }
 // path) — never a sibling-dir / git-remote / content guess. A repo name is not a
 // portable filesystem path, so absent a manifest entry the fail-loud floor directs
 // the caller to an absolute checkout path.
-func resolveRepoDir(ctx context.Context, deps ClientDeps, repoArg string) (string, error) {
-	base := strings.TrimSpace(effectiveCwd(ctx, deps))
+//
+// toolName prefixes every error this returns. The resolver serves more than the
+// ast tool — the topology dispatcher resolves an analyzer's walk root through it
+// too — so the caller names itself rather than every message claiming "ast".
+func resolveRepoDir(ctx context.Context, deps ClientDeps, toolName, repoArg string) (string, error) {
+	// rootExplicit is false ONLY when the deps exposes the capability AND reports
+	// the root was left at its built-in default. A deps that does not expose it
+	// (older / partial fakes) keeps the walk, which is the behavior this branch
+	// has always had.
+	rootExplicit := true
+	if rs, ok := deps.(rootDirSourcer); ok && !rs.RootDirSet() {
+		rootExplicit = false
+	}
+	return ResolveRepoDirCore(
+		effectiveCwd(ctx, deps), rootExplicit, session.WorkspaceCwdFromContext(ctx), toolName, repoArg)
+}
+
+// ResolveRepoDirCore is resolveRepoDir's PURE CORE, taking the five values the
+// wrapper reads off its ctx and deps instead of the ctx and deps themselves.
+//
+// IT IS EXPORTED FOR ONE CALLER AND ONE REASON: the `knowledge check run` CLI
+// needs exactly this branch chain and has no ClientDeps to construct. A SECOND
+// COPY OF THE CHAIN IS THE FAILURE MODE — a CLI that resolved repos differently
+// from the tool would send an author chasing a walk-root difference between two
+// surfaces that claim to run the same check. So the chain lives here once and
+// both surfaces call it.
+//
+// base is the walk base (a session cwd, the daemon --root, or a CLI's process
+// working directory). rootExplicit is false only when base is a pure built-in
+// default nobody chose. sessionCwd is the per-session workspace cwd when one rode
+// in, empty otherwise. toolName prefixes every error.
+func ResolveRepoDirCore(base string, rootExplicit bool, sessionCwd, toolName, repoArg string) (string, error) {
+	base = strings.TrimSpace(base)
 	if base == "" {
-		return "", fmt.Errorf("ast: --root is empty; pass a repo path with --root <dir>")
+		return "", fmt.Errorf("%s: --root is empty; pass a repo path with --root <dir>", toolName)
 	}
 	// Anchor a RELATIVE base to an absolute path. effectiveCwd can hand back a
 	// relative root — notably the daemon's default --root of "." when no session
@@ -82,12 +113,9 @@ func resolveRepoDir(ctx context.Context, deps ClientDeps, repoArg string) (strin
 		// that case `base` is just the daemon's process cwd, which almost never
 		// is the tree the caller means — walking it silently hands back results
 		// labeled for the wrong repo. Two inputs are read SEPARATELY: an explicit
-		// --root OR a live session cwd each preserve the walk. A deps that does
-		// not expose RootDirSet() (older/partial fakes) keeps the fallback.
-		if session.WorkspaceCwdFromContext(ctx) == "" {
-			if rs, ok := deps.(rootDirSourcer); ok && !rs.RootDirSet() {
-				return "", fmt.Errorf("ast: no repo specified and the daemon has no project root — pass repo:<name|/abs/path> or start the daemon with --root <dir>")
-			}
+		// --root OR a live session cwd each preserve the walk.
+		if sessionCwd == "" && !rootExplicit {
+			return "", fmt.Errorf("%s: no repo specified and the daemon has no project root — pass repo:<name|/abs/path> or start the daemon with --root <dir>", toolName)
 		}
 		return base, nil
 	}
@@ -100,7 +128,7 @@ func resolveRepoDir(ctx context.Context, deps ClientDeps, repoArg string) (strin
 		if info, statErr := os.Stat(repoArg); statErr == nil && info.IsDir() {
 			return repoArg, nil
 		}
-		return "", fmt.Errorf("ast: repo %q is an absolute path but not an existing directory; pass an existing checkout directory, or omit repo to walk the current tree", repoArg)
+		return "", fmt.Errorf("%s: repo %q is an absolute path but not an existing directory; pass an existing checkout directory, or omit repo to walk the current tree", toolName, repoArg)
 	}
 
 	// A bare NAME resolves ONLY when it names the CURRENT tree — the daemon's
@@ -134,5 +162,5 @@ func resolveRepoDir(ctx context.Context, deps ClientDeps, repoArg string) (strin
 	// manifest above is the only name→dir source, because it stores the actual
 	// collect-time path; absent a manifest entry, an absolute checkout path is the
 	// reliable cross-repo target.
-	return "", fmt.Errorf("ast: repo %q is not the current tree and is not in the local manifest (~/.knowledge/repos.json — populated when you `collect` a repo). Collect it first, register its path with manage(operation:\"register_repo\", name:%q, root:\"/abs/path\"), pass an absolute checkout path, e.g. repo=\"/path/to/%s\", or omit repo to walk the current tree", repoArg, repoArg, repoArg)
+	return "", fmt.Errorf("%s: repo %q is not the current tree and is not in the local manifest (~/.knowledge/repos.json — populated when you `collect` a repo). Collect it first, register its path with manage(operation:\"register_repo\", name:%q, root:\"/abs/path\"), pass an absolute checkout path, e.g. repo=\"/path/to/%s\", or omit repo to walk the current tree", toolName, repoArg, repoArg, repoArg)
 }

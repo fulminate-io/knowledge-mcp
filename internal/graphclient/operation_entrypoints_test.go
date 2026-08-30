@@ -31,18 +31,18 @@ import (
 // point exhaustively — every one of the advertised catalog tools, through the
 // real dispatchToolCall — because that family is where the overwhelming majority
 // of covered RPCs originate. The background loops in other packages (the LLM
-// pipeline, the thought propagation loop, the collector upload sink, the hive
-// monitor) cannot be reached from this package and each carries its own
-// stamping test beside the loop it guards.
+// pipeline, the thought propagation loop, the collector upload sink) cannot be
+// reached from this package and each carries its own stamping test beside the
+// loop it guards.
 func TestOperationEntryPoints(t *testing.T) {
 	// Mirrors tools.AllToolSchemas(); restated rather than imported because the
 	// tools package depends on this one.
 	catalog := []string{
 		"query", "traverse", "mutate", "delete", "manage", "sync",
 		"thoughts", "search", "file_symbols", "collect",
-		"worker", "custom_collector", "ast", "help", "record_decision",
-		"analyze_usage", "create_plan", "create_ticket", "create_project",
-		"create_research", "create_test_plan", "assemble", "hive",
+		"custom_collector", "ast", "help", "record_decision",
+		"analyze_usage", "manage_checks", "create_plan", "create_ticket", "create_project",
+		"create_research", "create_test_plan", "assemble",
 	}
 
 	declared := make(map[Operation]struct{}, len(AllOperations))
@@ -92,7 +92,7 @@ func TestOperationEntryPoints(t *testing.T) {
 			OpPipelineGapScan, OpPipelineGraphDiscovery,
 			OpPipelineGenPoll, OpPipelineEmbedWriteback,
 			OpCorpusDeltaDrain, OpRebuildSegments, OpPropagationReflect,
-			OpHiveMonitor, OpCollectChunk, OpCollectFinalize,
+			OpCollectChunk, OpCollectFinalize,
 			OpCollectFetchSubgraph, OpFileSymbolsSuffixFallback,
 			OpAstHydrate, OpTraverseGraphWide,
 		}
@@ -132,10 +132,10 @@ func TestUnstampedCoveredRPCFailsInTestBuild(t *testing.T) {
 	})
 
 	t.Run("an UNCOVERED request with no ctx operation does NOT fail", func(t *testing.T) {
-		// HealthCheckRequest has no client_context field. Failing here would
+		// CheckRequest has no client_context field. Failing here would
 		// break credential-less liveness probing, which is the carve-out's whole
 		// point — so this is the boundary the loud failure must respect.
-		err := stampOperation(context.Background(), &knowledgev1.HealthCheckRequest{}, "/knowledge.v1.HealthService/Check")
+		err := stampOperation(context.Background(), &knowledgev1.CheckRequest{}, "/knowledge.v1.HealthService/Check")
 		require.NoError(t, err, "an uncovered RPC is uncovered by design and must never trip default-deny")
 	})
 

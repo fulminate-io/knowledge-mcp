@@ -3,7 +3,6 @@
 package segmentdist
 
 import (
-	"context"
 	"sync"
 	"testing"
 
@@ -22,7 +21,6 @@ import (
 func TestReclaimConcurrency(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
 	// Low count target so the background merger fires frequently as segments pile up.
 	dm, ic := buildHNSWReclaimManager(t, kgtypes.GraphCode, "concurrency", t.TempDir(), 3)
 	defer dm.engine.Close()
@@ -33,8 +31,8 @@ func TestReclaimConcurrency(t *testing.T) {
 	)
 	var wg sync.WaitGroup
 
-	// Writers: each seals + ships its own docs concurrently. An embed-style ship
-	// against locallyShipped races the background merger and the reclaim hook.
+	// Writers: each seals + writes its own docs concurrently. An embed-style write
+	// against the L2 cache races the background merger and the reclaim hook.
 	for w := range writers {
 		wg.Add(1)
 		go func(w int) {
@@ -45,10 +43,13 @@ func TestReclaimConcurrency(t *testing.T) {
 					t.Errorf("Add: %v", err)
 					return
 				}
-				// ship warms the L2 cache (Put) and reconcile-prunes concurrently with
-				// the background merger's reclaim hook (Put/Remove) — the contended path.
-				if _, err := dm.ship(ctx, dm.locallyShipped); err != nil {
-					t.Errorf("ship: %v", err)
+				// The L2 WRITE runs concurrently with the background merger's reclaim
+				// hook (Put/Remove) — the contended path. The ship that used to drive
+				// this also reconcile-pruned server-side; only the local Put half of
+				// that contention still exists, and it is the half the reclaim hook
+				// races.
+				if err := dm.writeNewBlobsToL2(dm.engine.Export()); err != nil {
+					t.Errorf("writeNewBlobsToL2: %v", err)
 					return
 				}
 			}

@@ -19,7 +19,7 @@ package graphclient
 // interpolate user input, node ids, paths, or counts into a term.
 
 // Tool-dispatch operations: one per advertised MCP tool. The catalog is a closed
-// 23-entry set (tools.AllToolSchemas), so mapping tool name → operation keeps the
+// 22-entry set (tools.AllToolSchemas), so mapping tool name → operation keeps the
 // dimension bounded by construction; OperationForTool does that lookup and
 // TestOperationVocabulary pins that every catalog entry resolves.
 const (
@@ -33,19 +33,18 @@ const (
 	OpSearch         Operation = "search"
 	OpFileSymbols    Operation = "file_symbols"
 	OpCollect        Operation = "collect"
-	OpWorker         Operation = "worker"
 	OpCustomComputer Operation = "custom_collector"
 	OpAst            Operation = "ast"
 	OpHelp           Operation = "help"
 	OpRecordDecision Operation = "record_decision"
 	OpAnalyzeUsage   Operation = "analyze_usage"
+	OpManageChecks   Operation = "manage_checks"
 	OpCreatePlan     Operation = "create_plan"
 	OpCreateTicket   Operation = "create_ticket"
 	OpCreateProject  Operation = "create_project"
 	OpCreateResearch Operation = "create_research"
 	OpCreateTestPlan Operation = "create_test_plan"
 	OpAssemble       Operation = "assemble"
-	OpHive           Operation = "hive"
 )
 
 // Refinements of a tool operation, stamped by a specific sub-path that is worth
@@ -108,7 +107,6 @@ const (
 	OpSegmentHorizonSeed   Operation = "segment.horizon_seed"
 	OpInstructionBootstrap Operation = "instruction.bootstrap"
 	OpPropagationReflect   Operation = "propagation.reflect"
-	OpHiveMonitor          Operation = "hive.monitor"
 	// OpCrossGraphProbe attributes the cross-graph composer's foreign-node scan:
 	// the by-id probe issued against each loaded foreign graph in turn, plus the
 	// graph-name enumeration that feeds it. It fires while handling some other
@@ -134,9 +132,9 @@ const (
 // and must satisfy the same grammar as any other.
 var AllOperations = []Operation{
 	OpQuery, OpTraverse, OpMutate, OpDelete, OpManage, OpSync, OpThoughts,
-	OpSearch, OpFileSymbols, OpCollect, OpWorker, OpCustomComputer, OpAst,
-	OpHelp, OpRecordDecision, OpAnalyzeUsage, OpCreatePlan, OpCreateTicket,
-	OpCreateProject, OpCreateResearch, OpCreateTestPlan, OpAssemble, OpHive,
+	OpSearch, OpFileSymbols, OpCollect, OpCustomComputer, OpAst,
+	OpHelp, OpRecordDecision, OpAnalyzeUsage, OpManageChecks, OpCreatePlan, OpCreateTicket,
+	OpCreateProject, OpCreateResearch, OpCreateTestPlan, OpAssemble,
 
 	OpFileSymbolsSuffixFallback, OpAstHydrate, OpTraverseGraphWide,
 
@@ -146,7 +144,7 @@ var AllOperations = []Operation{
 	OpPipelineGenPoll, OpPipelineEmbedWriteback,
 	OpCorpusDeltaDrain, OpRebuildSegments, OpSegmentDeltaMerge,
 	OpSegmentHeal, OpSegmentReconcile, OpSegmentRepair, OpSegmentHorizonSeed,
-	OpInstructionBootstrap, OpPropagationReflect, OpHiveMonitor,
+	OpInstructionBootstrap, OpPropagationReflect,
 	OpCrossGraphProbe, OpPostCollectFanout,
 
 	OpToolUnknown, OpUnstamped,
@@ -167,19 +165,18 @@ var toolOperations = map[string]Operation{
 	"search":           OpSearch,
 	"file_symbols":     OpFileSymbols,
 	"collect":          OpCollect,
-	"worker":           OpWorker,
 	"custom_collector": OpCustomComputer,
 	"ast":              OpAst,
 	"help":             OpHelp,
 	"record_decision":  OpRecordDecision,
 	"analyze_usage":    OpAnalyzeUsage,
+	"manage_checks":    OpManageChecks,
 	"create_plan":      OpCreatePlan,
 	"create_ticket":    OpCreateTicket,
 	"create_project":   OpCreateProject,
 	"create_research":  OpCreateResearch,
 	"create_test_plan": OpCreateTestPlan,
 	"assemble":         OpAssemble,
-	"hive":             OpHive,
 }
 
 // OpToolUnknown is stamped for a tool name with no declared term. It is a

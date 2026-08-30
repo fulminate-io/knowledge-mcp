@@ -58,10 +58,10 @@ func TestShutdownClosesSegmentEngines(t *testing.T) {
 	const repo = "shutdownCloseRepo"
 	const enginesForOneGraph = 2 // one HNSW, one BM25
 
-	baseline := mergerGoroutines()
+	baseline := quiescedMergerBaseline(t)
 
 	ctx := opCtx()
-	c, _, _ := buildReconcileClientWithSeg(t, 100, repo)
+	c, _ := buildReconcileClientWith(t, 100, repo)
 	require.NoError(t, c.segmentMgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, repo, fastloadVecDocs(repo, 32)))
 	require.NoError(t, c.segmentMgr.AddAndMarkDirtyFields(ctx, kgtypes.GraphCode, repo, fastloadVecDocs(repo, 32)))
 
@@ -78,6 +78,57 @@ func TestShutdownClosesSegmentEngines(t *testing.T) {
 	require.Equal(t, baseline, waitForMergers(baseline, 5*time.Second),
 		"a clean shutdown must close the segment engines; a surviving merger is a 50ms ticker that "+
 			"outlives every graph the daemon ever touched, since nothing removes an engine from the memo maps")
+}
+
+// quiescedMergerBaseline samples the merger census only once it has STOPPED
+// FALLING, and fails loudly if it never settles.
+//
+// THE BUG THIS CLOSES IS IN THE SAMPLING, NOT IN THE CODE UNDER TEST.
+// Manager.Close is signal-only by contract — its own doc says it "does NOT wait"
+// — so a prior test's Close returns while that manager's mergers are still
+// observing the closed channel and exiting. Reading the census at that instant
+// captures goroutines that are already on their way out, and they are gone by
+// the time the known-positive reads again a few milliseconds later. The count
+// then FALLS across the two reads, so the rise the known-positive requires never
+// materializes and the test fails at its own control.
+//
+// Reproduced deterministically at GOMAXPROCS=1, where the constrained scheduler
+// widens the exit delay: baseline sampled 4, the known-positive then saw 2
+// against a want of 6 — the exact reported numbers. The source is the
+// immediately preceding test; running that pair alone reproduces it, and running
+// this test alone samples 0 and passes.
+//
+// WAITING HERE IS SOUND RATHER THAN A LONGER SLEEP, and the difference is that
+// the drain is already under way with a terminating condition. Every producer
+// registered t.Cleanup(segmentMgr.Close), and Go runs a test's cleanups before
+// the next test begins, so by this line every residual merger has ALREADY been
+// signaled to stop and no new one can start: this test takes no t.Parallel, and
+// parallel siblings resume only after the sequential pass. There is nothing left
+// to race — only a bounded exit to finish.
+//
+// A census that never settles is therefore a REAL LEAK, not slow scheduling, and
+// this fails naming the count rather than proceeding on a number it knows is
+// moving.
+func quiescedMergerBaseline(t *testing.T) int {
+	t.Helper()
+	const settleReads = 3 // consecutive equal reads that call it quiesced
+	deadline := time.Now().Add(5 * time.Second)
+
+	prev, stable := mergerGoroutines(), 1
+	for time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+		got := mergerGoroutines()
+		if got == prev {
+			if stable++; stable >= settleReads {
+				return got
+			}
+			continue
+		}
+		prev, stable = got, 1
+	}
+	t.Fatalf("the merger census never settled within 5s (last read %d): every prior test closed its "+
+		"manager before this one began, so a count still moving here is a merger that is not exiting at all", prev)
+	return 0
 }
 
 // waitForMergers polls until the merger count reaches want, returning the last

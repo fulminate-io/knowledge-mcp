@@ -25,9 +25,7 @@ import (
 // enough to evict nothing keeps the manager inert until that assignment lands.
 func budgetManager(t *testing.T) *Manager {
 	t.Helper()
-	svc, _ := newSegmentHarness(t)
-	return closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0,
-		withSegmentSource(svc.viewFor(nil, "")),
+	return closeOnCleanup(t, NewManager(t.TempDir(), 0,
 		WithResidencyBudget(noEvictionCeiling)))
 }
 
@@ -205,7 +203,7 @@ func TestResidencyBudgetEvictsColdestPoolFirst(t *testing.T) {
 // resident by running one search, and then evicts both — the starting state every
 // background-arm subtest below needs. It returns the manager and the shared fake
 // source view whose per-leg counters prove an arm paid no network.
-func evictedGraphFixture(t *testing.T) (*Manager, *fakeSegmentSource, kgtypes.GraphType, string) {
+func evictedGraphFixture(t *testing.T) (*Manager, kgtypes.GraphType, string) {
 	return evictedGraphFixtureN(t, "evictedArms", 8)
 }
 
@@ -215,14 +213,13 @@ func evictedGraphFixture(t *testing.T) (*Manager, *fakeSegmentSource, kgtypes.Gr
 // whole tiny set — so a test whose property depends on that gate biting must pass a
 // corpus at or above the floor, or it measures the disarm instead.
 func evictedGraphFixtureN(t *testing.T, name string, docCount int) (
-	*Manager, *fakeSegmentSource, kgtypes.GraphType, string,
+	*Manager, kgtypes.GraphType, string,
 ) {
 	t.Helper()
 	ctx := context.Background()
 	gt := kgtypes.GraphKnowledge
 
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	docs := bothFormatDocs(docCount, "arms-")
 	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, docs))
@@ -239,7 +236,7 @@ func evictedGraphFixtureN(t *testing.T, name string, docCount int) (
 	require.True(t, hnswOK, "PRECONDITION: the HNSW pool must evict")
 	require.True(t, bm25OK, "PRECONDITION: the BM25 pool must evict")
 	require.True(t, mgr.PoolEvicted(gt, name))
-	return mgr, gc, gt, name
+	return mgr, gt, name
 }
 
 // TestBackgroundArmsDoNotResurrectAnEvictedPool is ticket constraint 2's
@@ -261,40 +258,43 @@ func TestBackgroundArmsDoNotResurrectAnEvictedPool(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("reconcile_arm_skips", func(t *testing.T) {
-		mgr, gc, gt, name := evictedGraphFixture(t)
-		lists, fetches := gc.listCalls.Load(), gc.fetchCalls.Load()
+		mgr, gt, name := evictedGraphFixture(t)
 
-		verdicts, err := mgr.ReconcileResidentDegenerateByFormat(ctx, gt, name)
+		obs, err := mgr.ResidentObservationsByFormat(ctx, gt, name)
 		require.NoError(t, err)
-		require.Len(t, verdicts, 2, "one verdict per format arm")
-		for _, v := range verdicts {
+		require.Len(t, obs, 2, "one observation per format arm")
+		for _, v := range obs {
 			require.True(t, v.Evicted, "%s arm must report Evicted", v.Format)
-			require.False(t, v.Degenerate, "an unmeasured arm must never drive a rebuild")
 			require.NoError(t, v.Err)
 			require.Zero(t, v.ResidentAfterLoad, "a declined arm measured nothing")
 		}
+		// THE DEGENERATE ASSERTION IS GONE WITH THE VERDICT. This probe no longer
+		// decides anything — ArmObservation carries measurements only, and the
+		// caller holding the embedded denominator makes the call. "An unmeasured arm
+		// must never drive a rebuild" is now asserted where the decision lives:
+		// bootstrap/per_format_degeneracy_test.go's evicted-pool arm.
 		require.True(t, mgr.PoolEvicted(gt, name), "the probe must not have resurrected the pool")
-		require.Equal(t, lists, gc.listCalls.Load(), "a declined arm pays no List")
-		require.Equal(t, fetches, gc.fetchCalls.Load(), "a declined arm pays no Fetch")
+		// THE "PAYS NO List / NO Fetch" ASSERTIONS ARE GONE WITH THE SOURCE. They
+		// compared a segment source's per-leg counters either side of the call, to prove
+		// a declined arm did no work. Nothing calls a source — there is none — so those
+		// counters could only ever have read zero, which is a check that cannot fail.
+		// What the pair was really asserting survives one line up: the pool is STILL
+		// evicted afterwards, which is the observable that goes red if an arm quietly
+		// re-materializes it.
 	})
 
-	t.Run("completeness_arm_skips", func(t *testing.T) {
-		mgr, gc, gt, name := evictedGraphFixture(t)
-		lists, fetches := gc.listCalls.Load(), gc.fetchCalls.Load()
-
-		for _, arm := range []completenessArm{mgr.managerFor(gt, name), mgr.bm25ManagerFor(gt, name)} {
-			require.NoError(t, mgr.convergeArmToManifest(ctx, gt, name, arm))
-		}
-
-		require.True(t, mgr.PoolEvicted(gt, name))
-		require.Equal(t, lists, gc.listCalls.Load(), "a declined arm pays no List")
-		require.Equal(t, fetches, gc.fetchCalls.Load(), "a declined arm pays no Fetch")
-	})
+	// THE completeness_arm_skips SUBTEST WAS DELETED HERE. It drove
+	// convergeArmToManifest over the completenessArm seam — the arm that reconciled a
+	// pool against its published MANIFEST. Both the seam and the manifest are gone, so
+	// there is no arm left to decline. The property it shared with its sibling above —
+	// an evicted pool is declined without paying a read — is still asserted by
+	// reconcile_arm_skips against the surviving observation probe, so nothing is lost
+	// by its removal.
 
 	t.Run("resident_doc_count_materializes", func(t *testing.T) {
 		// THE SCOPE FENCE, asserted rather than assumed: this probe is consumer-side
 		// and keeps its materializing load.
-		mgr, _, gt, name := evictedGraphFixture(t)
+		mgr, gt, name := evictedGraphFixture(t)
 
 		count, err := mgr.LoadResidentDocCount(ctx, gt, name)
 		require.NoError(t, err)
@@ -303,15 +303,15 @@ func TestBackgroundArmsDoNotResurrectAnEvictedPool(t *testing.T) {
 	})
 
 	t.Run("live_resident_doc_count_reads_zero", func(t *testing.T) {
-		mgr, gc, gt, name := evictedGraphFixture(t)
-		lists, fetches := gc.listCalls.Load(), gc.fetchCalls.Load()
+		mgr, gt, name := evictedGraphFixture(t)
 
 		count, err := mgr.LoadLiveResidentDocCount(ctx, gt, name)
 		require.NoError(t, err)
 		require.Zero(t, count, "an evicted pool reads 0 — nobody looked, which is not the same as empty")
 		require.True(t, mgr.PoolEvicted(gt, name))
-		require.Equal(t, lists, gc.listCalls.Load(), "a declined probe pays no List")
-		require.Equal(t, fetches, gc.fetchCalls.Load(), "a declined probe pays no Fetch")
+		// The source-call counters these two lines compared are gone with the source;
+		// PoolEvicted one line up is the surviving observable, and its known-positive
+		// control follows immediately below.
 
 		// KNOWN-POSITIVE CONTROL for the zero: the SAME probe against the SAME graph
 		// reads non-zero once the pool is materialized, so the zero above is the
@@ -323,8 +323,7 @@ func TestBackgroundArmsDoNotResurrectAnEvictedPool(t *testing.T) {
 	})
 
 	t.Run("uncovered_members_errors", func(t *testing.T) {
-		mgr, gc, gt, name := evictedGraphFixture(t)
-		lists, fetches := gc.listCalls.Load(), gc.fetchCalls.Load()
+		mgr, gt, name := evictedGraphFixture(t)
 		probe := []searchengine.ExternalID{"arms-n0"}
 
 		missHNSW, missBM25, err := mgr.UncoveredMembers(ctx, gt, name, probe)
@@ -333,8 +332,9 @@ func TestBackgroundArmsDoNotResurrectAnEvictedPool(t *testing.T) {
 		require.Nil(t, missHNSW, "no manufactured missing-set")
 		require.Nil(t, missBM25)
 		require.True(t, mgr.PoolEvicted(gt, name))
-		require.Equal(t, lists, gc.listCalls.Load(), "a declined probe pays no List")
-		require.Equal(t, fetches, gc.fetchCalls.Load(), "a declined probe pays no Fetch")
+		// The source-call counters these two lines compared are gone with the source;
+		// PoolEvicted one line up is the surviving observable, and its known-positive
+		// control follows immediately below.
 
 		// KNOWN-POSITIVE CONTROL for the error: with the pools materialized the SAME
 		// call answers cleanly, so the error above is the decline rather than a
@@ -347,29 +347,28 @@ func TestBackgroundArmsDoNotResurrectAnEvictedPool(t *testing.T) {
 }
 
 // TestWriteRematerializesAnEvictedPool asserts the REAL mechanism rather than a
-// proxy for it: after a write lands on an evicted pool, the drain's publish must
-// COMPLETE A MANIFEST SWAP.
+// proxy for it: after a write lands on an evicted pool, the drain must actually
+// REACH L2 on both arms.
 //
 // Without the re-materialization the write seals a handful of documents into an
-// emptied engine, publishResident's coverage gate refuses the swap (the pool is far
-// below the ratio against its shipped denominator), the completed-swap counter never
-// rises, and markCoverageSkip accumulates a suppression streak that manage(status)
-// eventually renders as the STUCK band — which ticket constraint 6 forbids.
+// emptied engine and the drain has nothing to land, so the pool stays effectively
+// empty while every call still returns a nil error. That is the shape worth guarding:
+// a silent no-op that reads as success to its caller.
 //
 // THE CORPUS IS SIZED AT OR ABOVE residentBackstopFloor (64) DELIBERATELY, and the
-// reason was measured rather than assumed: at 8 documents the coverage-ratio gate
-// DISARMS itself (a tiny graph legitimately publishes its whole set), so stripping
-// the materialization out left this test GREEN — it was measuring the disarm. At 80
-// the gate arms, and stripping the materialization turns the swap assertions red on
-// the mechanism they name.
+// reason was measured rather than assumed: at 8 documents the size-based guard
+// DISARMS itself (a tiny graph legitimately writes its whole set), so stripping the
+// materialization out left this test GREEN — it was measuring the disarm. At 80 the
+// guard arms, and stripping the materialization turns the per-arm cache assertions
+// red on the mechanism they name.
 func TestWriteRematerializesAnEvictedPool(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	mgr, _, gt, name := evictedGraphFixtureN(t, "evictedWrites", 80)
+	mgr, gt, name := evictedGraphFixtureN(t, "evictedWrites", 80)
 	hdm, bdm := mgr.managerFor(gt, name), mgr.bm25ManagerFor(gt, name)
 
-	hnswSwapsBefore, bm25SwapsBefore := hdm.completedSwapCount(), bdm.completedSwapCount()
+	hnswBefore, bm25Before := sortedCacheIDs(hdm.cache), sortedCacheIDs(bdm.cache)
 
 	more := bothFormatDocs(2, "postevict-")
 	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, more))
@@ -379,10 +378,17 @@ func TestWriteRematerializesAnEvictedPool(t *testing.T) {
 
 	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, gt, name))
 
-	require.Greater(t, hdm.completedSwapCount(), hnswSwapsBefore,
-		"the HNSW drain must LAND a manifest swap, not be refused by the coverage gate")
-	require.Greater(t, bdm.completedSwapCount(), bm25SwapsBefore,
-		"the BM25 drain must LAND a manifest swap, not be refused by the coverage gate")
-	require.Zero(t, hdm.coverageSuppressedSince(), "no HNSW coverage-suppression episode was opened")
-	require.Zero(t, bdm.coverageSuppressedSince(), "no BM25 coverage-suppression episode was opened")
+	// THE DRAIN MUST LAND ON BOTH ARMS. The original read the publish-gate's swap
+	// counter and then asserted no coverage-suppression episode had opened; the gate,
+	// its counter and its suppression clock are all deleted. What "landed" means
+	// locally is that the arm's blobs reached L2, and it is asserted PER ARM because
+	// the defect being guarded is one arm re-materializing twice while the other never
+	// drains — a single combined observable would hide exactly that.
+	//
+	// THE ID SET IS THE OBSERVABLE, NOT ITS SIZE: this drain rewrites the partition it
+	// touches, so the count is unchanged while the bytes are not. See sortedCacheIDs.
+	require.NotEqual(t, hnswBefore, sortedCacheIDs(hdm.cache),
+		"the HNSW drain must LAND — its blobs reach L2")
+	require.NotEqual(t, bm25Before, sortedCacheIDs(bdm.cache),
+		"the BM25 drain must LAND — its blobs reach L2, and not the HNSW arm's twice")
 }

@@ -22,17 +22,21 @@ package tools
 // forces the issue, because the partition assertion then demands a cell on every
 // arm — so the accounting became a statement rather than a coincidence.
 //
-// There is no live instance left, and the class is now held closed DURABLY rather
-// than by inspection: TestNegationProofParams_NoUndeclaredWireField walks every
-// json-tagged field on mutateArgs and thinkArgs and fails on any tag the owning
-// tool's schema does not declare, so a FUTURE undeclared-but-consumed param
-// cannot land quietly. The shape that made the old ones dangerous is still worth
-// stating because it is not the obvious one: suppliedMutateParams does not filter
-// by schema, so an undeclared key DOES appear in its output. What kept those keys
-// from being rejected is the other side — every arm's rejected set is authored
-// from schema keys only, so a key with no cell can never be classified rejected.
-// The reproduction suite pins that reader-side behavior against a synthetic
-// non-schema key, precisely because there is no longer a real one to use.
+// ONE LIVE INSTANCE REMAINS, and the class is held closed only as far as the walk
+// reaches: TestNegationProofParams_NoUndeclaredWireField walks every json-tagged
+// field on the mutateArgs and thinkArgs declared IN THIS PACKAGE and fails on any
+// tag the owning tool's schema does not declare. That closes the class for the
+// structs it walks and only those. The mutate payload has a SECOND verbatim decode
+// site in package engine, whose own mutateArgs reads repo, account AND branch;
+// repo and account are now declared, and branch remains a live instance — left
+// undeclared by ruling, because overlay write semantics for mutate are unproven,
+// not because nothing reads it.
+//
+// The shape that made the old ones dangerous is still worth stating because it is
+// not the obvious one: suppliedMutateParams does not filter by schema, so an
+// undeclared key DOES appear in its output. What kept those keys from being
+// rejected is the other side — every arm's rejected set is authored from schema
+// keys only, so a key with no cell can never be classified rejected.
 //
 // UNKNOWN TOP-LEVEL KEYS ARE REJECTED, and the two rejections are complementary
 // rather than alternatives. A caller key that is in no arm's sets because it is
@@ -181,21 +185,31 @@ func paramClassFor(arm armID, param string) (paramClass, bool) {
 	return registryParamClass(mutateArmRegistry, arm, param)
 }
 
-// accountMutateParams is the pre-write gate, and it runs three checks in order.
-// First the classification check: an error when the caller supplied any param
-// this arm classifies as rejected, naming the field, so the call fails BEFORE any
-// write instead of succeeding with the field dropped. Then the unknown-key
-// sweep: a supplied key the mutate schema does not declare at all, which no
-// arm's rejected set can catch because those sets are authored from schema keys
-// only. Then the payload-value check, on the arms with no criterion-specific
-// handler — a `command` metadata value whose shape cannot tell a passing test
-// from an absent one is rejected here rather than stored. See payloadCommands
-// for why the two criterion-path arms are excluded from the third check.
+// accountMutateParams is the pre-write gate, and it runs four checks in order.
+// First the swallowed-parameter check: a caller text field whose value carries
+// that field's own closing tag followed by the swallowed remainder of the call,
+// which means the tool call was mis-serialized and an unknown number of
+// parameters reached this tool as ABSENT (swallowed_param_gate.go). Then the
+// classification check: an error when the caller supplied any param this arm
+// classifies as rejected, naming the field, so the call fails BEFORE any write
+// instead of succeeding with the field dropped. Then the unknown-key sweep: a
+// supplied key the mutate schema does not declare at all, which no arm's rejected
+// set can catch because those sets are authored from schema keys only. Then the
+// payload-value check, on the arms with no criterion-specific handler — a
+// `command` metadata value whose shape cannot tell a passing test from an absent
+// one is rejected here rather than stored. See payloadCommands for why the two
+// criterion-path arms are excluded from the fourth check.
 //
-// The classification check runs FIRST so a rejected param keeps its deterministic
-// first hit regardless of what else the payload carries, and so a DECLARED param
-// keeps its arm-specific message rather than falling to the generic unknown-key
-// form.
+// The swallowed-parameter check runs FIRST because every diagnosis below it is
+// computed from a param set that is KNOWN INCOMPLETE once that shape is present:
+// the swallowed params are indistinguishable from params the caller never sent,
+// so an arm-specific "you supplied X" or "you omitted Y" message read off that
+// payload would be describing a call the caller did not make.
+//
+// The classification check then runs before the unknown-key sweep so a rejected
+// param keeps its deterministic first hit regardless of what else the payload
+// carries, and so a DECLARED param keeps its arm-specific message rather than
+// falling to the generic unknown-key form.
 //
 // Fail-closed on a missing carrier: a nil raw payload means accounting never
 // ran, and passing everything through in that state would be the exact silent
@@ -203,6 +217,9 @@ func paramClassFor(arm armID, param string) (paramClass, bool) {
 func accountMutateParams(arm armID, a mutateArgs) error {
 	if a.raw == nil {
 		return fmt.Errorf("mutate: param accounting not initialized for arm %s", arm)
+	}
+	if err := rejectSwallowedParamValues("mutate", a.raw); err != nil {
+		return err
 	}
 	if err := accountParams(mutateArmRegistry, "mutate", arm, a.raw); err != nil {
 		return err
@@ -323,12 +340,6 @@ type payloadCommand struct {
 	command string
 }
 
-// metadataCarrier is the one field payloadCommands reads off a batch entry. The
-// arms' own decoders own the rest of the shape.
-type metadataCarrier struct {
-	Metadata map[string]string `json:"metadata"`
-}
-
 // payloadCommands returns every `command` metadata value carried by a payload on
 // an arm with NO criterion-specific handler: create_batch's nodes[],
 // update_batch's items[], bulk_update_metadata's updates[], and upsert's
@@ -353,41 +364,18 @@ type metadataCarrier struct {
 //
 // suppliedMutateParams is deliberately NOT reused: it reports top-level KEY NAMES
 // only, discarding values and never descending, and this needs values out of
-// nested maps. A payload that does not fit the shape yields nothing — the arm's
-// own decode is what reports a malformed payload.
+// nested maps. The four-carrier walk itself lives in payloadMetadataMaps
+// (payload_metadata.go), shared with the corpus check gate so the two cannot
+// disagree about which carriers a payload has; this function adds only the
+// `command` selection and the ".command" path suffix.
 func payloadCommands(arm armID, raw json.RawMessage) []payloadCommand {
 	if arm == armCriterionCreate || arm == armUpdateTyped {
 		return nil
 	}
-	var payload struct {
-		Metadata map[string]string `json:"metadata"`
-		Nodes    []metadataCarrier `json:"nodes"`
-		Items    []metadataCarrier `json:"items"`
-		Updates  []metadataCarrier `json:"updates"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return nil
-	}
 	var found []payloadCommand
-	if cmd := payload.Metadata["command"]; cmd != "" {
-		found = append(found, payloadCommand{path: "metadata.command", command: cmd})
-	}
-	groups := []struct {
-		field   string
-		entries []metadataCarrier
-	}{
-		{"nodes", payload.Nodes},
-		{"items", payload.Items},
-		{"updates", payload.Updates},
-	}
-	for _, g := range groups {
-		for i, entry := range g.entries {
-			if cmd := entry.Metadata["command"]; cmd != "" {
-				found = append(found, payloadCommand{
-					path:    fmt.Sprintf("%s[%d].metadata.command", g.field, i),
-					command: cmd,
-				})
-			}
+	for _, pm := range payloadMetadataMaps(raw) {
+		if cmd := pm.Metadata["command"]; cmd != "" {
+			found = append(found, payloadCommand{path: pm.Path + ".command", command: cmd})
 		}
 	}
 	return found
@@ -489,4 +477,19 @@ func statusExplicitlySupplied(raw json.RawMessage) bool {
 	}
 	_, present := argMap["status"]
 	return present
+}
+
+// accountNonKnowledgeMutate accounts a mutate that declined every client arm and
+// is about to fall through to the server carrying a non-knowledge graph.
+//
+// The link SKIP is load-bearing rather than an optimization: the cross-graph link
+// block upstream does NOT return when its composer declines, so a declined link
+// carrying a non-knowledge graph reaches the fallthrough too. It was already
+// accounted upstream under its own arm, and accounting it a second time under a
+// different spec would reject a call neither arm rejects on its own.
+func accountNonKnowledgeMutate(a mutateArgs) error {
+	if a.Operation == "link" {
+		return nil
+	}
+	return accountMutateParams(armNonKnowledgeFallthrough, a)
 }

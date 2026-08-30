@@ -35,7 +35,7 @@ type traceClientArgs struct {
 func handleTraceClient(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) kgtools.ToolResult {
 	var a traceClientArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
-		return errorResult("invalid arguments: " + err.Error())
+		return errorResult("invalid arguments: " + decodeArgsError(params.Arguments, err))
 	}
 	if a.Thought == "" {
 		return errorResult("trace: 'thought' (starting thought node ID) is required")

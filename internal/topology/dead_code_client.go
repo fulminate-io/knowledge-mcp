@@ -43,9 +43,10 @@ type topoExecutor interface {
 //
 // Errors propagate up; the intercept renders them via errorResult so
 // the user sees the same diagnostic shape as the prior server-side
-// path. A non-empty diagnostic from runRTA degrades to a nil-findings
-// success — dream cycles run this analyzer unattended and a noisy error
-// path would spam logs across non-Go repos.
+// path. A non-empty diagnostic from runRTA is neither an error nor a silent
+// skip: it returns ONE informational finding stating that the analysis did not
+// complete, because an empty finding set reads as "this repo has no dead code"
+// and a run that analyzed nothing must not be mistaken for a clean one.
 func RunDeadCode(ctx context.Context, gc graphCaller, repoRoot, repo string, topK int) ([]foundation.Finding, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("topology/dead_code: %w", err)
@@ -61,13 +62,20 @@ func RunDeadCode(ctx context.Context, gc graphCaller, repoRoot, repo string, top
 	}
 
 	const tests = true // matches prior server-side default (OQ-3)
-	deadFuncs, _, diagnostic, err := runRTA(ctx, repoRoot, tests)
+	deadFuncs, diagnostic, err := runRTA(ctx, repoRoot, tests)
 	if err != nil {
 		return nil, fmt.Errorf("rta: %w", err)
 	}
 	if diagnostic != "" {
-		// Skip cleanly — same posture as the prior server-side analyzer.
-		return nil, nil
+		// A diagnostic means the RTA run did not complete: a package that would
+		// not load, a build constraint that excluded everything. An empty finding
+		// set renders identically to "this repo has no dead code", so the
+		// inability is STATED instead — the same loud-over-silent call corpus_scan
+		// took when it deviated from this family's skeleton.
+		//
+		// THIS IS NOT A FALLBACK. Nothing is retried, defaulted or computed some
+		// other way; the reported inability IS the honest output.
+		return []foundation.Finding{deadCodeIncompleteFinding(repoRoot, diagnostic)}, nil
 	}
 	if len(deadFuncs) == 0 {
 		return nil, nil
@@ -86,6 +94,27 @@ func RunDeadCode(ctx context.Context, gc graphCaller, repoRoot, repo string, top
 		findings = append(findings, buildDeadCodeFinding(row, flags[i]))
 	}
 	return truncateTopK(findings, topK), nil
+}
+
+// DeadCodeIncompleteTitle titles the one informational finding RunDeadCode
+// emits when the RTA run produced a diagnostic instead of a call graph. It names
+// the analyzer and the reason class, following the disclosure shape corpus_scan
+// established; the diagnostic text itself is payload and rides in the summary.
+const DeadCodeIncompleteTitle = "dead_code: analysis did not complete"
+
+// deadCodeIncompleteFinding states the RTA run's inability, carrying BOTH the
+// diagnostic the run already produced and the root it was run against — the root
+// because a reader otherwise cannot tell a genuinely unanalyzable tree from a
+// mis-resolved one.
+func deadCodeIncompleteFinding(repoRoot, diagnostic string) foundation.Finding {
+	return foundation.Finding{
+		Algorithm: "dead_code",
+		Severity:  foundation.SeverityNotice,
+		Title:     DeadCodeIncompleteTitle,
+		Summary: fmt.Sprintf("the reachability analysis over %s produced a diagnostic and yielded no call graph, "+
+			"so this run reports nothing about dead code rather than reporting none: %s", repoRoot, diagnostic),
+		Evidence: []string{repoRoot},
+	}
 }
 
 // fetchNodeIndex pulls every function-ish node in the scoped code graph by

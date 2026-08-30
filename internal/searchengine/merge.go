@@ -15,10 +15,14 @@ const mergeTickInterval = 50 * time.Millisecond
 
 // startMerger launches the background merge goroutine. It wakes on a ticker or
 // on a write signal (Add/Delete), evaluates the trigger policy, and performs at
-// most one merge per wake. Stopped by Close (closing e.stop). Lifecycle: one
-// goroutine per engine, lives until Close.
+// most one merge per wake. Stopped by Close (closing e.stop), which then WAITS for
+// this goroutine to exit. Lifecycle: one goroutine per engine, lives until Close.
 func (e *SegmentedIndex[Q, S]) startMerger() {
 	go func() {
+		// FIRST statement, so e.done closes on EVERY exit path — that channel is
+		// the only thing Close can wait on, and a return that skipped it would
+		// hang Close forever rather than merely failing to join.
+		defer close(e.done)
 		ticker := time.NewTicker(mergeTickInterval)
 		defer ticker.Stop()
 		for {
@@ -82,7 +86,7 @@ func (e *SegmentedIndex[Q, S]) pickMergeTargets(set *segmentSet[Q, S]) []*segmen
 	return dirty
 }
 
-// doMerge consolidates the chosen entries via format.Merge, which reads the LIVE
+// doMerge consolidates the chosen entries via mergeEntry, whose format.MergeTo reads the LIVE
 // INDEXED data directly from each sealed segment (no source Documents — decoded
 // and locally-built segments are merge-equivalent), keeping only members the
 // accept predicate marks live. The consolidated segment is all-live; it replaces
@@ -102,13 +106,40 @@ func (e *SegmentedIndex[Q, S]) doMerge(chosen []*segmentEntry[Q, S]) {
 		remove[entry.meta.ID] = true
 	}
 
-	merged, err := e.format.Merge(segs, accept)
+	// ABANDON BEFORE THE EXPENSIVE STEP once Close has been signaled. This is what
+	// bounds Close's join to at most one in-flight merge step instead of a whole
+	// merge, and it needs no new machinery: returning here without publishing is an
+	// exit doMerge ALREADY takes on a mergeEntry error, so the caller-visible
+	// outcome — nothing published, constituents untouched — is one this function
+	// already produced.
+	select {
+	case <-e.stop:
+		return
+	default:
+	}
+
+	entry, err := e.mergeEntry(segs, accept)
 	if err != nil {
 		return
 	}
-	entry, err := e.newEntry(merged, nil)
-	if err != nil {
+	// THE CONSOLIDATED SEGMENT REMEMBERS WHAT IT REPLACED, in its own STORED BYTES
+	// (supersession.go). That is what lets a cold load decline these constituents with
+	// no external state: the stored corpus is all a restarted process has, and until
+	// this record existed it said only "here are some blobs".
+	//
+	// ITS COHORT IS ITSELF. A background merge publishes ONE output and that output
+	// carries every live member of every constituent it consumed, so its presence alone
+	// is proof enough to decline them.
+	removed := sortedSegmentIDs(remove)
+	stampSupersession(entry, removed, []SegmentID{entry.meta.ID})
+
+	// And again before publishing: a merge that finished after the close was
+	// signaled must not swap itself in, because publishing is what makes the
+	// OnMerge reclaim below fire.
+	select {
+	case <-e.stop:
 		return
+	default:
 	}
 
 	// Publish via CAS. If the set changed under us (concurrent Add/Import), the
@@ -134,13 +165,9 @@ func (e *SegmentedIndex[Q, S]) doMerge(chosen []*segmentEntry[Q, S]) {
 	// merged blob would be a fresh false-prune, so an empty/partial Merged is worse
 	// than no callback (the next ship/reconcile still bounds the server set).
 	if e.opts.OnMerge != nil && len(remove) > 0 {
-		bytes, err := entry.payload.Encode()
+		envelope, payload, err := entry.blobParts()
 		if err != nil {
 			return
-		}
-		removed := make([]SegmentID, 0, len(remove))
-		for id := range remove {
-			removed = append(removed, id)
 		}
 		e.opts.OnMerge(MergeResult{
 			Removed: removed,
@@ -149,7 +176,8 @@ func (e *SegmentedIndex[Q, S]) doMerge(chosen []*segmentEntry[Q, S]) {
 				Format:     e.format.Name(),
 				Generation: entry.meta.Generation,
 				DocCount:   entry.meta.DocCount,
-				Bytes:      bytes,
+				Bytes:      payload,
+				Envelope:   envelope,
 				// Bytes come from a resident entry's payload, which on a mapped
 				// segment IS the mapping. The entry is reachable from the
 				// published set for this hook's duration, but only incidentally
@@ -161,9 +189,36 @@ func (e *SegmentedIndex[Q, S]) doMerge(chosen []*segmentEntry[Q, S]) {
 	}
 }
 
-// Close stops the background merge goroutine. Idempotent.
+// Close stops the background merge goroutine and BLOCKS until it has exited.
+// Idempotent.
+//
+// THE WAIT IS THE POINT, and it is a caller-visible contract rather than an
+// implementation detail. Close used to only signal, so a merge already in flight
+// ran on afterwards — and a completed merge fires OnMerge, which in production is
+// segmentdist's reclaimMerged: a cache.Put that WRITES A FILE. An owner that
+// closed the engine and then removed its cache directory could have a blob written
+// underneath it. Because Close now joins, "Close returned" means "no further
+// OnMerge can fire", which is what an owner tearing down that directory needs.
+//
+// IT IS UNCONDITIONAL — there is deliberately no timeout that abandons the
+// goroutine. A join that gives up reintroduces exactly the race it exists to
+// remove, just less often; a caller that cannot wait forever bounds its OWN call
+// (the daemon wraps this in a bounded shutdown stage), which leaves the engine's
+// guarantee intact for everyone else.
+//
+// THE BOUND ON HOW LONG IT WAITS IS STRUCTURAL, not a deadline: doMerge checks
+// e.stop at its coarse boundaries, so a merge in progress abandons before the
+// expensive format.Merge or before publishing, and the wait is at most one
+// in-flight merge step rather than a whole merge chain.
+//
+// REENTRANCY WARNING FOR FUTURE HOOK AUTHORS: OnMerge runs ON the merge goroutine,
+// so an OnMerge that called Close would deadlock — Close would wait for the
+// goroutine that is waiting on Close. The only production hook
+// (segmentdist/manager_factory.go wiring reclaimMerged) does not, and a new one
+// must not either.
 func (e *SegmentedIndex[Q, S]) Close() {
 	e.stopOnce.Do(func() { close(e.stop) })
+	<-e.done
 }
 
 // MergeCount reports how many background merges have completed.

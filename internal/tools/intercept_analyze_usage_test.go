@@ -21,19 +21,19 @@ type fakeUsageAnalyzer struct {
 	recs   transcriptanalytics.SynthesisResult
 }
 
-func (f fakeUsageAnalyzer) RunDetectors(context.Context) (*transcriptanalytics.DetectorReport, error) {
+func (f fakeUsageAnalyzer) RunDetectors(context.Context, transcriptanalytics.Filters) (*transcriptanalytics.DetectorReport, error) {
 	return f.report, nil
 }
 
-func (f fakeUsageAnalyzer) Recommend(context.Context) (*transcriptanalytics.DetectorReport, transcriptanalytics.SynthesisResult, error) {
+func (f fakeUsageAnalyzer) Recommend(context.Context, transcriptanalytics.Filters) (*transcriptanalytics.DetectorReport, transcriptanalytics.SynthesisResult, error) {
 	return f.report, f.recs, nil
 }
 
 // analyzeUsageTestDeps is a minimal ClientDeps carrying only a UsageAnalyzer; the
-// other accessors are unused by InterceptAnalyzeUsage. Embeds workerTestDeps to inherit
+// other accessors are unused by InterceptAnalyzeUsage. Embeds thoughtTestDeps to inherit
 // every other ClientDeps method as a nil stub.
 type analyzeUsageTestDeps struct {
-	workerTestDeps
+	thoughtTestDeps
 	analyzer UsageAnalyzerAPI
 }
 
@@ -55,7 +55,7 @@ func callAnalyzeUsage(t *testing.T, deps ClientDeps, argsJSON string) (handled b
 // TestInterceptAnalyzeUsage_NameFiltering pins that the intercept ignores other tools.
 func TestInterceptAnalyzeUsage_NameFiltering(t *testing.T) {
 	deps := analyzeUsageTestDeps{}
-	for _, name := range []string{"worker", "search", "query", ""} {
+	for _, name := range []string{"search", "query", ""} {
 		handled, _ := InterceptAnalyzeUsage(opCtx(), deps, kgtools.CallToolParams{Name: name, Arguments: json.RawMessage(`{}`)})
 		assert.False(t, handled, "tool %q must not be handled by InterceptAnalyzeUsage", name)
 	}

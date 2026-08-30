@@ -14,9 +14,9 @@ import (
 // render_correlations_pivot.go ports the GENERIC (graph-neutral) correlations
 // and pivot renderers + the pivot-matrix builder the
 // InterceptQueryCorrelationsPivot composer (cmd/knowledge/internal/tools)
-// consumes. Direct ports of the server formatGenericCorrelations
-// (tools_query_correlations.go) and formatPivotMatrix + buildPivotMatrix +
-// extractNodeField (tools_query_pivot.go / tools_query_pivot_render.go). The
+// consumes. Direct ports of the server's formatGenericCorrelations and
+// formatPivotMatrix + buildPivotMatrix + extractNodeField, all removed from the
+// server when the render moved client-side. The
 // logs path fills the SAME PivotMatrix shape and reuses these same generic
 // writers — porting the generic family covers the logs structural shape too,
 // but this composer drives only the non-logs path (logs is owned by
@@ -147,8 +147,8 @@ func methodOrDash(s string) string {
 	return s
 }
 
-// PivotMatrix is the graph-neutral pivot payload — a direct port of the server
-// pivotMatrix (tools_query_pivot_render.go). StreamsCovered/StreamsSkipped stay
+// PivotMatrix is the graph-neutral pivot payload — a direct port of the server's
+// since-removed pivotMatrix. StreamsCovered/StreamsSkipped stay
 // zero off the logs path.
 type PivotMatrix struct {
 	RowKey         string

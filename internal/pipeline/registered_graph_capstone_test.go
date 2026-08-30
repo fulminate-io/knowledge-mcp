@@ -51,6 +51,14 @@ func TestCapstone_RegisteredGraphEnumerateAndShip(t *testing.T) {
 		return nil, nil
 	}
 	p := New(Config{}, wc, noopSum, fe.call)
+	// refreshOnce below REGISTERS a collector, and a registered collector is a
+	// running one: it spawns its summary and embed wake loops immediately. Nothing
+	// in this test's assertions needs them afterwards, so without this teardown they
+	// outlive the test — parked in sleepForWake for the remainder of the test BINARY,
+	// and holding the segment index the embed axis seals below, whose merger
+	// goroutine then leaks too. Neither failed anything; the package's goleak gate is
+	// what surfaced them.
+	t.Cleanup(func() { require.NoError(t, p.Stop(context.Background())) })
 	ws := workingset.New()
 	require.True(t, ws.Admit(customGT, customName, "collect"),
 		"the interaction that earns the custom graph its place")
@@ -71,22 +79,31 @@ func TestCapstone_RegisteredGraphEnumerateAndShip(t *testing.T) {
 		{GraphType: customGT, GraphName: customName, NodeID: "world-node", SummarizeText: `{"name":"world"}`},
 	})
 
-	// Embed axis: a hellograph:demo embed work item with BM25 fields drains through
-	// the embed worker → seals HNSW (AddAndMarkDirty) AND BM25 (AddAndMarkDirtyFields).
+	// Embed axis: a hellograph:demo embed work item drains through the embed worker
+	// → seals HNSW (AddAndMarkDirty). It no longer seals BM25: that moved to the
+	// BM25 arm, asserted separately below.
 	runEmbedWorkerBatch(ctx, p, []EmbedWork{
 		{
-			GraphType:  customGT,
-			GraphName:  customName,
-			NodeID:     "world-node",
-			EmbedText:  "hello world",
-			Bm25Fields: map[string]string{"name": "world", "summary": "a hello world greeting"},
+			GraphType: customGT,
+			GraphName: customName,
+			NodeID:    "world-node",
+			EmbedText: "hello world",
 		},
 	})
 
 	require.GreaterOrEqual(t, fsm.calls, 1, "embed axis shipped an HNSW segment for the custom graph")
-	require.GreaterOrEqual(t, fsm.fieldsCalls, 1, "embed axis shipped a BM25 segment for the custom graph")
 	require.Contains(t, fsm.shipKeys, graphKey{GraphType: customGT, GraphName: customName},
 		"HNSW segment shipped under the custom (hellograph, demo) key")
-	require.Contains(t, fsm.fieldsShipKeys, graphKey{GraphType: customGT, GraphName: customName},
-		"BM25 segment shipped under the custom (hellograph, demo) key")
+	require.Zero(t, fsm.fieldsCalls,
+		"the embed axis no longer seals BM25 for ANY graph, custom ones included")
+
+	// --- (3) THE CUSTOM GRAPH STILL GETS BM25 COVERAGE, just from a different
+	// producer. This capstone's claim was never "the embed axis ships BM25" — it was
+	// "a registered custom graph is a first-class segment citizen". Dropping the BM25
+	// half when the producer moved would have quietly narrowed that claim, so it is
+	// re-asserted against the new producer's admission gate instead: the BM25 arm
+	// serves this graph type, so its documents come from the CorpusDelta feed.
+	require.True(t, bm25ArmEnabledFor(customGT, true),
+		"a registered custom graph type must be admitted by the BM25 arm — otherwise moving BM25 "+
+			"off the embed axis would have silently dropped custom graphs out of the keyword corpus")
 }

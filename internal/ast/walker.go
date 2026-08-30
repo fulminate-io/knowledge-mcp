@@ -22,8 +22,13 @@
 // consumes comments verbatim into its capture — which is what keeps a $$$ body
 // re-interpolating as valid source. The comment skip is a TARGET-side act only:
 // a comment written into a pattern is deliberate and is compared as an ordinary
-// node. Three records come out of a successful match: the named Captures, the
-// literal-token alignment, and the skipped-comment spans — all in alignment.go.
+// node. Four records come out of a successful match: the named bindings, in
+// captures.go, and the literal-token alignment, the dropped spans and the
+// skipped-comment spans, all in alignment.go.
+//
+// A THIRD, OPPOSITE MECHANISM: where layout tokens and comments REMOVE children,
+// a grammar's declared SPAN-GAP kinds suppress the child walk and compare whole
+// text, their children not covering their own span (opaque_text.go).
 //
 // Sequence-placeholder semantics:
 //
@@ -57,97 +62,6 @@ import (
 
 	sitter "github.com/smacker/go-tree-sitter"
 )
-
-// Captures is the per-match name → Capture binding accumulator. Sequence
-// captures populate Children + StartByte + EndByte; single captures leave
-// Children nil. aligns is the ordered literal-token alignment record for the
-// same match attempt and dropped holds the pattern spans its promotions threw
-// away — see alignment.go.
-type Captures struct {
-	byName   map[string]Capture
-	aligns   []TokenAlign
-	dropped  []byteRange
-	comments []byteRange
-}
-
-// newCaptures returns an empty Captures binding accumulator.
-func newCaptures() *Captures {
-	return &Captures{
-		byName:   make(map[string]Capture),
-		aligns:   make([]TokenAlign, 0, alignInitialCap),
-		dropped:  make([]byteRange, 0, dropInitialCap),
-		comments: make([]byteRange, 0, commentInitialCap),
-	}
-}
-
-// reset clears all bindings so the Captures can be reused for a new
-// match attempt without allocating a new map. Both pattern-side accumulators
-// are truncated rather than dropped: reset runs once per candidate node, and
-// either record leaked from a rejected candidate would corrupt the next match.
-func (c *Captures) reset() {
-	for k := range c.byName {
-		delete(c.byName, k)
-	}
-	c.aligns = c.aligns[:0]
-	c.dropped = c.dropped[:0]
-	c.comments = c.comments[:0]
-}
-
-// clearNodeMap removes all entries from a node map for reuse.
-func clearNodeMap(m map[string]*sitter.Node) {
-	for k := range m {
-		delete(m, k)
-	}
-}
-
-// bindNode records a single-node capture under name (or appends a fresh
-// per-occurrence binding when the name is empty / wildcard). Multiple
-// captures with the same name OVERWRITE — the v2 design rejects implicit
-// binding equality, so named-collision is a callsite concern (B.4
-// same_node leaf is the explicit identity check).
-func (c *Captures) bindNode(name string, n *sitter.Node, src []byte) {
-	if name == "" || n == nil {
-		return
-	}
-	c.byName[name] = nodeToCapture(n, src)
-}
-
-// bindSeq records a sequence capture: name → Capture with Children
-// populated, Text spanning [first.StartByte, last.EndByte). Empty seq
-// (no siblings) records {Text: "", Children: []}.
-//
-// THE SEPARATOR RULE. A seq shadow consumes whole sibling spans, anonymous
-// tokens included — it has to, because the pattern siblings that follow it
-// align against the target's own anonymous tokens. So the commas between
-// parameters and the semicolons between statements arrive here. Text KEEPS
-// them: it is the verbatim source span, which is what makes a seq capture
-// re-interpolate as valid source. Children DROPS them: it carries semantic
-// siblings only, so a two-parameter capture reads as two parameters rather
-// than two parameters and a comma.
-func (c *Captures) bindSeq(name string, siblings []*sitter.Node, src []byte) {
-	if name == "" {
-		return
-	}
-	cap := Capture{
-		Children: make([]Capture, 0, len(siblings)),
-	}
-	if len(siblings) > 0 {
-		first := siblings[0]
-		last := siblings[len(siblings)-1]
-		cap.StartByte = first.StartByte()
-		cap.EndByte = last.EndByte()
-		cap.Line = int(first.StartPoint().Row) + 1
-		cap.Text = string(src[first.StartByte():last.EndByte()])
-		for _, s := range siblings {
-			if !s.IsNamed() {
-				continue
-			}
-			cap.Children = append(cap.Children, nodeToCapture(s, src))
-		}
-		// Sequence captures don't carry a Kind — the children carry kinds.
-	}
-	c.byName[name] = cap
-}
 
 // matchTree compares pat at its current root position against target. src
 // is the target file's source bytes — the placeholder lookup uses the
@@ -213,11 +127,14 @@ func effectiveTargetNode(t *sitter.Node) *sitter.Node {
 //  1. If P's byte range hits a single-node placeholder, bind T (when not a
 //     wildcard) and return true — wildcards match anything.
 //  2. Otherwise P.Type() must equal T.Type().
-//  3. When both are childless tokens, their source text must match.
-//  4. Otherwise iterate all children of P and T together with seq-shadow
+//  3. When the kind is one the grammar declares as span-gap
+//     (LangConfig.OpaqueTextKinds), the WHOLE node text must match and the walk
+//     does not descend — those nodes' children do not cover their own bytes.
+//  4. When both are childless tokens, their source text must match.
+//  5. Otherwise iterate all children of P and T together with seq-shadow
 //     handling.
 //
-//nolint:gocognit // four-case dispatch over a small grammar; the complexity is inherent to the sibling-alignment logic
+//nolint:gocognit // five-case dispatch over a small grammar; the complexity is inherent to the sibling-alignment logic
 func matchNode(pt *PatternTree, p, t *sitter.Node, patSrc, src []byte, caps *Captures) bool {
 	pOrig := p
 	// The wrapper-strip is refused for a subtree that chains down to a
@@ -261,6 +178,11 @@ func matchNode(pt *PatternTree, p, t *sitter.Node, patSrc, src []byte, caps *Cap
 	}
 	if p.Type() != t.Type() {
 		return false
+	}
+	// SPAN-GAP KINDS ARE COMPARED WHOLE, BEFORE THE LEAF GATE BELOW, which declines
+	// them as non-leaves while descending skips their content (opaque_text.go).
+	if isOpaqueTextKind(pt.LangCfg, p.Type()) {
+		return matchOpaqueText(p, t, patSrc, src, caps)
 	}
 	// TOKEN EQUALITY IS DECIDED HERE AND NOWHERE ELSE. A node with no
 	// children of ANY kind is a token, and two tokens match when their source
@@ -474,18 +396,4 @@ func isIgnorableComment(c *sitter.Node, comments []string) bool {
 		return false
 	}
 	return slices.Contains(comments, c.Type())
-}
-
-// nodeToCapture builds a Capture from a single tree-sitter node: text,
-// kind, line, byte range. Sequence captures call bindSeq, which builds
-// the outer-span Capture itself and uses nodeToCapture only for child
-// entries.
-func nodeToCapture(n *sitter.Node, src []byte) Capture {
-	return Capture{
-		Text:      n.Content(src),
-		Kind:      n.Type(),
-		Line:      int(n.StartPoint().Row) + 1,
-		StartByte: n.StartByte(),
-		EndByte:   n.EndByte(),
-	}
 }

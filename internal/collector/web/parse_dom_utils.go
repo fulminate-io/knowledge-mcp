@@ -64,16 +64,10 @@ func (w *walker) classifyLink(lr *linkRecord) {
 }
 
 // parseRelNoFollow reports whether the given rel attribute value contains
-// the token "nofollow" (case-insensitive, whitespace-separated). The HTML
-// rel attribute is a space-separated token list; we check each token
-// individually so substrings like "nofollowup" don't match.
+// the token "nofollow". The token-list rationale now lives on hasToken,
+// which this shares with the role="heading" reader.
 func parseRelNoFollow(rel string) bool {
-	for tok := range strings.FieldsSeq(rel) {
-		if strings.EqualFold(tok, "nofollow") {
-			return true
-		}
-	}
-	return false
+	return hasToken(rel, "nofollow")
 }
 
 // sameHost returns true when candidate resolves to the same host as base.
@@ -134,11 +128,18 @@ func firstElementChild(n *html.Node, a atom.Atom) *html.Node {
 // collectText concatenates every descendant text node's data preserving
 // order. Whitespace is NOT normalized — callers needing a one-liner use
 // collectProseText.
+//
+// Non-renderable subtrees are skipped: collectText backs handleCodeBlock's
+// <pre> source extraction and emitProseText's backticked <code> text, and
+// neither should ever carry script or style source.
 func collectText(n *html.Node) string {
 	var sb strings.Builder
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
 		if n == nil {
+			return
+		}
+		if n.Type == html.ElementNode && isNonRenderable(n.DataAtom) {
 			return
 		}
 		if n.Type == html.TextNode {
@@ -160,12 +161,49 @@ func collectProseText(n *html.Node) string {
 	return strings.Join(strings.Fields(sb.String()), " ")
 }
 
+// collapseProseLines collapses intra-line whitespace to single spaces while
+// PRESERVING author-declared line boundaries, then drops blank leading and
+// trailing lines. It is the per-line form of the flat collapse
+// collectProseText performs, and on single-line input the two are
+// byte-identical.
+//
+// Its only consumer is flushInlineRun, which needs the <br> boundaries
+// emitProseText writes to survive into a paragraph's Text — every other
+// caller goes through collectProseText's flat Fields-join and sees the
+// de-welding fix alone.
+func collapseProseLines(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = strings.Join(strings.Fields(line), " ")
+	}
+	start, end := 0, len(lines)
+	for start < end && lines[start] == "" {
+		start++
+	}
+	for end > start && lines[end-1] == "" {
+		end--
+	}
+	return strings.Join(lines[start:end], "\n")
+}
+
 func emitProseText(sb *strings.Builder, n *html.Node) {
 	if n == nil {
 		return
 	}
 	if n.Type == html.TextNode {
 		sb.WriteString(n.Data)
+		return
+	}
+	if n.Type == html.ElementNode && isNonRenderable(n.DataAtom) {
+		return
+	}
+	// A <br> is a childless element, so the recursion below writes nothing
+	// for it and tokens on either side weld together. Write a NEWLINE rather
+	// than a space: collectProseText's flat Fields-join turns it straight
+	// back into a single space for every existing caller, while
+	// collapseProseLines preserves it as a line boundary.
+	if n.Type == html.ElementNode && n.DataAtom == atom.Br {
+		sb.WriteByte('\n')
 		return
 	}
 	if n.Type == html.ElementNode && n.DataAtom == atom.Code {

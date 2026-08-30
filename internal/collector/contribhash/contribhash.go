@@ -403,7 +403,7 @@ func fileGroupHash(g FileGroup) [32]byte {
 //
 // EVIDENCE IS THE FOURTH TERM, AND THAT POSITION IS LOAD-BEARING RATHER THAN
 // ALPHABETICAL. The server's per-file aggregate orders by
-// (from_id, to_id, type, COALESCE(evidence,”)) under COLLATE "C"
+// (from_id, to_id, type, COALESCE(evidence, the empty string)) under COLLATE "C"
 // (contributionManifestSQL), which is TOTAL over stored rows because those four
 // are the edges table's unique identity. The two sides must agree on the
 // DISCRIMINATING PREFIX or their file hashes differ for every file carrying a

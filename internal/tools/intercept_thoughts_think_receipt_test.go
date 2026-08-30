@@ -29,21 +29,36 @@ func thinkArgsJSON(t *testing.T, fields map[string]any) json.RawMessage {
 // regression for the silent born-link narrowing: when a caller's serialization
 // leaves parameter-like markup as literal text at the END of content, the
 // parameter it names never reached the tool and no edge was written. The tool
-// cannot recover the parameter — but it CAN say so. The warning is non-fatal by
-// contract: the thought is still created and the call still succeeds.
+// cannot recover the parameter — but it CAN say so.
+//
+// SCOPE, after the swallowed-parameter refusal landed. The advisory now owns only
+// the AMBIGUOUS dialect: parameter markup with NO anchored `</content>` closing
+// tag, which proves nothing about serialization because a value may legitimately
+// discuss the grammar. The unambiguous shape — content carrying its own closing
+// tag with the remainder running to the end — is REFUSED upstream at
+// interceptThoughtsOp (swallowed_param_gate.go) and is covered by
+// TestInterceptThoughts_SwallowedParamTail_RefusesBeforeAnyWrite. The fixture
+// below was changed from the anchored shape to the ambiguous one for exactly that
+// reason; the earlier "the anchored shape warns and still writes" contract is
+// superseded, not merely relocated.
+//
+// ENTERS AT InterceptThoughts, not handleThinkClient. The refusal lives at the
+// tool's single accounting point, so a test calling the handler directly would
+// assert a warn-and-write outcome production no longer produces.
 func TestHandleThinkClient_ParamShapedTail_WarnsButWrites(t *testing.T) {
 	fc := &fakeGraphCaller{mutateIDs: []string{"th-leaky"}}
 	deps := interceptTestDeps{gc: fc}
 
-	res := handleThinkClient(context.Background(), deps, kgtools.CallToolParams{
+	handled, res := InterceptThoughts(context.Background(), deps, kgtools.CallToolParams{
 		Name: "thoughts",
 		Arguments: thinkArgsJSON(t, map[string]any{
 			"content": "a hypothesis whose serialization went wrong at the end\n" +
-				"</content>\n<parameter name=\"session\">some-topic",
+				"<parameter name=\"session\">some-topic",
 			"summary": "leaked-parameter tail gist",
 		}),
 	})
-	require.False(t, res.IsError, "a param-shaped tail must NEVER refuse the write: %s", toolResultText(res))
+	require.True(t, handled)
+	require.False(t, res.IsError, "the ambiguous dialect must NEVER refuse the write: %s", toolResultText(res))
 	body := toolResultText(res)
 
 	// The write still landed.
@@ -64,11 +79,19 @@ func TestHandleThinkClient_ParamShapedTail_WarnsButWrites(t *testing.T) {
 }
 
 // TestHandleThinkClient_ParamShapedTail_CorrectCallStillProceeds is the
-// false-positive guard: a CORRECT call may legitimately carry the same markup
-// inside content (a thought documenting the tool grammar, for instance) while
-// emitting its parameters properly. Such a call must proceed, its session must
-// still land, and the receipt must report the landed session — the warning is
-// advisory, never a verdict about what was written.
+// false-positive guard: a CORRECT call may legitimately be ABOUT the tool grammar
+// while emitting its parameters properly. Such a call must proceed, its session
+// must still land, and the receipt must report the landed session — the advisory
+// is a tell, never a verdict about what was written.
+//
+// THE FIXTURE CHANGED WITH THE CONTRACT, and the change is the point. This test
+// used to author the specimen with LIVE angle brackets ending the content body,
+// which is byte-indistinguishable from the mis-serialization and is now refused.
+// The sanctioned way to write about the markup is to escape the brackets, which
+// is exactly what the refusal message tells a caller to do — so the escaped
+// spelling is asserted here rather than left as an untested promise in an error
+// string. The live-bracket MENTION mid-prose is kept alongside it so the advisory
+// still fires and this stays a warn-not-refuse guard.
 func TestHandleThinkClient_ParamShapedTail_CorrectCallStillProceeds(t *testing.T) {
 	fc := &fakeGraphCaller{
 		nodeMatchResults: map[graphKey][]*knowledgev1.Node{
@@ -80,15 +103,21 @@ func TestHandleThinkClient_ParamShapedTail_CorrectCallStillProceeds(t *testing.T
 	}
 	deps := interceptTestDeps{gc: fc}
 
-	res := handleThinkClient(context.Background(), deps, kgtools.CallToolParams{
+	content := "documenting the malformed shape, escaped so it cannot be read as one:\n" +
+		"&lt;/content&gt;&lt;parameter name=\"session\"&gt;grammar-notes\n" +
+		"the live form <parameter name=\"session\"> is named here mid-prose, and the sentence continues."
+	require.Empty(t, swallowedParamFragment("content", content),
+		"the documenting fixture must be OUTSIDE the refusal's predicate, or this guard asserts nothing")
+
+	handled, res := InterceptThoughts(context.Background(), deps, kgtools.CallToolParams{
 		Name: "thoughts",
 		Arguments: thinkArgsJSON(t, map[string]any{
-			"content": "documenting the malformed shape verbatim:\n" +
-				"</content>\n<parameter name=\"session\">grammar-notes",
+			"content": content,
 			"summary": "documenting the malformed tool-call shape",
 			"session": "grammar-notes",
 		}),
 	})
+	require.True(t, handled)
 	require.False(t, res.IsError, "a correct call carrying the markup must succeed: %s", toolResultText(res))
 	body := toolResultText(res)
 

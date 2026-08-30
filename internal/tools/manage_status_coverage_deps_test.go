@@ -5,7 +5,7 @@ package tools
 import (
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
@@ -26,17 +26,14 @@ type coverageDeps struct {
 	segCov SegmentCoverageReader
 }
 
-func (d *coverageDeps) LocalLiveness() LocalLiveness                 { return nil }
-func (d *coverageDeps) Sink() collector.Sink                         { return nil }
-func (d *coverageDeps) RootDir() string                              { return "" }
-func (d *coverageDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
-func (d *coverageDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
-func (d *coverageDeps) WorkerReady() bool                            { return true }
-func (d *coverageDeps) PropReady() bool                              { return true }
-func (d *coverageDeps) PipelineReady() bool                          { return true }
-func (d *coverageDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
-func (d *coverageDeps) BanSet() *hivemonitor.BanSet                  { return nil }
-func (d *coverageDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d *coverageDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d *coverageDeps) Sink() collector.Sink            { return nil }
+func (d *coverageDeps) RootDir() string                 { return "" }
+func (d *coverageDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+
+func (d *coverageDeps) PropReady() bool     { return true }
+func (d *coverageDeps) PipelineReady() bool { return true }
+
 func (d *coverageDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
 func (d *coverageDeps) Embedder() embed.BinaryEmbedder               { return nil }
 func (d *coverageDeps) BackendResolver() BackendResolver             { return nil }

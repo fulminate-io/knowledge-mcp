@@ -57,23 +57,6 @@ func (c *client) reconcileOneGraph(ctx context.Context, g segmentGraphRef, delta
 	} else {
 		c.commitMergeWatermark(g, pending)
 	}
-	// CONVERGE THE L2 CACHE TO THE PUBLISHED MANIFEST, before the degeneracy probe
-	// below. This is where the L2-first load's completeness hole is repaired: a
-	// cache holding only the blobs the last rebuild ADDED pins the engine to that
-	// subset, and load() accepts it because any non-empty cache satisfies it.
-	//
-	// ORDER MATTERS AND IT IS NOT COSMETIC. A graph healed here is no longer
-	// degenerate, so the probe below does not flag it and no PG rebuild fires for a
-	// shortfall a fetch already fixed. Running it after would spend a full rebuild
-	// to reach the state this call reaches with a diff fetch.
-	//
-	// Best-effort: its own arms log the detail, so one graph's failure never stops
-	// the pass. It is gated internally on a LOCAL comparison, so a healthy graph
-	// pays no network here.
-	if err := c.segmentMgr.ReconcileManifestCompleteness(ctx, g.gt, g.name); err != nil {
-		slog.Warn("bootstrap: segment manifest-completeness reconcile failed (continuing)",
-			"graph_type", g.gt, "name", g.name, "error", err)
-	}
 	// RE-BUCKET TRIGGER: the graph's resident layout may be a FULL DOUBLING behind
 	// the partition count its corpus now derives. That crossing is one the delta
 	// path structurally cannot close — a delta rebuild is always scoped to the
@@ -123,68 +106,105 @@ func (c *client) reconcileOneGraph(ctx context.Context, g segmentGraphRef, delta
 	// nothing for one that does not hold this tick's round-robin slot, and two reads
 	// for one that does and is converged.
 	c.repairUncoveredGraph(ctx, g, deltaScope == nil)
-	degenerate, err := c.segmentMgr.ReconcileResidentDegenerate(ctx, g.gt, g.name)
+	// THE DEGENERACY VERDICT IS COMPUTED HERE, from the per-format observations
+	// plus the embedded denominator this layer holds. It used to be one call to a
+	// Manager wrapper that OR'd a per-arm Degenerate field; that field went with
+	// the shipped doc count behind it, so the wrapper had nothing
+	// left to compute and the verdict moved to the layer holding its operand.
+	//
+	// ONE DENOMINATOR READ SERVES EVERY ARM: it is per-GRAPH while the resident
+	// numerators are per-FORMAT.
+	obs, err := c.segmentMgr.ResidentObservationsByFormat(ctx, g.gt, g.name)
 	if err != nil {
 		slog.Warn("bootstrap: segment reconcile probe failed (continuing)",
 			"graph_type", g.gt, "name", g.name, "error", err)
 		return
 	}
+	embedded, eerr := tools.GraphEmbeddedCount(ctx, c.GraphCaller(), g.gt, g.name)
+	if eerr != nil {
+		slog.Warn("bootstrap: segment reconcile embedded-count read failed (continuing)",
+			"graph_type", g.gt, "name", g.name, "error", eerr)
+		return
+	}
+	hnswFormat := hnsw.New().Name()
+	degenerate := false
+	for _, o := range obs {
+		// AN EVICTED OR UNREADABLE ARM CONTRIBUTES NOTHING. Both report
+		// ResidentAfterLoad 0, which either predicate below would read as a lost
+		// pool and turn into a from-scratch rebuild — on the strength of a measurement
+		// nobody took. An evicted pool re-materializes on its next consumer search;
+		// rebuilding it from scratch would undo the eviction at the highest cost.
+		if o.Evicted || o.Err != nil {
+			continue
+		}
+		// THE TWO ARMS NOW ASK DIFFERENT QUESTIONS, so this loop routes per format
+		// instead of applying one predicate to both.
+		//
+		// HNSW: the ratio band is RETIRED for this arm. THIS SWEEP IS NOT THE QUIESCENCE
+		// EDGE — it is a periodic pass that runs whenever it runs, with no knowledge of
+		// whether the pipeline is mid-drain — so it gets the away-from-quiescence
+		// predicate, which asserts only a LOST POOL. The exact balance verdict is formed
+		// at the drain edge, where the corpus is not moving underneath it. Applying an
+		// exact zero-tolerance equation here would report every mid-convergence graph
+		// unhealthy, which is the false-unhealthy this work removes.
+		//
+		// BM25: UNCHANGED, still the ratio band, because no exact BM25 corpus count
+		// exists yet and deleting the band with no replacement would remove the only
+		// detector for the collapse shape it was written for.
+		if o.Format == hnswFormat {
+			if hnswPoolLost(o.ResidentAfterLoad, embedded) {
+				degenerate = true
+			}
+			continue
+		}
+		if degenerateAgainstEmbedded(o.ResidentAfterLoad, embedded) {
+			degenerate = true
+		}
+	}
 	if !degenerate {
-		return // healthy (or disarmed) — no rebuild.
+		return // healthy — no rebuild.
 	}
 	// reconcile diagnostic (kept per keep-debug-logging): on the degenerate branch
-	// record the SHIPPED-corpus doc count vs the EMBEDDED node count. When shipped
-	// covers embedded, the read engine is flagged degenerate only because it has
-	// not loaded the intact corpus — a PG RebuildSegments writes the DETERMINISTIC
-	// engine (not this read engine), so it cannot raise the resident count the
-	// probe re-reads and the rebuild is wasted. The healNeedsRebuild gate below
-	// acts on exactly this shipped-vs-embedded signal; this line makes it
-	// observable per tick.
-	if snapshot, serr := c.segmentMgr.ShippedManifestSnapshot(ctx, g.gt, g.name, hnsw.New().Name()); serr != nil {
-		slog.Debug("bootstrap: segment reconcile degenerate-branch shipped probe failed",
-			"graph_type", g.gt, "name", g.name, "error", serr)
-	} else {
-		shippedDocs, anyUnknown := c.segmentMgr.ShippedDocCountFromSnapshot(snapshot, hnsw.New().Name())
-		embedded, eerr := tools.GraphEmbeddedCount(ctx, c.GraphCaller(), g.gt, g.name)
+	// record each arm's resident count against the EMBEDDED node count, which is the
+	// comparison the verdict above actually made.
+	for _, o := range obs {
 		slog.Debug("bootstrap: segment reconcile degenerate branch",
-			"graph_type", g.gt, "name", g.name,
-			"shipped_docs", shippedDocs, "any_unknown", anyUnknown,
-			"embedded", embedded, "embedded_err", eerr)
+			"graph_type", g.gt, "name", g.name, "format", o.Format,
+			"resident_after_load", o.ResidentAfterLoad, "evicted", o.Evicted,
+			"embedded", embedded, "arm_err", o.Err)
 	}
-	// SHIPPED-COMPLETENESS GATE: ReconcileResidentDegenerate above flags
-	// when the READ engine is below the SHIPPED corpus — which a merely lazily-loaded
-	// read engine trips even when the shipped corpus is COMPLETE.
+	// COMPLETENESS GATE: the probe above flags when a READ engine is below the
+	// embedded corpus — which a merely lazily-loaded read engine trips even when the
+	// L2 corpus is COMPLETE.
 	//
-	// THE ORIGINAL LOOP CAUSE IS STRUCTURALLY GONE, and the gate is kept anyway. A PG
-	// RebuildSegments used to write a SECOND, deterministic engine, so it could never
-	// raise the read engine's resident count and the next 5-min tick re-flagged and
-	// rebuilt again — the ~85 rebuilds/wk loop. The reset now swaps its layer into the
-	// engine this probe reads, so a landed rebuild does raise that count and the loop
-	// cannot recur for that reason. The gate still earns its place: it stops an
-	// expensive full rebuild whenever the shipped corpus is already complete and the
-	// read engine is merely cold, which is the common case and independent of how many
-	// engines exist. healNeedsRebuild asks
-	// the RIGHT question for a PG regen — is the SHIPPED/L2 corpus genuinely
-	// incomplete vs the embedded node count? (HasShippedFromSnapshot +
-	// segmentPoolDegenerate, then a read-engine-load attempt) — returning true ONLY
-	// when the corpus is genuinely zero/incomplete AND a load cannot restore it. So
-	// the expensive PG rebuild fires on genuine incompleteness, never on a lazy read
-	// engine. The ReconcileResidentDegenerate call above is still made FIRST so its
-	// warm-load side effect (load()+recoverIfDegenerate) is preserved. healNeedsRebuild
-	// re-probes ReconcileResidentDegenerate internally on this rare degenerate branch
-	// (a second cheap load/List, off the bind path); healthy graphs short-circuited at
-	// `if !degenerate` above and never reach it. The MANUAL manage(rebuild_segments)
+	// THE ORIGINAL LOOP CAUSE IS STRUCTURALLY GONE, and the gate is kept anyway. A
+	// rebuild used to write a SECOND, deterministic engine, so it could never raise
+	// the read engine's resident count and the next 5-min tick re-flagged and rebuilt
+	// again — the ~85 rebuilds/wk loop. The reset now swaps its layer into the engine
+	// this probe reads, so a landed rebuild does raise that count and the loop cannot
+	// recur for that reason. The gate still earns its place: it stops an expensive
+	// full rebuild whenever the L2 corpus is already complete and the read engine is
+	// merely cold, which is the common case.
+	//
+	// healNeedsRebuild asks the RIGHT question for a regen — is the L2 corpus
+	// genuinely incomplete against the embedded node count? — returning true ONLY
+	// when a load cannot restore it. The observation probe above is still made FIRST
+	// so its warm-load side effect is preserved. The MANUAL manage(rebuild_segments)
 	// path (handleClientRebuildSegments) is intentionally NOT gated — an operator
 	// asking for a rebuild always gets one.
 	//
-	// SCOPE (boot herd + hypothesis c): this collapses the STEADY-STATE 5-min re-flag
-	// loop, not a boot-time one-rebuild-per-daemon herd — the RebuildSegments
-	// single-flight is PER-PROCESS, so N cold fleet daemons can each pay one rebuild
-	// until a complete corpus is shipped+visible. That is also how the gate mitigates
-	// c: once ANY daemon ships a complete corpus, every other daemon's healNeedsRebuild
-	// sees shipped-complete and skips. The residual boot rebuild is within the ticket
-	// goal — post-deploy observers must not read it as a regression.
-	needsRebuild, herr := c.healNeedsRebuild(ctx, g.gt, g.name)
+	// SCOPE (boot herd): this collapses the STEADY-STATE 5-min re-flag loop, not a
+	// boot-time one-rebuild-per-daemon herd — the RebuildSegments single-flight is
+	// PER-PROCESS, so N cold fleet daemons can each pay one rebuild until a complete
+	// corpus is built. The residual boot rebuild is within the ticket goal —
+	// post-deploy observers must not read it as a regression.
+	// THE OPERANDS ARE REUSED, NOT RE-READ. obs and embedded were both resolved above
+	// for this tick's verdict; healNeedsRebuildWith takes them so the gate does not
+	// repeat an Engine Stats RPC and a two-engine observation probe that already ran
+	// microseconds earlier. Reading them again is not merely wasteful — it would put
+	// the reconcile path at three denominator RPCs per graph per tick, against a
+	// per-graph denominator whose whole point is that one read serves every arm.
+	needsRebuild, herr := c.healNeedsRebuildWith(ctx, g.gt, g.name, obs, embedded)
 	if herr != nil {
 		slog.Warn("bootstrap: segment reconcile shipped-completeness gate failed (continuing, no rebuild)",
 			"graph_type", g.gt, "name", g.name, "error", herr)
@@ -197,8 +217,8 @@ func (c *client) reconcileOneGraph(ctx context.Context, g segmentGraphRef, delta
 	}
 	// Heal breaker gate: once a graph has latched disarmed after
 	// healBreakerTripThreshold no-progress rebuilds, skip the FUTILE RebuildSegments.
-	// The recovery probe (ReconcileResidentDegenerate) above still ran — only the
-	// rebuild is gated — so the legitimate ~5-min recovery path keeps working.
+	// The observation probe above still ran — only the rebuild is gated — so the
+	// legitimate ~5-min recovery path keeps working.
 	if !c.healBreaker.Allow(g.gt, g.name) {
 		slog.Debug("bootstrap: segment reconcile — auto-heal breaker latched for graph, skipping rebuild (recovery probe still ran)",
 			"graph_type", g.gt, "name", g.name)
@@ -245,7 +265,109 @@ func (c *client) rebuildDegenerateGraph(ctx context.Context, gt kgtypes.GraphTyp
 	}
 	// Classify against the breaker (records ONLY on ran==true) — the same strict
 	// no-progress/progress rule the embed-drain trigger uses.
-	c.classifyHealOutcome(ctx, gt, name, out.Ran, out.Scanned, out.Built, out.Partial)
+	c.classifyHealOutcome(gt, name, out.Ran, out.Scanned)
+}
+
+// rebuildBehindWindowGraph runs the from-scratch rebuild for ONE graph the server
+// REFUSED to serve a delta window for, because the erasure journal was trimmed
+// past this client's position.
+//
+// IT IS A SIBLING OF rebuildDegenerateGraph RATHER THAN A SECOND CALLER, for
+// rebuildReBucketGraph's stated reason: reusing that function would announce
+// "rebuilt a degenerate live pool" for a graph that is not degenerate, and a line
+// that misattributes the cause sends the operator looking for a collapse that never
+// happened. A behind-floor graph is not degenerate either — its pool is intact, its
+// POSITION is unrecoverable.
+//
+// THE WATERMARK IS TWO SEPARATE CLAIMS, and both hold here.
+// (a) THE REFUSED WINDOW'S HORIZON IS DISCARDED. This function never calls
+// SaveMergeWatermark: the scan errored, so the caller returns a mergePending with
+// Pull=false and commitMergeWatermark exits at its first guard. Nothing can commit
+// a position derived from a window that was never served.
+// (b) THE LANDED REBUILD'S HORIZON BECOMES THE POSITION. The from-scratch run
+// publishes its own durable rebuild record, and mergeHorizonFor already reads that
+// record as its third seed source — so the next window resolves from the rebuild's
+// position with no new persistence path. If the rebuild does NOT land (breaker
+// latched, or an error), the position is left where it was and the next pass is
+// refused again, which is correct: an unrepaired client must keep being refused
+// rather than quietly proceeding.
+//
+// THE BREAKER MATTERS MORE HERE THAN ON THE OTHER TWO ARMS. A refusal repeats on
+// every pass until the position moves, so without it a graph whose rebuild keeps
+// failing would rebuild every tick forever.
+//
+// IT FAILS LOUD. The enclosing pass is best-effort and this does not change that
+// for the other arms — but a refusal detected and then swallowed is
+// indistinguishable from a healthy pass, and its consequence is a deleted node that
+// stays searchable forever. The WARN names the graph, this client's position, and
+// on the SAME line whether the rebuild was attempted, skipped by the breaker, or
+// failed. There is deliberately NO compensating partial-merge path: no state exists
+// in which applying half a refused window is right.
+func (c *client) rebuildBehindWindowGraph(ctx context.Context, g segmentGraphRef, since int64) {
+	if !c.healBreaker.Allow(g.gt, g.name) {
+		slog.Warn("bootstrap: segment delta REFUSED (behind the server's erasure retention floor) and the rebuild was SKIPPED — the auto-heal breaker is latched, so this graph stays behind and will be refused again next pass",
+			"graph_type", g.gt, "name", g.name, "client_position", since, "rebuild", "skipped-breaker-latched")
+		return
+	}
+	out, err := tools.RebuildSegments(ctx, c.PipelineScanner(), c.SegmentShipper(), g.gt, g.name, true)
+	if err != nil {
+		slog.Warn("bootstrap: segment delta REFUSED (behind the server's erasure retention floor) and the recovery rebuild FAILED — this graph stays behind and will be refused again next pass",
+			"graph_type", g.gt, "name", g.name, "client_position", since, "rebuild", "failed", "error", err)
+		return
+	}
+	slog.Warn("bootstrap: segment delta REFUSED (behind the server's erasure retention floor) — recovered with a from-scratch rebuild whose own horizon becomes this client's new position",
+		"graph_type", g.gt, "name", g.name, "client_position", since, "rebuild", "attempted",
+		"ran", out.Ran, "scanned", out.Scanned, "built", out.Built,
+		"partial", out.Partial, "published", out.Published)
+	if out.Ran {
+		c.armBM25HealProgress(g.gt, g.name)
+	}
+	c.classifyHealOutcome(g.gt, g.name, out.Ran, out.Scanned)
+}
+
+// rebuildUnreadableFloorGraph runs the ONE recovery rebuild for a graph whose delta
+// pass declined because its retention floor could not be read.
+//
+// IT IS A SIBLING OF rebuildBehindWindowGraph RATHER THAN A SECOND CALLER OF IT, for
+// the reason this file already states at rebuildReBucketGraph: every line of that
+// arm says "behind the server's erasure retention floor", which is the wrong cause
+// here and would send an operator hunting a refusal that never happened. The cause
+// is local and unreadable state, and the remedy is a local path.
+//
+// WHY A RESET REBUILD CONVERGES THIS, by construction rather than by hope. A reset
+// never reads the durable rebuild record at all — the load sits behind the non-reset
+// branch — and the retention helper short-circuits on the zero a reset passes as its
+// own position, so neither leg touches the unreadable record. On a landed publish the
+// driver writes a FRESH record, and the next delta pass reads a healthy one.
+//
+// THE ATTEMPT IS CLAIMED ONCE PER GRAPH PER PROCESS. A second and later pass takes
+// the honest decline path instead: see claimFloorRecovery for why an unwritable path
+// would otherwise drive a full-corpus rebuild every pass forever.
+func (c *client) rebuildUnreadableFloorGraph(ctx context.Context, g segmentGraphRef, since int64) {
+	if !c.claimFloorRecovery(g) {
+		slog.Warn("bootstrap: segment delta DECLINED (this client cannot read its own retention floor) and NO deletions were learned this pass — the recovery rebuild was already attempted this process, so fix the unreadable rebuild-state record under the segments cache directory",
+			"graph_type", g.gt, "name", g.name, "client_position", since, "rebuild", "already-attempted")
+		return
+	}
+	if !c.healBreaker.Allow(g.gt, g.name) {
+		slog.Warn("bootstrap: segment delta DECLINED (this client cannot read its own retention floor) and the recovery rebuild was SKIPPED — the auto-heal breaker is latched, so this graph learns no deletions until its rebuild-state record is readable again",
+			"graph_type", g.gt, "name", g.name, "client_position", since, "rebuild", "skipped-breaker-latched")
+		return
+	}
+	out, err := tools.RebuildSegments(ctx, c.PipelineScanner(), c.SegmentShipper(), g.gt, g.name, true)
+	if err != nil {
+		slog.Warn("bootstrap: segment delta DECLINED (this client cannot read its own retention floor) and the recovery rebuild FAILED — repair the unreadable rebuild-state record under the segments cache directory (rebuildstate), which is what the next pass reads",
+			"graph_type", g.gt, "name", g.name, "client_position", since, "rebuild", "failed", "error", err)
+		return
+	}
+	slog.Warn("bootstrap: segment delta DECLINED (this client cannot read its own retention floor) — recovered with a from-scratch rebuild, which writes a fresh rebuild-state record for the next pass to read",
+		"graph_type", g.gt, "name", g.name, "client_position", since, "rebuild", "attempted",
+		"ran", out.Ran, "scanned", out.Scanned, "built", out.Built,
+		"partial", out.Partial, "published", out.Published)
+	if out.Ran {
+		c.armBM25HealProgress(g.gt, g.name)
+	}
+	c.classifyHealOutcome(g.gt, g.name, out.Ran, out.Scanned)
 }
 
 // rebuildReBucketGraph runs the one-time reset rebuild for ONE graph whose resident
@@ -294,7 +416,7 @@ func (c *client) rebuildReBucketGraph(ctx context.Context, gt kgtypes.GraphType,
 	if out.Ran {
 		c.armBM25HealProgress(gt, name)
 	}
-	c.classifyHealOutcome(ctx, gt, name, out.Ran, out.Scanned, out.Built, out.Partial)
+	c.classifyHealOutcome(gt, name, out.Ran, out.Scanned)
 }
 
 // untombstoneRecreatedWrites clears the persisted record's tombstone for every id that

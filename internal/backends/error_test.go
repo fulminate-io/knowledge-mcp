@@ -11,7 +11,8 @@ import (
 // TestError_UnwrapAndAsTraversesFmtErrorf ensures errors.As pierces
 // fmt.Errorf("%w") wrapping — the runPush layer wraps adapter errors
 // through "push %s: %w" and "batch %d: %w" patterns. Mirrors
-// domains/store/llm_errors_test.go:59.
+// TestLLMError_AsTraversesFmtErrorf in llm/errors_test.go, which asserts the
+// same property for that package's *LLMError.
 func TestError_UnwrapAndAsTraversesFmtErrorf(t *testing.T) {
 	root := &Error{Transient: true, Reason: ReasonRateLimited, Cause: errors.New("linear: 429")}
 	wrapped := fmt.Errorf("push abc-1: %w", root)

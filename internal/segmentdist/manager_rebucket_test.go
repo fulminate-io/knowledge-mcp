@@ -16,8 +16,8 @@ import (
 // graph name per leg so no leg inherits another's layout.
 func newReBucketManager(t *testing.T) *Manager {
 	t.Helper()
-	_, gc := newSegmentHarness(t)
-	return closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+
+	return closeOnCleanup(t, NewManager(t.TempDir(), 0))
 }
 
 // TestReBucketTriggerFiresOnlyWhenADoublingBehind pins the rule at both of its
@@ -50,7 +50,7 @@ func TestReBucketTriggerFiresOnlyWhenADoublingBehind(t *testing.T) {
 		// 2049 documents laid out at the count a 1024-document corpus derives: ONE
 		// segment holding a corpus that now derives four.
 		docs := prefixIDs(hnswVecDocs(2049), "fire-a-")
-		_, err := replaceBucketGroups(dm, nil, docs, nil, 1024)
+		_, _, err := replaceBucketGroups(dm, nil, docs, nil, 1024, nil)
 		require.NoError(t, err)
 
 		require.Len(t, dm.engine.ResidentSegmentIDs(), 1,
@@ -72,10 +72,16 @@ func TestReBucketTriggerFiresOnlyWhenADoublingBehind(t *testing.T) {
 
 		// Two partition segments from a layout derived at 2048, plus one freshly
 		// sealed tail: three segments against a corpus deriving four.
+		//
+		// THE TAIL IS CONFINED TO ONE PARTITION so that it is ONE segment. The write
+		// path seals one segment per partition its ids occupy, so a tail drawn at
+		// random would seal several and the fixture would be over a doubling rather
+		// than one short of it — a different shape from the one this leg rules on. It
+		// is aimed at the count the seal derives, BucketCountFor(2049+8) = 4.
 		docs := prefixIDs(hnswVecDocs(2049), "miss-b-")
-		_, err := replaceBucketGroups(dm, nil, docs, nil, 2048)
+		_, _, err := replaceBucketGroups(dm, nil, docs, nil, 2048, nil)
 		require.NoError(t, err)
-		tail := prefixIDs(hnswVecDocs(8), "miss-b-tail-")
+		tail := docsInBucket(t, 0, 4, 8, "miss-b-tail-")
 		require.NoError(t, mgr.AddAndMarkDirty(context.Background(), gt, name, tail))
 
 		require.Len(t, dm.engine.ResidentSegmentIDs(), 3,
@@ -103,7 +109,7 @@ func TestReBucketTriggerFiresOnlyWhenADoublingBehind(t *testing.T) {
 		// 1024 documents spread over the eight partitions an 8192-document corpus
 		// derives: the layout is FINER than the corpus now needs.
 		docs := prefixIDs(hnswVecDocs(1024), "shrunk-c-")
-		_, err := replaceBucketGroups(dm, nil, docs, nil, 8192)
+		_, _, err := replaceBucketGroups(dm, nil, docs, nil, 8192, nil)
 		require.NoError(t, err)
 
 		require.Len(t, dm.engine.ResidentSegmentIDs(), 8,
@@ -172,9 +178,13 @@ func TestReBucketTriggerSuppressedDuringPartialRealignment(t *testing.T) {
 		dm := mgr.managerFor(gt, name)
 		distinctBefore := dm.engine.DistinctResidentDocCount()
 
-		// One thin batch, sealed into exactly one segment however few documents it
-		// carries, and NOT drained — the state every write leaves between ticks.
-		require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, prefixIDs(hnswVecDocs(8), "thin-tail-")))
+		// One thin batch, CONFINED TO ONE PARTITION so it seals into exactly one
+		// segment, and NOT drained — the state every write leaves between ticks. The
+		// write path seals one segment per partition its ids occupy, so the batch is
+		// aimed at the count the seal derives, BucketCountFor(2049+8) = 4; a tail drawn
+		// at random would add several segments and this leg would stop measuring the
+		// single thin tail it is named for.
+		require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, docsInBucket(t, 0, 4, 8, "thin-tail-")))
 
 		// ASSERT THE TAIL ACTUALLY LANDED, or this leg is silence about a write that
 		// never happened.

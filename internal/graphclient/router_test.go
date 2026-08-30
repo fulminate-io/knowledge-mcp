@@ -59,7 +59,7 @@ func (s *fakeAuthStore) Delete(_ context.Context, key string) error {
 // counter → Execute routes local.
 func TestRouter_LocalOnly_NoAuth(t *testing.T) {
 	localURL, localEng := startCountingEngine(t)
-	localGC := NewGraphClientForURL(localURL)
+	localGC := closeIdleOnCleanup(t, NewGraphClientForURL(localURL))
 	store := newFakeAuthStore() // empty → not logged in
 	as := auth.NewAuthState(store, time.Hour)
 	r := NewRouter(localGC, "http://cloud.invalid", staticTokenSource{}, as)
@@ -74,7 +74,7 @@ func TestRouter_LocalOnly_NoAuth(t *testing.T) {
 func TestRouter_Auth_RoutesCloud(t *testing.T) {
 	localURL, localEng := startCountingEngine(t)
 	cloudURL, cloudEng := startCountingEngine(t)
-	localGC := NewGraphClientForURL(localURL)
+	localGC := closeIdleOnCleanup(t, NewGraphClientForURL(localURL))
 
 	store := newFakeAuthStore()
 	require.NoError(t, store.Set(opCtx(), auth.KeyRefreshToken, "frt-stub"))
@@ -191,7 +191,7 @@ func TestRouter_CloudBuiltLazilyOnce(t *testing.T) {
 // *GraphClient pointer passed at construction, OR nil when nil was passed.
 func TestRouter_Local_ReturnsLocalClient(t *testing.T) {
 	localURL, _ := startCountingEngine(t)
-	localGC := NewGraphClientForURL(localURL)
+	localGC := closeIdleOnCleanup(t, NewGraphClientForURL(localURL))
 	store := newFakeAuthStore()
 	as := auth.NewAuthState(store, time.Hour)
 
@@ -207,7 +207,7 @@ func TestRouter_Local_ReturnsLocalClient(t *testing.T) {
 func TestRouter_MidSessionLoginSwap(t *testing.T) {
 	localURL, localEng := startCountingEngine(t)
 	cloudURL, cloudEng := startCountingEngine(t)
-	localGC := NewGraphClientForURL(localURL)
+	localGC := closeIdleOnCleanup(t, NewGraphClientForURL(localURL))
 	store := newFakeAuthStore() // empty initially
 	as := auth.NewAuthState(store, time.Millisecond)
 	r := NewRouter(localGC, cloudURL, staticTokenSource{tok: "tok"}, as)
@@ -236,7 +236,7 @@ func TestRouter_MidSessionLoginSwap(t *testing.T) {
 func TestRouter_IngestClient_RoutesByLogin(t *testing.T) {
 	localURL, _ := startCountingEngine(t)
 	cloudURL, _ := startCountingEngine(t)
-	localGC := NewGraphClientForURL(localURL)
+	localGC := closeIdleOnCleanup(t, NewGraphClientForURL(localURL))
 	store := newFakeAuthStore() // empty initially → not logged in
 	as := auth.NewAuthState(store, time.Millisecond)
 	r := NewRouter(localGC, cloudURL, staticTokenSource{tok: "tok"}, as)
@@ -270,7 +270,7 @@ func TestRouter_IngestClient_RoutesByLogin(t *testing.T) {
 func TestRouter_Backend_RoutesByLogin(t *testing.T) {
 	localURL, _ := startCountingEngine(t)
 	cloudURL, _ := startCountingEngine(t)
-	localGC := NewGraphClientForURL(localURL)
+	localGC := closeIdleOnCleanup(t, NewGraphClientForURL(localURL))
 	store := newFakeAuthStore() // empty initially → not logged in
 	as := auth.NewAuthState(store, time.Millisecond)
 	r := NewRouter(localGC, cloudURL, staticTokenSource{tok: "tok"}, as)
@@ -318,7 +318,7 @@ func TestRouter_Backend_NoBackend(t *testing.T) {
 func TestRouter_Forwarders_RouteAtCallTime(t *testing.T) {
 	localURL, localEng := startCountingEngine(t)
 	cloudURL, cloudEng := startCountingEngine(t)
-	localGC := NewGraphClientForURL(localURL)
+	localGC := closeIdleOnCleanup(t, NewGraphClientForURL(localURL))
 	store := newFakeAuthStore()
 	as := auth.NewAuthState(store, time.Millisecond)
 	r := NewRouter(localGC, cloudURL, staticTokenSource{tok: "tok"}, as)
@@ -415,7 +415,7 @@ func TestRouter_Forwarders_RouteAtCallTime(t *testing.T) {
 func TestRouter_MachineAuth_RoutesCloudWithoutLogin(t *testing.T) {
 	localURL, localEng := startCountingEngine(t)
 	cloudURL, cloudEng := startCountingEngine(t)
-	localGC := NewGraphClientForURL(localURL)
+	localGC := closeIdleOnCleanup(t, NewGraphClientForURL(localURL))
 	store := newFakeAuthStore() // empty → NOT logged in
 	as := auth.NewAuthState(store, time.Hour)
 	r := NewRouterWithMachineAuth(localGC, cloudURL, staticTokenSource{tok: "machine-tok"}, as, true)
@@ -433,7 +433,7 @@ func TestRouter_MachineAuth_RoutesCloudWithoutLogin(t *testing.T) {
 func TestRouter_MachineAuthFalse_UnchangedSelection(t *testing.T) {
 	localURL, localEng := startCountingEngine(t)
 	cloudURL, cloudEng := startCountingEngine(t)
-	localGC := NewGraphClientForURL(localURL)
+	localGC := closeIdleOnCleanup(t, NewGraphClientForURL(localURL))
 	store := newFakeAuthStore() // empty → not logged in
 	as := auth.NewAuthState(store, time.Hour)
 	r := NewRouterWithMachineAuth(localGC, cloudURL, staticTokenSource{}, as, false)

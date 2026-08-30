@@ -38,12 +38,25 @@ func assembleDecision(ctx context.Context, gc GraphCaller, node *knowledgev1.Nod
 	}
 	fmt.Fprintf(&sb, "ID: %s%s\n", node.Id, updatedSuffix(node))
 
-	// Follow EdgeInformedBy to findings/research.
+	// Follow EdgeInformedBy to findings/research, and EdgeSupports incoming
+	// (evidence → decision). Both sections share ONE bulk hydrate; each renders
+	// by walking its own EDGE slice and looking the peer up, never by ranging
+	// over the map, whose iteration order is undefined.
 	outEdges, _ := IterEdges(ctx, gc, node.Id, kgwire.OutgoingEdges, kgtypes.EdgeInformedBy)
+	inEdges, _ := IterEdges(ctx, gc, node.Id, kgwire.IncomingEdges, kgtypes.EdgeSupports)
+
+	peerIDs := make([]string, 0, len(outEdges)+len(inEdges))
+	for _, e := range outEdges {
+		peerIDs = append(peerIDs, e.ToId)
+	}
+	for _, e := range inEdges {
+		peerIDs = append(peerIDs, e.FromId)
+	}
+	peers, truncated, _ := FetchNodesByIDs(ctx, gc, peerIDs)
+
 	var informed []*knowledgev1.Node
 	for _, e := range outEdges {
-		in, err := FetchNode(ctx, gc, e.ToId)
-		if err == nil && in != nil {
+		if in, ok := peers[e.ToId]; ok {
 			informed = append(informed, in)
 		}
 	}
@@ -54,12 +67,9 @@ func assembleDecision(ctx context.Context, gc GraphCaller, node *knowledgev1.Nod
 		}
 	}
 
-	// Follow EdgeSupports (incoming: evidence → decision).
-	inEdges, _ := IterEdges(ctx, gc, node.Id, kgwire.IncomingEdges, kgtypes.EdgeSupports)
 	var supporting []*knowledgev1.Node
 	for _, e := range inEdges {
-		sn, err := FetchNode(ctx, gc, e.FromId)
-		if err == nil && sn != nil {
+		if sn, ok := peers[e.FromId]; ok {
 			supporting = append(supporting, sn)
 		}
 	}
@@ -69,5 +79,7 @@ func assembleDecision(ctx context.Context, gc GraphCaller, node *knowledgev1.Nod
 			fmt.Fprintf(&sb, "- [%s] %s — ID: %s\n", s.Type, s.SymbolName, s.Id)
 		}
 	}
-	return kgtools.TextResult(sb.String())
+	// This arm renders no contains tree, so the bulk hydrate's verdict is the
+	// only one it receives. A clamped hydrate silently shortens both sections.
+	return AppendTruncationNotice(kgtools.TextResult(sb.String()), truncated, len(peers))
 }

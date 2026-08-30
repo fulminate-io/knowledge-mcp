@@ -22,8 +22,8 @@ import (
 // duplication.
 
 // SearchJSONResult is the client-local JSON shape for --format json search
-// output. Relocated from pkg/store/search_json_result.go: this envelope
-// is CLIENT-ONLY and never crosses the wire — renderJSON builds it for tool
+// output. Relocated from a server-store file that has since been deleted. This
+// envelope is CLIENT-ONLY and never crosses the wire — renderJSON builds it for tool
 // output and HydrateFromJSON re-reads it for the client rerank + decisions
 // narrowing. The real search wire is the typed HydratedResult/Node proto
 // (engine_decode.go), NOT this struct. The JSON tags are preserved verbatim so
@@ -58,23 +58,62 @@ type SearchJSONResult struct {
 }
 
 // SearchJSONResponse is the client-local envelope wrapping the JSON search
-// rows. Relocated from pkg/store/search_json_result.go for the same
+// rows. Relocated from that same since-deleted store file for the same
 // client-only reason as SearchJSONResult: it is built by renderJSON and
 // consumed by HydrateFromJSON entirely client-side; it never crosses the wire.
 type SearchJSONResponse struct {
 	Query   string             `json:"query"`
 	Total   int                `json:"total"`
 	Results []SearchJSONResult `json:"results"`
+	// Truncated reports whether a SERVER row ceiling engaged, emitted
+	// UNCONDITIONALLY (no omitempty) so a consumer never has to special-case this
+	// envelope: an absent key is indistinguishable from an old binary.
+	//
+	// IT IS FALSE ON EVERY PATH TODAY, AND THAT IS TRUE BY CONSTRUCTION rather
+	// than a placeholder. The verdict would have to ride
+	// ExecuteResponse.SearchResults, and nothing server-side populates that
+	// carrier — server-side search is retired, as responseRowCount's own comment
+	// records. The client-engine searches that reach here through RenderForCaller
+	// issue no server row-bounded read at all.
+	//
+	// TRIPWIRE: the value is READ from the response rather than hardcoded
+	// (renderSearchResponse threads resp.GetTruncated()), so the day a server arm
+	// starts populating a truncation verdict for the search carrier this key
+	// starts telling the truth on its own. If that thread is ever removed in
+	// favor of a literal, this comment is the thing that has to be revisited.
+	Truncated bool `json:"truncated"`
 }
 
 // RenderForCaller re-renders a hydrated (and optionally reranked) slice for the
 // caller, switching on the originally-requested format. Mirrors the server-side
 // renderer's shape so the engine path is LLM-facing-equivalent to the legacy
 // search path.
+// Its signature deliberately carries NO truncation parameter: every caller of
+// THIS entry point is a CLIENT-side search — the segment engine, a code/web/pdf
+// or log search, a rerank replay — which issues no server row-bounded read, so
+// there is no server ceiling that could have engaged. It passes false to
+// renderForCaller, and that false is a statement about those reads rather than a
+// default. The arms that DO hold an ExecuteResponse (renderSearchResponse and
+// renderSearchResponseFiltered) call renderForCaller directly with the response's
+// own verdict.
 func RenderForCaller(query string, results []SearchResult, format string, fields []string, searchMode string) kgtools.ToolResult {
+	return renderForCaller(query, results, format, fields, searchMode, false)
+}
+
+// renderForCaller is RenderForCaller plus the server's truncation verdict, which
+// rides both JSON envelopes.
+func renderForCaller(query string, results []SearchResult, format string, fields []string, searchMode string, truncated bool) kgtools.ToolResult {
+	// Once per RESPONSE, ahead of the per-result projection loop in
+	// renderJSONProjected. This is the sole gateway to projectHydratedResult, so
+	// one call here covers every ranked-search projection in BOTH tools.
+	if len(fields) > 0 {
+		if err := ValidateHitProjection(fields); err != nil {
+			return errorResult(err.Error())
+		}
+	}
 	switch format {
 	case "json":
-		return renderJSON(query, results, fields)
+		return renderJSON(query, results, fields, truncated)
 	default:
 		return renderText(query, results, searchMode)
 	}
@@ -88,7 +127,7 @@ func renderSearchResponse(resp *knowledgev1.ExecuteResponse, query, format strin
 	if err != nil {
 		return kgtools.ToolResult{}, err
 	}
-	return RenderForCaller(labelForSearch(query, mode), results, format, fields, searchMode), nil
+	return renderForCaller(labelForSearch(query, mode), results, format, fields, searchMode, resp.GetTruncated()), nil
 }
 
 // renderSearchResponseFiltered is renderSearchResponse plus a client-side
@@ -102,12 +141,12 @@ func renderSearchResponseFiltered(resp *knowledgev1.ExecuteResponse, query, form
 		return kgtools.ToolResult{}, err
 	}
 	results = filterByResourceTypePrefix(results, resourceType)
-	return RenderForCaller(labelForSearch(query, mode), results, format, fields, searchMode), nil
+	return renderForCaller(labelForSearch(query, mode), results, format, fields, searchMode, resp.GetTruncated()), nil
 }
 
 // filterByResourceTypePrefix trims the result set to those whose resource_type
 // metadata begins with prefix — the VERBATIM behavior of the server-side
-// srvtools.FilterCloudResultsByResourceType (tools_query_cloud.go:226) the
+// srvtools.FilterCloudResultsByResourceType the
 // engine post-filter previously applied. An empty prefix is a no-op (returns the
 // input). This trim moved from the engine search post-rank to
 // the client render path (OP_PREFIX is inert on a QSearch).
@@ -125,9 +164,8 @@ func filterByResourceTypePrefix(results []SearchResult, prefix string) []SearchR
 }
 
 // labelForSearch appends the server's mode-label suffix to the query label:
-// " (PPR graph-reach)" for SearchMode_PPR (tools_search.go:242) and
-// " (recency-boosted)" for SearchMode_TEMPORAL (tools_search.go:244 /
-// tools_query_search_modes.go:58). The hybrid/default mode adds no suffix. This
+// " (PPR graph-reach)" for SearchMode_PPR and " (recency-boosted)" for
+// SearchMode_TEMPORAL. The hybrid/default mode adds no suffix. This
 // is the ONE net-new render helper — the suffix is appended inline server-side
 // with no reusable analog.
 func labelForSearch(query string, mode knowledgev1.SearchMode) string {
@@ -144,14 +182,15 @@ func labelForSearch(query string, mode knowledgev1.SearchMode) string {
 // renderJSON re-packs the results as a SearchJSONResponse envelope. When
 // fields is non-empty, projects each result down to the requested keys (mirrors
 // the server-side projectSearchResult shape).
-func renderJSON(query string, results []SearchResult, fields []string) kgtools.ToolResult {
+func renderJSON(query string, results []SearchResult, fields []string, truncated bool) kgtools.ToolResult {
 	if len(fields) > 0 {
-		return renderJSONProjected(query, results, fields)
+		return renderJSONProjected(query, results, fields, truncated)
 	}
 	resp := SearchJSONResponse{
-		Query:   query,
-		Total:   len(results),
-		Results: make([]SearchJSONResult, len(results)),
+		Query:     query,
+		Total:     len(results),
+		Results:   make([]SearchJSONResult, len(results)),
+		Truncated: truncated,
 	}
 	for i, r := range results {
 		name := r.Node.SymbolName
@@ -189,16 +228,23 @@ func renderJSON(query string, results []SearchResult, fields []string) kgtools.T
 
 // renderJSONProjected emits a projected map per result containing only the
 // requested keys. Mirrors the server-side projectSearchResult vocabulary.
-func renderJSONProjected(query string, results []SearchResult, fields []string) kgtools.ToolResult {
+//
+// Its envelope carries `truncated` on the SAME terms as SearchJSONResponse — see
+// that type's field comment for the tripwire. It is a SEPARATE struct, so adding
+// the key to the full envelope alone would have shipped it on unprojected search
+// reads and not on `fields`-projected ones.
+func renderJSONProjected(query string, results []SearchResult, fields []string, truncated bool) kgtools.ToolResult {
 	type projectedResponse struct {
-		Query   string           `json:"query"`
-		Total   int              `json:"total"`
-		Results []map[string]any `json:"results"`
+		Query     string           `json:"query"`
+		Total     int              `json:"total"`
+		Results   []map[string]any `json:"results"`
+		Truncated bool             `json:"truncated"`
 	}
 	resp := projectedResponse{
-		Query:   query,
-		Total:   len(results),
-		Results: make([]map[string]any, len(results)),
+		Query:     query,
+		Total:     len(results),
+		Results:   make([]map[string]any, len(results)),
+		Truncated: truncated,
 	}
 	for i, r := range results {
 		resp.Results[i] = projectHydratedResult(r, fields)
@@ -210,9 +256,49 @@ func renderJSONProjected(query string, results []SearchResult, fields []string) 
 	return kgtools.TextResult(string(data))
 }
 
+// hitDisplayName is the hit grammar's `name` value: SymbolName, falling back to
+// Description when the node carries no symbol name. This DIVERGES from
+// ProjectNodeJSON's `name`, which returns SymbolName with no fallback. The
+// divergence is deliberate and preserved: aligning them would change what the
+// search tool renders as `name` for every symbol-less node.
+func hitDisplayName(n *knowledgev1.Node) string {
+	if n.SymbolName != "" {
+		return n.SymbolName
+	}
+	return n.Description
+}
+
+// projectHitMetadataKey serves the hit grammar's per-metadata-key
+// "metadata.<key>" projection. Unlike a top-level key, this form is OMITTED
+// ENTIRELY when the node lacks the key — the one conditional the
+// emit-unconditionally contract deliberately leaves in place. It reads the
+// node's metadata map directly; ProjectNodeJSON's counterpart resolves through
+// kgtypes.Value instead, so the two are NOT interchangeable.
+func projectHitMetadataKey(out map[string]any, md map[string]string, field string) {
+	key, ok := strings.CutPrefix(field, metadataProjectionPrefix)
+	if !ok {
+		return
+	}
+	if v, ok := md[key]; ok {
+		out[field] = v
+	}
+}
+
 // projectHydratedResult maps a HydratedResult to a key-projected map according
-// to the requested field list. Unknown field names are silently dropped.
-// Mirrors the server-side projectSearchResult shape.
+// to the requested field list, serving every hitProjectionKeys member. An
+// unsupported key is REFUSED by ValidateHitProjection before this runs, so every
+// key reaching this switch is a declared one. Mirrors the server-side
+// projectSearchResult shape.
+//
+// A requested top-level key is emitted UNCONDITIONALLY — empty string for an
+// unset text field, 0 for an unset timestamp, empty map for absent metadata — so
+// "the field is present and unset" stays distinguishable from "the key was not in
+// your projection". tombstoned_at is the ONE top-level key carved out of that
+// rule, on the same terms as the node arm: it is OMITTED ENTIRELY for a live hit,
+// because 0 is what a live node carries and a sentinel 0 is indistinguishable at
+// the wire from a real tombstone stamp. Only that key and the metadata.<key> form
+// keep a conditional omission. created_at/updated_at are raw int64 unix nanos,
+// matching the by-id convention, and so is tombstoned_at when it is emitted.
 func projectHydratedResult(r SearchResult, fields []string) map[string]any {
 	out := make(map[string]any, len(fields))
 	for _, f := range fields {
@@ -220,11 +306,7 @@ func projectHydratedResult(r SearchResult, fields []string) map[string]any {
 		case "id":
 			out["id"] = r.Node.Id
 		case "name":
-			name := r.Node.SymbolName
-			if name == "" {
-				name = r.Node.Description
-			}
-			out["name"] = name
+			out["name"] = hitDisplayName(r.Node)
 		case "type":
 			out["type"] = r.Node.Type
 		case "score":
@@ -251,24 +333,24 @@ func projectHydratedResult(r SearchResult, fields []string) map[string]any {
 			out["line"] = r.Node.StartLine
 		case "language":
 			out["language"] = r.Node.Language
+		case "content":
+			out["content"] = r.Node.Content
+		case "created_at":
+			out["created_at"] = r.Node.CreatedAt
+		case "updated_at":
+			out["updated_at"] = r.Node.UpdatedAt
+		case tombstonedAtProjectionKey:
+			// Absent, never a sentinel — the shared rule the node arm applies too,
+			// and the reason the doc block above carves this key out by name.
+			projectTombstonedAt(out, r.Node.TombstonedAt)
 		case "graph":
-			if r.Graph != "" {
-				out["graph"] = r.Graph
-			}
+			out["graph"] = r.Graph
 		case "graph_instance":
-			if r.GraphInstance != "" {
-				out["graph_instance"] = r.GraphInstance
-			}
+			out["graph_instance"] = r.GraphInstance
 		case "metadata":
-			if len(r.Node.Metadata) > 0 {
-				out["metadata"] = r.Node.Metadata
-			}
+			out["metadata"] = copyProjectedMetadata(r.Node.Metadata)
 		default:
-			if key, ok := strings.CutPrefix(f, "metadata."); ok {
-				if v, ok := r.Node.Metadata[key]; ok {
-					out[f] = v
-				}
-			}
+			projectHitMetadataKey(out, r.Node.Metadata, f)
 		}
 	}
 	return out

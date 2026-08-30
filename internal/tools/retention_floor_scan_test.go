@@ -123,4 +123,57 @@ func TestSegmentScan_RetentionFloorTakesTheSlowestConsumer(t *testing.T) {
 			require.Zero(t, sc.afterStamped[0], "the repair arm reads the whole corpus and reports no position")
 		})
 	})
+
+	t.Run("delta_arm_sends_its_own_horizon_on_the_scan_field", func(t *testing.T) {
+		// THE TWO MEANINGS TRAVEL ON TWO FIELDS. The floor is what the erasure
+		// refusal is measured against and stays the minimum across consumers; the
+		// scan bound is this consumer's own position, and sending it is what stops
+		// the window widening back down to a pinned rebuild watermark every pass.
+		//
+		// VACUITY GUARD: floorLagging and floorAhead are distinct package constants
+		// (1e9 and 2e9), so no single value can satisfy both assertions below — one
+		// field carrying both meanings fails one of them.
+		require.NotEqual(t, floorLagging, floorAhead,
+			"vacuity guard: the two positions must differ, or one value would satisfy both assertions")
+		sc := &fakeRepairScanner{pages: [][]*knowledgev1.PipelineScanItem{floorScanPage()}}
+		sh := &fakeRebuildShipper{}
+		sh.watermark, sh.mergeWatermark = floorLagging, floorAhead
+		_, err := MergeSegmentDelta(ctx, sc, sh, &fakeRepairShipper{}, nil,
+			kgtypes.GraphCode, "myrepo", floorAhead)
+		require.NoError(t, err)
+		require.NotEmpty(t, sc.afterStamped)
+		require.Equal(t, floorLagging, sc.afterStamped[0],
+			"control, unchanged from before the split: field 8 still carries the FLOOR across consumers")
+		require.NotEmpty(t, sc.scanFroms)
+		require.Equal(t, floorAhead, sc.scanFroms[0],
+			"and field 10 carries THIS consumer's own horizon — the bound the scan actually reads from")
+	})
+
+	t.Run("rebuild_and_repair_arms_leave_the_scan_field_unset", func(t *testing.T) {
+		// A SCOPE FENCE, labeled honestly: it is green from the moment the field
+		// exists and stays green after the client edit. Its job is to fail if a later
+		// edit widens the scan field beyond the delta arm, which would narrow a scan
+		// whose contract is to read the whole corpus.
+		t.Run("rebuild_drain", func(t *testing.T) {
+			sc := &fakeRebuildScanner{pages: [][]*knowledgev1.PipelineScanItem{floorScanPage()}}
+			sh := &fakeRebuildShipper{}
+			sh.watermark, sh.mergeWatermark = floorAhead, floorLagging
+			_, err := RebuildSegments(ctx, sc, sh, kgtypes.GraphCode, "myrepo", false)
+			require.NoError(t, err)
+			require.NotEmpty(t, sc.scanFroms)
+			for i, got := range sc.scanFroms {
+				require.Zero(t, got, "the rebuild drain must leave the scan field unset on request %d", i)
+			}
+		})
+
+		t.Run("segment_repair", func(t *testing.T) {
+			sc := &fakeRepairScanner{pages: [][]*knowledgev1.PipelineScanItem{floorScanPage()}}
+			_, err := RepairUncoveredSegments(ctx, sc, &fakeRepairShipper{}, kgtypes.GraphCode, "myrepo")
+			require.NoError(t, err)
+			require.NotEmpty(t, sc.scanFroms)
+			for i, got := range sc.scanFroms {
+				require.Zero(t, got, "the repair arm must leave the scan field unset on request %d", i)
+			}
+		})
+	})
 }

@@ -22,11 +22,11 @@ Findings are added later via record_finding with question_id. Use this for compl
 				"goal":      {Type: "string", Description: "What this research aims to answer"},
 				"summary":   {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars (handler enforces)."},
 				"ticket_id": {Type: "string", Description: "Ticket node ID to link this research under (optional)"},
-				"questions": {Type: "array", Description: "Ordered list of research questions. Each question REQUIRES a summary (search-optimized rendering of the question itself, distinct from context which is background).", Items: &kgtools.Property{
+				"questions": {Type: "array", Description: "Ordered list of research questions. Each question's summary is REQUIRED (a search-optimized one-line rendering of the question itself, distinct from context which is background): nothing composes one for you.", Items: &kgtools.Property{
 					Type: "object", Description: `Question object: {"question":"...","summary":"required search-optimized one-line summary, max 500 chars","context":"why this question matters"}`,
 					AdditionalProperties: &falseValue, Properties: map[string]kgtools.Property{
 						"question": {Type: "string", Description: "The research question (required)"},
-						"summary":  {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars"},
+						"summary":  {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars, written by you: an omitted or empty one is refused under the indexed field path questions[i].summary. It is what makes the question findable later, so state the concept in plain terms rather than restating the question verbatim. An over-cap one is clamped at a word boundary with a warning, never rejected."},
 						"context":  {Type: "string", Description: "Why this question matters (background)"},
 					},
 				}},

@@ -17,6 +17,7 @@ func RecordDecisionToolDef() kgtools.MCPTool {
 			Type: "object",
 			Properties: map[string]kgtools.Property{
 				"name":         {Type: "string", Description: "Decision name (e.g., 'Keep HNSW in blob, drop only BM25')"},
+				"summary":      {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary of the decision, max 500 chars. Over-cap values are clamped at a word boundary with a warning."},
 				"choice":       {Type: "string", Description: "What was decided"},
 				"rationale":    {Type: "string", Description: "Why this was chosen"},
 				"alternatives": {Type: "string", Description: "Other options considered (comma-separated)"},
@@ -26,7 +27,7 @@ func RecordDecisionToolDef() kgtools.MCPTool {
 				"links":        {Type: "array", Description: "Node IDs to relate the decision to (node--relates-to-->target). Knowledge-graph IDs ride the atomic create; code/cloud IDs are linked post-create via the cross-graph linkage. An unresolvable ID is dropped with a warning, never blocking the write.", Items: &kgtools.Property{Type: "string"}},
 				"format":       {Type: "string", Description: "Output format: 'text' (default) or 'json' (structured: {id, name, warnings})."},
 			},
-			Required: []string{"name", "choice", "rationale"},
+			Required: []string{"name", "choice", "rationale", "summary"},
 		},
 	}
 }

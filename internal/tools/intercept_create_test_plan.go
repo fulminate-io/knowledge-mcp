@@ -37,6 +37,7 @@ type createTestPlanStep struct {
 
 type createTestPlanCriterion struct {
 	Description string `json:"description"`
+	Summary     string `json:"summary"`
 	Command     string `json:"command,omitempty"`
 	Type        string `json:"type,omitempty"`
 }
@@ -52,11 +53,14 @@ func InterceptCreateTestPlan(ctx context.Context, deps ClientDeps, params kgtool
 	}
 	var a createTestPlanArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
-		return true, errorResult("invalid arguments: " + err.Error())
+		return true, errorResult("invalid arguments: " + decodeArgsError(params.Arguments, err))
 	}
 	// Ahead of every validation and every write: the decode above discards any
 	// top-level key createTestPlanArgs has no field for, so an undeclared param
 	// would otherwise vanish into a successful create.
+	if err := rejectSwallowedParamValues("create_test_plan", params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	if err := rejectUndeclaredParams("create_test_plan", "", CreateTestPlanToolDef().InputSchema.Properties, params.Arguments); err != nil {
 		return true, errorResult(err.Error())
 	}
@@ -79,20 +83,11 @@ func InterceptCreateTestPlan(ctx context.Context, deps ClientDeps, params kgtool
 			Description: st.Description,
 			Summary:     st.Summary,
 		}
-		for k, c := range st.Criteria {
-			// These criteria reach the graph through the test-plan builder, which
-			// runs no criterion validation of its own, so the command's shape is
-			// checked here — under the indexed path that locates the offender.
-			if gerr := validate.RunSelectorGuard("create_test_plan",
-				fmt.Sprintf("steps[%d].criteria[%d].command", i, k), c.Command); gerr != nil {
-				return true, errorResult(gerr.Error())
-			}
-			stepArgs.Criteria = append(stepArgs.Criteria, projects.CriterionArgs{
-				Description: c.Description,
-				Command:     c.Command,
-				Type:        c.Type,
-			})
+		criteria, cerr := buildTestPlanCriteria(i, st.Criteria)
+		if cerr != nil {
+			return true, errorResult(cerr.Error())
 		}
+		stepArgs.Criteria = criteria
 		planArgs.Steps = append(planArgs.Steps, stepArgs)
 	}
 
@@ -120,20 +115,56 @@ func InterceptCreateTestPlan(ctx context.Context, deps ClientDeps, params kgtool
 	if ferr != nil || root == nil || root.Id == "" {
 		var oneLine strings.Builder
 		fmt.Fprintf(&oneLine, "Test plan created: %s → ID: %s", a.Name, planID)
-		writeClientWarningsSection(&oneLine, warnings, "\n")
+		writeClientWarningsSection(&oneLine, warnings)
 		return true, textResult(oneLine.String() + " [graph: knowledge/default]")
 	}
-	render.RenderTree(ctx, gc, &sb, root, 0, 3)
-	writeClientWarningsSection(&sb, warnings, "\n")
-	return true, textResult(sb.String() + " [graph: knowledge/default]")
+	childIndex, byID, dependsOn, truncated := render.AssembleSubtree(ctx, gc, root.Id, 3)
+	render.RenderTreeFromIndex(&sb, root, 0, 3, childIndex, dependsOn)
+	writeClientWarningsSection(&sb, warnings)
+	return true, render.AppendTruncationNotice(
+		textResult(sb.String()+" [graph: knowledge/default]"), truncated, len(byID))
+}
+
+// buildTestPlanCriteria converts one step's wire criteria into the builder's
+// CriterionArgs, guarding each command's shape on the way. These criteria reach
+// the graph through the test-plan builder, which runs no criterion validation of
+// its own, so the command's shape is checked here — under the indexed path that
+// locates the offender in a plan of dozens.
+//
+// The SUMMARY is already clamped in place by clampTestPlanSummaries before this
+// runs, so the value copied here is the clamped one.
+func buildTestPlanCriteria(stepIdx int, criteria []createTestPlanCriterion) ([]projects.CriterionArgs, error) {
+	// NIL, not an empty slice, for a step with no criteria: the append-into-nil
+	// shape this replaced left the field nil, and BuildTestPlanGraph reads it.
+	if len(criteria) == 0 {
+		return nil, nil
+	}
+	out := make([]projects.CriterionArgs, 0, len(criteria))
+	for k, c := range criteria {
+		if gerr := validate.RunSelectorGuard("create_test_plan",
+			fmt.Sprintf("steps[%d].criteria[%d].command", stepIdx, k), c.Command); gerr != nil {
+			return nil, gerr
+		}
+		out = append(out, projects.CriterionArgs{
+			Description: c.Description,
+			Summary:     c.Summary,
+			Command:     c.Command,
+			Type:        c.Type,
+		})
+	}
+	return out, nil
 }
 
 // clampTestPlanSummaries validates the test-plan name and clamps the
-// author-supplied plan + step summaries in place (a is a pointer so the clamped
-// values flow into BuildTestPlanGraph). Each author summary is clamped at a word
-// boundary with a non-fatal warning rather than hard-rejected; emptiness still
-// hard-rejects. Returns the accumulated clamp warnings plus the first hard
-// validation error.
+// author-supplied plan + step + criterion summaries in place (a is a pointer so
+// the clamped values flow into BuildTestPlanGraph). Each author summary is
+// clamped at a word boundary with a non-fatal warning rather than hard-rejected;
+// emptiness still hard-rejects. Returns the accumulated clamp warnings plus the
+// first hard validation error.
+//
+// The criteria loop ITERATES BY INDEX: `for k, c := range` would clamp a COPY
+// and ship the unclamped summary into PersistBatch, where the server refuses the
+// whole create.
 func clampTestPlanSummaries(a *createTestPlanArgs) (warnings []string, err error) {
 	if err := validate.Name("create_test_plan", a.Name); err != nil {
 		return nil, err
@@ -154,6 +185,16 @@ func clampTestPlanSummaries(a *createTestPlanArgs) (warnings []string, err error
 		a.Steps[i].Summary = c
 		if sw != "" {
 			warnings = append(warnings, sw)
+		}
+		for k := range a.Steps[i].Criteria {
+			cc, cw, ccerr := validate.ClampSummary("create_test_plan", fmt.Sprintf("steps[%d].criteria[%d].summary", i, k), a.Steps[i].Criteria[k].Summary)
+			if ccerr != nil {
+				return nil, ccerr
+			}
+			a.Steps[i].Criteria[k].Summary = cc
+			if cw != "" {
+				warnings = append(warnings, cw)
+			}
 		}
 	}
 	return warnings, nil

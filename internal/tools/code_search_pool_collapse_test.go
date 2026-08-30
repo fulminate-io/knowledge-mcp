@@ -32,20 +32,26 @@ import (
 // was asked for and how many times, which is what lets a test prove an injected
 // fault actually reached the gate rather than being served from the memo.
 type poolCoverageFake struct {
-	mu         sync.Mutex
-	covered    int
-	anyUnknown bool
-	err        error
-	asked      []string
+	mu sync.Mutex
+	// covered is the SUMMING resident count the loading reader returns. The gate
+	// calls that reader for its load and its error and DISCARDS this number.
+	covered int
+	// liveCovered is the DISTINCT LIVE-SEARCHABLE count — the operand the gate
+	// actually compares against the bar. Holding both separately is what lets a
+	// fixture express cross-segment duplication (liveCovered < covered), which is
+	// the state the gate used to read as complete.
+	liveCovered int
+	err         error
+	asked       []string
 }
 
 func (f *poolCoverageFake) ShippedSegmentDocCount(
 	_ context.Context, _ kgtypes.GraphType, name string,
-) (int, bool, error) {
+) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.asked = append(f.asked, name)
-	return f.covered, f.anyUnknown, f.err
+	return f.covered, f.err
 }
 
 func (f *poolCoverageFake) askedNames() []string {
@@ -54,11 +60,19 @@ func (f *poolCoverageFake) askedNames() []string {
 	return append([]string(nil), f.asked...)
 }
 
+// LiveResidentDocCount IS READ BY THE GATE — it is the operand compared against the
+// bar. It is served from its own field rather than from `covered` so a fixture can
+// express a bucket carrying cross-segment duplication.
+func (f *poolCoverageFake) LiveResidentDocCount(kgtypes.GraphType, string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.liveCovered
+}
+
 // The remaining SegmentCoverageReader methods exist only to satisfy the seam —
 // the gate reads none of them, and a fake that returned something interesting here
 // would suggest otherwise.
-func (f *poolCoverageFake) ResidentDocCount(kgtypes.GraphType, string) int     { return 0 }
-func (f *poolCoverageFake) LiveResidentDocCount(kgtypes.GraphType, string) int { return 0 }
+func (f *poolCoverageFake) ResidentDocCount(kgtypes.GraphType, string) int { return 0 }
 func (f *poolCoverageFake) RepairVerification(kgtypes.GraphType, string) (RepairVerification, bool) {
 	return RepairVerification{}, false
 }
@@ -122,15 +136,27 @@ type collapseFixture struct {
 	bar    *poolBarFake
 }
 
-func newCollapseFixture(repo, branch string, covered, embedded int) *collapseFixture {
-	overlay := overlayName(repo, branch)
+// collapseFixtureBranch is the branch every collapseFixture is built for, and the
+// branch its tests hand the code under test. It is a CONST rather than a
+// newCollapseFixture parameter because those two strings must be the SAME string —
+// the fixture keys its overlay hit list by it, so a test supplying a different
+// branch to the code under test would resolve a pool the engine fake has no canned
+// list for and assert against an empty read. A parameter let the two be spelled
+// independently while every call site passed the same value anyway.
+const collapseFixtureBranch = "feat"
+
+func newCollapseFixture(repo string, covered, embedded int) *collapseFixture {
+	overlay := overlayName(repo, collapseFixtureBranch)
 	eng := &codeSearchEngineFake{
 		hitsByRepo: map[string][]searchengine.Hit{
 			repo:    {{ID: "base-doc", Score: 1}},
 			overlay: {{ID: "branch-doc", Score: 1}},
 		},
 	}
-	cov := &poolCoverageFake{covered: covered}
+	// The existing fixtures model a bucket with NO cross-segment duplication, which
+	// is what their assertions have always meant: both readers agree. A fixture that
+	// wants duplication sets liveCovered below covered explicitly.
+	cov := &poolCoverageFake{covered: covered, liveCovered: covered}
 	bar := &poolBarFake{embedded: embedded}
 	return &collapseFixture{
 		cdeps: codeSearchDeps{
@@ -158,10 +184,10 @@ func hitIDs(hits []searchengine.Hit) []searchengine.ExternalID {
 // population is served from that ONE pool — and the pool is the BRANCH's, not
 // base's.
 func TestCodeSearchPoolHits_SinglePoolWhenBranchShippedComplete(t *testing.T) {
-	f := newCollapseFixture("collapse-repo", "feat", 12, 12)
+	f := newCollapseFixture("collapse-repo", 12, 12)
 
 	hits := codeSearchPoolHits(context.Background(), f.cdeps,
-		"collapse-repo", "feat", "q", nil, 5)
+		"collapse-repo", collapseFixtureBranch, "q", nil, 5)
 
 	pools := f.engine.requestedPools()
 	// KNOWN-POSITIVE FIRST: a gate that returned no hits at all would satisfy
@@ -206,12 +232,18 @@ func TestCodeSearchPoolHits_TwoPoolWhenBranchShippedIncomplete(t *testing.T) {
 		name: "control_complete_collapses", repo: "incomplete-control", covered: 8, embedded: 8,
 		twoPool: false,
 	}, {
-		name: "unknown_denominator", repo: "incomplete-unknown", covered: 8, embedded: 8,
-		mutate:  func(f *collapseFixture) { f.cov.anyUnknown = true },
-		twoPool: true,
-	}, {
+		// THE "unknown_denominator" CASE WAS DELETED HERE, with its reason, because
+		// this was the ONLY test exercising the unknown-disarm path and a silent
+		// removal would look like coverage that was merely dropped.
+		//
+		// The honest reason is that the path became UNREACHABLE, not that the case was
+		// inconvenient: ShippedSegmentDocCount lost its unknown-count return when the
+		// cloud branch went, and the surviving branch never reports an unknown
+		// denominator — it reads a resident count, which is always known. A fixture
+		// setting an unknown flag now sets a field nobody reads, so the case would
+		// have gone on passing while asserting nothing at all.
 		name: "covered_read_errors", repo: "incomplete-err", covered: 8, embedded: 8,
-		mutate:  func(f *collapseFixture) { f.cov.err = errors.New("manifest read failed") },
+		mutate:  func(f *collapseFixture) { f.cov.err = errors.New("segment read failed") },
 		twoPool: true,
 	}, {
 		// The one durably-short bucket: SeedBranchBucketFromBase warns and continues
@@ -233,12 +265,12 @@ func TestCodeSearchPoolHits_TwoPoolWhenBranchShippedIncomplete(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newCollapseFixture(tc.repo, "feat", tc.covered, tc.embedded)
+			f := newCollapseFixture(tc.repo, tc.covered, tc.embedded)
 			if tc.mutate != nil {
 				tc.mutate(f)
 			}
 
-			hits := codeSearchPoolHits(context.Background(), f.cdeps, tc.repo, "feat", "q", nil, 5)
+			hits := codeSearchPoolHits(context.Background(), f.cdeps, tc.repo, collapseFixtureBranch, "q", nil, 5)
 			pools := f.engine.requestedPools()
 
 			require.NotEmpty(t, f.cov.askedNames(),
@@ -286,7 +318,7 @@ func TestComposeCodeSearch_WiresTheCoverageSeam(t *testing.T) {
 	eng := &codeSearchEngineFake{
 		hitsByRepo: map[string][]searchengine.Hit{"wire-repo": {{ID: "base-doc", Score: 1}}},
 	}
-	cov := &poolCoverageFake{covered: 3}
+	cov := &poolCoverageFake{covered: 3, liveCovered: 3}
 	deps := &poolWiringDeps{interceptDeps: &interceptDeps{gc: gc, segMgr: eng}, cov: cov}
 
 	composeCodeSearch(context.Background(), deps, gc.Execute,
@@ -302,11 +334,11 @@ func TestComposeCodeSearch_WiresTheCoverageSeam(t *testing.T) {
 // step requires: the gate runs once per code query on the hot read path, and
 // neither operand may become a per-query read.
 func TestShippedCompleteForUnifiedSearch_MemoizesWithinTTL(t *testing.T) {
-	f := newCollapseFixture("memo-repo", "feat", 4, 4)
+	f := newCollapseFixture("memo-repo", 4, 4)
 	ctx := context.Background()
 
-	require.True(t, shippedCompleteForUnifiedSearch(ctx, f.cdeps, "memo-repo", "feat"))
-	require.True(t, shippedCompleteForUnifiedSearch(ctx, f.cdeps, "memo-repo", "feat"))
+	require.True(t, shippedCompleteForUnifiedSearch(ctx, f.cdeps, "memo-repo", collapseFixtureBranch))
+	require.True(t, shippedCompleteForUnifiedSearch(ctx, f.cdeps, "memo-repo", collapseFixtureBranch))
 
 	assert.Len(t, f.cov.askedNames(), 1, "the covered count is read once per TTL window, not per query")
 	assert.Len(t, f.bar.askedSelectors(), 1, "the bar is read once per TTL window, not per query")

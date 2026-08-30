@@ -28,10 +28,9 @@ import (
 func residencyPool(t *testing.T, name string, contents ...string) (
 	*distManager[mockQuery, mockStats],
 	*searchengine.SegmentedIndex[mockQuery, mockStats],
-	*fakeSegmentSource,
 ) {
 	t.Helper()
-	_, gc := newSegmentHarness(t)
+
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: name}
 	ctx := context.Background()
 
@@ -39,14 +38,18 @@ func residencyPool(t *testing.T, name string, contents ...string) (
 	for i, c := range contents {
 		require.NoError(t, shipEng.Add([]searchengine.Document{doc(fmt.Sprintf("d%d", i+1), c)}))
 	}
-	shipMgr, _ := buildManager(shipEng, gc, target, t.TempDir())
-	_, err := shipMgr.ship(ctx, shipMgr.locallyShipped)
-	require.NoError(t, err)
+	// ONE cache directory for both managers. They used to point at separate dirs
+	// because the SERVER carried the corpus between them; with the cache as the only
+	// store, separate dirs would leave loadMgr with nothing to load and every
+	// assertion below would run against an empty engine.
+	cacheDir := t.TempDir()
+	shipMgr := buildManager(shipEng, target, cacheDir)
+	require.NoError(t, shipMgr.writeNewBlobsToL2(shipEng.Export()))
 
 	loadEng := newMockEngine(t)
-	loadMgr, view := buildManager(loadEng, gc, target, t.TempDir())
+	loadMgr := buildManager(loadEng, target, cacheDir)
 	require.NoError(t, loadMgr.load(ctx))
-	return loadMgr, loadEng, view
+	return loadMgr, loadEng
 }
 
 // residentIDsOf snapshots a pool's resident segment ids in sorted order.
@@ -74,7 +77,7 @@ func evictedIDsOf(m *distManager[mockQuery, mockStats]) []searchengine.SegmentID
 func TestEvictResidentThenSearchReturnsIdenticalHits(t *testing.T) {
 	t.Parallel()
 
-	mgr, eng, _ := residencyPool(t, "evictidentical", "alpha", "alpha", "alpha")
+	mgr, eng := residencyPool(t, "evictidentical", "alpha", "alpha", "alpha")
 	before := eng.Search(mockQuery{term: "alpha"}, 10)
 	require.Len(t, before, 3, "the loaded pool serves every doc")
 
@@ -98,7 +101,7 @@ func TestEvictDeclinesWhenAResidentIDIsAbsentFromL2(t *testing.T) {
 	t.Parallel()
 
 	t.Run("missing_l2_blob_declines", func(t *testing.T) {
-		mgr, eng, _ := residencyPool(t, "evictdecline", "alpha", "alpha", "alpha")
+		mgr, eng := residencyPool(t, "evictdecline", "alpha", "alpha", "alpha")
 		ids := residentIDsOf(mgr)
 		require.Len(t, ids, 3)
 		mgr.cache.Remove(ids[0])
@@ -112,7 +115,7 @@ func TestEvictDeclinesWhenAResidentIDIsAbsentFromL2(t *testing.T) {
 	})
 
 	t.Run("intact_l2_evicts", func(t *testing.T) {
-		mgr, eng, _ := residencyPool(t, "evictcontrol", "alpha", "alpha", "alpha")
+		mgr, eng := residencyPool(t, "evictcontrol", "alpha", "alpha", "alpha")
 		freed, ok := mgr.evictResident()
 		require.True(t, ok, "with L2 intact the same gate must ACT — otherwise the decline above proves nothing")
 		require.Positive(t, freed)
@@ -140,18 +143,18 @@ func TestStrictReloadErrorsRatherThanServingAShortList(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("missing_blob_errors", func(t *testing.T) {
-		mgr, eng, view := residencyPool(t, "strictmissing", "alpha", "alpha", "alpha")
+		mgr, eng := residencyPool(t, "strictmissing", "alpha", "alpha", "alpha")
 		_, ok := mgr.evictResident()
 		require.True(t, ok)
 
 		ids := evictedIDsOf(mgr)
 		require.Len(t, ids, 3, "the strict set names exactly what was unloaded")
-		// The blob is gone from L2 AND unavailable from the source: it genuinely
-		// cannot be restored.
+		// REMOVING IT FROM L2 IS THE WHOLE CONDITION NOW. This used to remove the blob
+		// AND trip a source double's Fetch, because a missing cache entry could still be
+		// re-fetched. There is nowhere to re-fetch from: the cache is the only store, so
+		// an id absent from it is genuinely unrestorable and the strict reload must say
+		// so rather than return a short set.
 		mgr.cache.Remove(ids[0])
-		view.rejectFetch = func([]searchengine.SegmentID) error {
-			return fmt.Errorf("segment %s is unavailable", ids[0])
-		}
 
 		err := mgr.load(ctx)
 		require.Error(t, err, "a re-materialization that cannot complete must ERROR, never serve a short list")
@@ -161,7 +164,7 @@ func TestStrictReloadErrorsRatherThanServingAShortList(t *testing.T) {
 	})
 
 	t.Run("merge_reclaim_rewrites_the_evicted_set", func(t *testing.T) {
-		mgr, eng, view := residencyPool(t, "strictmerge", "alpha", "alpha", "alpha")
+		mgr, eng := residencyPool(t, "strictmerge", "alpha", "alpha", "alpha")
 		_, ok := mgr.evictResident()
 		require.True(t, ok)
 
@@ -185,14 +188,9 @@ func TestStrictReloadErrorsRatherThanServingAShortList(t *testing.T) {
 		for _, id := range superseded {
 			gone[id] = struct{}{}
 		}
-		view.rejectFetch = func(req []searchengine.SegmentID) error {
-			for _, id := range req {
-				if _, dead := gone[id]; dead {
-					return fmt.Errorf("segment %s was reclaimed by the merge", id)
-				}
-			}
-			return nil
-		}
+		// THE SUPERSEDED IDS ARE UNRESTORABLE BY CONSTRUCTION. The reclaim removes them
+		// from L2, and L2 is the only store — so a rewrite that left them in the strict
+		// set would fail the reload below on its own, with no fault to inject.
 
 		mgr.reclaimMerged(searchengine.MergeResult{
 			Removed: superseded,
@@ -202,12 +200,14 @@ func TestStrictReloadErrorsRatherThanServingAShortList(t *testing.T) {
 			"the rewrite drops the superseded ids and adds the merged one")
 		require.True(t, mgr.isEvicted(), "the rewrite does NOT clear the latch — that is markMaterialized's job")
 
-		fetchesBefore := view.fetchCalls.Load()
 		require.NoError(t, mgr.load(ctx), "the rewritten strict set restores the pool in full")
 		require.Len(t, eng.Search(mockQuery{term: "alpha"}, 10), 3,
 			"every doc is back, served from the merged blob")
-		require.Equal(t, fetchesBefore, view.fetchCalls.Load(),
-			"the merged blob was Put to L2, so the reload pays ZERO network")
+		// THE ZERO-NETWORK ASSERTION IS GONE WITH THE NETWORK. It compared a source's
+		// fetch counter either side of the reload to prove the merged blob came from L2
+		// rather than the wire. There is no wire and no counter: the reload succeeding
+		// at all IS the proof that the merged blob was Put to L2 before the swap, since
+		// nothing else could have supplied it.
 		require.False(t, mgr.isEvicted())
 	})
 }
@@ -225,8 +225,7 @@ func TestSearchRematerializesAnEvictedPool(t *testing.T) {
 	ctx := context.Background()
 	gt, name := kgtypes.GraphKnowledge, "searchRematerializes"
 
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	docs := bothFormatDocs(8, "remat-")
 	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, docs))
@@ -276,8 +275,7 @@ func TestEvictionFreesHeap(t *testing.T) {
 	ctx := context.Background()
 	gt, name := kgtypes.GraphKnowledge, "evictionFreesHeap"
 
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	docs := heapFixtureDocs(600)
 	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, docs))
@@ -408,7 +406,7 @@ func heapFixtureDocs(n int) []searchengine.Document {
 func TestForceLoadClearsTheEvictedLatch(t *testing.T) {
 	t.Parallel()
 
-	mgr, _, _ := residencyPool(t, "forceloadlatch", "alpha", "alpha", "alpha")
+	mgr, _ := residencyPool(t, "forceloadlatch", "alpha", "alpha", "alpha")
 	_, ok := mgr.evictResident()
 	require.True(t, ok)
 	require.True(t, mgr.isEvicted())

@@ -363,3 +363,50 @@ func RegisteredLanguages() []Language {
 	slices.Sort(out)
 	return out
 }
+
+// extensionlessNames is the inverse of the filename switch inside
+// DetectLanguage, listing one canonical spelling per language that switch
+// recognizes. It exists so FixtureFileName can name a file for a language that
+// no extension reaches — dockerfile is the only such registered language today.
+// It is deliberately NOT consulted by DetectLanguage, whose switch accepts
+// several spellings per language and is the authority; this table only has to
+// pick one that routes back, and TestFixtureFileName_RoundTrips is what catches
+// it drifting from the switch.
+var extensionlessNames = map[Language]string{
+	LangDockerfile: "Dockerfile",
+	LangBash:       "Makefile",
+	LangRuby:       "Rakefile",
+	LangGroovy:     "Jenkinsfile",
+}
+
+// FixtureFileName returns a filename whose detection routes back to l, for a
+// caller that must materialize source text on disk and have the walk read it as
+// that language — the corpus fixture executor is the case it was added for.
+//
+// The name is DERIVED from extMap rather than from a second extension table: the
+// extensions are walked in sorted order and the first one mapping to l wins, so
+// a language whose extensions change here changes there with no edit. A language
+// no extension reaches falls back to extensionlessNames.
+//
+// Returns ("", false) for LangUnknown and for any language neither table
+// reaches, so a caller refuses loudly rather than writing a file that would be
+// parsed by nothing.
+func FixtureFileName(l Language) (string, bool) {
+	if l == LangUnknown {
+		return "", false
+	}
+	exts := make([]string, 0, len(extMap))
+	for ext, lang := range extMap {
+		if lang == l {
+			exts = append(exts, ext)
+		}
+	}
+	if len(exts) > 0 {
+		slices.Sort(exts)
+		return "fixture" + exts[0], true
+	}
+	if name, ok := extensionlessNames[l]; ok {
+		return name, true
+	}
+	return "", false
+}

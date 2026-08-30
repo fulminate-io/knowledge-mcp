@@ -108,12 +108,20 @@ func TestInterceptSearch_SimilarMode_RequiresNodeID(t *testing.T) {
 }
 
 // TestInterceptSearch_SimilarMode_RequiresStoredVector: a resolver returning
-// (nil,false) → handled=true with a loud errorResult naming the node and the
-// no-stored-vector reason + rebuild guidance, NEVER an empty success.
+// (nil,false) for a LIVE node → handled=true with a loud errorResult naming the
+// node and the no-stored-vector reason + embed-pipeline guidance, NEVER an empty
+// success.
+//
+// The seeded LIVE node is load-bearing, not decoration: the composer now reads
+// the seed node before choosing its wording, and the wait-for-the-pipeline
+// guidance asserted below is correct ONLY for a node that still exists. A
+// deleted or absent seed gets its own message — covered in
+// search_similar_node_absent_test.go.
 func TestInterceptSearch_SimilarMode_RequiresStoredVector(t *testing.T) {
-	res := &fakeVectorResolver{ok: false} // not embedded yet
+	res := &fakeVectorResolver{ok: false} // live, not embedded yet
 	mgr := &fakeSegmentSearcher{}
-	deps := &interceptDeps{gc: newInterceptHarness(t, new(atomic.Int64), cannedNodesResp()), segMgr: mgr, segRes: res}
+	liveSeed := cannedNodesResp(&knowledgev1.Node{Id: "ghost", Type: "finding"})
+	deps := &interceptDeps{gc: newInterceptHarness(t, new(atomic.Int64), liveSeed), segMgr: mgr, segRes: res}
 
 	handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
 		"graph": "knowledge", "mode": "similar", "node_id": "ghost",

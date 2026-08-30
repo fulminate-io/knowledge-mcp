@@ -111,6 +111,92 @@ func TestPruneCache_EnumeratesKnowledgeAndCodeRepos(t *testing.T) {
 	assert.False(t, p.gotExecute, "default is preview (execute=false)")
 }
 
+// workingSetPruneDeps answers the optional workingSetReader capability the
+// production *bootstrap.client satisfies. Every other fixture in this file leaves
+// it unsatisfied, so inWorkingSetFor's unwired default (true) keeps their
+// enumerations exactly as they were — which is why this is a separate type rather
+// than a field on pruneCacheTestDeps.
+type workingSetPruneDeps struct {
+	pruneCacheTestDeps
+	members map[string]bool
+}
+
+func (d workingSetPruneDeps) InWorkingSet(gt kgtypes.GraphType, name string) bool {
+	return d.members[string(gt)+"/"+name]
+}
+
+// TestPruneCache_DeclinesGraphsOutsideTheWorkingSet pins the second unmanaged
+// materializer this ticket's trace exposed.
+//
+// prune-cache is a MANAGE operation, so it admits nothing, and it is the heaviest
+// per-graph reader the client has: PruneCache force-full-loads BOTH segment pools
+// of every target it is handed — on the PREVIEW run as much as the executing one —
+// so an unnarrowed enumeration materializes every graph in the catalog, including
+// the ones nothing on this machine maintains.
+//
+// The force-load itself is NOT what is gated and must not be: it is the guard
+// against a corpus wipe (a live set that is merely the resident-only view condemns
+// every unloaded segment on disk). What is gated is which graphs reach it.
+//
+// THE CONTROL IS THE ADMITTED REPO IN THE SAME CALL: the target list must still
+// carry it, or the zero for the foreign repo would only mean the handler enumerated
+// nothing.
+func TestPruneCache_DeclinesGraphsOutsideTheWorkingSet(t *testing.T) {
+	p := &fakePruner{}
+	gc := &fakeGraphCaller{}
+	body, err := json.Marshal(graphNamesSeed([]string{"managedrepo", "foreignrepo"}))
+	require.NoError(t, err)
+	gc.listGraphsResult = &kgtools.ToolResult{Content: []kgtools.ContentBlock{{Type: "text", Text: string(body)}}}
+
+	deps := workingSetPruneDeps{
+		pruneCacheTestDeps: pruneCacheTestDeps{interceptTestDeps: interceptTestDeps{gc: gc}, pruner: p},
+		members:            map[string]bool{"code/managedrepo": true, "knowledge/default": true},
+	}
+	var a manageArgs
+	require.NoError(t, json.Unmarshal([]byte(`{"operation":"prune-cache"}`), &a))
+	res := handleClientPruneCache(context.Background(), deps, a)
+	require.False(t, res.IsError, "prune-cache: %s", toolResultText(res))
+
+	require.Equal(t, []string{"default", "managedrepo"}, p.gotNames,
+		"the admitted graphs must still be targeted (control), and the foreign repo must not be")
+	require.Equal(t, []kgtypes.GraphType{kgtypes.GraphKnowledge, kgtypes.GraphCode}, p.gotTypes)
+
+	// A withheld graph contributes no pool, so its absence from the breakdown is
+	// indistinguishable from a clean scan unless the report names it.
+	assert.Contains(t, toolResultText(res), "code/foreignrepo",
+		"the declined graph must be NAMED — a silent omission reads as a pool that was scanned and found clean")
+	assert.Contains(t, toolResultText(res), "NOT SCANNED")
+}
+
+// TestPruneCache_DeclinesKnowledgeWhenUnadmitted is the knowledge-graph leg of the
+// same gate. It is separate because knowledge/default is the ONE target the handler
+// hardcodes rather than enumerates, so it has its own line of code to get wrong —
+// and because the working set seeds nothing at process start (workingset.New), so
+// an un-interacted-with daemon really does reach here with knowledge unadmitted.
+func TestPruneCache_DeclinesKnowledgeWhenUnadmitted(t *testing.T) {
+	p := &fakePruner{}
+	gc := &fakeGraphCaller{}
+	body, err := json.Marshal(graphNamesSeed([]string{"managedrepo"}))
+	require.NoError(t, err)
+	gc.listGraphsResult = &kgtools.ToolResult{Content: []kgtools.ContentBlock{{Type: "text", Text: string(body)}}}
+
+	deps := workingSetPruneDeps{
+		pruneCacheTestDeps: pruneCacheTestDeps{interceptTestDeps: interceptTestDeps{gc: gc}, pruner: p},
+		// The code repo is admitted and knowledge is not — the inverse of the usual
+		// shape, so a handler that unconditionally prepends knowledge/default fails
+		// here and only here.
+		members: map[string]bool{"code/managedrepo": true},
+	}
+	var a manageArgs
+	require.NoError(t, json.Unmarshal([]byte(`{"operation":"prune-cache"}`), &a))
+	res := handleClientPruneCache(context.Background(), deps, a)
+	require.False(t, res.IsError, "prune-cache: %s", toolResultText(res))
+
+	require.Equal(t, []string{"managedrepo"}, p.gotNames,
+		"an unadmitted knowledge/default must not be targeted")
+	require.Equal(t, []kgtypes.GraphType{kgtypes.GraphCode}, p.gotTypes)
+}
+
 // TestPruneCache_PreviewByDefault asserts execute=false renders the DRY RUN preview
 // with the per-pool would-remove counts and never sets the Execute flag.
 func TestPruneCache_PreviewByDefault(t *testing.T) {

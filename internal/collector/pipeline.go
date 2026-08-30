@@ -23,22 +23,40 @@ var DefaultSinkFactory func() Sink
 // then hands the result to the configured Sink (DefaultSinkFactory by
 // default). The server the sink streams into applies its own force/replace
 // policy at ingest time.
-func Collect(ctx context.Context, typ, id string, opts CollectOptions) error {
+//
+// It also returns the node-type composition of the run. The census is taken
+// here because this is where the whole CollectResult is in memory client-side,
+// before it is handed to the sink; node Type is set at emission and nothing
+// downstream retypes a node.
+//
+// Collect performs NO composition ASSERTION — that is CheckComposition's job,
+// called once at the single top-level collect site. The placement is
+// load-bearing: the four cloud collectors call Collect RECURSIVELY for cascade
+// targets, so an assertion here would fire once per cascade sub-collect and let
+// a sub-collect's composition fail the parent.
+//
+// Every error path returns the zero CollectComposition.
+func Collect(ctx context.Context, typ, id string, opts CollectOptions) (CollectComposition, error) {
 	c, err := Lookup(typ)
 	if err != nil {
-		return fmt.Errorf("collect %s: %w", typ, err)
+		return CollectComposition{}, fmt.Errorf("collect %s: %w", typ, err)
 	}
 
 	result, err := c.Collect(ctx, id, opts)
 	if err != nil {
-		return fmt.Errorf("collect %s: %w", typ, err)
+		return CollectComposition{}, fmt.Errorf("collect %s: %w", typ, err)
 	}
+
+	comp := NewCollectComposition(result)
 
 	sink, err := resolveSink(opts)
 	if err != nil {
-		return fmt.Errorf("collect %s: %w", typ, err)
+		return CollectComposition{}, fmt.Errorf("collect %s: %w", typ, err)
 	}
-	return sink.WriteResult(ctx, typ, result)
+	if err := sink.WriteResult(ctx, typ, result); err != nil {
+		return CollectComposition{}, err
+	}
+	return comp, nil
 }
 
 // resolveSink picks the Sink for this call: opts.Sink wins when set,

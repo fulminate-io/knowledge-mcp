@@ -21,15 +21,23 @@ import "time"
 // ExternalCites are links to off-site resources recorded as their own
 // linkRecord entries with rel="external".
 type pageRecord struct {
-	URL           string
-	FinalURL      string
-	Title         string
-	Author        string
-	PubDate       string
-	Breadcrumb    []string
-	FetchedAt     time.Time
-	ContentHash   string // sha256 of raw body bytes (hex)
-	HTTPStatus    int
+	URL         string
+	FinalURL    string
+	Title       string
+	Author      string
+	PubDate     string
+	Breadcrumb  []string
+	FetchedAt   time.Time
+	ContentHash string // sha256 of raw body bytes (hex)
+	HTTPStatus  int
+
+	// RawHTMLBase64 is base64.StdEncoding of the EXACT response bytes —
+	// the faithful capture the raw graph exists to hold. It and ContentHash
+	// are derived from the same p.Body inside the same parsePage call, so a
+	// round-trip check that decodes RawHTMLBase64 and hashes it is comparing
+	// two values produced by ONE stamper rather than two independent ones.
+	RawHTMLBase64 string
+
 	TopSections   []*sectionRecord
 	InternalLinks []string // resolved absolute URLs, same-host as FinalURL
 	ExternalCites []*linkRecord
@@ -49,8 +57,10 @@ type sectionRecord struct {
 	Anchor   string
 	Children []contentRecord
 
-	// Attrs holds verbatim DOM attributes from the <section>/<article>
-	// element; zero interpretation.
+	// Attrs holds verbatim DOM attributes from the element that opened the section —
+	// an h1-h6, an element carrying role="heading" with an explicit
+	// aria-level, or a presentation marker the heuristic pre-pass promoted.
+	// No path reads a <section> or <article> element; zero interpretation.
 	Attrs commonAttrs
 }
 

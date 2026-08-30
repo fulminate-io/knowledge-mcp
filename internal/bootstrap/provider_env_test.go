@@ -27,6 +27,8 @@ import (
 	"os"
 	"testing"
 
+	"go.uber.org/goleak"
+
 	"github.com/fulminate-io/knowledge-mcp/internal/config"
 )
 
@@ -56,7 +58,18 @@ func TestMain(m *testing.M) {
 			panic("clearing " + k + " for the test suite: " + err.Error())
 		}
 	}
-	os.Exit(m.Run())
+	// THE LEAK GATE. The client daemon's wiring is almost entirely background
+	// work: runServe spawns wireRuntimesBackground (daemon.go:469), which spawns
+	// the deferred instruction bootstrap (daemon.go:375), and
+	// maybeStartTranscriptUpload spawns both the boot delay and the upload loop
+	// (client_transcript_upload.go:148-149). Each outlives the call that started
+	// it by design, so a test that wires a client and returns leaks whatever those
+	// loops are waiting on — with no per-test symptom at all.
+	//
+	// VerifyTestMain replaces the os.Exit(m.Run()) that used to end this function;
+	// it runs the suite, checks for leaks and exits itself. The allowlist is
+	// deliberately EMPTY.
+	goleak.VerifyTestMain(m)
 }
 
 // TestProviderEnvCleared is the control for TestMain above. Asserting only that

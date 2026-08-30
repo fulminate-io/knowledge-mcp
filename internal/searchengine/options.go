@@ -1,5 +1,10 @@
 package searchengine
 
+import (
+	"fmt"
+	"os"
+)
+
 // OnMergeFunc is the merge-completion callback an owner installs via
 // Options.OnMerge. The engine invokes it (when non-nil) exactly once per
 // completed background merge, AFTER the consolidated segment is published, with
@@ -13,6 +18,18 @@ type Options struct {
 	// MinSegmentDocs is the coalescing threshold: Add buffers documents until at
 	// least this many are pending, then seals them into one segment. Engine
 	// tunable, not contract-locked.
+	//
+	// AN OWNER INDEXING WIDE VECTORS MUST CLAMP THIS, and the bound is the
+	// format's to state, not this package's. A vector format addresses its
+	// sections with fixed-width offsets, so there is a largest node count one
+	// segment can hold, and it shrinks as the vector widens — the hnsw format
+	// exposes it as MaxSegmentDocsForWidth. The default below is sized for
+	// 32-byte vectors, where it sits far under that ceiling; at wide float32
+	// widths an unclamped threshold seals segments the encoder will refuse.
+	//
+	// It stays ONE FIELD rather than growing a parallel maximum: withDefaults
+	// fills it only when unset, so a caller-supplied clamp survives untouched —
+	// the same mechanism MergeDisabledCountTarget below relies on.
 	MinSegmentDocs int
 	// DeletesPctAllowed is the dead-document ratio above which a segment becomes
 	// merge-eligible. Contract default 0.33.
@@ -27,6 +44,44 @@ type Options struct {
 	// without this field gets the prior behavior. withDefaults value-copies the
 	// func field unchanged and never substitutes a default.
 	OnMerge OnMergeFunc
+	// ScratchDir is the directory the engine creates merge scratch files in. A
+	// merge writes its output to a file here, maps it, decodes over the mapping
+	// and unlinks it, so the directory holds one file per in-flight merge and
+	// nothing between merges.
+	//
+	// EMPTY MEANS os.CreateTemp's OWN DEFAULT (os.TempDir()). There is no computed
+	// default here on purpose: the production value has to be on the same
+	// filesystem as the L2 destination, which is a fact only the owner knows, and
+	// inventing one in this package would put a filesystem-layout decision in the
+	// layer furthest from the filesystem.
+	ScratchDir string
+	// MapBlob turns a finished merge scratch file into readable bytes plus a
+	// release. The engine Decodes the returned data and hands release to the
+	// entry's cleanup, so the bytes must stay valid until release is called.
+	//
+	// THE DEFAULT IS NOT A FALLBACK, and the distinction is load-bearing rather
+	// than pedantic. A fallback is a lane an ERROR routes into. This one is not
+	// reached by an error, repairs nothing, and cannot fire twice on the same
+	// cause: it is simply what an engine constructed WITHOUT a mapping hook can
+	// do, which is read the file with os.ReadFile and return a nil release.
+	//
+	// ITS PURPOSE IS THAT THE MERGE PATH HAS NO BRANCH. Create, MergeTo, map,
+	// Decode, unlink — one sequence, with the hook deciding only whether the bytes
+	// land in the page cache or on the heap. A two-armed path with a heap arm
+	// reachable when mapping FAILS would be a fallback and is forbidden: a MapBlob
+	// error fails the merge loudly.
+	//
+	// THE ENGINE STILL CONTAINS NO PLATFORM CODE. os.ReadFile is stdlib; the mmap
+	// hook is supplied by the distribution layer, which is where mapping ownership
+	// lives.
+	//
+	// A CONSEQUENCE WORTH STATING, because it decides where the proof of this
+	// plan's headline property belongs: under the default hook a merged payload is
+	// a HEAP copy. The zero-heap property is present only in production
+	// configuration, so a test asserting it in THIS package would be measuring the
+	// default and would be red against correct code forever. It is measured where
+	// the real hook is wired.
+	MapBlob func(path string) (data []byte, release func(), err error)
 }
 
 const (
@@ -79,5 +134,32 @@ func (o Options) withDefaults() Options {
 	if o.SegmentCountTarget <= 0 {
 		o.SegmentCountTarget = defaultSegmentCountTarget
 	}
+	// MapBlob is filled ONLY WHEN UNSET, so a caller-supplied hook survives — the
+	// same fill-when-zero convention every field above uses.
+	//
+	// THIS DEPARTS FROM OnMerge, DELIBERATELY, and the departure is worth naming
+	// because OnMerge's own doc says withDefaults "value-copies the func field
+	// unchanged and never substitutes a default". The two func fields differ in
+	// what nil MEANS. A nil OnMerge is a complete behaviour — no callback — so
+	// substituting one would invent an obligation the caller declined. A nil
+	// MapBlob is not a behaviour at all: the merge path has to turn a file into
+	// bytes somehow, and leaving it nil would make every merge nil-panic. Filling
+	// it is what lets the path stay branchless.
+	if o.MapBlob == nil {
+		o.MapBlob = readBlobFromFile
+	}
 	return o
+}
+
+// readBlobFromFile is the default MapBlob: read the whole file onto the heap and
+// return a nil release, since heap bytes need no freeing.
+//
+// See Options.MapBlob for why this is a declared capability rather than a
+// fallback — nothing routes here on an error.
+func readBlobFromFile(path string) ([]byte, func(), error) {
+	data, err := os.ReadFile(path) //nolint:gosec // the path is the engine's own scratch file
+	if err != nil {
+		return nil, nil, fmt.Errorf("searchengine: reading merge scratch %s: %w", path, err)
+	}
+	return data, nil, nil
 }

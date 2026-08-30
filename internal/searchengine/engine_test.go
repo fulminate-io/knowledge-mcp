@@ -440,8 +440,8 @@ func TestMockFormat(t *testing.T) {
 		t.Fatal("decoded segment IDs differ from built")
 	}
 
-	// Merge concatenates accept-kept rows, including on decoded inputs.
-	merged, err := f.Merge(
+	// MergeTo concatenates accept-kept rows, including on decoded inputs.
+	merged, err := mergeMockSegments(t, f,
 		[]Segment[mockQuery, mockStats]{seg, dec},
 		[]func(ExternalID) bool{
 			func(id ExternalID) bool { return id == "a" },
@@ -454,6 +454,6 @@ func TestMockFormat(t *testing.T) {
 	mergedIDs := merged.IDs()
 	sort.Strings(mergedIDs)
 	if fmt.Sprint(mergedIDs) != "[a c]" {
-		t.Fatalf("Merge kept ids = %v, want [a c]", mergedIDs)
+		t.Fatalf("MergeTo kept ids = %v, want [a c]", mergedIDs)
 	}
 }

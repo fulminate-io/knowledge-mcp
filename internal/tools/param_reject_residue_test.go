@@ -26,8 +26,8 @@ import (
 //
 // THE EMPTY-PAYLOAD FENCE IS NOT PART OF THAT RED. An absent or empty payload is
 // a legal, documented call shape across this surface — help() with no topic is
-// the documented way to list topics, and both the propagate handler and the hive
-// intercept explicitly guard on a non-empty payload. empty_arguments_accepted
+// the documented way to list topics, and the propagate handler explicitly guards
+// on a non-empty payload. empty_arguments_accepted
 // passes BEFORE and AFTER the sweep; its job is to catch a rejection wired so
 // broadly it starts refusing legal no-arg calls.
 
@@ -65,8 +65,6 @@ func residueRejectTable() []residueRejectCase {
 		{tool: "delete", fn: InterceptDeleteGuard, payload: map[string]any{"ids": []string{"a"}}},
 		{tool: "file_symbols", fn: InterceptFileSymbols, payload: map[string]any{"file_path": "a.go"}},
 		{tool: "help", fn: InterceptHelp, payload: map[string]any{"topic": "query"}},
-		// hive spells its operation selector `op`, not `operation`.
-		{tool: "hive", fn: InterceptHive, payload: map[string]any{"op": "status"}},
 		// register_repo is purely client-side and errors on the missing name/root,
 		// so it clears the name gate without touching the daemon.
 		{tool: "manage", fn: InterceptManage, payload: map[string]any{"operation": "register_repo"}},
@@ -76,8 +74,7 @@ func residueRejectTable() []residueRejectCase {
 		{tool: "sync", fn: InterceptSync, payload: map[string]any{"operation": "status"}},
 		{tool: "thoughts", fn: InterceptThoughts, payload: map[string]any{"operation": "propagate"}},
 		{tool: "traverse", fn: InterceptLogsTraversal, payload: map[string]any{"start": "a"}},
-		{tool: "worker", fn: InterceptWorker, payload: map[string]any{"operation": "list"}},
-		// NOT an eighteenth tool: a SECOND entry point on the mutate tool. It
+		// NOT a seventeenth tool: a SECOND entry point on the mutate tool. It
 		// gates on params.Name == "mutate" and fires ahead of the main mutate
 		// intercept, so the main intercept's accounting does not cover it.
 		{
@@ -144,7 +141,6 @@ func TestResidueTools_RejectUndeclaredTopLevelParam(t *testing.T) {
 			{label: "thoughts_nil", name: "thoughts", fn: InterceptThoughts},
 			{label: "thoughts_propagate", name: "thoughts", fn: InterceptThoughts,
 				args: json.RawMessage(`{"operation":"propagate"}`)},
-			{label: "hive_nil", name: "hive", fn: InterceptHive},
 		}
 		for _, c := range cases {
 			_, res := c.fn(opCtx(), rejectProbeDeps(), kgtools.CallToolParams{Name: c.name, Arguments: c.args})

@@ -11,14 +11,14 @@ import (
 // Provider names an LLM backend by stable string identifier.
 //
 // The string values are intentionally the same as the constants in
-// domains/llm/types.go (anthropic, openai, gemini, claude-cli, codex-cli)
+// internal/llm/types.go (anthropic, openai, gemini, claude-cli, codex-cli)
 // so a config Provider is interchangeable with llm.Provider at the
-// boundary between domains/config and downstream wiring code. Keeping
-// the type local — rather than importing domains/llm — preserves
-// domains/config as a true leaf with no upstream deps.
+// boundary between this package and downstream wiring code. Keeping
+// the type local — rather than importing internal/llm — preserves
+// internal/config as a true leaf with no upstream deps.
 type Provider string
 
-// Provider constants matching domains/llm/types.go exactly.
+// Provider constants matching internal/llm/types.go exactly.
 const (
 	ProviderAnthropic Provider = "anthropic"
 	ProviderOpenAI    Provider = "openai"
@@ -59,8 +59,7 @@ func (p Provider) String() string { return string(p) }
 //
 // Each consumer reads its provider+model independently from the config,
 // with [default] as the per-field fallback. The Validate method takes a
-// list of consumers so callers (and follow-up tickets such as dream
-// wiring) decide which consumers are required.
+// list of consumers so callers decide which consumers are required.
 type Consumer string
 
 // Consumer constants. Strings match the corresponding TOML section names.
@@ -70,11 +69,10 @@ type Consumer string
 // substrate components that actually run an LLM appear here.
 const (
 	ConsumerSummarizer Consumer = "summarizer"
-	ConsumerDream      Consumer = "dream"
-	// ConsumerHiveSupervisor is the Tier-2 strong-model LLM that judges a
-	// hive worker's transcript on monitor ambiguity. Resolved like dream:
-	// an absent [supervisor] section inherits fully from [default].
-	ConsumerHiveSupervisor Consumer = "supervisor"
+	// ConsumerSupervisor is the strong-model LLM the agent-flow synthesis stage
+	// resolves for its ranked recommendations (transcriptanalytics.NewSynthesizer).
+	// An absent [supervisor] section inherits fully from [default].
+	ConsumerSupervisor Consumer = "supervisor"
 	// ConsumerTopics is the topic-summary LLM the similarity lever uses to
 	// produce one-line topic summaries over thought clusters. Separate from
 	// ConsumerSummarizer so the low-volume, quality-sensitive topic pass can
@@ -147,9 +145,36 @@ type Config struct {
 	SchemaVersion int
 	Default       Section
 	Summarizer    *Section
-	Dream         *Section
 	Supervisor    *Section
 	Topics        *Section
+	// Embedder and Reranker are the [embedder] and [reranker] tables. nil
+	// means the section is absent, which ResolveEmbedder/ResolveReranker
+	// resolve to the voyage provider at the accepted width and dtype with
+	// an EMPTY model (the arm's own default). They are plain pointers
+	// rather than Consumer-resolved Sections because these axes carry no
+	// [default] inheritance: [default] names an LLM provider, and three of
+	// those five cannot embed at all.
+	Embedder *EmbedSection
+	Reranker *RerankSection
+	// EmbedProfiles holds the NAMED [embedder.profile.<name>] tables, keyed
+	// by name. The single [embedder] table is NOT in this map: it is the
+	// profile named "default", derived from Embedder on demand, so an
+	// existing single-[embedder] config gains a default profile without
+	// gaining a map entry. See EmbedProfileByName.
+	//
+	// A nil/empty map means the default profile is the only one, which is
+	// exactly what every config written before profiles existed says.
+	EmbedProfiles map[string]EmbedSection
+	// EmbedFamilyProfiles maps a graph FAMILY to the PROFILE NAME a graph of
+	// that family is created under, from the [embedder.family.<family>]
+	// tables. An absent family resolves to "default".
+	//
+	// IT IS A CREATION-TIME DEFAULT AND NOTHING ELSE. It is consulted at
+	// first embed to choose a graph's identity; it is never consulted again
+	// for a graph that already has one, and editing it never rewrites a
+	// recorded identity. There is deliberately no code path from config load
+	// to an identity write.
+	EmbedFamilyProfiles map[string]string
 	// HealthProbeInterval is how often the background health-prober re-checks a
 	// summarizer chain entry that was marked limited, shifting traffic back to a
 	// higher-priority entry once it recovers. Parsed from the top-level
@@ -184,14 +209,18 @@ type Config struct {
 // agnostic (brew services / systemd / k8s all read this file); operators
 // who do should chmod the file 600.
 //
-// This is ONLY the five backend/LLM keys — the Fulminate auth token is
-// NOT here; it lives in the OS keychain via domains/fulminate/auth.
+// This is ONLY the six backend/LLM keys — the Fulminate auth token is
+// NOT here; it lives in the OS keychain via internal/auth.
 type Credentials struct {
 	VoyageAPIKey    string
 	LinearAPIKey    string
 	AnthropicAPIKey string
 	OpenAIAPIKey    string
 	GeminiAPIKey    string
+	// CohereAPIKey credentials the Cohere embed/rerank arm. Cohere has no
+	// summarizer arm, so this key is resolved only through
+	// APIKeyForEmbedProvider (embed.go), never through APIKeyForProvider.
+	CohereAPIKey string
 }
 
 // Resolve returns the effective Section for consumer.
@@ -209,9 +238,7 @@ func (c *Config) Resolve(consumer Consumer) (Section, error) {
 	switch consumer {
 	case ConsumerSummarizer:
 		per = c.Summarizer
-	case ConsumerDream:
-		per = c.Dream
-	case ConsumerHiveSupervisor:
+	case ConsumerSupervisor:
 		per = c.Supervisor
 	case ConsumerTopics:
 		per = c.Topics
@@ -287,9 +314,7 @@ func (c *Config) perConsumerSection(consumer Consumer) (*Section, error) {
 	switch consumer {
 	case ConsumerSummarizer:
 		return c.Summarizer, nil
-	case ConsumerDream:
-		return c.Dream, nil
-	case ConsumerHiveSupervisor:
+	case ConsumerSupervisor:
 		return c.Supervisor, nil
 	case ConsumerTopics:
 		return c.Topics, nil

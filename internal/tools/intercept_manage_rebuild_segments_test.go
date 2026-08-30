@@ -11,10 +11,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
@@ -339,17 +339,14 @@ type rebuildClientDeps struct {
 	pipelineNotReady bool
 }
 
-func (rebuildClientDeps) LocalLiveness() LocalLiveness                 { return nil }
-func (rebuildClientDeps) Sink() collector.Sink                         { return nil }
-func (rebuildClientDeps) RootDir() string                              { return "" }
-func (rebuildClientDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
-func (rebuildClientDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
-func (rebuildClientDeps) WorkerReady() bool                            { return true }
-func (rebuildClientDeps) PropReady() bool                              { return true }
-func (d rebuildClientDeps) PipelineReady() bool                        { return !d.pipelineNotReady }
-func (rebuildClientDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
-func (rebuildClientDeps) BanSet() *hivemonitor.BanSet                  { return nil }
-func (rebuildClientDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (rebuildClientDeps) LocalLiveness() LocalLiveness    { return nil }
+func (rebuildClientDeps) Sink() collector.Sink            { return nil }
+func (rebuildClientDeps) RootDir() string                 { return "" }
+func (rebuildClientDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+
+func (rebuildClientDeps) PropReady() bool       { return true }
+func (d rebuildClientDeps) PipelineReady() bool { return !d.pipelineNotReady }
+
 func (d rebuildClientDeps) GraphTypeCRUD() GraphTypeCRUDAPI            { return d.crud }
 func (rebuildClientDeps) Embedder() embed.BinaryEmbedder               { return nil }
 func (rebuildClientDeps) BackendResolver() BackendResolver             { return nil }

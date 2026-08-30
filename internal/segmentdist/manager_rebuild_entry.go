@@ -26,7 +26,7 @@ import (
 // Flush force-seals the sub-threshold coalescing tail of BOTH the HNSW and the
 // BM25 engine for one (graphType, graphName), then — per format, AFTER that
 // force-seal — ships+publishes the newly-sealed tail. Each format's ship/publish is
-// gated on hasUnshippedExport()||publishRetryPending(), so a no-progress re-Flush
+// gated on hasUnwrittenExport(), so a no-progress re-Flush
 // (empty tail, everything already shipped, no pending retry) is a true no-op; the
 // engine.Flush() force-seal itself is never gated. It is the migration's force-seal:
 // a caller that Adds straight to the engine leaves a trailing buffer of fewer than
@@ -53,19 +53,15 @@ func (m *Manager) Flush(ctx context.Context, gt kgtypes.GraphType, name string) 
 	if err := hnsw.engine.Flush(); err != nil {
 		return err
 	}
-	// REGISTRY MODEL: embed force-seal of the sub-threshold tail, then
-	// publish the resident live set as the manifest (unioned with the deterministic
-	// engine's resident ids for the shared HNSW manifest) — restart-safe. The
-	// ship/publish is gated AFTER the force-seal: a genuinely-sealed tail still
-	// ships, but a no-progress re-Flush (empty tail, nothing unshipped, no pending
-	// retry) is skipped.
-	if unshipped, pending := hnsw.hasUnshippedExport(), hnsw.publishRetryPending(); unshipped || pending {
-		// Re-fire observability (kept): a Flush that runs ship/publish ONLY because the
-		// retry bit is pending (nothing genuinely unshipped) is the self-sustaining
-		// publish-retry re-arm — logging the cause per Flush makes that cycle visible.
-		slog.Debug("segmentdist: Flush ship/publish gate open",
-			"graph_type", gt, "name", name, "format", hnsw.format, "unshipped", unshipped, "publish_retry_pending", pending)
-		if _, err := hnsw.shipAndPublish(ctx, hnsw.locallyShipped); err != nil {
+	// Force-seal the sub-threshold tail, then make the resident set durable. The L2
+	// write is gated AFTER the force-seal: a genuinely-sealed tail still gets written,
+	// but a no-progress re-Flush (empty tail, everything already on disk) is skipped.
+	// The gate is one question now — is anything resident missing from L2 — because
+	// the publish-retry bit it used to be OR'd with went with the publish.
+	if unwritten := hnsw.hasUnwrittenExport(); unwritten {
+		slog.Debug("segmentdist: Flush L2-write gate open",
+			"graph_type", gt, "name", name, "format", hnsw.format, "unwritten", unwritten)
+		if _, err := hnsw.persistResident(); err != nil {
 			return err
 		}
 	}
@@ -74,10 +70,10 @@ func (m *Manager) Flush(ctx context.Context, gt kgtypes.GraphType, name string) 
 		return err
 	}
 	// Same gate for the BM25 leg, after its own force-seal.
-	if unshipped, pending := bm.hasUnshippedExport(), bm.publishRetryPending(); unshipped || pending {
-		slog.Debug("segmentdist: Flush ship/publish gate open",
-			"graph_type", gt, "name", name, "format", bm25.New().Name(), "unshipped", unshipped, "publish_retry_pending", pending)
-		if _, err := bm.shipAndPublish(ctx, bm.locallyShipped); err != nil {
+	if unwritten := bm.hasUnwrittenExport(); unwritten {
+		slog.Debug("segmentdist: Flush L2-write gate open",
+			"graph_type", gt, "name", name, "format", bm25.New().Name(), "unwritten", unwritten)
+		if _, err := bm.persistResident(); err != nil {
 			return err
 		}
 	}
@@ -161,33 +157,43 @@ func (m *Manager) takeRebuildWork(gt kgtypes.GraphType, name string) *stagedRebu
 // one number cannot describe both.
 //
 // REPORTING A SET IS NOT EVICTING IT. InvalidateLocal still consumes the HNSW set
-// alone, which is correct and unchanged; retired BM25 blobs orphan locally until
-// PruneCache reaps them. That is pre-existing and fail-safe in direction — an orphan
-// wastes disk, it is never a false prune — and nothing here makes the finalize
-// responsible for BM25 disk hygiene.
+// alone, which is correct and unchanged; retired BM25 blobs orphan locally and STAY
+// THERE. This used to say PruneCache reaps them, and it does not: those blobs are in
+// the pool's L2 index, and the prune's live set is force-loaded from that index, so
+// they are never classified orphans — see the reap paragraph at the top of
+// prune_cache.go. The direction is still fail-safe — retained disk is never a false
+// prune — but it is unbounded rather than reclaimed on a schedule, and nothing here
+// makes the finalize responsible for BM25 disk hygiene.
 type RebuildFinalizeResult struct {
 	HNSWSuperseded []searchengine.SegmentID
 	BM25Superseded []searchengine.SegmentID
-	// Swapped is true only when BOTH formats completed a manifest swap. They carry
-	// SEPARATE manifests over the same nodes, so a caller told "finalized" after a
-	// single-format swap would treat an unpublished corpus as durable.
+	// Swapped is true only when BOTH formats completed a layer swap. They index the
+	// same nodes independently, so a caller told "finalized" after a single-format
+	// swap would treat a half-replaced corpus as done.
 	Swapped bool
 }
 
 // FinalizeRebuild is the SINGLE serial finalizer of a reset rebuild, called ONCE by
 // the driver after every partition has been staged. It builds each format's staged
-// layer ASIDE, ships it, gates it against the degeneracy policy, swaps it in with one
-// CAS, and publishes the new resident set — per format, through one shared body.
+// layer ASIDE, writes it to L2, gates it against the empty-layer wipe guard, and
+// swaps it in with one CAS — per format, through one shared body.
 //
 // IT FINALIZES AT THE SERVING ENGINES. There is no staging engine: the build happens
 // aside in memory and the swap replaces the layer the engine is serving, so the corpus
 // is never half-replaced and no second engine has to be reconciled with the first
-// afterwards. That is the collapse — one engine per format, and the manifest IS its
+// afterwards. That is the collapse — one engine per format, and the live set IS its
 // Export.
 //
-// A SKIPPED PUBLISH IS NOT AN ERROR AND MUST NOT READ AS SUCCESS. Both the coverage
-// gate and the agent's 409 decline with a NIL ERROR, so Swapped is read from a rise in
-// each engine's landed-swap counter rather than from the absence of an error.
+// SWAPPED IS READ FROM THE SWAP ITSELF. engine.ReplaceLayer either returns nil, in
+// which case the layer landed, or it errors. There is no second step that can decline
+// with a nil error, which is the only reason the finalize ever had to infer the answer
+// from a completion counter.
+//
+// THERE IS NO corpusComplete PARAMETER. It existed to tell the coverage gate that this
+// run's scan covered the whole embedded corpus, so the gate would not compare the
+// layer against a prior manifest that duplication had inflated. With no manifest there
+// is no comparison to exempt, and the only surviving gate — the layer is non-empty —
+// applies identically to every run.
 func (m *Manager) FinalizeRebuild(
 	ctx context.Context, gt kgtypes.GraphType, name string,
 ) (RebuildFinalizeResult, error) {
@@ -221,7 +227,10 @@ func (m *Manager) FinalizeRebuild(
 //
 // IT IS FED THE HNSW SET ONLY, and deliberately: the finalize also reports what BM25
 // retired, but reporting a set is not evicting it — retired field blobs orphan locally
-// until PruneCache reaps them, which is pre-existing and fail-safe in direction.
+// and are not reclaimed by anything. This Remove loop is what takes an id OUT of the
+// pool's L2 index, and a blob still IN that index can never be an orphan to PruneCache,
+// whose live set is force-loaded from it (see the reap paragraph at the top of
+// prune_cache.go). Pre-existing, and fail-safe in direction, but unbounded.
 //
 // IT EVICTS FROM THE SERVING ENGINE'S CACHE, which is a FIX, not a relocation. It used
 // to resolve the DETERMINISTIC staging engine, and that accessor check-construct-STORES:

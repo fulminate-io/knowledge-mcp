@@ -25,8 +25,8 @@ import (
 const browseDefaultLimit = 10
 
 // queryArgs is the compile-local view of the `query` tool's wire shape,
-// mirroring the server-side queryArgs (tools_query_args.go) for the fields the
-// reducible read path consumes. Thought-graph filter fields (valence/magnitude/
+// mirroring the params QueryToolDef (cmd/knowledge/internal/tools) declares for
+// the fields the reducible read path consumes. Thought-graph filter fields (valence/magnitude/
 // consistency/session/connected_to/cluster*/since/action/target/polarity/
 // weight) are intentionally omitted: a query carrying any of them is a recall/
 // reflect shape (SPECIALIZED), denied by hasThoughtFilter below.
@@ -110,8 +110,10 @@ type fieldPredicateArg struct {
 // can serve. Everything else — stats/examine/topology/pivot/correlations/
 // timeline/explain/resolver/metadata_stats/reflect (personality/influence/
 // tensions/blind_spots/evolution/summary/simulate/charges/clusters)/lineage/
-// evidence/plan_tree/modules/file_symbols — is SPECIALIZED
-// and falls through to legacy.
+// evidence/plan_tree/modules/file_symbols — is SPECIALIZED, and a
+// specialized mode has exactly two dispositions: a client intercept claims it
+// ahead of engine.Dispatch, or it meets the generic deny. There is no legacy
+// dispatch fallback post-cutover.
 var reducibleQueryModes = map[string]struct{}{
 	"":        {}, // default: id / ids / text / type / meta dispatch
 	"text":    {}, // text search
@@ -146,9 +148,9 @@ var reducibleTextRequiredModes = map[string]struct{}{
 // special-shape seam): a non-nil error is rendered as an explicit
 // validation-error result and NO Execute RPC is issued. Returns nil (no gate)
 // for every shape that is not a text-required mode with empty text, so Dispatch
-// proceeds to Compile unchanged. It is the only remaining client-side
-// pre-Compile validation gate (the mutate(create) body precheck was relocated
-// server-side).
+// proceeds to Compile unchanged. It is one of the two client-side pre-Compile
+// validation gates — precheckTraverse (compile_traverse.go) is the other, and
+// the mutate(create) body precheck was relocated server-side.
 //
 // Message phrasing is fixed (`query mode "recent" requires a non-empty text
 // query`) so the LLM-facing error text stays stable and legible — distinct from
@@ -410,10 +412,11 @@ func applyQueryVec(p *knowledgev1.QueryPlan, queryVector string) {
 }
 
 // applyLimitOffset sets Limit/Offset only when supplied. Used by the SEARCH
-// arms (text / recent): a search plan that carries limit==0 is
-// self-defaulted to 10 by the server-side compositor (search/compositor.go), so
-// the client injects no default here — doing so would be redundant and could
-// fight the over-fetch plan.
+// arms (text / recent): this helper injects no default of its own, so a plan
+// carrying limit==0 reaches Execute uncapped by it. The knowledge-graph search
+// arms take their fallback top-k from knowledgeSearchDefaultLimit in the tools
+// package before they reach here; a second default injected in this helper
+// could fight the over-fetch plan.
 func applyLimitOffset(p *knowledgev1.QueryPlan, limit, offset int) {
 	if limit > 0 {
 		p.Limit = int32(limit)

@@ -26,7 +26,7 @@ func TestHandleChargeClient_EmptyThought_Errors(t *testing.T) {
 	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
 	res := handleChargeClient(context.Background(), deps, kgtools.CallToolParams{
 		Name:      "thoughts",
-		Arguments: json.RawMessage(`{"operation":"charge","polarity":"positive","weight":1.0}`),
+		Arguments: json.RawMessage(`{"operation":"charge","summary":"the charge fixture summary","polarity":"positive","weight":1.0}`),
 	})
 	require.True(t, res.IsError)
 	assert.Contains(t, toolResultText(res), "charge requires 'thought'")
@@ -36,7 +36,7 @@ func TestHandleChargeClient_BadPolarity_Errors(t *testing.T) {
 	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
 	res := handleChargeClient(context.Background(), deps, kgtools.CallToolParams{
 		Name:      "thoughts",
-		Arguments: json.RawMessage(`{"operation":"charge","thought":"t-1","polarity":"sideways","weight":1.0}`),
+		Arguments: json.RawMessage(`{"operation":"charge","summary":"the charge fixture summary","thought":"t-1","polarity":"sideways","weight":1.0}`),
 	})
 	require.True(t, res.IsError)
 	assert.Contains(t, toolResultText(res), "polarity must be 'positive' or 'negative'")
@@ -52,7 +52,7 @@ func TestHandleChargeClient_NonChargeableTarget_Rejected(t *testing.T) {
 	deps := interceptTestDeps{gc: fc}
 	res := handleChargeClient(context.Background(), deps, kgtools.CallToolParams{
 		Name:      "thoughts",
-		Arguments: json.RawMessage(`{"operation":"charge","thought":"doc-1","polarity":"positive","weight":1.0,"reasoning":"r"}`),
+		Arguments: json.RawMessage(`{"operation":"charge","summary":"the charge fixture summary","thought":"doc-1","polarity":"positive","weight":1.0,"reasoning":"r"}`),
 	})
 	require.True(t, res.IsError)
 	assert.Contains(t, toolResultText(res), `charge target doc-1 is type "document", must be one of thought/finding/research`)
@@ -73,7 +73,7 @@ func TestHandleChargeClient_FindingTarget_Accepted(t *testing.T) {
 	deps := interceptTestDeps{gc: fc}
 	res := handleChargeClient(context.Background(), deps, kgtools.CallToolParams{
 		Name:      "thoughts",
-		Arguments: json.RawMessage(`{"operation":"charge","thought":"f-1","polarity":"positive","weight":2.0,"reasoning":"a finding can be charged"}`),
+		Arguments: json.RawMessage(`{"operation":"charge","summary":"the charge fixture summary","thought":"f-1","polarity":"positive","weight":2.0,"reasoning":"a finding can be charged"}`),
 	})
 	require.False(t, res.IsError, "charging a finding should succeed: %s", toolResultText(res))
 	assert.Contains(t, toolResultText(res), "Charge recorded → ID: charge-f")
@@ -91,7 +91,7 @@ func TestHandleChargeClient_ResearchTarget_Accepted(t *testing.T) {
 	deps := interceptTestDeps{gc: fc}
 	res := handleChargeClient(context.Background(), deps, kgtools.CallToolParams{
 		Name:      "thoughts",
-		Arguments: json.RawMessage(`{"operation":"charge","thought":"r-1","polarity":"negative","weight":3.0,"reasoning":"a research question can be charged"}`),
+		Arguments: json.RawMessage(`{"operation":"charge","summary":"the charge fixture summary","thought":"r-1","polarity":"negative","weight":3.0,"reasoning":"a research question can be charged"}`),
 	})
 	require.False(t, res.IsError, "charging a research node should succeed: %s", toolResultText(res))
 	assert.Contains(t, toolResultText(res), "Charge recorded → ID: charge-r")
@@ -102,7 +102,7 @@ func TestHandleChargeClient_MissingTarget_NotFound(t *testing.T) {
 	deps := interceptTestDeps{gc: fc}
 	res := handleChargeClient(context.Background(), deps, kgtools.CallToolParams{
 		Name:      "thoughts",
-		Arguments: json.RawMessage(`{"operation":"charge","thought":"missing","polarity":"positive","weight":1.0,"reasoning":"r"}`),
+		Arguments: json.RawMessage(`{"operation":"charge","summary":"the charge fixture summary","thought":"missing","polarity":"positive","weight":1.0,"reasoning":"r"}`),
 	})
 	require.True(t, res.IsError)
 	assert.Contains(t, toolResultText(res), "thought missing not found")
@@ -126,7 +126,7 @@ func TestHandleChargeClient_LowersToCreateBatch(t *testing.T) {
 	deps := interceptTestDeps{gc: fc}
 	res := handleChargeClient(context.Background(), deps, kgtools.CallToolParams{
 		Name:      "thoughts",
-		Arguments: json.RawMessage(`{"operation":"charge","thought":"th-1","polarity":"positive","weight":3.0,"reasoning":"because the test says so","evidence":["ev-1"]}`),
+		Arguments: json.RawMessage(`{"operation":"charge","summary":"the charge fixture summary","thought":"th-1","polarity":"positive","weight":3.0,"reasoning":"because the test says so","evidence":["ev-1"]}`),
 	})
 	require.False(t, res.IsError, "charge should succeed: %s", toolResultText(res))
 	assert.Contains(t, toolResultText(res), "Charge recorded → ID: charge-1")
@@ -168,7 +168,7 @@ func TestHandleChargeClient_NoHitEvidence_RawIDPreserved(t *testing.T) {
 	deps := interceptTestDeps{gc: fc}
 	res := handleChargeClient(context.Background(), deps, kgtools.CallToolParams{
 		Name:      "thoughts",
-		Arguments: json.RawMessage(`{"operation":"charge","thought":"th-1","polarity":"negative","weight":1.0,"reasoning":"r","evidence":["dangling-ev"]}`),
+		Arguments: json.RawMessage(`{"operation":"charge","summary":"the charge fixture summary","thought":"th-1","polarity":"negative","weight":1.0,"reasoning":"r","evidence":["dangling-ev"]}`),
 	})
 	require.False(t, res.IsError, "charge should succeed: %s", toolResultText(res))
 	require.Len(t, fc.execMutations, 1)
@@ -197,7 +197,7 @@ func TestHandleChargeClient_ThoughtEvidence_ResolvesToDirectEdge(t *testing.T) {
 	deps := interceptTestDeps{gc: fc}
 	res := handleChargeClient(context.Background(), deps, kgtools.CallToolParams{
 		Name:      "thoughts",
-		Arguments: json.RawMessage(`{"operation":"charge","thought":"th-1","polarity":"positive","weight":4.0,"reasoning":"a related thought confirms this","evidence":["eth-1"]}`),
+		Arguments: json.RawMessage(`{"operation":"charge","summary":"the charge fixture summary","thought":"th-1","polarity":"positive","weight":4.0,"reasoning":"a related thought confirms this","evidence":["eth-1"]}`),
 	})
 	require.False(t, res.IsError, "charge should succeed: %s", toolResultText(res))
 
@@ -286,7 +286,7 @@ func TestHandleChargeClient_PrefixResolvesOnce(t *testing.T) {
 	fc := prefixChargeFake(t)
 	res := handleChargeClient(context.Background(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
 		Name: "thoughts",
-		Arguments: json.RawMessage(`{"operation":"charge","thought":"` + chargePrefix + `",` +
+		Arguments: json.RawMessage(`{"operation":"charge","summary":"the charge fixture summary","thought":"` + chargePrefix + `",` +
 			`"polarity":"positive","weight":2.0,"reasoning":"prefix resolution","evidence":["ev8"]}`),
 	})
 	body := toolResultText(res)
@@ -330,7 +330,7 @@ func TestHandleChargeClient_AmbiguousPrefixNoWrite(t *testing.T) {
 	}
 	res := handleChargeClient(context.Background(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
 		Name: "thoughts",
-		Arguments: json.RawMessage(`{"operation":"charge","thought":"` + chargePrefix + `",` +
+		Arguments: json.RawMessage(`{"operation":"charge","summary":"the charge fixture summary","thought":"` + chargePrefix + `",` +
 			`"polarity":"positive","weight":2.0,"reasoning":"ambiguous"}`),
 	})
 	body := toolResultText(res)
@@ -353,7 +353,7 @@ func TestHandleChargeClient_MissingIDNoWrite(t *testing.T) {
 	fc.queryErrors = map[string]error{missing: errors.New("node deadbeefdeadbeef not found")}
 	res := handleChargeClient(context.Background(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
 		Name: "thoughts",
-		Arguments: json.RawMessage(`{"operation":"charge","thought":"` + missing + `",` +
+		Arguments: json.RawMessage(`{"operation":"charge","summary":"the charge fixture summary","thought":"` + missing + `",` +
 			`"polarity":"positive","weight":2.0,"reasoning":"missing"}`),
 	})
 	body := toolResultText(res)
@@ -380,7 +380,7 @@ func TestHandleChargeClient_PropsAgreeWithChargesFor(t *testing.T) {
 	fc := prefixChargeFake(t)
 	res := handleChargeClient(context.Background(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
 		Name: "thoughts",
-		Arguments: json.RawMessage(`{"operation":"charge","thought":"` + chargeFullID + `",` +
+		Arguments: json.RawMessage(`{"operation":"charge","summary":"the charge fixture summary","thought":"` + chargeFullID + `",` +
 			`"polarity":"positive","weight":2.0,"reasoning":"agreement"}`),
 	})
 	body := toolResultText(res)
@@ -397,4 +397,57 @@ func TestHandleChargeClient_PropsAgreeWithChargesFor(t *testing.T) {
 	assert.Contains(t, body, fmt.Sprintf("Self-trust: %.3f", props.SelfTrust))
 	assert.Contains(t, body, fmt.Sprintf("Charges: %d (positive: %.1f, negative: %.1f)",
 		props.ChargeCount, props.PositiveWeight, props.NegativeWeight))
+}
+
+// TestThoughtsCharge_SummaryRequired pins the author-supplied summary on
+// thoughts(charge) in both directions: a call carrying thought/polarity/weight/
+// reasoning and no summary is refused, and a call supplying one PERSISTS it on
+// the charge node verbatim.
+//
+// The second arm is what proves the field reaches the node rather than being
+// validated and dropped — the specific failure a validation-only implementation
+// produces, which the server's charge summary gate would then turn into a
+// refusal on every charge.
+func TestThoughtsCharge_SummaryRequired(t *testing.T) {
+	seeded := func() *fakeGraphCaller {
+		return &fakeGraphCaller{
+			queryResponses: map[string]kgtools.ToolResult{
+				"th-1": nodeResultJSON(t, "th-1", "thought", nil),
+			},
+			mutateIDs: []string{"charge-1"},
+		}
+	}
+
+	t.Run("no summary is refused", func(t *testing.T) {
+		fc := seeded()
+		res := handleChargeClient(context.Background(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
+			Name: "thoughts",
+			Arguments: json.RawMessage(`{"operation":"charge","thought":"th-1","polarity":"positive",` +
+				`"weight":3.0,"reasoning":"the suite went green after the fix"}`),
+		})
+		require.True(t, res.IsError, "a charge with no summary must be refused, never composed")
+		assert.Contains(t, toolResultText(res), "thoughts(charge): summary is required and must be non-empty")
+		assert.Empty(t, fc.execMutations, "the refusal must precede any write")
+	})
+
+	t.Run("a supplied summary is persisted on the charge node", func(t *testing.T) {
+		const authored = "the green suite is evidence the reconciler drains before the deadline"
+		fc := seeded()
+		res := handleChargeClient(context.Background(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
+			Name: "thoughts",
+			Arguments: json.RawMessage(`{"operation":"charge","thought":"th-1","polarity":"positive",` +
+				`"weight":3.0,"reasoning":"the suite went green after the fix",` +
+				`"summary":"` + authored + `"}`),
+		})
+		require.False(t, res.IsError, "an authored charge summary must be accepted: %s", toolResultText(res))
+
+		require.Len(t, fc.execMutations, 1)
+		bodies := fc.execMutations[0].GetNodeBodies()
+		require.Len(t, bodies, 1)
+		assert.Equal(t, authored, bodies[0].GetSummary(),
+			"the author's summary must reach the charge node untouched")
+		// SymbolName stays the truncated reasoning — that is a NAME derivation and
+		// is deliberately unchanged, so the two must not be the same value.
+		assert.NotEqual(t, bodies[0].GetSummary(), bodies[0].GetName())
+	})
 }

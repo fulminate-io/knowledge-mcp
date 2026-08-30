@@ -408,3 +408,34 @@ emit pattern {
 			"lineage anchors to the source_ref override, not the row NodeID")
 	}
 }
+
+// TestInterpret_GroupByRule_ExposesGroupKeys is the ONLY test that goes red if
+// the row-scoped pseudo-variable lookup is dropped. Its sibling above passes
+// with or without it, because that one never reads the accessor — it only
+// checks the collapse.
+func TestInterpret_GroupByRule_ExposesGroupKeys(t *testing.T) {
+	a := &knowledgev1.Node{Id: "a", Type: "section", SymbolName: "Alpha", Metadata: map[string]string{"family": "routing"}}
+	b := &knowledgev1.Node{Id: "b", Type: "section", SymbolName: "Bravo", Metadata: map[string]string{"family": "channels"}}
+	sv := &sourceView{
+		byID:   map[string]*knowledgev1.Node{"a": a, "b": b},
+		byType: map[string][]*knowledgev1.Node{"section": {a, b}},
+	}
+	body := `select section
+group_by node.metadata.family
+emit pattern {
+    name := section.symbol_name
+    keys := group.keys
+}`
+	recipe := parseOrFatal(t, body)
+	result, err := Interpret(context.Background(), recipe, sv, recipeTargetSpec(), "eip", Options{})
+	require.NoError(t, err)
+	require.Len(t, result.Nodes, 2)
+
+	// Two DISTINCT keys, sorted and comma-joined. Both emitted nodes carry the
+	// same whole-key list, which is what the accessor means.
+	for _, n := range result.Nodes {
+		got := n.Metadata["keys"]
+		assert.Equal(t, "channels,routing", got)
+		assert.NotEmpty(t, got, "group.keys returned empty — the pseudo-variable fell through to a node read")
+	}
+}

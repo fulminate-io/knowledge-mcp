@@ -11,11 +11,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -27,17 +27,14 @@ type fakeAssembleDeps struct {
 	gc GraphCaller
 }
 
-func (d *fakeAssembleDeps) LocalLiveness() LocalLiveness                 { return nil }
-func (d *fakeAssembleDeps) Sink() collector.Sink                         { return nil }
-func (d *fakeAssembleDeps) RootDir() string                              { return "" }
-func (d *fakeAssembleDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
-func (d *fakeAssembleDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
-func (d *fakeAssembleDeps) WorkerReady() bool                            { return true }
-func (d *fakeAssembleDeps) PropReady() bool                              { return true }
-func (d *fakeAssembleDeps) PipelineReady() bool                          { return true }
-func (d *fakeAssembleDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
-func (d *fakeAssembleDeps) BanSet() *hivemonitor.BanSet                  { return nil }
-func (d *fakeAssembleDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d *fakeAssembleDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d *fakeAssembleDeps) Sink() collector.Sink            { return nil }
+func (d *fakeAssembleDeps) RootDir() string                 { return "" }
+func (d *fakeAssembleDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+
+func (d *fakeAssembleDeps) PropReady() bool     { return true }
+func (d *fakeAssembleDeps) PipelineReady() bool { return true }
+
 func (d *fakeAssembleDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
 func (d *fakeAssembleDeps) Embedder() embed.BinaryEmbedder               { return nil }
 func (d *fakeAssembleDeps) BackendResolver() BackendResolver             { return nil }

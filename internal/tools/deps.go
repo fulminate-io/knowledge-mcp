@@ -19,7 +19,6 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/backends"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
@@ -89,16 +88,6 @@ type LocalLiveness interface {
 //   - RootDir: project root directory the user passed via --root. The
 //     client-side ast intercept walks this directory to find source
 //     files (the server has no repo, especially in remote-server mode).
-//   - WorkerRuntime: client-side dream runtime for the worker.trigger /
-//     worker.status MCP intercepts. Returns nil when wireWorkerRuntime
-//     degraded at boot — InterceptWorker nil-checks before dispatching
-//     so the rest of the MCP loop keeps working.
-//   - WorkerCRUD: client-side wire-loopback CRUD client for the
-//     worker.list / worker.create / worker.update / worker.delete MCP
-//     intercepts. Production wires a *workercrud.Client backed by the
-//     same GraphClient; tests inject a fake. Returns nil only when the
-//     client was constructed without a GraphClient — InterceptWorker
-//     nil-checks before dispatching.
 //   - Embedder: client-side BinaryEmbedder used by InterceptSearch /
 //     InterceptQuery to embed query text on the client side so the
 //     server-side compositor short-circuits its own embed call (Phase
@@ -130,29 +119,13 @@ type ClientDeps interface {
 	LocalLiveness() LocalLiveness
 	Sink() collector.Sink
 	RootDir() string
-	WorkerRuntime() WorkerRuntimeAPI
-	// UsageAnalyzer returns the client-side agent-flow analyzer (embedded DuckDB over
-	// the local transcript parquet cache) the analyze_usage intercept dispatches
-	// through. Returns nil in router-less / headless test fixtures (and if the cache
-	// root is unresolvable) — InterceptAnalyzeUsage nil-checks and renders the
-	// cold-cache --seed hint. The analyzer needs no router/network; it reads the local
-	// cache only.
+	// UsageAnalyzer returns the client-side agent-flow analyzer (the pure-Go
+	// transcriptanalytics engine over the local transcript parquet cache) the
+	// analyze_usage intercept dispatches through. Returns nil in router-less /
+	// headless test fixtures (and if the cache root is unresolvable) —
+	// InterceptAnalyzeUsage nil-checks and renders the cold-cache --seed hint.
+	// The analyzer needs no router/network; it reads the local cache only.
 	UsageAnalyzer() UsageAnalyzerAPI
-	// ClaimRegistry returns the client-side hive claim registry recording
-	// which MCP session holds which work claims. InterceptHive Binds on a
-	// successful claim and Clears on ack/fail; the daemon Monitor reads it each
-	// tick to renew the cloud lease for live claims. Returns nil in router-less
-	// test fixtures and degraded headless mode — InterceptHive nil-checks before
-	// using it, and the Registry methods are themselves nil-safe.
-	ClaimRegistry() *hivemonitor.Registry
-	// BanSet returns the client-side hive ban set: the harness-session-id ban
-	// keys plus the daemon-populated Mcp-Session-Id→harness-id resolver.
-	// InterceptHive consults it to refuse a banned session's hive calls
-	// CLIENT-SIDE before they reach the cloud (an unresolved session fails open).
-	// Returns nil in router-less test fixtures and degraded headless mode — the
-	// gate nil-checks, and the BanSet methods are themselves nil-safe.
-	BanSet() *hivemonitor.BanSet
-	WorkerCRUD() WorkerCRUDAPI
 	GraphTypeCRUD() GraphTypeCRUDAPI
 	Embedder() embed.BinaryEmbedder
 	BackendResolver() BackendResolver
@@ -249,9 +222,9 @@ type ClientDeps interface {
 	// in this process (same condition as ClusterProvider) — handleReflectTensions
 	// renders a "reflection loop not running" message on nil rather than recomputing.
 	TensionsProvider() TensionsProvider
-	// WorkerReady / PropReady / PipelineReady report whether the corresponding
+	// PropReady / PipelineReady report whether the corresponding
 	// background-wiring stage has completed (Bind-first startup: the daemon binds the HTTP
-	// MCP listener first, then wires the worker / propagation / pipeline runtimes
+	// MCP listener first, then wires the propagation / pipeline runtimes
 	// in a background goroutine). The runtime-dependent intercept guards consult
 	// these to distinguish the wiring window — emit "daemon still starting:
 	// <subsystem> not ready" — from a permanent boot degrade (the accessor returns
@@ -260,7 +233,6 @@ type ClientDeps interface {
 	// guard that sees Ready()==true may safely read the accessor. The engine ops
 	// (query / search-BM25 / mutate) have no runtime dependency and consult none
 	// of these — they serve immediately after bind.
-	WorkerReady() bool
 	PropReady() bool
 	PipelineReady() bool
 }

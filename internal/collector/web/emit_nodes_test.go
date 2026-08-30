@@ -3,6 +3,7 @@
 package web
 
 import (
+	"encoding/base64"
 	"testing"
 	"time"
 
@@ -10,10 +11,15 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
+// fixtureBody is the retained response body buildFixture claims to have
+// captured. ContentHash and RawHTMLBase64 below are both derived from it, so
+// the fixture cannot assert a round-trip its own two fields contradict.
+const fixtureBody = `<html><body><h1>Intro</h1><p>first para</p></body></html>`
+
 // buildFixture assembles a pageRecord with one section, two paragraphs,
-// one code_block, one list with 2 items, one internal link record, and
-// one external cite. The fixture is the canonical input used by the
-// table of assertions below.
+// one code_block, one list with 2 items, one internal link record, one
+// external cite, and the retained raw body. The fixture is the canonical
+// input used by the table of assertions below.
 func buildFixture() *pageRecord {
 	sec := &sectionRecord{
 		Heading: "Intro",
@@ -36,7 +42,8 @@ func buildFixture() *pageRecord {
 		Title:         "Intro",
 		HTTPStatus:    200,
 		FetchedAt:     time.Unix(0, 0).UTC(),
-		ContentHash:   "deadbeef",
+		ContentHash:   hashBody([]byte(fixtureBody)),
+		RawHTMLBase64: base64.StdEncoding.EncodeToString([]byte(fixtureBody)),
 		TopSections:   []*sectionRecord{sec},
 		InternalLinks: []string{"https://example.com/other"},
 		ExternalCites: []*linkRecord{{URL: "https://ext.example.org/x", Rel: "external"}},
@@ -48,8 +55,8 @@ func TestEmitFromPage_NodeCountAndTypes(t *testing.T) {
 	nodes, _ := emitFromPage(p)
 
 	// Expected: 1 page + 1 section + 2 paragraphs + 1 code_block + 1 list
-	// + 2 list_items + 1 link = 9 nodes.
-	want := 9
+	// + 2 list_items + 1 link + 1 raw_html = 10 nodes.
+	want := 10
 	if len(nodes) != want {
 		types := make([]string, len(nodes))
 		for i, n := range nodes {
@@ -66,6 +73,7 @@ func TestEmitFromPage_NodeCountAndTypes(t *testing.T) {
 		"list":       1,
 		"list_item":  2,
 		"link":       1,
+		"raw_html":   1,
 	}
 	counts := map[string]int{}
 	for _, n := range nodes {
@@ -122,13 +130,20 @@ func TestEmitFromPage_PageDescriptionFlattens(t *testing.T) {
 	}
 }
 
-// TestEmitFromPage_PageDescriptionRespectsCap confirms the body is hard-
-// capped at pageDescriptionCap. A long article must not blow the rerank
-// doc-text or BM25 field budgets when downstream recipes copy the
-// description into a pattern node.
-func TestEmitFromPage_PageDescriptionRespectsCap(t *testing.T) {
+// TestEmitFromPage_PageDescriptionIsUntruncated confirms the flattened page
+// body is NOT character-truncated. The ceiling that used to apply here cut the
+// Description at 8000 characters; a page whose prose runs past that must now
+// reach the graph whole.
+//
+// The two assertions are complementary rather than redundant: equality against
+// the full flatten catches truncation at ANY length, and the strict
+// greater-than-8000 guard is what proves the fixture actually crosses the
+// removed ceiling — without it, equality would hold trivially on a short page
+// and the test would go green against a still-capped implementation.
+func TestEmitFromPage_PageDescriptionIsUntruncated(t *testing.T) {
 	const filler = "lorem ipsum dolor sit amet "
-	repeats := (pageDescriptionCap / len(filler)) + 100
+	const removedCeiling = 8000
+	repeats := (removedCeiling / len(filler)) + 100
 	bigPara := paragraphRecord{Text: repeatString(filler, repeats)}
 	sec := &sectionRecord{
 		Heading:  "Big",
@@ -154,8 +169,21 @@ func TestEmitFromPage_PageDescriptionRespectsCap(t *testing.T) {
 	if pageNode == nil {
 		t.Fatal("page node missing")
 	}
-	if got := len(pageNode.Description); got > pageDescriptionCap {
-		t.Errorf("page.Description over cap: got %d bytes, cap=%d", got, pageDescriptionCap)
+
+	want := flattenPageBody(p.TopSections)
+	if len(want) <= removedCeiling {
+		t.Fatalf("fixture flattens to only %d chars, at or under the removed ceiling %d — this test could not detect truncation",
+			len(want), removedCeiling)
+	}
+	if got := len(pageNode.Description); got != len(want) {
+		t.Errorf("page.Description is %d chars, want the full flatten's %d — something is still truncating", got, len(want))
+	}
+	if pageNode.Description != want {
+		t.Error("page.Description differs from the full flatten of the same sections")
+	}
+	if len(pageNode.Description) <= removedCeiling {
+		t.Errorf("page.Description is %d chars, still at or under the removed ceiling %d",
+			len(pageNode.Description), removedCeiling)
 	}
 }
 

@@ -60,15 +60,20 @@ var queryReflectArmSpecs = map[armID]armSpec{
 	},
 
 	// Tensions is served O(1) from the propagation loop's cache and issues no
-	// graph reads at all, so the format switch is its only input.
+	// graph reads at all, so format and the render cap are its only inputs.
+	// `limit` caps the RENDERED rows; the provider's slice is already collapsed,
+	// ranked and capped, so an absent limit keeps the full cached report.
+	// offset stays REJECTED and is listed as a LOOSE key rather than riding
+	// qgPaging, because limit is now consumed here — dropping the group would
+	// leave offset in no cell and fail the partition assertion.
 	armReflectTensions: {
 		operation: "query",
 		handler:   "interceptQueryReflect handleReflectTensions",
-		consumed:  qparams(qkeys("graph", "mode", "format")),
+		consumed:  qparams(qkeys("graph", "mode", "format", "limit")),
 		rejected: qparams(
-			qgIdentity, qgPaging, qgCode, qgThought, qgSimulate,
+			qgIdentity, qgCode, qgThought, qgSimulate,
 			qgTopology, qgPivot, qgStats, qgCloud, qgRules,
-			qkeys("name", "repo", "account", "language", "branch", "text", "queries", "query_vector"),
+			qkeys("name", "repo", "account", "language", "branch", "text", "queries", "query_vector", "offset"),
 		),
 		deliberatelyIgnored: queryFieldsIgnored(),
 	},

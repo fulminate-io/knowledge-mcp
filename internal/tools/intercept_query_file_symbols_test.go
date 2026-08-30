@@ -289,3 +289,88 @@ func TestInterceptFileSymbols_Gate(t *testing.T) {
 // fsGateDeps is a minimal ClientDeps stub for the gate test (no GraphClient
 // needed — the path-required error fires first).
 type fsGateDeps struct{ ClientDeps }
+
+// fsLimitFake seeds one file carrying six symbols, so a cap of two has something
+// to cut and an uncapped render has something to show.
+func fsLimitFake() *fsFake {
+	symIDs := make([]string, 0, 6)
+	symbols := make([]knowledgev1.Node, 0, 6)
+	for i := range 6 {
+		id := fmt.Sprintf("f.go:S%d", i)
+		symIDs = append(symIDs, id)
+		symbols = append(symbols, knowledgev1.Node{
+			Id: id, SymbolName: fmt.Sprintf("Sym%d", i), Type: "function",
+			FilePath: "f.go", StartLine: int32(10 * (i + 1)), EndLine: int32(10*(i+1) + 5),
+		})
+	}
+	return &fsFake{
+		fileNode: knowledgev1.Node{Id: "f.go", Type: string(kgtypes.NodeFile)},
+		symIDs:   symIDs,
+		symbols:  symbols,
+	}
+}
+
+// TestFileSymbols_LimitCapsSymbolRows (FAILS-WHEN-ABSENT) asserts that limit is
+// honored on BOTH entry points that reach composeFileSymbols — query(mode:
+// "file_symbols") and the standalone file_symbols tool — and that an absent limit
+// still renders every symbol.
+//
+// THE TWO ENTRY POINTS ARE DRIVEN SEPARATELY, not once. They reach the same
+// composer through DIFFERENT schemas: the standalone arm sweeps its payload
+// against FileSymbolsToolDef, which is where `limit` may be undeclared, so a
+// query-side assertion alone would go green while the standalone tool still
+// refused the param as unknown.
+func TestFileSymbols_LimitCapsSymbolRows(t *testing.T) {
+	// The file node is rendered as a row alongside the symbols, so a corpus of six
+	// symbols renders seven rows uncapped.
+	const uncappedRows = 7
+
+	drive := func(t *testing.T, name string, args map[string]any) kgtools.ToolResult {
+		t.Helper()
+		raw, err := json.Marshal(args)
+		require.NoError(t, err)
+		f := fsLimitFake()
+		handled, res := InterceptFileSymbols(opCtx(), interceptTestDeps{gc: fsCaller{f: f}},
+			kgtools.CallToolParams{Name: name, Arguments: raw})
+		require.True(t, handled, "%s must claim the call", name)
+		require.False(t, res.IsError, "%s refused the call: %s", name, textBodyTools(res))
+		return res
+	}
+
+	t.Run("query mode honors limit", func(t *testing.T) {
+		body := textBodyTools(drive(t, "query", map[string]any{
+			"mode": "file_symbols", "repo": "knowledge", "path_prefix": "f.go", "limit": 2,
+		}))
+		assert.Contains(t, body, "(2 found)", "renders exactly the capped row count; got: %s", body)
+		assert.NotContains(t, body, "Sym5", "the rows past the cap are dropped")
+	})
+
+	t.Run("standalone tool honors limit", func(t *testing.T) {
+		body := textBodyTools(drive(t, "file_symbols", map[string]any{
+			"repo": "knowledge", "file_path": "f.go", "limit": 2,
+		}))
+		assert.Contains(t, body, "(2 found)", "the standalone tool honors limit too; got: %s", body)
+		assert.NotContains(t, body, "Sym5", "the rows past the cap are dropped")
+	})
+
+	t.Run("absent limit renders every symbol on both entry points", func(t *testing.T) {
+		queryBody := textBodyTools(drive(t, "query", map[string]any{
+			"mode": "file_symbols", "repo": "knowledge", "path_prefix": "f.go",
+		}))
+		assert.Contains(t, queryBody, fmt.Sprintf("(%d found)", uncappedRows), "an absent limit renders every symbol")
+		assert.Contains(t, queryBody, "Sym5", "the last symbol survives when no limit is supplied")
+
+		toolBody := textBodyTools(drive(t, "file_symbols", map[string]any{
+			"repo": "knowledge", "file_path": "f.go",
+		}))
+		assert.Contains(t, toolBody, fmt.Sprintf("(%d found)", uncappedRows), "an absent limit renders every symbol")
+		assert.Contains(t, toolBody, "Sym5", "the last symbol survives when no limit is supplied")
+	})
+
+	t.Run("limit above the symbol count renders everything", func(t *testing.T) {
+		body := textBodyTools(drive(t, "query", map[string]any{
+			"mode": "file_symbols", "repo": "knowledge", "path_prefix": "f.go", "limit": 99,
+		}))
+		assert.Contains(t, body, fmt.Sprintf("(%d found)", uncappedRows), "an over-large limit neither pads nor truncates")
+	})
+}

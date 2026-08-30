@@ -23,9 +23,16 @@ import (
 )
 
 // runDeltaRebuild finalizes a watermark-scoped window through the partition
-// machinery. It returns (outcome, applicable, error); applicable=false means the
-// serving engines hold no corpus to re-emit against and the CALLER must recover by
-// re-scanning from zero — the outcome is empty and must not be reported.
+// machinery. It returns (outcome, emittedBucketCount, applicable, error);
+// applicable=false means the serving engines hold no corpus to re-emit against and the
+// CALLER must recover by re-scanning from zero — the outcome is empty and must not be
+// reported.
+//
+// THE COUNT IS REPORTED BECAUSE ONLY THIS ARM KNOWS IT. It is the count the re-emit
+// actually ran against — derived from the RESIDENT corpus, never from the window in
+// hand — and the caller's retention trim is wrong under any other, because a window of
+// at most DefaultMinSegmentDocs derives a single partition and collapses every masked
+// id onto it. It is zero on every path that reports no completed re-emit.
 //
 // It NEVER reports a delta that could not be attempted as a completed run. The two
 // negative answers are different: a deferred publish (Swapped=false, Applicable=true)
@@ -33,36 +40,41 @@ import (
 // shape is a recovery the caller owns.
 func runDeltaRebuild(
 	ctx context.Context, shipper SegmentShipper, gt kgtypes.GraphType, name string, items []rebuildSegItem,
-) (RebuildOutcome, bool, error) {
-	hnswDocs, bm25Docs := buildRebuildDeltaDocs(items)
+) (RebuildOutcome, int, bool, error) {
+	// Applicable=true: an unresolvable representation is a recoverable
+	// configuration fault, not a shape this delta can never handle — the caller
+	// holds the watermark and retries once the config resolves.
+	hnswDocs, bm25Docs, err := buildRebuildDeltaDocs(items)
+	if err != nil {
+		return RebuildOutcome{}, 0, true, fmt.Errorf("delta rebuild %s/%s: %w", gt, name, err)
+	}
 
 	// THE BASELINE IS CAPTURED BEFORE THE CALL, and that is the only mechanism that
-	// makes "the manifest must not have grown" implementable here. A delta run has no
-	// corpus-size reading to measure the published cardinality against — its build
-	// count is a partition count, not a corpus — so the comparison has to be against
-	// what this same graph's manifest held a moment ago. A failed reading disables the
-	// check rather than guessing.
-	before, beforeErr := shipper.PublishedManifestCount(ctx, gt, name, hnsw.New().Name())
+	// makes "the live set must not have grown" implementable here. A delta run has no
+	// corpus-size reading to measure the resident set against — its build count is a
+	// partition count, not a corpus — so the comparison has to be against what this
+	// same graph's engine held a moment ago.
+	before := shipper.ResidentSegmentCount(gt, name, hnsw.New().Name())
 
 	res, err := shipper.ReEmitRebuiltDelta(ctx, gt, name, hnswDocs, bm25Docs)
 	if err != nil {
-		return RebuildOutcome{}, true, fmt.Errorf("delta re-emit failed: %w", err)
+		return RebuildOutcome{}, 0, true, fmt.Errorf("delta re-emit failed: %w", err)
 	}
 	if !res.Applicable {
-		return RebuildOutcome{}, false, nil
+		return RebuildOutcome{}, 0, false, nil
 	}
 
 	out := RebuildOutcome{
 		Ran: true, Scanned: len(items),
-		Built:             deltaPartitionsTouched(items, res.DerivedBucketCount),
-		Published:         res.Swapped,
-		PublishedManifest: manifestCardinalityUnmeasured,
+		Built:                deltaPartitionsTouched(items, res.DerivedBucketCount),
+		Published:            res.Swapped,
+		ResidentSegmentCount: derivedBucketCardinalityUnmeasured,
 	}
 	if res.Swapped {
-		out.PublishedManifest = readBackDeltaManifestCardinality(
-			ctx, shipper, gt, name, before, beforeErr, res.DerivedBucketCount)
+		out.ResidentSegmentCount = readDeltaResidentCardinality(
+			shipper, gt, name, before, res.DerivedBucketCount)
 	}
-	return out, true, nil
+	return out, res.DerivedBucketCount, true, nil
 }
 
 // deltaPartitionsTouched counts the DISTINCT partitions the scanned window owns under
@@ -82,54 +94,51 @@ func deltaPartitionsTouched(items []rebuildSegItem, bucketCount int) int {
 	return len(touched)
 }
 
-// readBackDeltaManifestCardinality reads the published HNSW manifest back after a
-// landed delta swap and reports its entry count, WARNing when a delta CHANGED it.
+// readDeltaResidentCardinality reads how many sealed HNSW segments the engine holds
+// after a landed delta swap and reports it, WARNing when a delta CHANGED the count.
 //
 // A DELTA RE-EMITS PARTITIONS; IT DOES NOT ADD OR DROP THEM. At a stable partition
-// count the manifest must hold exactly what it held before: growth is the thin-append
-// defect (a window sealed into a segment of its own and published beside every
-// untouched bucket blob), and shrinkage means content stopped being referenced.
+// count the engine must hold exactly what it held before: growth is the thin-append
+// defect (a window sealed into a segment of its own and left beside every untouched
+// bucket segment), and shrinkage means content stopped being in the live set.
+//
+// THE OPERANDS ARE THE SAME ENGINE READ TWICE, BEFORE AND AFTER, and that is exactly
+// what makes it a real check rather than the identity the full-rebuild path had to
+// avoid. It is not comparing a number to a restatement of itself; it is comparing the
+// live set to its own prior state across an operation that is supposed to leave the
+// cardinality alone.
 //
 // THE CHECK IS GATED ON A STABLE COUNT, and the gate is not a loophole — it is the
 // difference between a defect and correct work. A delta whose re-emit realigns its
-// touched partitions across a power-of-two boundary legitimately grows the manifest: a
+// touched partitions across a power-of-two boundary legitimately grows the set: a
 // segment aligned to the old count spans two partitions of the new one, so closing over
-// constituency consumes one segment and publishes two. When the count the re-emit ran
+// constituency consumes one segment and produces two. When the count the re-emit ran
 // at differs from the one the baseline implies, there is no honest equality to assert,
 // and the run reports UNMEASURED rather than flagging correct work as a fault. The same
-// gate absorbs a raced embed drain, which can grow the manifest between the two
-// readings for reasons this run did not cause.
+// gate absorbs a raced embed drain, which can grow the set between the two readings for
+// reasons this run did not cause.
 //
-// A FAILED READ-BACK IS NOT A FAILED REBUILD. The corpus is published by the time this
-// runs; the failure is logged and the cardinality reported unmeasured.
-func readBackDeltaManifestCardinality(
-	ctx context.Context, shipper SegmentShipper, gt kgtypes.GraphType, name string,
-	before int, beforeErr error, derivedBucketCount int,
+// NEITHER READ CAN FAIL. Its predecessor read a server manifest and needed a
+// baseline-unavailable path and a read-back-failure path; both operands are now one
+// atomic snapshot load, so the only unmeasured outcome left is the realignment gate.
+func readDeltaResidentCardinality(
+	shipper SegmentShipper, gt kgtypes.GraphType, name string,
+	before int, derivedBucketCount int,
 ) int {
-	if beforeErr != nil {
-		slog.Debug("rebuild_segments: delta manifest baseline unavailable — cardinality check disabled for this run (rebuild unaffected)",
-			"graph_type", gt, "name", name, "err", beforeErr)
-		return manifestCardinalityUnmeasured
-	}
 	// The baseline implies a partition count: an aligned corpus carries one segment per
 	// partition. A re-emit that ran at a different count realigned, so no equality holds.
 	if derivedBucketCount != before {
-		slog.Info("rebuild_segments: delta ran at a different partition count than the published manifest implies — cardinality check not applicable (realignment, not a fault)",
+		slog.Info("rebuild_segments: delta ran at a different partition count than the resident set implies — cardinality check not applicable (realignment, not a fault)",
 			"graph_type", gt, "name", name,
-			"manifest_before", before, "derived_bucket_count", derivedBucketCount)
-		return manifestCardinalityUnmeasured
+			"resident_before", before, "derived_bucket_count", derivedBucketCount)
+		return derivedBucketCardinalityUnmeasured
 	}
-	after, err := shipper.PublishedManifestCount(ctx, gt, name, hnsw.New().Name())
-	if err != nil {
-		slog.Debug("rebuild_segments: delta manifest cardinality read-back unavailable (rebuild unaffected)",
-			"graph_type", gt, "name", name, "err", err)
-		return manifestCardinalityUnmeasured
-	}
+	after := shipper.ResidentSegmentCount(gt, name, hnsw.New().Name())
 	if after != before {
-		slog.Warn("rebuild_segments: the DELTA run CHANGED the published manifest cardinality at a stable partition count — "+
+		slog.Warn("rebuild_segments: the DELTA run CHANGED the resident segment cardinality at a stable partition count — "+
 			"a delta re-emits partitions in place, so a change means it appended or dropped one",
 			"graph_type", gt, "name", name, "format", hnsw.New().Name(),
-			"manifest_before", before, "manifest_after", after)
+			"resident_before", before, "resident_after", after)
 	}
 	return after
 }

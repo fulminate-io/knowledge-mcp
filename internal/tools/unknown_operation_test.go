@@ -20,10 +20,9 @@ type unknownOperationCase struct {
 	invoke func(t *testing.T, op string) (bool, kgtools.ToolResult)
 }
 
-// unknownOperationCases enumerates every operation-dispatched tool. Two shapes
-// differ from the rest and are called out so a reader does not mistake them for
-// mistakes: hive reads its operation from the `op` key rather than `operation`,
-// and mutate is rejected by a head-of-function guard rather than a switch
+// unknownOperationCases enumerates every operation-dispatched tool. One shape
+// differs from the rest and is called out so a reader does not mistake it for a
+// mistake: mutate is rejected by a head-of-function guard rather than a switch
 // default (the guard runs before any graph routing, so an unknown operation
 // cannot slip past on a foreign graph).
 func unknownOperationCases() []unknownOperationCase {
@@ -47,13 +46,6 @@ func unknownOperationCases() []unknownOperationCase {
 			t.Helper()
 			return InterceptGraphType(opCtx(), interceptTestDeps{}, call("custom_collector", op))
 		}},
-		{"hive", func(t *testing.T, op string) (bool, kgtools.ToolResult) {
-			t.Helper()
-			return InterceptHive(opCtx(), interceptTestDeps{gc: &fakeHiveCaller{}}, kgtools.CallToolParams{
-				Name:      "hive",
-				Arguments: json.RawMessage(`{"op":"` + op + `","hive":"h1"}`),
-			})
-		}},
 		{"manage", func(t *testing.T, op string) (bool, kgtools.ToolResult) {
 			t.Helper()
 			return InterceptManage(opCtx(), interceptTestDeps{}, call("manage", op))
@@ -69,10 +61,6 @@ func unknownOperationCases() []unknownOperationCase {
 		{"thoughts", func(t *testing.T, op string) (bool, kgtools.ToolResult) {
 			t.Helper()
 			return InterceptThoughts(opCtx(), interceptTestDeps{}, call("thoughts", op))
-		}},
-		{"worker", func(t *testing.T, op string) (bool, kgtools.ToolResult) {
-			t.Helper()
-			return InterceptWorker(opCtx(), workerTestDeps{}, call("worker", op))
 		}},
 	}
 }
@@ -99,12 +87,12 @@ func TestUnknownOperation_CanonicalMessage(t *testing.T) {
 	}
 
 	// COMPLETENESS GUARD, enumerated not counted: a length check is green for
-	// any nine cases at all, including nine copies of one tool. Adding a tenth
-	// operation-dispatched tool means declaring it HERE.
+	// any seven cases at all, including seven copies of one tool. Adding an
+	// eighth operation-dispatched tool means declaring it HERE.
 	slices.Sort(covered)
 	assert.Equal(t, []string{
-		"analyze_usage", "ast", "custom_collector", "hive", "manage",
-		"mutate", "sync", "thoughts", "worker",
+		"analyze_usage", "ast", "custom_collector", "manage",
+		"mutate", "sync", "thoughts",
 	}, covered, "the canonical-message table must cover exactly the operation-dispatched tools")
 }
 
@@ -116,7 +104,7 @@ func TestUnknownOperation_CanonicalMessage(t *testing.T) {
 // mutate has no row: its list IS the schema read (mutateDeclaredOperations), so
 // there are not two things that can disagree.
 //
-// The other five tools (analyze_usage, custom_collector, hive, sync, worker)
+// The other three tools (analyze_usage, custom_collector, sync)
 // declare no operation Enum anywhere in this package, so their lists are
 // hand-written by necessity and have nothing to be checked against. That is not
 // an oversight — there is no second source to compare them to.

@@ -3,11 +3,11 @@
 // where.go — JSON where-tree evaluator for v2 patterns.
 //
 // The v2 DSL replaces the line-based where-clause grammar with a recursive
-// JSON boolean tree composed of three composers (all/any/not) and six
-// leaves (kind / matches / equals / same_node / inside_pattern /
-// contains_pattern). The last two compose sub-patterns recursively, so the
-// evaluator delegates back into compilePattern + matchTree when it
-// encounters them.
+// JSON boolean tree composed of three composers (all/any/not) and
+// eight leaves (kind / matches / equals / same_node / same_text /
+// inside_pattern / contains_pattern / flows_to). The two sub-pattern leaves
+// compose sub-patterns recursively, so the evaluator delegates back into
+// compilePattern + matchTree when it encounters them.
 //
 // Key locked decisions:
 //
@@ -58,6 +58,7 @@ type WhereNode struct {
 	SameText        *SameTextLeaf   `json:"same_text,omitempty"`
 	InsidePattern   *SubPatternLeaf `json:"inside_pattern,omitempty"`
 	ContainsPattern *SubPatternLeaf `json:"contains_pattern,omitempty"`
+	FlowsTo         *FlowsToLeaf    `json:"flows_to,omitempty"`
 }
 
 // KindLeaf checks the tree-sitter kind of a captured node. Either Is or Of
@@ -157,6 +158,11 @@ type evalScope struct {
 	// node is the bound target node for the local match — used by the
 	// walker to look up node identity for same_node leaves.
 	nodeByName map[string]*sitter.Node
+	// flowSteps memoizes the flow arm's answer per declaration node, keyed by
+	// that node's byte span. A pattern matching N sites inside one function
+	// would otherwise re-walk the same declaration subtree N times; see
+	// where_flow.go's flowStepsFor for the lifetime rule.
+	flowSteps map[[2]uint32][]flowStep
 }
 
 // newOuterScope builds the outermost evalScope. cache + cacheMu are owned
@@ -169,6 +175,7 @@ func newOuterScope(lang treesitter.Language, cache map[string][]patternVariant, 
 		cacheMu:    cacheMu,
 		lang:       lang,
 		nodeByName: map[string]*sitter.Node{},
+		flowSteps:  map[[2]uint32][]flowStep{},
 	}
 }
 
@@ -185,6 +192,10 @@ func (s *evalScope) withMatchCaptures(captures *Captures, nodeByName map[string]
 		lang:       s.lang,
 		src:        src,
 		nodeByName: nodeByName,
+		// The memo is INHERITED, never re-made. Each match gets its own scope, so
+		// a fresh map here would memoize nothing — and sharing one arm call across
+		// the N matches inside one declaration is the entire point.
+		flowSteps: s.flowSteps,
 	}
 }
 
@@ -201,6 +212,10 @@ func (s *evalScope) pushSubPattern(captures *Captures, nodeByName map[string]*si
 		lang:       s.lang,
 		src:        src,
 		nodeByName: nodeByName,
+		// Inherited for the same reason, and safe across the descent: the memo is
+		// keyed by declaration span, so a sub-pattern scoped to a different
+		// declaration simply misses and computes its own entry.
+		flowSteps: s.flowSteps,
 	}
 }
 
@@ -263,54 +278,6 @@ func evalWhere(ctx context.Context, where *WhereNode, scope *evalScope) (bool, e
 		}
 	}
 	return evalLeaves(ctx, where, scope)
-}
-
-// evalLeaves evaluates the six leaf operators on where, ANDing their
-// verdicts. Empty leaves are no-ops.
-func evalLeaves(ctx context.Context, where *WhereNode, scope *evalScope) (bool, error) {
-	if where.Kind != nil {
-		ok, err := evalKind(where.Kind, scope)
-		if err != nil || !ok {
-			return ok, err
-		}
-	}
-	if where.Matches != nil {
-		ok, err := evalMatches(where.Matches, scope)
-		if err != nil || !ok {
-			return ok, err
-		}
-	}
-	if where.Equals != nil {
-		ok, err := evalEquals(where.Equals, scope)
-		if err != nil || !ok {
-			return ok, err
-		}
-	}
-	if where.SameNode != nil {
-		ok, err := evalSameNode(where.SameNode, scope)
-		if err != nil || !ok {
-			return ok, err
-		}
-	}
-	if where.SameText != nil {
-		ok, err := evalSameText(where.SameText, scope)
-		if err != nil || !ok {
-			return ok, err
-		}
-	}
-	if where.InsidePattern != nil {
-		ok, err := evalSubPattern(ctx, where.InsidePattern, scope, ancestorSearch)
-		if err != nil || !ok {
-			return ok, err
-		}
-	}
-	if where.ContainsPattern != nil {
-		ok, err := evalSubPattern(ctx, where.ContainsPattern, scope, descendantSearch)
-		if err != nil || !ok {
-			return ok, err
-		}
-	}
-	return true, nil
 }
 
 // resolveCapture walks the scope chain per the ref's `$outer.` prefix

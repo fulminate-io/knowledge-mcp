@@ -53,6 +53,36 @@ func waitForMergers(want int, within time.Duration) int {
 	return got
 }
 
+// settledMergerCount polls until the census reads the same value twice across a
+// quiet interval, and returns that value.
+//
+// THE BASELINE HAS TO BE SETTLED, NOT SAMPLED, and this helper exists because
+// sampling it once was a real intermittent failure rather than a theoretical one.
+// An EARLIER test's Manager has already had Close called by its cleanup, but its
+// merger goroutines observe the closed channel on their own schedule — the exact
+// asynchrony waitForMergers exists for. A single read taken inside that drain
+// window counts goroutines that are already leaving; they are gone by the time
+// the rise is asserted, so the rise reads SHORT by however many were still
+// draining. Observed in CI-shaped whole-package runs as `expected: 10, actual:
+// 6`: a baseline of four draining mergers, all six new ones correctly built.
+//
+// Staying sequential (no t.Parallel) does not close this: it keeps a CONCURRENT
+// sibling's engines out of the count, but says nothing about a PRECEDING one's
+// goroutines still unwinding.
+func settledMergerCount(within time.Duration) int {
+	deadline := time.Now().Add(within)
+	prev := mergerGoroutines()
+	for time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		got := mergerGoroutines()
+		if got == prev {
+			return got
+		}
+		prev = got
+	}
+	return prev
+}
+
 // TestManagerCloseStopsEveryEngineMerger pins the OTHER half of the two lazy
 // constructors: each of them starts a merger goroutine that nothing else ever
 // stops, and Manager.Close is what stops them.
@@ -73,10 +103,13 @@ func TestManagerCloseStopsEveryEngineMerger(t *testing.T) {
 	const enginesPerGraph = 2 // one HNSW, one BM25
 
 	ctx := context.Background()
-	_, gc := newSegmentHarness(t)
-	baseline := mergerGoroutines()
 
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	// SETTLED, not sampled — see settledMergerCount. A preceding test's mergers may
+	// still be unwinding, and counting them into the baseline makes the rise below
+	// read short by exactly that many.
+	baseline := settledMergerCount(5 * time.Second)
+
+	mgr := NewManager(t.TempDir(), 0)
 	for i := range graphs {
 		name := "closegraph" + string(rune('a'+i))
 		require.NoError(t, mgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, name, hnswVecDocs(4)))

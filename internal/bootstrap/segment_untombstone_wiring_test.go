@@ -27,7 +27,7 @@ func TestReconcilePassUntombstonesRecreatedWrite(t *testing.T) {
 	)
 	gt := kgtypes.GraphCode
 
-	c, _, _ := buildReconcileClientWithSeg(t, embedded, repo)
+	c, _ := buildReconcileClientWith(t, embedded, repo)
 
 	docs := fastloadVecDocs(repo, corpusN)
 	require.NoError(t, c.segmentMgr.AddAndMarkDirty(ctx, gt, repo, docs))

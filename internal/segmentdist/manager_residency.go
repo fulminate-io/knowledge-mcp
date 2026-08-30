@@ -184,10 +184,10 @@ func (m *distManager[Q, S]) loadIfResident(ctx context.Context) (skipped bool, e
 //
 // CRASH WINDOW: nothing durable is destroyed. The .seg files stay on disk untouched
 // — that is exactly what makes the reload free of network — and resident,
-// evictedIDs, l2Loaded, importedGen and evicted are all per-process state a restart
-// re-derives from L2 as it does today. Steps 3-7 are one atomic unit under
-// residencyMu.Lock, so there is no arrangement in which the Unload happens and the
-// latch resets do not.
+// evictedIDs, l2Loaded and evicted are all per-process state a restart re-derives
+// from L2 as it does today. Steps 3-6 are one atomic unit under residencyMu.Lock,
+// so there is no arrangement in which the Unload happens and the latch resets do
+// not.
 func (m *distManager[Q, S]) evictResident() (freed int64, ok bool) {
 	m.residencyMu.Lock()
 	defer m.residencyMu.Unlock()
@@ -232,13 +232,11 @@ func (m *distManager[Q, S]) evictResident() (freed int64, ok bool) {
 	m.engine.Unload(ids)
 
 	// 4. Record the EXACT unloaded set for the strict reload, and empty the resident
-	// tracking. 5. Reset the load floor, or a reload against a cold L2 would List
-	// from a high floor and import an empty delta. 6. Clear the L2-first once-guard,
-	// or load() short-circuits forever over an empty engine. 7. Latch evicted.
+	// tracking. 5. Clear the L2-first once-guard, or load() short-circuits forever
+	// over an empty engine. 6. Latch evicted.
 	m.resMu.Lock()
 	m.evictedIDs = ids
 	m.resident = make(map[searchengine.SegmentID]residentSeg)
-	m.importedGen.Store(0)
 	m.l2Loaded.Store(false)
 	m.evicted.Store(true)
 	m.resMu.Unlock()
@@ -285,7 +283,8 @@ type residencyCandidate struct {
 // this call site. A sweep that evicted a pool and then reloaded it on the next tick
 // would be a treadmill; it cannot happen because every background arm DECLINES an
 // evicted pool (loadIfResident at the four probe/reconcile regions) and every
-// ArmVerdict consumer branches on Evicted rather than reading its zeros as healthy.
+// ArmObservation consumer branches on Evicted rather than reading its zeros as a
+// measurement.
 // So a pool a background arm made resident is loaded AT MOST ONCE per process and
 // then stays evicted until a CONSUMER touch — a search, a by-id vector read, a write
 // — re-materializes it, which is the cost-bearer this ticket intends. Weaken either
@@ -315,12 +314,11 @@ func (m *Manager) EnforceResidencyBudget() { m.enforceResidencyBudget(nil) }
 //     (b) alone is checkable in a test.
 //   - a pool already evicted — it has nothing left to free.
 //   - a graph with a non-empty write backlog — its pools are about to be sealed and
-//     shipped FROM THEIR RESIDENT SET, and evicting underneath that hands
-//     publishResident a corpus it cannot cover.
+//     written to L2 FROM THEIR RESIDENT SET, and evicting underneath that would make
+//     the emptied resident set the whole of what gets written.
 //
 // It reads the two engine maps DIRECTLY rather than through
-// managerFor/bm25ManagerFor, and it does NOT wait on the construction gate — the
-// same discipline CoverageSuppressedSince documents (manager_coverage_probe.go).
+// managerFor/bm25ManagerFor, and it does NOT wait on the construction gate.
 // Those accessors lazily CONSTRUCT an engine, and building engines for graphs this
 // client does not maintain is the opposite of what a memory-reclaim pass is for; a
 // construction still in flight has nothing resident to evict, and waiting for it
@@ -416,7 +414,7 @@ func (m *Manager) enforceResidencyBudget(exclude []graphKey) {
 // background deciders both consume it and neither derives its own.
 //
 // A graph with no constructed engine returns false: it has never been resident, so
-// it has never been evicted. Like CoverageSuppressedSince it reads the maps
+// it has never been evicted. It reads the maps
 // directly, constructing nothing and waiting on no gate.
 func (m *Manager) PoolEvicted(gt kgtypes.GraphType, name string) bool {
 	k := graphKey{graphType: gt, graphName: name}

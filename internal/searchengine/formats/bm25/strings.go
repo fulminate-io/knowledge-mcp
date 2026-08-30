@@ -11,9 +11,10 @@ import (
 // Unicode overhead of strings.ToLower by converting in a byte copy. Falls
 // back to strings.ToLower for strings containing non-ASCII bytes.
 //
-// Ported from cmd/knowledge-server/internal/store.ToLowerASCII so the client
-// BM25 tokenizer produces byte-identical tokens without importing the server
-// store package (the engine subpackage stays import-clean: stdlib + own subpkgs).
+// Ported from the server store's ToLowerASCII (since removed there as dead
+// code — this is now the sole copy) so the client BM25 tokenizer produces
+// byte-identical tokens without importing the server store package (the engine
+// subpackage stays import-clean: stdlib + own subpkgs).
 func toLowerASCII(s string) string {
 	// Check if any uppercase ASCII bytes are present; if not, no work needed.
 	hasUpper := false

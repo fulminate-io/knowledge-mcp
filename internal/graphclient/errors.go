@@ -9,8 +9,9 @@ import "errors"
 // and what client packages (tools/thought/workercrud) match on via
 // errors.Is. graphclient is the correct home because it is the lowest-level
 // client wire-leaf (it imports only gen/knowledge/v1 + connect) and is already
-// imported by every consumer package. Mirrors the one-line pkg/store.ErrNotFound
-// it supersedes on the client side.
+// imported by every consumer package. Mirrors the one-line store.ErrNotFound
+// (cmd/knowledge-server/internal/store/graph_graph.go:16) it supersedes on the
+// client side.
 //
 // NOTE: distinct from cmd/knowledge/internal/auth.ErrNotFound, which is a
 // separate keychain-storage sentinel and is intentionally left untouched.

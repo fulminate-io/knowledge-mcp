@@ -3,28 +3,77 @@
 // prune_cache.go — one-shot orphaned-L2-segment reclaim. PruneCache diffs the
 // on-disk .seg ids under each graph's per-format L2 cache root against that
 // graph's COMPLETE current live set (every segment id the engine would serve
-// after a force-full load) and removes the orphans — the .seg files no live
-// segment references, the accumulated backlog of superseded blobs that the
-// invalidation-driven reclaim never unlinked.
+// after a force-full load) and removes the orphans.
+//
+// WHAT IT REAPS IS WHAT THE STORED CORPUS LETS IT CLASSIFY, AND THAT IS MEASURED
+// RATHER THAN ARGUED. The live set is force-loaded FROM the pool's own L2 index
+// (forceCompleteLiveSet -> loadResidentFromL2 -> cache.Keys()), so an id that index
+// holds is in the set the diff is taken against UNLESS the import declines it. Two
+// classes are therefore reaped:
+//
+//  1. a .seg file the pool's in-memory index does not know about — one that appeared
+//     after scanExisting built that index, or was never Put through this cache
+//     instance;
+//  2. a stored blob another stored blob RECORDS as superseded — the pre-merge
+//     constituent an aborted reclaim strands, now that a consolidated blob names what
+//     it replaced and the import declines it (searchengine/supersession.go).
+//
+// THE SECOND CLASS DID NOT USED TO EXIST, and its absence was the defect: a blob Put
+// through this cache and never Removed was in the index, hence in the live set, hence
+// never an orphan, however thoroughly it had been superseded. The corpus recorded an id
+// and a payload and nothing that said "superseded by", so a prune could not classify
+// what it could not read. The measurements are
+// TestPruneCacheLiveSetExcludesWhatTheStoredBlobsSupersede and
+// TestPruneCacheReapsAnUnreclaimedMergeConstituent (prune_cache_reclaim_abort_test.go).
+//
+// WHAT IS STILL NOT REAPED HERE is everything no stored record names: a refused layer's
+// already-written blobs (manager_publish_resident.go, manager_rebuild_finalize.go) and
+// the retired BM25 set InvalidateLocal is not fed (manager_rebuild_entry.go). Those
+// blobs were never published as a consolidation's constituents, so nothing on disk
+// supersedes them, and they stay until something supersedes them by content. Each of
+// those sites used to promise this command would reap its leftovers; each now names
+// this paragraph instead.
+//
+// A SEARCH REAPS THE SAME SECOND CLASS SOONER, and by a different route: an aborted
+// reclaim's obligation is retained and discharged on the next consumer touch
+// (manager_reclaim_discharge.go), which unlinks the constituents without waiting for a
+// prune. The two are independent — the discharge needs the process that aborted, the
+// prune needs only the stored record.
+//
+// NARROWING THE LIVE SET IS EMPHATICALLY NOT THAT FIX, and the same test file
+// measures why: in the ordinary write-before-first-search order a process's engine
+// holds only the segment it just wrote while L2 holds the whole prior corpus, so an
+// engine-resident-only live set condemns every stored blob the process did not build.
+// That is the wipe the five signatures in restart_falseprune_test.go exist to catch,
+// reached through the write path instead of the read path
+// (TestPruneCacheColdStartStillLoadsTheWholeCorpus).
 //
 // The complete-live-set diff is the entire safety story, because a too-SMALL
 // live set false-prunes a live segment (data loss). Three load-bearing
 // guarantees, each its own helper so the test battery exercises them in
 // isolation:
 //
-//  1. forceCompleteLiveSet (manager.go path) resets the load floor and reloads,
-//     so Export() is the COMPLETE current generation — NOT the resident-only set
-//     a bare Export() returns (an unloaded-but-live segment would otherwise look
-//     orphaned).
+//  1. forceCompleteLiveSet re-imports the current L2 set, so Export() is the
+//     COMPLETE live set — NOT the resident-only set a bare Export() returns (an
+//     unloaded-but-live segment would otherwise look orphaned).
 //  2. completeHNSWLiveSet reads the ONE HNSW engine's Export ids. It used to UNION a
 //     second, deterministic engine's set, because the rebuild's blobs landed under this
 //     same cache root yet never appeared in the embed Export — and missing them meant
 //     deleting live data. The reset finalizes at this engine now, so its blobs are in
 //     this Export by construction and there is no second set to union.
-//  3. liveSetSubsetOfList0 cross-checks the computed live set against the server's
-//     List(0) — if the live set is NOT a subset (a load returned an incomplete
-//     view), the pool is HARD-SKIPPED (Aborted) and prunes NOTHING rather than
-//     warn-and-prune.
+//  3. prunePoolReport REFUSES a pool whose live set is EMPTY while the pool holds
+//     .seg files, and reports the refusal. That is the floor case of the same
+//     property: a live set can be too small by one segment or by all of them, and
+//     the all-of-them case is a whole-pool wipe.
+//
+// A FOURTH GUARANTEE USED TO SIT HERE and is gone with the rail: a cross-check of the
+// computed live set against the source's List(0) manifest. It cannot be restated
+// locally — List(0) is now the L2 cache the live set was loaded from, so the check
+// would compare the cache against itself and pass unconditionally. That reasoning is
+// correct AND it is the same reasoning as the reap paragraph above: the check was
+// dropped for being cache-against-cache, and the live-set diff it guarded is
+// cache-against-cache for exactly the same reason. What was lost with the rail was not
+// one check but the only second authority there was.
 //
 // Orphan removal is a DIRECT os.Remove of <dir>/<id>.seg, NOT the index-gated
 // diskSegmentCache.Remove: Remove only unlinks ids present in the cache's
@@ -39,6 +88,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
@@ -59,10 +109,17 @@ type PruneCacheTarget struct {
 
 // PruneCacheGraphReport is the per-(graph, format) prune result. Orphans is the
 // would-remove set (Execute=false) OR the did-remove set (Execute=true) of .seg
-// ids; Bytes is the summed FileInfo.Size() of those .seg files. Aborted+
-// AbortReason capture a List(0) subset-abort for this (graph, format) so the
-// report surfaces a SKIPPED pool rather than silently pruning a graph whose
-// computed live set is not a subset of the server's shipped set.
+// ids; Bytes is the summed FileInfo.Size() of those .seg files.
+//
+// Aborted+AbortReason capture a REFUSED pool so the report surfaces a pool that was
+// deliberately left untouched rather than one that had nothing to prune. The two are
+// indistinguishable without it — both show zero orphans — which is why the refusal
+// below reports through this pair rather than simply returning.
+//
+// THE PAIR IS RETAINED RATHER THAN RENAMED. It was introduced for the List(0)
+// subset-abort, which is gone; it now carries the empty-live-set refusal. Keeping the
+// existing shape means every consumer that already reads Aborted keeps working, where
+// a named successor would have required updating each of them to learn nothing new.
 type PruneCacheGraphReport struct {
 	GraphType   kgtypes.GraphType
 	Name        string
@@ -84,44 +141,61 @@ type PruneCacheReport struct {
 	RemovedBytes int64
 }
 
-// forceCompleteLiveSet resets this engine's load floor and reloads so the
-// subsequent Export() is the COMPLETE current generation — every segment id the
-// server holds for this graph+format — NOT the resident-only set a bare Export()
-// returns. It then returns those exported ids.
+// forceCompleteLiveSet reloads this engine from L2 so the subsequent Export() is the
+// COMPLETE stored corpus for this graph+format — every segment id the L2 CACHE holds
+// — NOT the resident-only set a bare Export() returns. It then returns those exported
+// ids.
+//
+// THIS FUNCTION IS THE GUARD AGAINST THE WIPE, and that is its reason for existing
+// rather than an incidental benefit. PruneCache decides what to unlink by DIFFING the
+// on-disk .seg ids against a live set. If that live set is ever the resident-only
+// view, everything not currently loaded is an orphan by construction and an executing
+// prune DELETES THE WHOLE CORPUS. A fresh process is the worst case: its engine has
+// loaded nothing, so a bare Export() is EMPTY and the diff condemns every segment on
+// disk. Nothing else on the prune path re-checks this, so weakening or short-
+// circuiting the reload below is sufficient on its own to destroy a corpus.
+//
+// The signature tests for that hazard are TestFreshProcessCannotRetireAPriorCorpus
+// and its four siblings in restart_falseprune_test.go. They are the reworked form of
+// the cloud rail's false-prune signatures: the incident shape is identical — a
+// process holding only its own tail retires a corpus it did not build — and only the
+// actuator moved, from a server Prune RPC to this local live-set diff.
 //
 // WHY the reset+load: Export() (distribution.go) serializes only the segments
 // CURRENTLY RESIDENT in the engine; a segment that engine.Unload CAS-removed is
-// still LIVE on the server and on disk but absent from a bare Export(). Diffing the
-// on-disk ids against a resident-only Export would mark that unloaded-but-live
-// segment an orphan and DELETE it — data loss.
-// importedGen.Store(0) + loadFromServer(ctx) (the manager_backstop.go
-// recoverIfDegenerate idiom) re-Lists(0) the full corpus and re-Imports it, making
-// Export() complete. It calls loadFromServer directly, NOT the L2-first load():
-// load() is L2-PRIMARY and short-circuits on the l2Loaded once-guard (already set
-// this process), so it would no-op the second call and leave the unloaded-but-live
-// segment out of the live set — a false-prune/data-loss. loadFromServer always
-// Lists(0) and re-Imports (the unloaded segments are L2 cache HITs — zero network),
-// which is exactly this force's purpose.
+// still LIVE on disk but absent from a bare Export(). Diffing the on-disk ids
+// against a resident-only Export would mark that unloaded-but-live segment an
+// orphan and DELETE it — data loss.
+// loadResidentFromL2 imports cache.Keys() and does NOT consult the l2Loaded
+// once-guard, so it always re-imports the CURRENT L2 set and Export() is then the
+// complete live set. It is called directly rather than through load(), which is
+// L2-PRIMARY and short-circuits on the l2Loaded once-guard (already set this
+// process): load() would no-op the second call and leave the unloaded-but-live
+// segment out of the live set — a false-prune/data-loss.
 //
-// SAFE-BY-IDEMPOTENCE (no lock, no gate): this force-load mutates a LIVE engine the
-// daemon may also be serving (the reconcile loop, a lazy recover, a concurrent
-// search). That is safe WITHOUT any single-flight guard because load() re-imports
-// are idempotent by segment id — publishImport drops any already-resident id, never
-// double-adding — and the importedGen.Store(0) reset only triggers a re-List(0) +
-// re-Import of the SAME corpus, never a delete. A concurrent search that races the
-// reset pays at most a wasted re-import (a cost, not a correctness issue), exactly
-// as recoverIfDegenerate documents. prune-cache is a one-shot operator command, so
-// the cost is paid once.
+// IT MUTATES A LIVE ENGINE, AND THE COST OF THAT IS NOT ONLY A COST. The force-load
+// runs against an engine the daemon may also be serving, on the PREVIEW run as much
+// as the executing one — execute is not consulted until after the live set exists.
+// No single-flight guard is needed, because the re-imports are idempotent by segment
+// id: publishImport drops any already-resident id and never double-adds, so a
+// re-import of the SAME corpus is wasted work and nothing more.
 //
-// OSS L2-AUTHORITATIVE (l2Authoritative): there is no server to List/Fetch from, so
-// the complete live set is the L2-resident set. loadResidentFromL2 imports cache.Keys()
-// (server-independently, and it does NOT consult the l2Loaded once-guard, so it always
-// re-imports the current L2 set), then Export() is the complete live set. The downstream
-// liveSetSubsetOfList0 gate compares this against source.List(0) = cache.Keys() (both L2),
-// so the pool is trivially a subset and never falsely aborted. This makes the existing
-// orphan pruner (listOnDiskSegIDs + prunePoolReport os.Remove) compare on-disk .seg
-// against the L2/resident set with NO server round-trip — decouple #4. A cold L2
-// (errL2CacheCold) is not an error here: the live set is simply empty.
+// BUT THE IMPORTED SET IS NOT THE SERVING SET. It is the whole L2 index, which can be
+// a strict SUPERSET of what the engine currently serves — and importing that superset
+// re-publishes segments the engine had already superseded. When one of them predates a
+// delete, the deleted document becomes searchable again: a correctness consequence,
+// not a wasted re-import. TestPruneCacheResurrectsTheDeletedID measures it on the
+// PREVIEW run, which is the one an operator reaches for precisely because they expect
+// it to inspect rather than to change anything.
+//
+// THAT CONSEQUENCE IS NOT THIS COMMAND'S TO FIX, and attributing it here would send a
+// fix to the wrong file. The same import runs on the ordinary read path — load()'s
+// PRIMARY branch — so one plain search after such a delete resurrects the document
+// with no prune in the picture at all (TestOrdinaryReadResurrectsAStrandedConstituent).
+//
+// A cold L2 (errL2CacheCold) is not an error here: the live set is simply empty.
+// The EMPTY case is not benign downstream, though — prunePoolReport REFUSES a pool
+// whose live set is empty rather than unlinking every .seg in it.
 //
 // IT CLEARS THE EVICTED LATCH (markMaterialized), and that is not optional. Both
 // branches above re-import the pool WITHOUT going through load() — the one place
@@ -131,16 +205,13 @@ type PruneCacheReport struct {
 // bytes would be missing from the residency budget's accounting, and it could never
 // be evicted again. A census over load() call sites structurally cannot see this
 // site, which is why it is named here.
+// ctx is unread for the same reason load's is — the whole load subtree became local
+// once the cloud rail was deleted. See the note on distManager.load (manager_load.go).
+//
+//nolint:unparam // ctx is unread since the cloud rail's deletion; see distManager.load's note — removing it cascades into segmentdist's public Manager API
 func (m *distManager[Q, S]) forceCompleteLiveSet(ctx context.Context) ([]searchengine.SegmentID, error) {
-	if m.l2Authoritative {
-		if err := m.loadResidentFromL2(ctx); err != nil && err != errL2CacheCold {
-			return nil, err
-		}
-	} else {
-		m.importedGen.Store(0)
-		if err := m.loadFromServer(ctx); err != nil {
-			return nil, err
-		}
+	if err := m.loadResidentFromL2(); err != nil && err != errL2CacheCold {
+		return nil, err
 	}
 	m.markMaterialized()
 	exported := m.engine.Export()
@@ -236,39 +307,6 @@ func listOnDiskSegIDs(dir string) ([]onDiskSeg, error) {
 	return segs, nil
 }
 
-// liveSetSubsetOfList0 reports whether EVERY id in the computed live set is present
-// in the server's authoritative List(0) manifest for THIS engine's format. It is the
-// subset-abort guard: a live set that is NOT a subset of List(0) means a load
-// returned an incomplete view (so the diff would false-prune), and the caller
-// HARD-SKIPS the pool rather than pruning against a suspect live set.
-//
-// PER-FORMAT-TIGHT: the server keys blobs by graphKey only (no format dimension), so
-// List(0) returns BOTH this graph's HNSW and BM25 ids. The candidate id set is
-// filtered through this engine's keepFormat predicate so the HNSW live set is checked
-// only against the shipped HNSW ids (and BM25 against BM25) — an unfiltered check
-// would be loose (over-permissive), never falsely aborting but not tight. List(0) is
-// residency-independent (the source's authoritative manifest), so it is the right
-// reference regardless of what is currently resident.
-func (m *distManager[Q, S]) liveSetSubsetOfList0(ctx context.Context, live map[searchengine.SegmentID]struct{}) (bool, error) {
-	metas, err := m.source.List(ctx, 0)
-	if err != nil {
-		return false, err
-	}
-	shipped := make(map[searchengine.SegmentID]struct{}, len(metas))
-	for _, meta := range metas {
-		if !m.keepFormat(meta.Format) {
-			continue
-		}
-		shipped[meta.ID] = struct{}{}
-	}
-	for id := range live {
-		if _, ok := shipped[id]; !ok {
-			return false, nil
-		}
-	}
-	return true, nil
-}
-
 // PruneCache diffs each graph's on-disk L2 .seg ids against its COMPLETE current
 // live set (per format: HNSW = embed ∪ deterministic, BM25 = the single engine)
 // and removes the orphans. It PREVIEWS by default: with execute=false it reports
@@ -293,22 +331,8 @@ func (m *Manager) PruneCache(ctx context.Context, graphs []PruneCacheTarget, exe
 		if err != nil {
 			return PruneCacheReport{}, err
 		}
-		// Re-fetch the memoized embed distManager (check-construct-store returns the
-		// SAME instance) for the per-format subset-check; the det engine shares the
-		// embed engine's HNSW format + target, so either engine's keepFormat/source
-		// is equivalent — use the embed manager's.
-		//
-		// NOTE (T3): unlike publishCoverageOK, PruneCache does NOT skip this subset
-		// check for the completeness-server-side (GCS) source. On the GCS path List(0)
-		// is the manifest, so a non-subset here merely SKIPS pruning (fail-safe — it
-		// never false-prunes). L2-prune-on-cloud is out of T3 scope (it belongs with
-		// the OSS-L2 work); leaving the guard intact is the conservative choice.
-		hnswSubset, err := m.managerFor(g.GraphType, g.Name).liveSetSubsetOfList0(ctx, hnswLive)
-		if err != nil {
-			return PruneCacheReport{}, err
-		}
 		hnswDir := graphCacheDirFor(m.cacheDir, g.GraphType, g.Name, hnsw.New().Name())
-		if err := m.prunePoolReport(&report, g, hnsw.New().Name(), hnswDir, hnswLive, hnswSubset, execute); err != nil {
+		if err := m.prunePoolReport(&report, g, hnsw.New().Name(), hnswDir, hnswLive, execute); err != nil {
 			return PruneCacheReport{}, err
 		}
 
@@ -317,12 +341,8 @@ func (m *Manager) PruneCache(ctx context.Context, graphs []PruneCacheTarget, exe
 		if err != nil {
 			return PruneCacheReport{}, err
 		}
-		bm25Subset, err := m.bm25ManagerFor(g.GraphType, g.Name).liveSetSubsetOfList0(ctx, bm25Live)
-		if err != nil {
-			return PruneCacheReport{}, err
-		}
 		bm25Dir := graphCacheDirFor(m.cacheDir, g.GraphType, g.Name, bm25.New().Name())
-		if err := m.prunePoolReport(&report, g, bm25.New().Name(), bm25Dir, bm25Live, bm25Subset, execute); err != nil {
+		if err := m.prunePoolReport(&report, g, bm25.New().Name(), bm25Dir, bm25Live, execute); err != nil {
 			return PruneCacheReport{}, err
 		}
 	}
@@ -330,10 +350,35 @@ func (m *Manager) PruneCache(ctx context.Context, graphs []PruneCacheTarget, exe
 }
 
 // prunePoolReport is the per-(graph, format) tail shared by the HNSW and BM25 pools:
-// subset-abort guard, on-disk diff, and (execute only) the direct-os.Remove unlink.
-// It appends exactly one PruneCacheGraphReport to report and accumulates the EXECUTED
-// totals. Non-generic so both engine instantiations route through one body; the
-// caller supplies the already-computed live set + subset result for the pool.
+// the empty-live-set refusal, the on-disk diff, and (execute only) the
+// direct-os.Remove unlink. It appends exactly one PruneCacheGraphReport to report and
+// accumulates the EXECUTED totals. Non-generic so both engine instantiations route
+// through one body; the caller supplies the already-computed live set for the pool.
+//
+// THE EMPTY-LIVE-SET REFUSAL IS THE ONE THING STANDING BETWEEN THIS FUNCTION AND A
+// CORPUS WIPE, and it is required work in this change rather than a hardening
+// afterthought. Every on-disk id absent from `live` is appended to Orphans and, under
+// execute, unlinked. So an EMPTY live set orphans and unlinks EVERY .seg file in the
+// pool. Nothing else in this body guards it.
+//
+// It used to be guarded incidentally, by a caller-supplied subset check against the
+// source's List(0): an empty live set arrived here only on a path that check covered.
+// That check compared the live set against a remote manifest and is gone — locally it
+// would compare the L2 cache against itself. Removing it without putting this in its
+// place would have made the wipe reachable on the one destructive path this ticket
+// leaves universal.
+//
+// This is the corpus-wipe property — an empty live set must NEVER drive a destructive
+// sweep — restated at its second reachable site. The first is the layer swap, where
+// prospectiveLayerOK enforces it.
+//
+// THE REFUSAL IS REPORTED, NOT SILENT. It appends an Aborted pool with a reason
+// naming the empty live set, because an unreported refusal is indistinguishable from
+// a pool that had nothing to prune — both render zero orphans, and an operator would
+// read "nothing to do" where the truth is "declined to act".
+//
+// A pool whose live set AND on-disk set are both empty is not refused: there is
+// nothing to destroy, so it reports as an ordinary empty pool.
 //
 // The orphan unlink is a DIRECT os.Remove(filepath.Join(dir, id+".seg")) — NEVER the
 // index-gated diskSegmentCache.Remove. Remove only reaches os.Remove when the id is
@@ -348,24 +393,25 @@ func (m *Manager) prunePoolReport(
 	g PruneCacheTarget,
 	format, dir string,
 	live map[searchengine.SegmentID]struct{},
-	subsetOK, execute bool,
+	execute bool,
 ) error {
-	if !subsetOK {
-		// Live set is NOT a subset of List(0): the load returned an incomplete view, so
-		// pruning against it could false-prune. SKIP the pool untouched.
-		report.Graphs = append(report.Graphs, PruneCacheGraphReport{
-			GraphType:   g.GraphType,
-			Name:        g.Name,
-			Format:      format,
-			Aborted:     true,
-			AbortReason: "live set not a subset of List(0) — incomplete, skipping",
-		})
-		return nil
-	}
-
 	onDisk, err := listOnDiskSegIDs(dir)
 	if err != nil {
 		return err
+	}
+
+	if len(live) == 0 && len(onDisk) > 0 {
+		// EMPTY LIVE SET OVER A POPULATED POOL. Every .seg on disk would be classified
+		// an orphan and unlinked. REFUSE the pool untouched and say so.
+		report.Graphs = append(report.Graphs, PruneCacheGraphReport{
+			GraphType: g.GraphType,
+			Name:      g.Name,
+			Format:    format,
+			Aborted:   true,
+			AbortReason: "empty live set over " + itoa(len(onDisk)) +
+				" on-disk segments — refusing to prune, this would remove the whole pool",
+		})
+		return nil
 	}
 
 	pool := PruneCacheGraphReport{GraphType: g.GraphType, Name: g.Name, Format: format}
@@ -389,3 +435,7 @@ func (m *Manager) prunePoolReport(
 	report.Graphs = append(report.Graphs, pool)
 	return nil
 }
+
+// itoa keeps the refusal reason free of a fmt import in a file that otherwise has
+// none.
+func itoa(n int) string { return strconv.Itoa(n) }

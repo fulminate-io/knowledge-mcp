@@ -62,8 +62,8 @@ func gatedRouteLinkage(ctx context.Context, gc statsRPC, a queryArgs) kgtools.To
 	return routeLinkageClient(ctx, gc, a, queryArgsPayload(a))
 }
 
-func gatedRouteWebPDF(a queryArgs) (bool, kgtools.ToolResult) {
-	return routeWebPDFClient(a, queryArgsPayload(a))
+func gatedRouteWebPDF(ctx context.Context, deps ClientDeps, a queryArgs) (bool, kgtools.ToolResult) {
+	return routeWebPDFClient(ctx, deps, a, queryArgsPayload(a))
 }
 
 // queryRenderAllowlist is the CLOSED set of params an arm may deliberately
@@ -95,7 +95,7 @@ var queryParamGroupTable = map[string][]string{
 // each declared param EXACTLY ONCE. This is the group-level twin of the per-arm
 // partition: because the arms compose their sets from these groups, a schema
 // addition that lands in no group is caught here with a single clear failure
-// rather than as 47 identical per-arm failures.
+// rather than as 48 identical per-arm failures.
 func TestQueryParamGroups_PartitionSchema(t *testing.T) {
 	schema := QueryToolDef().InputSchema.Properties
 	require.NotEmpty(t, schema, "QueryToolDef must declare params")
@@ -140,20 +140,25 @@ func sortedGroupNames() []string {
 	return names
 }
 
-// TestQueryArmRegistry_IsOneObjectAssembledFromItsSiblings proves the three
-// sibling table files feed ONE registry rather than standing as three
+// TestQueryArmRegistry_IsOneObjectAssembledFromItsSiblings proves the FOUR
+// sibling table files feed ONE registry rather than standing as four
 // independent ones. It checks the sum arithmetic (so a group that failed to be
 // copied cannot hide behind the total) and then reads one arm from each sibling
 // back out of the assembled map — the gate and the tests must see the same
 // object or the classification they enforce and the classification they assert
 // can drift apart.
+//
+// THE FOURTH GROUP is queryStatsArmSpecs (query_arm_registry_stats.go), split off
+// when the checks/transformers stats arm pushed the per-graph file past the
+// 500-line cap. Both the sum and the per-group probe below were widened with it —
+// a new sibling left out of EITHER would make this test weaker while still green.
 func TestQueryArmRegistry_IsOneObjectAssembledFromItsSiblings(t *testing.T) {
 	require.Len(t, queryArmRegistry,
-		len(queryGraphArmSpecs)+len(queryModeArmSpecs)+len(queryReflectArmSpecs),
+		len(queryGraphArmSpecs)+len(queryModeArmSpecs)+len(queryReflectArmSpecs)+len(queryStatsArmSpecs),
 		"every sibling group must be copied into the one registry, and no armID may collide "+
 			"across groups (a collision silently overwrites and shrinks the total)")
 
-	for _, arm := range []armID{armCloudCICDStats, armCorrelations, armReflectRecall} {
+	for _, arm := range []armID{armCloudCICDStats, armCorrelations, armReflectRecall, armBuiltinGraphStats} {
 		spec, ok := queryArmRegistry[arm]
 		assert.Truef(t, ok, "arm %s is declared in a sibling file but absent from the assembled registry", arm)
 		assert.NotEmptyf(t, spec.handler, "arm %s came through the assembly without its handler", arm)

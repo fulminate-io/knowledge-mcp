@@ -23,9 +23,16 @@ const formatName = "bm25v2"
 // Format is the BM25F SegmentFormat for the segmented engine, generic over
 // [Query, *CorpusStats]: the query is a pre-tokenized bm25.Query and the corpus
 // statistics are *CorpusStats (corpus-global IDF + per-field average doc length).
-// The format owns its concrete Segment type (*mappedSegment) so Merge
+// The format owns its concrete Segment type (*mappedSegment) so MergeTo
 // type-asserts its inputs and reads their internals (posting runs) directly — no
 // Document retention.
+//
+// IT SATISFIES SegmentFormat's CONCURRENCY OBLIGATION by being a STATELESS VALUE
+// TYPE: no fields, value receivers, every per-call allocation local. The engine
+// drives one Format value from several harvest goroutines at once. Per-call
+// uniqueness of the on-disk destination is no longer this format's problem: the
+// engine creates one file per MergeTo call and passes it in, so two concurrent
+// merges cannot collide on the filesystem either.
 type Format struct{}
 
 // New returns the BM25 SegmentFormat ready to hand to searchengine.New.
@@ -87,29 +94,43 @@ func (Format) Decode(blob []byte) (searchengine.Segment[Query, *CorpusStats], er
 	return seg, nil
 }
 
-// Merge consolidates several BM25 segments into one all-live segment, Lucene-style.
-// It type-asserts each input to *mappedSegment, keeps only members for which
-// accept[i](id) is true, and CONCATENATES the survivors' live postings into one
-// fresh segment, re-numbering internal docIDs into a single contiguous space.
-// Unlike an HNSW graph (whose neighbor links force re-insertion), BM25 postings
-// splice cleanly — only the docID needs remapping. The result is a single
-// consolidated segment in which every surviving member is live; the engine drops
-// the inputs' liveDocs. Per-segment doc frequency is recomputed from the merged
-// postings so AggregateStats over the consolidated set stays correct.
+// MergeTo consolidates segs into dst and reports the merged segment's byte
+// length, without ever holding the merged segment in memory.
 //
-// The consolidation is STREAMED: the inputs are read through dictionary cursors
-// and the output is written to a temp file that is read back once and unlinked,
-// so nothing the size of the merged segment is ever assembled on the heap.
-func (Format) Merge(segs []searchengine.Segment[Query, *CorpusStats], accept []func(searchengine.ExternalID) bool) (searchengine.Segment[Query, *CorpusStats], error) {
+// WHAT IS STREAMED, PRECISELY. The inputs are read through dictionary cursors
+// and the output is written to dst at absolute offsets, so no writer state grows
+// with the merged segment: a cursor per input dictionary, one reused posting
+// buffer, one reused string buffer, and a fixed set of coalescing windows. There
+// is no read-back and no output-sized allocation anywhere on this path, which is
+// what distinguishes MergeTo from Merge — Merge reads its temp file back into a
+// single output-sized blob and returns that as the segment's payload.
+//
+// WHAT REMAINS RESIDENT, stated rather than glossed: the merge holds the winner
+// map and the id remap, which are per-DOCUMENT and scale with the member count
+// rather than with the output's size. This is not a claim that a merge allocates
+// nothing — it is the narrower and true claim that nothing it allocates is sized
+// by the segment it produces.
+//
+// THIS PACKAGE STILL CREATES NO MAPPINGS AND CONTAINS NO PLATFORM CODE. dst is
+// an interface the engine supplies; mapping the finished file is the distribution
+// layer's job, and taking a sink rather than a mapping is what keeps that true.
+//
+// OWNERSHIP: dst belongs to the caller. This does not truncate, close, stat,
+// unlink or map it, and it leaves dst in place on the error path — a format that
+// cleaned up after itself would hide an engine that forgot to.
+func (Format) MergeTo(dst searchengine.MergeSink, segs []searchengine.Segment[Query, *CorpusStats], accept []func(searchengine.ExternalID) bool) (int64, error) {
+	if defaultDictKind > dictHash {
+		return 0, fmt.Errorf("bm25 merge: unknown dictionary kind %d", defaultDictKind)
+	}
 	ins := make([]*mappedSegment, len(segs))
 	for i, s := range segs {
 		ms, ok := s.(*mappedSegment)
 		if !ok {
-			return nil, fmt.Errorf("bm25 merge: input %d is %T, not *mappedSegment", i, s)
+			return 0, fmt.Errorf("bm25 merge: input %d is %T, not *mappedSegment", i, s)
 		}
 		ins[i] = ms
 	}
-	return mergeSegmentsV2(ins, accept, defaultDictKind)
+	return streamMergeToFile(dst, ins, accept, defaultDictKind)
 }
 
 // mergeSlot identifies the ONE copy of an external id that a merge keeps: which

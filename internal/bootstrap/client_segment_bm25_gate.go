@@ -4,33 +4,30 @@ package bootstrap
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"sync"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/bm25"
-	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 	"github.com/fulminate-io/knowledge-mcp/internal/segmentdist"
+	"github.com/fulminate-io/knowledge-mcp/internal/tools"
 )
 
 // The BM25 arm of the auto-heal rebuild decision.
 //
-// healNeedsRebuild's shipped-completeness check is scoped to the HNSW format: it
-// asks whether the HNSW corpus covers the embedded node count, and returns
-// no-rebuild when it does. A graph can have a healthy HNSW arm and a COLLAPSED BM25
-// arm at the same time — the two formats ship separate manifests and load from
-// separately-rooted L2 caches — and on that shape the HNSW-scoped check short-
-// circuits before the BM25 arm is ever consulted, so the collapsed arm has no
-// trigger to recover through. This file is the second arm of that decision.
+// healNeedsRebuildLocal is scoped to the HNSW format: it compares the HNSW resident
+// doc count against the graph's embedded-node count and returns no-rebuild when it
+// covers. A graph can have a healthy HNSW arm and a COLLAPSED BM25 arm at the same
+// time — the two formats load from separately-rooted L2 caches — and on that shape
+// the HNSW-scoped check short-circuits before the field corpus is ever examined, so
+// the collapsed arm has no trigger to recover through. This file is the second arm
+// of that decision, and healNeedsRebuild consults it whenever the HNSW arm is
+// satisfied.
 //
-// The BM25 arm is safe to escalate to a rebuild in a way the HNSW arm is not.
-// RebuildSegments populates the DETERMINISTIC HNSW engine, a different instance
-// from the HNSW engine the read path (and therefore the degeneracy probe) reads,
-// so an HNSW rebuild cannot raise the count it is measured against — hence the
-// HNSW arm's no-rebuild-when-shipped-complete rule. BM25 has no deterministic
-// variant: a rebuild writes the SAME BM25 engine the embed and read paths use, so
-// it genuinely raises the read pool and converges.
+// THE SHAPE THIS EXISTS FOR IS NOT HYPOTHETICAL. On 2026-07-27 a collapsed BM25 arm
+// behind a healthy HNSW arm produced 693 publish skips in 55 minutes and was cured
+// only by a manual rebuild; the diagnosis was that the degeneracy probe asked the
+// vector arm alone.
 
 // bm25HealPending and bm25HealArmed carry the gate's process-local no-progress
 // bound, keyed by graph. The two-map split is what makes the bound consumable only
@@ -89,12 +86,14 @@ func clearBM25HealProgress(gt kgtypes.GraphType, name string) {
 // shot the no-progress bound allows. It is called at every site where a rebuild's
 // (ran, err) outcome is visible, under `ran && err == nil`.
 //
-// IT IS A NO-OP WHEN NO PENDING RECORD EXISTS. Two of healNeedsRebuild's paths
-// reach a rebuild WITHOUT consulting this gate (a never-shipped HNSW corpus, and a
-// degenerate HNSW arm a read-engine load could not restore). Arming on one of those
-// would record a bound for an arm the gate never examined, poisoning the next BM25
-// decision with a resident value it never chose. The guard is on the pending record
-// being present, not on which caller is arming.
+// IT IS A NO-OP WHEN NO PENDING RECORD EXISTS, and that guard still earns its place
+// under the single surviving heal path. healNeedsRebuild SHORT-CIRCUITS on the HNSW
+// arm: a graph whose vector corpus is empty or degenerate returns true from
+// healNeedsRebuildLocal and reaches a rebuild WITHOUT this gate ever being consulted.
+// Arming on that outcome would record a bound for an arm the gate never examined,
+// poisoning the next BM25 decision with a resident value it never chose. The guard is
+// on the pending record being present, not on which caller is arming — which is what
+// keeps it correct as the set of rebuild-reaching paths changes.
 func (c *client) armBM25HealProgress(gt kgtypes.GraphType, name string) {
 	key := bm25HealKey(gt, name)
 	bm25HealMu.Lock()
@@ -107,59 +106,35 @@ func (c *client) armBM25HealProgress(gt kgtypes.GraphType, name string) {
 	bm25HealArmed[key] = resident
 }
 
-// armVerdictFor selects one format's verdict out of a per-format probe result.
-func armVerdictFor(verdicts []segmentdist.ArmVerdict, format string) (segmentdist.ArmVerdict, bool) {
-	for _, v := range verdicts {
+// armObservationFor selects one format's observation out of a per-format probe
+// result.
+func armObservationFor(obs []segmentdist.ArmObservation, format string) (segmentdist.ArmObservation, bool) {
+	for _, v := range obs {
 		if v.Format == format {
 			return v, true
 		}
 	}
-	return segmentdist.ArmVerdict{}, false
-}
-
-// hnswArmProbe runs the per-format degeneracy probe ONCE and reports the HNSW arm's
-// verdict, returning the whole verdict slice so the caller can hand it to the BM25
-// arm instead of paying a second probe.
-//
-// The returned error folds the top-level probe error together with the HNSW arm's
-// OWN ArmVerdict.Err, which preserves the caller's existing semantics exactly: an
-// HNSW arm that could not be read takes the probe-error path (warn, keep the
-// existing resident, do not rebuild) rather than being mistaken for an arm whose
-// load restored coverage. AN EVICTED ARM TAKES THAT SAME PATH, because an evicted
-// arm was not read: the residency budget unloaded its pool and the probe declined
-// to resurrect it, so its Degenerate false is the absence of a measurement rather
-// than a healthy one.
-func (c *client) hnswArmProbe(
-	ctx context.Context, gt kgtypes.GraphType, name string,
-) ([]segmentdist.ArmVerdict, bool, error) {
-	verdicts, err := c.segmentMgr.ReconcileResidentDegenerateByFormat(ctx, gt, name)
-	if err != nil {
-		return verdicts, false, err
-	}
-	v, ok := armVerdictFor(verdicts, hnsw.New().Name())
-	if !ok {
-		return verdicts, false, errors.New("segment probe returned no hnsw arm verdict")
-	}
-	if v.Err != nil {
-		return verdicts, false, v.Err
-	}
-	if v.Evicted {
-		return verdicts, false, errors.New("hnsw arm is evicted — its segment pool was unloaded and not measured")
-	}
-	return verdicts, v.Degenerate, nil
+	return segmentdist.ArmObservation{}, false
 }
 
 // healNeedsRebuildBM25 is the BM25 arm of the rebuild decision, reached once the
 // HNSW arm has decided it does not need a rebuild of its own. It runs three ordered
 // checks, and every one of them declines by default.
 //
-//  1. PRESENCE. The graph must have a shipped BM25 manifest. A graph with embedded
-//     nodes but no shipped BM25 corpus at all is deliberately OUT of scope: that
+//  1. PRESENCE. The graph must HOLD a BM25 corpus in its L2 cache. A graph with
+//     embedded nodes but no BM25 corpus at all is deliberately OUT of scope: that
 //     population recovers through ordinary indexing traffic, and rebuilding it here
 //     would fire a rebuild for every such graph on the first tick.
-//  2. RATIO. The BM25 arm must be degenerate against its OWN manifest's doc count.
-//     An arm that could not be measured never drives a rebuild, and an arm that is
-//     healthy clears the no-progress bound on its way out.
+//     THE OPERAND IS THE CACHE, NOT A RESIDENT COUNT. It was a shipped BM25 manifest
+//     until the cloud segment rail was deleted; the local restatement is
+//     CachedSegmentCount, which reads what is on disk. A resident count would read 0
+//     for an EVICTED pool and report a graph with a complete corpus as never having
+//     produced one.
+//  2. RATIO. The BM25 arm must be degenerate against the graph's EMBEDDED-node count,
+//     via the same degenerateAgainstEmbedded predicate healNeedsRebuildLocal uses —
+//     one predicate, so the HNSW and BM25 arms cannot drift into disagreeing about
+//     what degenerate means. An arm that could not be measured never drives a
+//     rebuild, and an arm that is healthy clears the no-progress bound on its way out.
 //  3. NO-PROGRESS BOUND. A rebuild that already completed for this graph without
 //     raising the arm's resident count is not repeated. Without this the arm would
 //     be rebuilt on every tick forever whenever a rebuild cannot converge — and the
@@ -167,44 +142,60 @@ func (c *client) hnswArmProbe(
 //     against the HNSW corpus, which on this shape is already complete and so
 //     records progress (resetting the streak) after every pass.
 //
-// verdicts is the already-computed per-format probe result when the caller has one;
+// obs is the already-computed per-format observation set when the caller has one;
 // pass nil to have the gate probe for itself.
 func (c *client) healNeedsRebuildBM25(
-	ctx context.Context, gt kgtypes.GraphType, name string, verdicts []segmentdist.ArmVerdict,
+	ctx context.Context, gt kgtypes.GraphType, name string, obs []segmentdist.ArmObservation,
+) (bool, error) {
+	embedded, err := tools.GraphEmbeddedCount(ctx, c.GraphCaller(), gt, name)
+	if err != nil {
+		return false, err
+	}
+	return c.healNeedsRebuildBM25With(ctx, gt, name, obs, embedded)
+}
+
+// healNeedsRebuildBM25With is healNeedsRebuildBM25 for a caller that already read the
+// embedded-node denominator. The denominator is per-GRAPH, so a caller evaluating
+// both arms reads it once and hands the same number to each.
+func (c *client) healNeedsRebuildBM25With(
+	ctx context.Context, gt kgtypes.GraphType, name string,
+	obs []segmentdist.ArmObservation, embedded int,
 ) (bool, error) {
 	format := bm25.New().Name()
 
 	// 1. PRESENCE.
-	snapshot, err := c.segmentMgr.ShippedManifestSnapshot(ctx, gt, name, format)
-	if err != nil {
-		return false, err
-	}
-	if !c.segmentMgr.HasShippedFromSnapshot(snapshot) {
-		return false, nil // nothing shipped for this format — not this gate's to heal.
+	if c.segmentMgr.CachedSegmentCount(gt, name, format) == 0 {
+		return false, nil // no BM25 corpus on disk — not this gate's to heal.
 	}
 
 	// 2. RATIO.
-	if verdicts == nil {
-		if verdicts, err = c.segmentMgr.ReconcileResidentDegenerateByFormat(ctx, gt, name); err != nil {
+	var err error
+	if obs == nil {
+		if obs, err = c.segmentMgr.ResidentObservationsByFormat(ctx, gt, name); err != nil {
 			return false, err
 		}
 	}
-	v, ok := armVerdictFor(verdicts, format)
+	v, ok := armObservationFor(obs, format)
 	if !ok || v.Err != nil {
-		// Unmeasured arm: best-effort, matching the probe-error convention above —
-		// an arm that could not be read must never drive a rebuild.
+		// Unmeasured arm: best-effort — an arm that could not be read must never
+		// drive a rebuild.
 		return false, nil //nolint:nilerr // an unmeasured arm declines rather than propagating
 	}
 	// AN EVICTED ARM DECLINES WITHOUT CLEARING, and it must be tested BEFORE the
-	// Degenerate branch below. An evicted arm reports Degenerate false, so falling
-	// into that branch would call clearBM25HealProgress and drop the no-progress
-	// bound — the only thing stopping check 3's endless per-tick rebuild — on the
-	// strength of a measurement nobody took. This is the same decline the unmeasured
-	// arm above performs, for the same reason.
+	// degeneracy test below. An evicted arm reports ResidentAfterLoad 0, which
+	// degenerateAgainstEmbedded reads as a lost pool and turns into a rebuild —
+	// undoing the eviction at the highest possible cost. Declining here is also what
+	// keeps the no-progress bound (check 3, the only thing stopping an endless
+	// per-tick rebuild) from being cleared on the strength of a measurement nobody
+	// took.
 	if v.Evicted {
 		return false, nil
 	}
-	if !v.Degenerate {
+	// THE DENOMINATOR IS THE GRAPH'S EMBEDDED-NODE COUNT, supplied by the caller and
+	// applied to THIS format's resident numerator. It is per-GRAPH while the numerator
+	// is per-FORMAT, which is exactly why the arms stay separately answerable off one
+	// read.
+	if !degenerateAgainstEmbedded(v.ResidentAfterLoad, embedded) {
 		clearBM25HealProgress(gt, name)
 		return false, nil
 	}
@@ -213,14 +204,14 @@ func (c *client) healNeedsRebuildBM25(
 	key := bm25HealKey(gt, name)
 	bm25HealMu.Lock()
 	armed, isArmed := bm25HealArmed[key]
-	declined := isArmed && v.ResidentAfterRecover <= armed
+	declined := isArmed && v.ResidentAfterLoad <= armed
 	if !declined {
-		bm25HealPending[key] = v.ResidentAfterRecover
+		bm25HealPending[key] = v.ResidentAfterLoad
 	}
 	bm25HealMu.Unlock()
 	if declined {
 		slog.Warn("bootstrap: BM25 arm rebuild declined — prior rebuild did not raise the arm's resident (no-progress bound)",
-			"graph_type", gt, "name", name, "resident", v.ResidentAfterRecover, "armed_at", armed)
+			"graph_type", gt, "name", name, "resident", v.ResidentAfterLoad, "armed_at", armed)
 		return false, nil
 	}
 	return true, nil

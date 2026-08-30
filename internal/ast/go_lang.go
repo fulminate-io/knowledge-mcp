@@ -47,7 +47,14 @@ var goLangConfig = LangConfig{
 		{Name: "expr", Context: contextExpr, Prefix: "package _\nvar _ = ", Suffix: ""},
 	},
 	CommentKinds: []string{"comment"},
-	IdentRule:    isGoIdent,
+	// Go's interpreted string parses to exactly its two quote tokens plus any
+	// escape sequences; the literal text between them produces NO node, so the
+	// child walk skipped every content byte and an inlined literal constrained
+	// nothing. Go's raw_string_literal, rune_literal and the numeric literals are
+	// childless and were always compared correctly — measured in
+	// testdata/opaque_text_census.txt.
+	OpaqueTextKinds: []string{"interpreted_string_literal"},
+	IdentRule:       isGoIdent,
 	// Go's grammar terminates a statement inside a block with an anonymous
 	// newline, so a multi-line block carries a child a one-line block does
 	// not. Measured across all 21 registered grammars (testdata/

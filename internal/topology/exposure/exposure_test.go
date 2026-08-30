@@ -73,6 +73,9 @@ type cloudFixture struct {
 	accounts  map[string]*fakeAccount
 	knowledge *fakeAccount
 	linkage   *fakeAccount
+	// empty is what the READ path resolves an unseeded account name to. It is
+	// shared and never written; see lookupAccount.
+	empty *fakeAccount
 }
 
 // newCloudFixture returns an empty fixture.
@@ -83,11 +86,16 @@ func newCloudFixture(t *testing.T) *cloudFixture {
 		accounts:  map[string]*fakeAccount{},
 		knowledge: &fakeAccount{},
 		linkage:   &fakeAccount{},
+		empty:     &fakeAccount{},
 	}
 }
 
 // account returns the named cloud account's synthetic graph, creating it on
 // first use.
+//
+// THIS IS THE SEEDING ACCESSOR AND IT MUTATES. Only the Add* helpers may call
+// it, and only from the test body before the analyzer runs. The query path uses
+// lookupAccount instead — see the note there.
 func (f *cloudFixture) account(name string) *fakeAccount {
 	acct, ok := f.accounts[name]
 	if !ok {
@@ -95,6 +103,27 @@ func (f *cloudFixture) account(name string) *fakeAccount {
 		f.accounts[name] = acct
 	}
 	return acct
+}
+
+// lookupAccount is the READ-ONLY account accessor, and the split from account()
+// is load-bearing rather than tidiness.
+//
+// Execute serves the analyzer's rule fanout, which runs its rules on concurrent
+// goroutines. account() creates on first use, and a map create is a WRITE — so
+// resolving an unseeded account name on that path raced two goroutines against
+// the same map and the race detector caught it: a write in account() from one
+// rule against a read in account() from another. The race was the FIXTURE's, not
+// the analyzer's; the analyzer only ever reads through this seam.
+//
+// Concurrent map READS are safe, so removing the write is the whole fix and no
+// lock is needed on the query path. An unseeded name resolves to a shared empty
+// account, which is exactly what the lazily-created one used to be — a browse
+// against an unseeded graph returns no nodes either way.
+func (f *cloudFixture) lookupAccount(name string) *fakeAccount {
+	if acct, ok := f.accounts[name]; ok {
+		return acct
+	}
+	return f.empty
 }
 
 // AddCloudResource appends one cloud-resource node to the named account and
@@ -251,7 +280,7 @@ func keysetPage(nodes []*knowledgev1.Node, afterID *string, limit int) []*knowle
 // linkage bucket; otherwise the named cloud account (empty → empty account).
 func (f *cloudFixture) accountForTarget(target *knowledgev1.GraphSelector) *fakeAccount {
 	if target == nil {
-		return f.account("")
+		return f.lookupAccount("")
 	}
 	switch kgtypes.GraphType(target.GetGraph()) {
 	case kgtypes.GraphKnowledge:
@@ -259,7 +288,7 @@ func (f *cloudFixture) accountForTarget(target *knowledgev1.GraphSelector) *fake
 	case kgtypes.GraphLinkage:
 		return f.linkage
 	default:
-		return f.account(target.GetAccount())
+		return f.lookupAccount(target.GetAccount())
 	}
 }
 

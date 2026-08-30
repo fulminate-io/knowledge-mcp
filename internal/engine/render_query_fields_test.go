@@ -180,13 +180,32 @@ func TestRenderQueryTool_SingleID_FieldsProjection(t *testing.T) {
 		assert.NotContains(t, out.Content[0].Text, "## cloud:prod node")
 	})
 
-	t.Run("knowledge empty fields returns full node JSON (no regression)", func(t *testing.T) {
+	t.Run("knowledge empty fields drops nothing (no regression)", func(t *testing.T) {
+		// THE PROPERTY THIS SUBTEST OWNS is that an ABSENT projection drops no
+		// field — content and summary survive. It used to assert that through the
+		// format:"json" read, which is no longer the right probe for it: format now
+		// SELECTS the by-id render, so json returns the {node,truncated} envelope.
+		// The property is asserted on both renders instead, which is strictly more
+		// than it covered before.
 		resp := nodeResp(t, richNode("n1"))
 		args := queryArgsJSON(t, queryArgs{ID: "n1", Graph: "knowledge", Format: "json"})
 		out, err := renderQueryTool(args, resp)
 		require.NoError(t, err)
+		var env struct {
+			Node *knowledgev1.Node `json:"node"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(out.Content[0].Text), &env))
+		require.NotNil(t, env.Node, "format:json wraps the node in the by-id envelope")
+		assert.Equal(t, "n1", env.Node.GetId())
+		assert.Equal(t, "even longer content body", env.Node.GetContent())
+		assert.Equal(t, "the summary", env.Node.GetSummary())
+
+		// An ABSENT format keeps the legacy bare-node body byte-for-byte.
+		bareArgs := queryArgsJSON(t, queryArgs{ID: "n1", Graph: "knowledge"})
+		bareOut, err := renderQueryTool(bareArgs, nodeResp(t, richNode("n1")))
+		require.NoError(t, err)
 		var decoded knowledgev1.Node
-		require.NoError(t, json.Unmarshal([]byte(out.Content[0].Text), &decoded))
+		require.NoError(t, json.Unmarshal([]byte(bareOut.Content[0].Text), &decoded))
 		assert.Equal(t, "n1", decoded.Id)
 		assert.Equal(t, "even longer content body", decoded.Content)
 		assert.Equal(t, "the summary", decoded.Summary)
@@ -249,5 +268,53 @@ func TestRenderQueryTool_SearchArm_FieldsProjection(t *testing.T) {
 		require.Len(t, env.Results, 1)
 		assert.Equal(t, "heavy description", env.Results[0].Description)
 		assert.Equal(t, "heavy content", env.Results[0].Content)
+	})
+}
+
+// TestNodeProjection_SummaryPopulatedAndEmpty pins the ticket's own reproduction:
+// `summary` is projectable, and a requested key is ALWAYS present in the row.
+//
+// The two fixtures are what make the claim meaningful. Asserting only the
+// populated case proves the arm exists but says nothing about presence; the
+// genuinely-empty case is what distinguishes "the field is present and unset"
+// from "the key was not in your projection" — the indistinguishability this
+// ticket exists to kill. require.Contains runs BEFORE the value assertion,
+// because an assertion on the value alone passes against a MISSING key through
+// a zero-value comparison, reintroducing the same ambiguity.
+func TestNodeProjection_SummaryPopulatedAndEmpty(t *testing.T) {
+	t.Run("populated summary projects its value", func(t *testing.T) {
+		n := &knowledgev1.Node{Id: "s1", SymbolName: "Populated", Summary: "the distinct summary value"}
+		out, err := renderNodesByIDsResponse(nodesResp(t, []*knowledgev1.Node{n}, 1), "knowledge", "json", []string{"id", "summary"}, false)
+		require.NoError(t, err)
+		require.False(t, out.IsError)
+		var payload struct {
+			Nodes []map[string]any `json:"nodes"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(out.Content[0].Text), &payload))
+		require.Len(t, payload.Nodes, 1)
+		row := payload.Nodes[0]
+		require.Contains(t, row, "summary")
+		require.Equal(t, "the distinct summary value", row["summary"])
+	})
+
+	t.Run("genuinely unset summary returns the key with an empty value", func(t *testing.T) {
+		n := &knowledgev1.Node{Id: "s2", SymbolName: "Unset", Summary: ""}
+		out, err := renderNodesByIDsResponse(nodesResp(t, []*knowledgev1.Node{n}, 1), "knowledge", "json", []string{"id", "summary"}, false)
+		require.NoError(t, err)
+		require.False(t, out.IsError)
+		var payload struct {
+			Nodes []map[string]any `json:"nodes"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(out.Content[0].Text), &payload))
+		require.Len(t, payload.Nodes, 1)
+		row := payload.Nodes[0]
+		require.Contains(t, row, "summary", "a requested key must be present even when the field is unset")
+		// Type-asserted before the emptiness check: require.Empty is satisfied by
+		// a nil interface too, so on a bare `any` it would also pass for a key
+		// that came back absent — the very ambiguity this sub-case exists to rule
+		// out. The string assertion makes "present and empty" the only pass.
+		summary, isString := row["summary"].(string)
+		require.True(t, isString, "summary must project as a string, not a null")
+		require.Empty(t, summary)
 	})
 }

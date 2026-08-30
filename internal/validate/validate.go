@@ -77,7 +77,7 @@ func clampAtWord(s string, maxLen int) string {
 // instead of hard-rejecting. An EMPTY summary still hard-rejects — emptiness
 // cannot be clamped — with a message byte-identical to Summary's required
 // message, so empty-summary behavior is unchanged. An in-range summary passes
-// through trimmed with no warning. Counting matches Summary/DerivedSummary
+// through trimmed with no warning. Counting matches Summary
 // (TrimSpace then RuneCountInString). Callers assign the clamped value back into
 // the field the node builder reads, and surface a non-empty warning to the user.
 func ClampSummary(toolName, fieldPath, summary string) (clamped string, warning string, err error) {
@@ -105,29 +105,6 @@ func runePrefix(s string, n int) string {
 	}
 	runes := []rune(s)
 	return string(runes[:n]) + "…"
-}
-
-// DerivedSummary validates an AUTO-DERIVED summary (one the caller built by
-// concatenating other fields rather than authoring directly) against the same
-// rune cap as Summary, but produces an actionable error: it names the indexed
-// field path, states the summary was auto-derived from derivedFrom, reports the
-// rune count and how far over the cap it is, and quotes a bounded prefix of the
-// offending text so the author can see WHICH derivation overflowed. The caller
-// passes the ALREADY-DERIVED string plus a human-readable list of the source
-// fields, so this validator never learns the derivation shapes.
-//
-// Trim-then-count parity: the rune count matches Summary (validate.go) and the
-// server validateSummary backstop, which both TrimSpace before counting. There
-// is no empty-check branch — a derived summary always carries its literal
-// prefix, so emptiness is not a reachable failure here.
-func DerivedSummary(toolName, fieldPath, derivedFrom, derived string) error {
-	trimmed := strings.TrimSpace(derived)
-	n := utf8.RuneCountInString(trimmed)
-	if n > SummaryMaxLen {
-		return fmt.Errorf("%s: %s is an auto-derived summary (derived from %s) that exceeds %d characters (got %d, over by %d). Shorten the source fields. Derived prefix: %q",
-			toolName, fieldPath, derivedFrom, SummaryMaxLen, n, n-SummaryMaxLen, runePrefix(trimmed, 80))
-	}
-	return nil
 }
 
 // goTestRunFlag / goTestListFlag / numericCompare detect the two `go test`

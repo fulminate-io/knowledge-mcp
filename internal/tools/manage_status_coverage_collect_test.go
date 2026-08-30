@@ -316,9 +316,9 @@ func TestRenderLLMCoverage_KnowledgeRowProbesDefaultInstance(t *testing.T) {
 	assert.Contains(t, out, "shipped 5220 · live 5220",
 		"the knowledge row must report the default instance's real coverage, not a "+
 			"zero read off an instance key nothing writes")
-	assert.Contains(t, seg.probed, "knowledge/default",
+	assert.Contains(t, seg.probedKeys(), "knowledge/default",
 		"the knowledge row must probe segment coverage under the default instance key")
-	assert.NotContains(t, seg.probed, "knowledge",
+	assert.NotContains(t, seg.probedKeys(), "knowledge",
 		"the empty-name key must never be probed — the real reader lazily constructs a "+
 			"manager and an L2 directory for whatever key it is handed, so probing a "+
 			"nonexistent instance makes a status READ create state")

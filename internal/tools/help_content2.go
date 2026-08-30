@@ -2,197 +2,26 @@
 
 package tools
 
-const helpThoughts = `# thoughts — Persistent reasoning graph (think / charge / recall / trace / propagate)
-
-The thought graph externalizes reasoning so it survives sessions, restarts,
-and compactions. Hypotheses become first-class nodes; charges add evidence;
-DeGroot propagation derives valence (consensus direction), magnitude
-(significance), consistency, and self-trust from charge topology.
-
-## Operations
-
-  - think     : record a thought (hypothesis / observation / plan)
-  - charge    : attach evidence that supports/contradicts a thought's claim
-  - recall    : search thoughts with composable filters
-  - trace     : follow reasoning chains forward/backward from a thought
-  - propagate : manually run DeGroot propagation across all thoughts;
-                with similarity:true, ASYNC-trigger the topic-similarity lever
-  - similarity_report : fetch the result of the async topic-similarity pass
-
-Common cycle:  recall → think → (do work) → charge → recall again to confirm
-the hypothesis landed. Examine a single thought via query(mode: "examine",
-id: thought_id). Link a thought to another node via mutate(operation:
-"link", from: thought_id, to: node_id, relationship: "informed-by"|
-"supports"|"contradicts"|"relates-to"|"produced").
-
-## operation: "think" — Record a unit of reasoning
-
-  content       — the thought (required)
-  summary       — search-optimized one-line summary, max 500 chars (REQUIRED).
-                  Authored deliberately — this is what makes the thought findable
-                  via recall. NOT auto-derived from content.
-  session       — group name for related thoughts (e.g. "backend-auth-design")
-  branches_from — thought ID this replaces (after invalidating the original)
-  links         — node IDs to connect to (decisions, steps, code)
-  status        — hypothesized (default) | validated | invalidated
-
-  Examples:
-    thoughts({ "operation": "think", "content": "Cache invalidation bug caused by X",
-               "summary": "Cache bug root cause: stale key X never invalidated on write",
-               "session": "debug-cache" })
-    thoughts({ "operation": "think", "content": "Approach: use Y instead of Z",
-               "summary": "Decided to use Y over Z for cache layer",
-               "links": ["decision_id"] })
-
-  When to use:
-    - Before implementing: record your planned approach
-    - When debugging: what's broken, your hypothesis
-    - After fixing: what was wrong and how you fixed it
-
-## operation: "charge" — Add evidence to a thought
-
-  thought   — thought node ID (required)
-  polarity  — "positive" (evidence SUPPORTS the thought's claim) or "negative"
-              (evidence CONTRADICTS it). Required. This is about the claim's
-              truth, NOT good-vs-bad news; sentiment goes in reasoning.
-  weight    — significance 1-10 (required)
-  reasoning — why this charge applies (required)
-  evidence  — node IDs of supporting evidence: cite the SPECIFIC thought,
-              finding, decision, or charge IDs the charge actually drew on
-              (not a vague hand-wave). Citing a related thought records a
-              charge→thought evidenced-by edge that feeds cross-cluster trust
-              differentiation, so a well-cited charge strengthens exactly the
-              thoughts it relied on — leave it empty and that signal is lost.
-
-  Examples:
-    // claim CONFIRMED → positive (the evidence supports the thought)
-    thoughts({ "operation": "charge", "thought": "t_abc",
-               "polarity": "positive", "weight": 8,
-               "reasoning": "Tests pass, behavior confirmed in prod — supports the claim",
-               "evidence": ["t_root_cause", "finding_bench_id"] })
-    // claim REFUTED → negative (the evidence contradicts the thought)
-    thoughts({ "operation": "charge", "thought": "t_abc",
-               "polarity": "negative", "weight": 5,
-               "reasoning": "Benchmark shows no regression — contradicts the claim" })
-    // polarity tracks the CLAIM, not the sentiment. Thought claims "competitor X
-    // poses a significant threat"; confirming the threat is POSITIVE because the
-    // evidence supports the claim — even though it is bad news for us.
-    thoughts({ "operation": "charge", "thought": "t_threat",
-               "polarity": "positive", "weight": 7,
-               "reasoning": "Confirmed X ships feature Y at lower price — supports the claim that the threat is real (this is bad news for us, but the charge is positive because it supports the thought)." })
-
-## operation: "recall" — Search thoughts with composable filters
-
-  query           — semantic search text (omit to browse)
-  session         — filter by session name
-  status          — hypothesized | validated | invalidated
-  valence_min/max — computed valence range (-1.0 to 1.0)
-  magnitude_min   — minimum magnitude threshold
-  consistency_max — max consistency (low = contested thoughts)
-  connected_to    — node ID thoughts must be connected to
-  time_start/end  — date range (ISO 8601)
-  limit           — max results (default 20, max 50)
-  mode            — search | timeline | charges | graph | clusters
-  format          — text (default) | json
-
-  Examples:
-    thoughts({ "operation": "recall", "query": "cache invalidation" })
-    thoughts({ "operation": "recall", "session": "debug-cache",
-               "status": "hypothesized" })
-    thoughts({ "operation": "recall", "mode": "timeline", "limit": 10 })
-    thoughts({ "operation": "recall", "valence_min": 0.5, "magnitude_min": 2.0 })
-
-## operation: "trace" — Follow reasoning chains
-
-  thought           — starting thought node ID (required)
-  direction         — forward | backward | both (default: both)
-  depth             — max hops (default: 5)
-  include_charges   — include charge nodes in the trace
-  include_artifacts — include linked artifacts (code, decisions, PRs)
-  format            — text (default) | json
-
-  Examples:
-    thoughts({ "operation": "trace", "thought": "t_abc" })
-    thoughts({ "operation": "trace", "thought": "t_abc",
-               "direction": "backward", "depth": 3, "include_artifacts": true })
-
-  When to use:
-    - Walking the reasoning that led to a decision
-    - Auditing whether a hypothesis was actually charged with evidence
-    - Finding all the artifacts a thought informed
-
-  A thought recorded with an origin role (the think origin param) carries an
-  agent--produced-->thought hub edge, so its trace surfaces the originating
-  agent node (e.g. the planner agent) as a provenance step — intentional
-  lineage, not noise.
-
-## operation: "propagate" — Manually run DeGroot propagation
-
-  No required parameters.
-
-  The background loop normally fires propagation on its own — invoke this
-  when you want immediate convergence after a batch of charges, or in tests
-  that need to observe the post-propagation state without a timer wait.
-
-  Optional:
-    force_full (bool) — Run the full-corpus backstop pass now: bypasses the
-      quiet-tick skip and incremental scoping, recomputes every component, and
-      resets the backstop cadence. Use for an on-demand full reflection (ops /
-      debug) instead of waiting for the periodic backstop tick. Errors if the
-      reflection loop is not running in this process.
-
-    similarity (bool) — ASYNC-trigger the topic-similarity lever (drain →
-      centroids → reconcile → merge cascade → summaries → drift → links →
-      densify). The pass can run many minutes — LONGER than the tool-call
-      timeout — so the trigger does NOT wait: it acquires the single-flight
-      guard, starts the pass in the background, and returns IMMEDIATELY with a
-      copy-pasteable thoughts({"operation":"similarity_report"}) fetch call and
-      a duration estimate. Only ONE pass runs at a time; a second trigger while
-      one is in flight coalesces (returns "already running" + the same fetch
-      contract, no second pass). Optional link_threshold / merge_threshold /
-      densify_threshold / densify_k / densify_edge_budget override the HIGH
-      defaults.
-
-  Returns: thoughts_processed, components, iterations, converged (plain
-  propagate); or the async-trigger contract (similarity:true).
-
-  Example:
-    thoughts({ "operation": "propagate" })
-    thoughts({ "operation": "propagate", "force_full": true })
-    thoughts({ "operation": "propagate", "similarity": true })
-
-## operation: "similarity_report" — Fetch the async similarity pass result
-
-  Optional:
-    id (string) — a specific past pass to fetch. Omit for the LATEST pass.
-
-  Renders by status:
-    running   — in-progress + elapsed + the duration estimate + may-take-longer
-    completed — the FULL rendered report (links, merge cascade, summaries,
-                reconciliation, densification, the threshold-tuning histogram)
-    failed    — the failure, surfaced loudly
-    no pass yet — a clear empty-state message naming how to trigger one
-
-  The report is persisted as an event node and fetched by id/marker — it is NOT
-  vector-searchable (event nodes do not embed); this op is the way to read it.
-
-  Example:
-    thoughts({ "operation": "similarity_report" })
-    thoughts({ "operation": "similarity_report", "id": "<pass-id>" })
-`
-
 const helpCreateProject = `# create_project — Create a project container node
 
 Projects are top-level containers for related work. A project holds tickets,
 and tickets hold plans. Hierarchy: project → ticket → plan → phase → step → criterion.
 
 ## Key fields
-  name        — project name (required)
-  description — project description (optional)
-  summary     — short search-optimized summary (optional)
+  name        — project name (required, max 255 chars — the Linear project-name cap)
+  description — project description (required, must stay under 250 chars for Linear)
+  summary     — search-optimized one-line summary (required, max 500 chars).
+                An empty summary is REJECTED; an over-cap one is clamped at a
+                word boundary with a non-fatal warning.
+  group       — backend group key (Linear team key, Jira project key, GitHub repo).
+                Required when a tracker backend is configured AND several groups
+                exist; auto-defaults when there is only one; ignored with no backend.
+  format      — "text" (default) or "json" ({id, name})
 
 ## Example
-  create_project({ "name": "Auth overhaul", "description": "Refactor the auth system" })
+  create_project({ "name": "Auth overhaul",
+                   "description": "Refactor the auth system",
+                   "summary": "Auth system refactor: sessions, tokens, middleware" })
 `
 
 const helpCreateTicket = `# create_ticket — Create a ticket node inside a project
@@ -201,13 +30,39 @@ Tickets are units of work within a project. A ticket holds plans.
 Hierarchy: project → ticket → plan → phase → step → criterion.
 
 ## Key fields
-  name        — ticket name (required)
-  project_id  — parent project node ID (optional; links ticket to project via contains edge)
-  description — ticket description (optional)
-  summary     — short search-optimized summary (optional)
+  name        — ticket name (required, max 255 chars — the Linear issue-title cap)
+  project_id  — parent project node ID (required; links ticket to project via contains edge)
+  description — ticket description (required)
+  summary     — search-optimized one-line summary (required, max 500 chars; empty
+                is REJECTED, over-cap is clamped with a warning)
+  external_id — external tracker ID (e.g. JIRA-123, GH-456)
+  priority    — e.g. high, medium, low
+  labels      — comma-separated labels or tags
+  format      — "text" (default) or "json" ({id, name, warnings})
+
+## The architecture-pattern tristate (also required)
+  EXACTLY ONE of pattern_ids, no_patterns_reason, or proposed_patterns must be
+  supplied. Supplying none — or two — is a hard error, not a warning:
+  "exactly one of pattern_ids, no_patterns_reason, or proposed_patterns must be
+  set (got N)".
+
+  pattern_ids        — canonical pattern node IDs this ticket extends (ticket→pattern uses edges)
+  no_patterns_reason — the audited escape hatch when no pattern applies
+  proposed_patterns  — [{name, sketch}] for not-yet-cataloged patterns; each
+                       creates a pattern node with status="emerging"
+
+  Broken/unknown pattern IDs are a NON-FATAL warning surfaced under a
+  "## Warnings" section, not an error.
+
+  language_patterns is INDEPENDENT of that tristate — any subset including none.
+  See help("patterns").
 
 ## Example
-  create_ticket({ "name": "Add OAuth2 login", "project_id": "proj_abc" })
+  create_ticket({ "name": "Add OAuth2 login",
+                  "project_id": "proj_abc",
+                  "description": "Add an OAuth2 authorization-code login path",
+                  "summary": "OAuth2 authorization-code login for the public API",
+                  "no_patterns_reason": "straight extension of the existing auth handler" })
 `
 
 const helpCreatePlan = `# create_plan — Batch-create plan → phases → steps → criteria
@@ -215,14 +70,26 @@ const helpCreatePlan = `# create_plan — Batch-create plan → phases → steps
 Creates a full plan tree in one call.
 
 ## Required fields
-  name, goal, summary, phases
+  name, goal, summary, phases — PLUS exactly one of pattern_ids,
+  no_patterns_reason, or proposed_patterns (the architecture-pattern tristate;
+  supplying none or two is a hard error, see help("create_ticket") for the terms
+  and help("patterns") for the catalog). Every phase requires name + summary;
+  every step requires name + description + summary.
 
 ## Key fields
   name                            — plan name
   goal                            — what the plan aims to achieve
-  summary                         — short search-optimized summary
+  summary                         — search-optimized one-line summary, max 500 chars
   ticket_id                       — optional parent ticket node ID (links via contains edge)
   research_id                     — optional research project ID (creates informed-by edge)
+  pattern_ids / no_patterns_reason / proposed_patterns — the required tristate above
+  language_patterns               — defensive language patterns/findings to be vigilant of
+                                    (plan→node audits edges). INDEPENDENT of the
+                                    tristate; any subset including none
+  open_questions                  — [{question, context}] uncertainties for the user
+                                    to answer before implementation; creates question
+                                    nodes (status: open) linked to the plan
+  format                          — "text" (default) or "json" ({id, name, node_ids, warnings})
   phases[].name                   — phase name
   phases[].overview               — phase overview
   phases[].summary                — phase summary
@@ -239,6 +106,7 @@ Creates a full plan tree in one call.
     "name": "Add auth",
     "goal": "Ship JWT-based auth for the public API",
     "summary": "JWT middleware + handler plumbing + integration tests",
+    "no_patterns_reason": "straight middleware insertion, no new architectural shape",
     "phases": [{
       "name": "Phase 1", "overview": "Wire middleware", "summary": "middleware",
       "steps": [{
@@ -262,8 +130,14 @@ const helpCreateResearch = `# create_research — Batch-create research with nes
   goal                   — what this research aims to answer
   summary                — short search-optimized summary
   ticket_id              — optional parent ticket node ID
+  format                 — "text" (default) or "json" ({id, name, question_ids})
   questions[].question   — question text
   questions[].context    — background/why this question matters
+  questions[].summary    — REQUIRED per-question search-optimized summary. It is
+                           yours to write and nothing composes one from question
+                           + context; an omitted or empty one is refused under
+                           questions[i].summary, and an over-cap one is clamped
+                           at a word boundary with a warning.
 
 ## Example
   create_research({
@@ -271,8 +145,8 @@ const helpCreateResearch = `# create_research — Batch-create research with nes
     "goal": "Understand current cache invalidation and hot paths",
     "summary": "Cache architecture audit",
     "questions": [
-      { "question": "What is the current cache invalidation strategy?", "context": "Baseline before changes" },
-      { "question": "Where are the hot paths?", "context": "Guide optimization work" }
+      { "question": "What is the current cache invalidation strategy?", "summary": "cache invalidation strategy is undocumented", "context": "Baseline before changes" },
+      { "question": "Where are the hot paths?", "summary": "the hot paths are unidentified", "context": "Guide optimization work" }
     ]
   })
 `
@@ -285,7 +159,8 @@ const helpCreateTestPlan = `# create_test_plan — Create a structured test plan
 ## Key fields
   name                    — test plan name
   goal                    — what this test plan verifies
-  summary                 — short search-optimized summary
+  summary                 — search-optimized one-line summary, max 500 chars
+  format                  — "text" (default) or "json" ({id, name, step_ids})
   steps[].name            — step name
   steps[].description     — what to test and expected result
   steps[].summary         — short summary of the step
@@ -313,6 +188,15 @@ const helpRecordDecision = `# record_decision — Record a design decision with 
   rationale    — why (required)
   alternatives — what else was considered and why rejected
   informed_by  — comma-separated node IDs of findings/research that informed this
+  ticket_id    — born-link the decision under its work item (ticket--contains-->decision)
+  session      — born-link it under a working session (creates the session if new)
+  links        — node IDs to relate it to (decision--relates-to-->target); code/cloud
+                 IDs are linked post-create via the cross-graph linkage
+  format       — "text" (default) or "json" ({id, name, warnings})
+
+  There is no summary param: record_decision synthesizes the decision's Summary
+  from choice. An unresolvable ticket_id / link target is dropped with a warning
+  and never blocks the write.
 
 ## Example
   record_decision({
@@ -327,7 +211,7 @@ const helpRecordDecision = `# record_decision — Record a design decision with 
 const helpSearchCode = `# search — Unified search across code, knowledge, practice, cloud, linkage, and log graphs
 
 ## Graph routing
-  graph          — "code" (default) | "knowledge" | "practice" | "cloud" | "linkage" | "logs"
+  graph          — "code" (default) | "knowledge" | "practice" | "cloud" | "cicd" | "linkage" | "logs"
 
 ## Parameters (all graphs)
   query          — single search query
@@ -341,9 +225,21 @@ const helpSearchCode = `# search — Unified search across code, knowledge, prac
                    Decoded length mismatches return a structured validation
                    error and no search is performed.
 
+## Result shaping (all graphs)
+  format         — "text" (default, markdown) or "json" ({results:[{id,name,type,score,...}]})
+  fields         — format=json only: per-result field projection, to shrink
+                   high-volume responses. An unsupported key is REFUSED naming it.
+  types          — filter results by node type (knowledge + registered custom graphs)
+  rerank         — apply the post-fusion rerank when configured (default true)
+  RETIRED        — search no longer accepts include_tombstones or explain. Both were
+                   declared and read by nothing, so they were accepted and dropped;
+                   they are now refused by name. Tombstoned nodes: use query.
+
 ## Code graph parameters
-  repo           — repository name (default: active repo, "all" for cross-repo)
-  repos          — specific repos array
+  repo           — repository name. REQUIRED for graph=code — it is NEVER inferred
+                   from cwd and there is no active-repo default. "all" spans every
+                   indexed repo.
+  repos          — specific repos array (alternative to repo:"all")
   path_prefix    — filter to files under this path
   include_source — include full source code (default true)
   group_by_file  — group results by file
@@ -403,12 +299,20 @@ const helpFileSymbols = `# file_symbols — List all symbols in a file
 
 ## Parameters
   file_path      — file path, partial paths work (required)
-  repo           — repository name (default: all repos)
+  file_paths     — several files in one call (combined with file_path)
+  repo           — repository name. REQUIRED — it is NEVER inferred from cwd and
+                   there is no all-repos default. "all" spans every indexed repo.
+  branch         — branch overlay to read instead of the base graph. Auto-filled
+                   from the machine-local repo manifest when omitted and repo is
+                   not "all"; supply it to pin a specific overlay.
   include_source — include source code (default true)
+  include_tombstones — include tombstoned symbols (default false)
+  format         — "text" (default, markdown) or "json" (rows: {id, symbol_name,
+                   type, file_path, start_line, end_line, signature, summary})
 
 ## Examples
-  file_symbols({ "file_path": "tools/tools_dispatch.go" })
-  file_symbols({ "file_path": "tools_help.go", "include_source": false })
+  file_symbols({ "file_path": "tools/tools_dispatch.go", "repo": "myrepo" })
+  file_symbols({ "file_path": "tools_help.go", "repo": "myrepo", "include_source": false })
 `
 
 const helpHelp = `# help — Get documentation about tools, node types, edge types, and workflows
@@ -417,14 +321,20 @@ const helpHelp = `# help — Get documentation about tools, node types, edge typ
   topic — topic name (optional, default: "overview")
 
 ## Available topics
-  overview, node_types, edge_types, statuses, workflows,
-  logs, patterns, recipes, topology, dreaming
 
-  Per-tool: query, traverse, mutate, delete, manage,
-  think, charge, recall, create_project, create_ticket,
-  create_plan, create_research, create_test_plan,
-  record_decision, search, file_symbols,
+  Reference: overview, node_types, edge_types, statuses, workflows,
+  logs, patterns, recipes, topology
+
+  Per-tool: query, traverse, mutate, delete, manage, manage_checks, ast,
+  thoughts, create_project, create_ticket, create_plan, create_research,
+  create_test_plan, record_decision, search, file_symbols,
   help, assemble, sync
+
+  That is the complete set. An unrecognized topic is refused naming the topic
+  and pointing at help() with no args for the list. There is no per-operation
+  topic — the thoughts operations (think / charge / recall / trace / propagate /
+  adjacency / charges_for / similarity_report) are all documented under the one
+  "thoughts" topic.
 `
 
 const helpAssemble = `# assemble — Walk a plan/test-plan/agent tree and render it
@@ -443,6 +353,7 @@ The node type determines the traversal pattern:
   type        — node type for name lookup
   new_run     — if true and test_plan, creates test_run nodes (default false)
   run_session — filter or group test runs by session UUID
+  format      — "text" (default) or "json" (structured)
 
 ## Examples
   assemble({ "id": "plan_id" })

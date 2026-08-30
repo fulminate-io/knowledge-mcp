@@ -44,12 +44,11 @@ var peerCwdRunner = func(ctx context.Context, name string, args ...string) ([]by
 //
 // lsof shell-out is fine for v1 (a libproc/proc path is a later optimization).
 //
-// Returns the peer's cwd, PID, and comm (the lsof COMMAND column). The PID and
-// comm were previously discarded; they are retained so the hive daemon monitor
-// can bind the session to the right per-harness transcript. Note that COMMAND
-// carries the peer's PROCESS TITLE, which a harness may rewrite to something
-// naming no CLI at all — downstream that makes comm a routing hint only, never
-// an identity source.
+// Returns the peer's cwd, PID, and comm (the lsof COMMAND column). The cwd is
+// what the session stores; the PID and comm are diagnostics the caller logs
+// alongside it. Note that COMMAND carries the peer's PROCESS TITLE, which a
+// harness may rewrite to something naming no CLI at all — that makes comm a
+// hint only, never an identity source.
 func resolvePeerCwd(ctx context.Context, localPort, ephemeralPort int) (cwd string, pid int, comm string, err error) {
 	pid, comm, err = peerPIDFromPort(ctx, localPort, ephemeralPort)
 	if err != nil {
@@ -86,8 +85,8 @@ func peerPIDFromPort(ctx context.Context, localPort, ephemeralPort int) (int, st
 // is only on the remote side (the daemon's accepted socket) is skipped. The
 // daemon's own PID (selfPID) is excluded so the daemon never resolves to
 // itself. comm is fields[0] of the matched line (the same COMMAND-column read
-// as mcp-probe's peerWorkspace) — it selects the per-harness transcript resolver
-// (claude vs codex) in the hive daemon monitor.
+// as mcp-probe's peerWorkspace) — it names the peer harness process for the
+// resolution log line.
 func parsePeerPID(lsofOut string, localPort, ephemeralPort, selfPID int) (int, string, error) {
 	for line := range strings.SplitSeq(lsofOut, "\n") {
 		fields := strings.Fields(line)

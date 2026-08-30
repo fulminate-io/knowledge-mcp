@@ -66,6 +66,15 @@ var testCallsConsumerCensus = []testCallsConsumerRow{
 			"It consumes nothing; a disposition here would be a decision about a const block.",
 	},
 	{
+		Path:        "cmd/knowledge/internal/kgtypes/edge_types_cloud.go",
+		Disposition: dispositionProducer,
+		Reason: "Declares the cloud, CI/CD, cross-domain and log-graph edge vocabulary, split out " +
+			"of edge_types.go by vocabulary. It names EdgeCalls in ONE PLACE ONLY — the " +
+			"EdgeCorrelatesWith doc comment, which cites it as an example of the structural " +
+			"confirmation a log correlation requires — so it consumes nothing and a disposition " +
+			"here would be a decision about a const block.",
+	},
+	{
 		Path:        "cmd/knowledge/internal/collector/treesitter/types.go",
 		Disposition: dispositionProducer,
 		Reason: "The chunker's own EdgeType mirror of the kgtypes vocabulary — a deliberate " +
@@ -84,6 +93,16 @@ var testCallsConsumerCensus = []testCallsConsumerRow{
 			"widen a production symbol's blast radius — a symbol is not more dangerous to change " +
 			"because more tests exercise it. parseEdgeTypeOverride already lets a caller pass " +
 			"edge_types=TEST_CALLS explicitly when that IS the question being asked.",
+	},
+	{
+		Path:        "cmd/knowledge/internal/topology/corpusscan/assertion.go",
+		Disposition: dispositionOptsIn,
+		Reason: "codeEdgeTypes admits kgtypes.EdgeTestCalls alongside kgtypes.EdgeCalls, so a corpus " +
+			"author asks for test traffic BY NAME in the check body's edge_type and gets exactly what " +
+			"they named — no check silently mixes the two, because the evaluator counts one edge type " +
+			"per assertion. The allowlist exists to refuse a typo'd edge type before the read rather " +
+			"than to narrow the vocabulary: an unadmitted spelling would otherwise return zero edges " +
+			"and read as a clean scan.",
 	},
 	{
 		Path:        "cmd/knowledge/internal/topology/graph/god_object_metrics.go",

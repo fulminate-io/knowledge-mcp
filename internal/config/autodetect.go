@@ -41,8 +41,8 @@ func defaultDetectDeps() detectDeps {
 // provider without an explicit user override. The summarizer is the
 // only consumer that resolves through [default] today, and summarization
 // is text-extraction work — haiku-class models are sufficient. Users
-// who add a [dream] section should pick an opus-class model since dream
-// phases run multi-step reasoning.
+// who add a [supervisor] or [topics] section should pick an opus-class
+// model, since those consumers run deeper reasoning.
 var defaultModels = map[Provider]Model{
 	ProviderAnthropic: "claude-haiku-4-5-20251001",
 	ProviderOpenAI:    "gpt-4o-mini",
@@ -168,10 +168,11 @@ func providerAvailability(deps detectDeps, p Provider) (bool, string) {
 //
 // Behavior:
 //
-//  1. Stat path. If the file exists, Load + Validate(consumers) for the
-//     two consumers wired in this ticket scope (summarizer + transformer;
-//     dream is parser-only and skipped). On success the singleton is
-//     populated by Load and the bool return is false.
+//  1. Stat path. If the file exists, Load + Validate for the single
+//     consumer this entry point validates (ConsumerSummarizer), skipped
+//     entirely when providerConfigured reports no provider at all. On
+//     success the singleton is populated by Load and the bool return is
+//     false.
 //
 //  2. If the file does not exist, pick the precedence list with
 //     IsLoopback(bindAddr): loopback → localPrecedence; everything else

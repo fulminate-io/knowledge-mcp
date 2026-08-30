@@ -235,9 +235,21 @@ func behaviorBool(b *knowledgev1.BehaviorDefaults, pick func(*knowledgev1.Behavi
 	return pick(b)
 }
 
+// emptyDash returns "-" for empty strings so the markdown table cells stay
+// visually balanced. Mirrors orDash() in tools_logs_manage_backend.go — kept
+// package-private, and it lives here because formatGraphTypesTable below is now
+// its only caller. It was previously defined in worker_render.go, alongside a
+// second caller that went with the worker tool.
+func emptyDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
 // formatGraphTypesTable renders the list as a markdown table surfacing name +
 // collector + behavior cascade flags. Same empty-case messaging shape as
-// worker:list / log_backend:list.
+// log_backend:list.
 func formatGraphTypesTable(defs []*knowledgev1.GraphTypeDef) string {
 	if len(defs) == 0 {
 		return "No graph types registered. Use custom_collector(operation: \"register\", ...) to add one."

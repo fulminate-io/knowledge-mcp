@@ -34,15 +34,15 @@ func (p *fakePinger) setErr(err error) {
 
 func (p *fakePinger) Check(
 	_ context.Context,
-	_ *connect.Request[knowledgev1.HealthCheckRequest],
-) (*connect.Response[knowledgev1.HealthCheckResponse], error) {
+	_ *connect.Request[knowledgev1.CheckRequest],
+) (*connect.Response[knowledgev1.CheckResponse], error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls++
 	if p.pingErr != nil {
 		return nil, p.pingErr
 	}
-	return connect.NewResponse(&knowledgev1.HealthCheckResponse{}), nil
+	return connect.NewResponse(&knowledgev1.CheckResponse{}), nil
 }
 
 func (p *fakePinger) callCount() int {

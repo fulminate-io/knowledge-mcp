@@ -16,12 +16,19 @@
 // cover only the positions the user named, so everything between them is
 // indistinguishable from template text and gets overwritten wholesale.
 //
-// ONLY LEAF TOKENS ARE RECORDED. An interior pattern node's byte range is the
-// union of its children's, so recording it too would produce nested,
-// overlapping entries that a positional consumer cannot use. Entries are
-// appended during the walker's pre-order descent, which runs left-to-right
-// over the pattern, so the accumulated slice arrives in ascending
-// pattern-byte order and each pattern token appears at most once.
+// ONLY TERMINAL COMPARISONS ARE RECORDED. An interior pattern node whose
+// children the walker descends into earns no entry of its own: its byte range is
+// the union of its children's, so recording it too would produce nested,
+// overlapping entries that a positional consumer cannot use. That covers leaf
+// tokens and ONE non-leaf case — a span-gap kind declared in
+// LangConfig.OpaqueTextKinds, which the walker compares WHOLE and returns from
+// without descending (opaque_text.go). Such a node records one entry spanning
+// itself and its children record none, so the record stays non-overlapping;
+// before it existed those content bytes earned no entry at all, because nothing
+// was ever compared against them. Entries are appended during the walker's
+// pre-order descent, which runs left-to-right over the pattern, so the
+// accumulated slice arrives in ascending pattern-byte order and each recorded
+// position appears at most once.
 //
 // COORDINATE SPACE. PatStart/PatEnd are offsets into
 // PatternTree.SubstitutedSource — the exact bytes handed to the parser,

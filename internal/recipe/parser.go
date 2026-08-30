@@ -63,7 +63,14 @@ func (p *parser) parseRecipe() (*Recipe, error) {
 		rules = append(rules, rule)
 		p.skipNewlines()
 	}
-	return &Recipe{Rules: rules, Pos: startPos}, nil
+	out := &Recipe{Rules: rules, Pos: startPos}
+	// Bare field-path heads are validated here rather than in Parse so Parse's
+	// signature is untouched. See parser_heads.go for why this one class of
+	// mistake is refused instead of degrading.
+	if err := validateBareHeads(out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // parseRule reads the keyword that starts a line and dispatches to the

@@ -33,6 +33,13 @@ const (
 	scalaKindTraitDefinition
 	scalaKindFunctionDefinition
 	scalaKindFunctionDeclaration
+	scalaKindParameters
+	scalaKindCallExpression
+	scalaKindFieldExpression
+	scalaKindArguments
+	scalaKindAssignmentExpression
+	scalaKindReturnExpression
+	scalaKindLambdaExpression
 )
 
 // scalaKindNames maps every scala node-kind spelling the scala arms name onto
@@ -60,6 +67,13 @@ var scalaKindNames = map[string]uint8{
 	"trait_definition":       scalaKindTraitDefinition,
 	"function_definition":    scalaKindFunctionDefinition,
 	"function_declaration":   scalaKindFunctionDeclaration,
+	"parameters":             scalaKindParameters,
+	"call_expression":        scalaKindCallExpression,
+	"field_expression":       scalaKindFieldExpression,
+	"arguments":              scalaKindArguments,
+	"assignment_expression":  scalaKindAssignmentExpression,
+	"return_expression":      scalaKindReturnExpression,
+	"lambda_expression":      scalaKindLambdaExpression,
 }
 
 // scalaKindTable memoizes the scala class table for the process, on the shared

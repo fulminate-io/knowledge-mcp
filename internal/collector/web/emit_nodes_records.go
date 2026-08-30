@@ -10,11 +10,12 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
-// emitParagraph emits one "paragraph" node under parentID.
-func (e *emitter) emitParagraph(parentID, path string, r paragraphRecord, idx int) {
+// emitParagraph emits one "paragraph" node under parentID. uri is the
+// enclosing section's address, stamped on the node.
+func (e *emitter) emitParagraph(parentID, path string, r paragraphRecord, idx int, uri string) {
 	myPath := extendPath(path, "paragraph", idx)
 	id := stableID(e.page.URL, "paragraph", myPath, idx)
-	md := map[string]string{"position": strconv.Itoa(idx)}
+	md := map[string]string{"position": strconv.Itoa(idx), "uri": uri}
 	applyCommonAttrs(md, r.Attrs)
 	applyInlineEmphasis(md, r.InlineEmphasis)
 	e.nodes = append(e.nodes, &knowledgev1.Node{
@@ -45,11 +46,12 @@ func applyInlineEmphasis(md map[string]string, emphs []inlineEmphasis) {
 }
 
 // emitCodeBlock emits one "code_block" node under parentID. Language is
-// surfaced as metadata and also on the Node.Language scalar.
-func (e *emitter) emitCodeBlock(parentID, path string, r codeBlockRecord, idx int) {
+// surfaced as metadata and also on the Node.Language scalar. uri is the
+// enclosing section's address, stamped on the node.
+func (e *emitter) emitCodeBlock(parentID, path string, r codeBlockRecord, idx int, uri string) {
 	myPath := extendPath(path, "code_block", idx)
 	id := stableID(e.page.URL, "code_block", myPath, idx)
-	md := map[string]string{"position": strconv.Itoa(idx)}
+	md := map[string]string{"position": strconv.Itoa(idx), "uri": uri}
 	if r.Language != "" {
 		md["language"] = r.Language
 	}
@@ -69,14 +71,17 @@ func (e *emitter) emitCodeBlock(parentID, path string, r codeBlockRecord, idx in
 }
 
 // emitList emits a "list" node plus one "list_item" node per entry,
-// each list_item contained by the list with a position on its edge.
-func (e *emitter) emitList(parentID, path string, r listRecord, idx int) {
+// each list_item contained by the list with a position on its edge. uri is
+// the enclosing section's address; the SAME value is stamped on the list
+// node and on every list_item it emits.
+func (e *emitter) emitList(parentID, path string, r listRecord, idx int, uri string) {
 	myPath := extendPath(path, "list", idx)
 	listID := stableID(e.page.URL, "list", myPath, idx)
 	md := map[string]string{
 		"position": strconv.Itoa(idx),
 		"kind":     r.Kind,
 		"ordered":  strconv.FormatBool(r.Ordered),
+		"uri":      uri,
 	}
 	applyCommonAttrs(md, r.Attrs)
 	e.nodes = append(e.nodes, &knowledgev1.Node{
@@ -90,7 +95,7 @@ func (e *emitter) emitList(parentID, path string, r listRecord, idx int) {
 	for _, item := range r.Items {
 		itemPath := extendPath(myPath, item.recordKind(), item.Position)
 		itemID := stableID(e.page.URL, item.recordKind(), itemPath, item.Position)
-		itemMd := map[string]string{"position": strconv.Itoa(item.Position)}
+		itemMd := map[string]string{"position": strconv.Itoa(item.Position), "uri": uri}
 		applyCommonAttrs(itemMd, item.Attrs)
 		applyInlineEmphasis(itemMd, item.InlineEmphasis)
 		e.nodes = append(e.nodes, &knowledgev1.Node{
@@ -107,11 +112,12 @@ func (e *emitter) emitList(parentID, path string, r listRecord, idx int) {
 // emitTable emits a "table" node carrying headers/rows as JSON on
 // content metadata. Rows and headers stay inline rather than becoming
 // individual nodes because downstream consumers typically want the
-// whole table as a unit.
-func (e *emitter) emitTable(parentID, path string, r tableRecord, idx int) {
+// whole table as a unit. uri is the enclosing section's address, stamped
+// on the node.
+func (e *emitter) emitTable(parentID, path string, r tableRecord, idx int, uri string) {
 	myPath := extendPath(path, "table", idx)
 	id := stableID(e.page.URL, "table", myPath, idx)
-	md := map[string]string{"position": strconv.Itoa(idx)}
+	md := map[string]string{"position": strconv.Itoa(idx), "uri": uri}
 	if h, err := json.Marshal(r.Headers); err == nil {
 		md["headers"] = string(h)
 	}
@@ -132,13 +138,20 @@ func (e *emitter) emitTable(parentID, path string, r tableRecord, idx int) {
 // registered in e.page.InternalLinks / e.page.ExternalCites already,
 // so emitLinks() handles page-level reference edges separately. This
 // per-section link node captures the in-section anchor.
-func (e *emitter) emitLink(parentID, path string, r linkRecord, idx int) {
+//
+// Two addresses meet on this node and must not be conflated. md["uri"] is
+// the link's OWN position in THIS document — the enclosing section's uri,
+// passed in. md["url"] and md["anchor"] describe the link's TARGET, which
+// lives in some other document; r.Anchor is the fragment of that target URL,
+// never an address in this page.
+func (e *emitter) emitLink(parentID, path string, r linkRecord, idx int, uri string) {
 	myPath := extendPath(path, "link", idx)
 	id := stableID(e.page.URL, "link", myPath, idx)
 	md := map[string]string{
 		"position": strconv.Itoa(idx),
 		"url":      r.URL,
 		"rel":      r.Rel,
+		"uri":      uri,
 	}
 	if r.Anchor != "" {
 		md["anchor"] = r.Anchor
@@ -157,13 +170,15 @@ func (e *emitter) emitLink(parentID, path string, r linkRecord, idx int) {
 	e.addContains(parentID, id, idx)
 }
 
-// emitImage emits an "image" node.
-func (e *emitter) emitImage(parentID, path string, r imageRecord, idx int) {
+// emitImage emits an "image" node. uri is the enclosing section's address;
+// md["url"] remains the image's own source URL.
+func (e *emitter) emitImage(parentID, path string, r imageRecord, idx int, uri string) {
 	myPath := extendPath(path, "image", idx)
 	id := stableID(e.page.URL, "image", myPath, idx)
 	md := map[string]string{
 		"position": strconv.Itoa(idx),
 		"url":      r.URL,
+		"uri":      uri,
 	}
 	if r.Alt != "" {
 		md["alt"] = r.Alt
@@ -181,11 +196,12 @@ func (e *emitter) emitImage(parentID, path string, r imageRecord, idx int) {
 	e.addContains(parentID, id, idx)
 }
 
-// emitQuote emits a "blockquote" node.
-func (e *emitter) emitQuote(parentID, path string, r quoteRecord, idx int) {
+// emitQuote emits a "blockquote" node. uri is the enclosing section's
+// address, stamped on the node.
+func (e *emitter) emitQuote(parentID, path string, r quoteRecord, idx int, uri string) {
 	myPath := extendPath(path, "blockquote", idx)
 	id := stableID(e.page.URL, "blockquote", myPath, idx)
-	md := map[string]string{"position": strconv.Itoa(idx)}
+	md := map[string]string{"position": strconv.Itoa(idx), "uri": uri}
 	if r.CiteURL != "" {
 		md["cite_url"] = r.CiteURL
 	}

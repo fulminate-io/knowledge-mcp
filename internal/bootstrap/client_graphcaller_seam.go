@@ -38,15 +38,6 @@ func (g graphClientCaller) Index(ctx context.Context, req *knowledgev1.IndexRequ
 	return g.gc.Index(ctx, req)
 }
 
-// Hive exposes the wrapped *GraphClient's engine Hive RPC so the client-side
-// hive intercept (InterceptHive) can forward agent-facing work-queue ops over
-// the GraphCaller without reaching for the concrete *GraphClient. Like
-// Execute/Index, this is a narrow seam a tools-side interface type-asserts for;
-// it does NOT widen the Call-only tools.GraphCaller interface.
-func (g graphClientCaller) Hive(ctx context.Context, req *knowledgev1.HiveRequest) (*knowledgev1.HiveResponse, error) {
-	return g.gc.Hive(ctx, req)
-}
-
 // MetadataStats exposes the wrapped *GraphClient's engine MetadataStats RPC so
 // the client-side promote_metadata composer can read the per-graph
 // stats + override carriers off the GraphCaller without reaching for the

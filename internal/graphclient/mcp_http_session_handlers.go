@@ -28,13 +28,6 @@ import (
 // No Content. An unknown/absent id returns 404 (per the unknown-session spec
 // posture) — a no-op delete still surfaces the miss legibly. This removes only
 // the CLIENT-SIDE entry; the daemon holds no server-side per-session state.
-//
-// Deleting the session also ends any hive session it was running. When it is the
-// LAST hive-active one, the 204 can be delayed by up to two daemonStopDeadline
-// budgets (~6s) while the hive reaper and monitor drain — acceptable because the
-// connection is going away regardless, and preferable to an unbounded or
-// fire-and-forget stop. The same budget is disclosed on the hive tool intercept,
-// the other seam that can block on the loop controller.
 func (h *HTTPServer) handleDELETE(w http.ResponseWriter, r *http.Request) {
 	sess, ok := h.validSession(r)
 	if !ok {
@@ -72,8 +65,7 @@ func (h *HTTPServer) handleHTTPInitialize(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	cwd, pid, comm := h.resolvePeerCwdForRequest(r)
-	h.ensureSession(sid, cwd, pid, comm)
+	h.ensureSession(sid, h.resolvePeerCwdForRequest(r))
 
 	w.Header().Set(mcpSessionHeader, sid)
 
@@ -89,28 +81,29 @@ func (h *HTTPServer) handleHTTPInitialize(w http.ResponseWriter, r *http.Request
 }
 
 // resolvePeerCwdForRequest extracts the client's ephemeral port from the
-// request's RemoteAddr and resolves the owning process's cwd, PID, and comm via
-// resolvePeerCwd. Returns ("", 0, "") (logged) on any failure so the caller
-// stores a session that falls back to deps.RootDir() for repo resolution; the
-// pid + comm are retained for the hive daemon monitor's transcript binding.
-func (h *HTTPServer) resolvePeerCwdForRequest(r *http.Request) (cwd string, pid int, comm string) {
+// request's RemoteAddr and resolves the owning process's cwd via resolvePeerCwd.
+// Returns "" (logged) on any failure so the caller stores a session that falls
+// back to deps.RootDir() for repo resolution. The peer PID and comm resolvePeerCwd
+// also returns are logged beside the cwd as resolution diagnostics; the session
+// stores only the cwd.
+func (h *HTTPServer) resolvePeerCwdForRequest(r *http.Request) string {
 	_, portStr, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		slog.Warn("knowledge serve: cannot parse RemoteAddr for peer-cwd resolution", "remoteAddr", r.RemoteAddr, "error", err)
-		return "", 0, ""
+		return ""
 	}
 	ephemeralPort, err := strconv.Atoi(portStr)
 	if err != nil {
 		slog.Warn("knowledge serve: non-numeric ephemeral port in RemoteAddr", "remoteAddr", r.RemoteAddr, "error", err)
-		return "", 0, ""
+		return ""
 	}
-	cwd, pid, comm, err = resolvePeerCwd(r.Context(), h.port, ephemeralPort)
+	cwd, pid, comm, err := resolvePeerCwd(r.Context(), h.port, ephemeralPort)
 	if err != nil {
 		slog.Warn("knowledge serve: peer-cwd resolution failed; session will fall back to --root", "ephemeralPort", ephemeralPort, "error", err)
-		return "", 0, ""
+		return ""
 	}
 	slog.Info("knowledge serve: resolved session workspace", "ephemeralPort", ephemeralPort, "cwd", cwd, "pid", pid, "comm", comm)
-	return cwd, pid, comm
+	return cwd
 }
 
 // validSession looks up the request's Mcp-Session-Id header in the session

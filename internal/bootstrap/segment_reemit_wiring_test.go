@@ -8,14 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
-
-// publishCount reads the fake backend's manifest-publish counter under its lock.
-func (b *fakeSegBackend) publishCount() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.publishCalls
-}
 
 // TestReconcilePassDrainsBacklogForHealthyGraph is the WIRING gate for the
 // partitioned re-emit. The drain has exactly one production caller — the reconcile
@@ -37,27 +31,35 @@ func TestReconcilePassDrainsBacklogForHealthyGraph(t *testing.T) {
 		repo     = "wiringRepo"
 		corpusN  = 128 // clears the resident backstop floor
 		embedded = 100 // resident 128 >= 0.5*100, so the graph is HEALTHY
-		batchN   = 20
+		// THE BATCH MUST BE BIG ENOUGH TO SEAL, and that is a property of the
+		// OBSERVABLE, not a magic number. This test used to read a publish-call count,
+		// which rises whether or not the drain produced anything; it now reads DURABLE
+		// .seg ids, and a sub-threshold batch leaves the documents in an unsealed tail
+		// that no export carries — the drain runs, writes nothing, and the assertion
+		// reads a no-op as a missing call. Measured: at 20 the drain ran (the write-diff
+		// log fires) and the id count stayed at 1; at MinSegmentDocs it seals a second
+		// segment. Verified to still discriminate by removing the drain call from the
+		// per-graph pass — the assertion goes red.
+		batchN = 1024 // searchengine.DefaultMinSegmentDocs — enough to seal a new segment
 	)
 
-	c, _, backend := buildReconcileClientWithSeg(t, embedded, repo)
+	c, _, dir := buildReconcileClientWithDir(t, embedded, repo)
 
 	// Seed a published corpus, then confirm the graph really is healthy — if this
 	// precondition ever broke, the test would be gating the wrong branch.
 	require.NoError(t, c.segmentMgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, repo, fastloadVecDocs(repo, corpusN)))
 	require.NoError(t, c.segmentMgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, repo))
 
-	degenerate, err := c.segmentMgr.ReconcileResidentDegenerate(ctx, kgtypes.GraphCode, repo)
-	require.NoError(t, err)
+	degenerate := armIsDegenerate(t, c.segmentMgr, kgtypes.GraphCode, repo, embedded)
 	require.False(t, degenerate,
 		"PRECONDITION: the fixture graph must be HEALTHY, so the pass reaches the healthy-graph continue")
 
 	// Queue a backlog WITHOUT draining it — the state a drain leaves between ticks.
 	require.NoError(t, c.segmentMgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, repo, fastloadVecDocs("wiringBatch", batchN)))
 
-	before := backend.publishCount()
+	before := len(l2SegmentIDs(t, dir, repo, hnsw.New().Name()))
 	c.reconcileSegmentCoverage(ctx)
-	after := backend.publishCount()
+	after := len(l2SegmentIDs(t, dir, repo, hnsw.New().Name()))
 
 	require.Greater(t, after, before,
 		"one reconcile pass must drain the backlog of a HEALTHY graph and publish the result; "+

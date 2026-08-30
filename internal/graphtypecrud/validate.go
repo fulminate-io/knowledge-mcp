@@ -22,8 +22,7 @@ var allowedParamTypes = map[string]struct{}{
 // Validate enforces the record-shape invariants of a GraphTypeDef independent of
 // the built-in-name collision check. It operates on the gen proto getters
 // because the generated type cannot carry hand-written methods, so this is a
-// package-level function (mirroring workers.Worker.Validate's sequential
-// wrapped-error checks).
+// package-level function using sequential wrapped-error checks.
 //
 // Validate does NOT check whether the name collides with a built-in GraphType —
 // that registration concern needs kgtypes.allGraphTypes and lives in

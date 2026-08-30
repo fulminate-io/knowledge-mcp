@@ -71,6 +71,20 @@ func newDefaultDiscoveryStore() *discoveryStore {
 //
 // The two halves are joined into ONE value so a single stored record covers both
 // and there is one comparison rather than two that can disagree.
+//
+// THE LANGUAGE-SET FOLD IS ALSO A DELETION FENCE — incidental to its purpose, but
+// load-bearing, so it is recorded here rather than nowhere. A walk that discovers
+// no files collapses the set to empty, so this value differs from any prior that
+// carried languages, the discovery-mode fallback fires, and the collect degrades
+// to a full upload before a deletion set is ever computed. MEASURED: a zero-file
+// branch collect against a prior of "…|go" produces "…|" and names no deletions.
+//
+// THE FOLD ALONE FENCES ONLY A PRIOR CARRYING LANGUAGES: against a language-less
+// prior the two agree and it cannot engage — measured, that state named the repo
+// root deleted. seedBranchBaselinesFromSiblings closes it by REFUSING to seed a
+// language-less value, so the pair is the fence and neither half is optional.
+// Re-shaping this value must keep the empty-walk case distinguishable, or that
+// guard silently stops matching what it guards.
 func discoverySignature(result *collectorwire.CollectResult) string {
 	seen := make(map[string]struct{})
 	for _, n := range result.Nodes {
@@ -83,8 +97,12 @@ func discoverySignature(result *collectorwire.CollectResult) string {
 		langs = append(langs, l)
 	}
 	sort.Strings(langs)
-	return result.DiscoveryFingerprint + "|" + strings.Join(langs, ",")
+	return result.DiscoveryFingerprint + discoveryLangSep + strings.Join(langs, ",")
 }
+
+// discoveryLangSep joins discoverySignature's two halves. It is NAMED so the seed
+// guard below tests the shape this function produces rather than a loose literal.
+const discoveryLangSep = "|"
 
 // discoveryKey scopes the record to one graph AND branch: a branch collect and a
 // base collect legitimately see different language sets, and comparing across
@@ -299,6 +317,144 @@ func (d *discoveryStore) record(commits ...baselineCommit) error {
 		return nil
 	}
 	return d.writeLocked(entries)
+}
+
+// seedBranchBaselinesFromSiblings fills each ABSENT key from the value this
+// graph's OTHER branches unanimously record for the same baseline, and PERSISTS
+// what it resolved. A key the store already holds is left exactly as it is.
+//
+// WHY AN ABSENT BRANCH KEY HAS A LEGITIMATE ANSWER AT ALL. The three baselines
+// are scoped to one graph AND branch, so a branch that has never been collected
+// on this machine holds none of them — and absence reads as "changed" for both
+// trigger-table rows, which degrades that branch's FIRST touch to a whole-repo
+// upload for a delta of a few lines. But the branch's rows did not come from
+// nowhere: the server CLONED them from the base inside the manifest render, ahead
+// of the response this client is holding. The signature its siblings unanimously
+// record is the graph-wide value the clone source also carries — a BORROWED
+// description of this branch's rows, not an observed one. It is an inference from
+// unanimity, and where no sibling is the clone source the inference is the
+// residual the ticket accepts, not a measurement.
+//
+// WHY THIS IS NOT THE WATERMARK ANTI-PATTERN, which is the single most likely
+// thing a future reader will get wrong here. record()'s doc above cites
+// "advancing the watermark before persistence completes" as the reason the
+// compare and the commit were split, and this method writes during the compare
+// pass. The distinction is WHAT is being recorded: record() would be asserting
+// something about work THIS COLLECT is about to do, which is exactly the claim
+// that must wait for the upload to land. This records a signature INFERRED from
+// what the server's rows already were before this collect began — borrowed from
+// the siblings' unanimous value rather than measured against those rows. Nothing
+// it writes is contingent on anything this collect goes on to do, and that is the
+// property which takes it out of the anti-pattern. The borrowing is a separate
+// residual, stated above; do not read it as an observation.
+//
+// WHY THE VALUE IS WRITTEN RATHER THAN MERELY READ THROUGH. A first-touch collect
+// whose finalize tail never confirms leaves commitCollectBaselines withholding, so
+// a read-through design would leave the branch key absent forever: a later
+// collector upgrade plus a base re-collect moves every sibling to the NEW version,
+// the read-through resolves to "unchanged", and the branch's rows sit at the old
+// version permanently with no self-repair. Persisting pins what the rows came
+// from, so the upgrade differs from it and the trigger fires.
+//
+// UNANIMITY IS THE WHOLE SAFETY ARGUMENT, and both failure directions keep
+// today's meaning. No sibling at all is the bootstrap path every machine takes
+// once; siblings that DISAGREE have no honest answer to inherit. Both leave the
+// key absent, so it still reads as changed and the fail-closed lane is untouched.
+func (d *discoveryStore) seedBranchBaselinesFromSiblings(branch string, keys ...string) error {
+	if d == nil {
+		return fmt.Errorf(
+			"collect discovery store: no store — the home directory could not be resolved, " +
+				"so this collect cannot seed a branch baseline from its siblings")
+	}
+	// AN EMPTY BRANCH SEEDS NOTHING, AND "HEAD" IS DELIBERATELY NOT COVERED HERE.
+	// The server treats EITHER spelling as a full-replace of the base rather than
+	// an overlay (codesync/collector.go: "Empty/\"HEAD\" is forwarded as-is and the
+	// server treats it as a full-replace"), so "no clone, therefore no sibling" is
+	// equally true of both and does not describe this guard.
+	//
+	// WHAT SEPARATES THEM IS BRANCH IDENTITY. "HEAD" names a real checkout whose
+	// rows the full-replace targets, so a unanimous sibling value is one the target
+	// itself recorded and inheriting it asserts a provenance that did happen —
+	// MEASURED: a "HEAD" collect with unanimous siblings DOES seed, by design. An
+	// EMPTY branch is not a branch at all; it is also what a non-git checkout
+	// produces, where no branch's rows could have been cloned and inheriting one
+	// would assert a provenance that never happened.
+	if branch == "" {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	// ONE READ AND AT MOST ONE WRITE FOR THE WHOLE SET, through the same primitives
+	// record() uses. Resolving key by key would cost a read-modify-write each and
+	// make the set non-atomic — a failure between two writes advances one baseline
+	// and not the other, the half-committed state record()'s own doc records.
+	entries, err := d.readLocked()
+	if err != nil {
+		return err
+	}
+	seeded := false
+	for _, key := range keys {
+		value, ok := unanimousSiblingValue(entries, key, branch)
+		// A LANGUAGE-LESS DISCOVERY VALUE IS NEVER INHERITED: the empty-walk shape the
+		// fold cannot fence (discoverySignature's doc). Measured, seeding it let a
+		// first touch name the repo root deleted; refusing costs nothing, because the
+		// only other state it describes is an empty graph, which deletes nothing.
+		if !ok || strings.HasSuffix(value, discoveryLangSep) {
+			continue
+		}
+		entries[key] = value
+		seeded = true
+	}
+	if !seeded {
+		return nil
+	}
+	return d.writeLocked(entries)
+}
+
+// unanimousSiblingValue answers what an absent branch key may inherit: the value
+// every OTHER branch of the SAME graph records for the same baseline, and only
+// when they all agree. The second return is false whenever there is no honest
+// answer — the key is already held, it does not belong to this branch, no sibling
+// exists, or the siblings disagree.
+//
+// THE "@" IN THE SIBLING PREFIX IS LOAD-BEARING, not incidental punctuation. Every
+// key is built as <prefix><graphtype>/<graphname>@<branch>, so a scan matching the
+// bare trimmed prefix also admits a DIFFERENT graph whose NAME merely extends this
+// one's — and that pair is routine rather than contrived, because a worktree keys
+// its graph under its own directory basename. Such a decoy poisons the unanimity
+// test with a value that was never this graph's.
+//
+// TRIMMING THE EXACT "@"+branch SUFFIX IS THE INVERSE OF THE CONSTRUCTION, which
+// is why it is used rather than splitting on '@'. Splitting on the first or the
+// last '@' both mis-group when a graph name or a branch name contains one. A graph
+// name holding '@' can still collide with a branch-name boundary here; that
+// residual fails in the CONSERVATIVE direction — a mis-grouped sibling set reads
+// as non-unanimous and keeps today's full re-land.
+func unanimousSiblingValue(entries map[string]string, key, branch string) (string, bool) {
+	if _, held := entries[key]; held {
+		return "", false
+	}
+	prefix := strings.TrimSuffix(key, "@"+branch)
+	// An unchanged result means the key does not end in this branch, so it is not a
+	// key this collect owns and there is nothing to resolve it against.
+	if prefix == key {
+		return "", false
+	}
+	prefix += "@"
+	value := ""
+	found := false
+	// The key itself cannot appear here: the guard above returned when the store
+	// held it, so it is absent from entries.
+	for k, v := range entries {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		if found && v != value {
+			return "", false
+		}
+		value, found = v, true
+	}
+	return value, found
 }
 
 // readLocked returns the recorded signatures. A MISSING file is an empty record

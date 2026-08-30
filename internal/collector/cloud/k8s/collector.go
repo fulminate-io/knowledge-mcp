@@ -74,7 +74,7 @@ func (c *K8sCollector) Collect(ctx context.Context, id string, opts collector.Co
 		if rm != nil {
 			rm.Record(t.ID, t.ResolutionID)
 		}
-		if cascadeErr := collector.Collect(ctx, t.Collector, t.ID, opts); cascadeErr != nil {
+		if _, cascadeErr := collector.Collect(ctx, t.Collector, t.ID, opts); cascadeErr != nil {
 			// Best-effort: log and continue to the next cascade target so
 			// one bad provider doesn't sink the whole collection.
 			slog.Warn("k8s: cascade failed",

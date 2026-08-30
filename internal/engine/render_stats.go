@@ -17,14 +17,15 @@ import (
 // resp.GetGraphStats() / resp.GetMetadataStats() / resp.GetOverrideConfig() and
 // pass the proto pointers straight into the renderers (no store-side decode step;
 // the prior graphStatsFromProto / DecodeMetadataStats / DecodeOverrideConfig
-// decoders are gone with the pkg/store dependency). Topology findings are no
+// decoders are gone with the dependency on the server store package,
+// cmd/knowledge-server/internal/store). Topology findings are no
 // longer decoded here: the analyzers now run client-side and produce
 // foundation.Finding directly (the Topology RPC carrier + its decode are gone),
 // which also breaks the engine<->topology import cycle.
 
 // RenderStatsBreakdown renders a consistent Markdown stats body for the given
-// proto GraphStats — a direct port of the server formatStatsBreakdown
-// (cmd/knowledge-server/tools/tools_query_stats.go). The caller passes the typed
+// proto GraphStats — a direct port of the server's since-removed
+// formatStatsBreakdown. The caller passes the typed
 // resp.GetGraphStats() pointer straight in; this emits the scalar block followed
 // by the sorted-by-count-desc Nodes-by-Type / Edges-by-Type tables. Shared across
 // every graph type's stats mode (knowledge, cloud, cicd, practice, linkage, logs,

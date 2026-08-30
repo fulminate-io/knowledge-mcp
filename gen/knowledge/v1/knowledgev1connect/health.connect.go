@@ -45,7 +45,7 @@ const (
 type HealthServiceClient interface {
 	// Check returns an empty response on success; used as a cheap liveness
 	// probe.
-	Check(context.Context, *connect.Request[v1.HealthCheckRequest]) (*connect.Response[v1.HealthCheckResponse], error)
+	Check(context.Context, *connect.Request[v1.CheckRequest]) (*connect.Response[v1.CheckResponse], error)
 	// Status returns process PID plus graph statistics (nodes, edges,
 	// vectors, bm25 docs, graph path).
 	Status(context.Context, *connect.Request[v1.StatusRequest]) (*connect.Response[v1.StatusResponse], error)
@@ -62,7 +62,7 @@ func NewHealthServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 	baseURL = strings.TrimRight(baseURL, "/")
 	healthServiceMethods := v1.File_knowledge_v1_health_proto.Services().ByName("HealthService").Methods()
 	return &healthServiceClient{
-		check: connect.NewClient[v1.HealthCheckRequest, v1.HealthCheckResponse](
+		check: connect.NewClient[v1.CheckRequest, v1.CheckResponse](
 			httpClient,
 			baseURL+HealthServiceCheckProcedure,
 			connect.WithSchema(healthServiceMethods.ByName("Check")),
@@ -79,12 +79,12 @@ func NewHealthServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 
 // healthServiceClient implements HealthServiceClient.
 type healthServiceClient struct {
-	check  *connect.Client[v1.HealthCheckRequest, v1.HealthCheckResponse]
+	check  *connect.Client[v1.CheckRequest, v1.CheckResponse]
 	status *connect.Client[v1.StatusRequest, v1.StatusResponse]
 }
 
 // Check calls knowledge.v1.HealthService.Check.
-func (c *healthServiceClient) Check(ctx context.Context, req *connect.Request[v1.HealthCheckRequest]) (*connect.Response[v1.HealthCheckResponse], error) {
+func (c *healthServiceClient) Check(ctx context.Context, req *connect.Request[v1.CheckRequest]) (*connect.Response[v1.CheckResponse], error) {
 	return c.check.CallUnary(ctx, req)
 }
 
@@ -97,7 +97,7 @@ func (c *healthServiceClient) Status(ctx context.Context, req *connect.Request[v
 type HealthServiceHandler interface {
 	// Check returns an empty response on success; used as a cheap liveness
 	// probe.
-	Check(context.Context, *connect.Request[v1.HealthCheckRequest]) (*connect.Response[v1.HealthCheckResponse], error)
+	Check(context.Context, *connect.Request[v1.CheckRequest]) (*connect.Response[v1.CheckResponse], error)
 	// Status returns process PID plus graph statistics (nodes, edges,
 	// vectors, bm25 docs, graph path).
 	Status(context.Context, *connect.Request[v1.StatusRequest]) (*connect.Response[v1.StatusResponse], error)
@@ -137,7 +137,7 @@ func NewHealthServiceHandler(svc HealthServiceHandler, opts ...connect.HandlerOp
 // UnimplementedHealthServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedHealthServiceHandler struct{}
 
-func (UnimplementedHealthServiceHandler) Check(context.Context, *connect.Request[v1.HealthCheckRequest]) (*connect.Response[v1.HealthCheckResponse], error) {
+func (UnimplementedHealthServiceHandler) Check(context.Context, *connect.Request[v1.CheckRequest]) (*connect.Response[v1.CheckResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("knowledge.v1.HealthService.Check is not implemented"))
 }
 

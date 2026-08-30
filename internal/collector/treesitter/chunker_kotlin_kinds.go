@@ -30,29 +30,53 @@ const (
 	kotlinKindDelegationSpecifier
 	kotlinKindConstructorInvocation
 	kotlinKindExplicitDelegation
+	kotlinKindFunctionValueParameters
+	kotlinKindCallExpression
+	kotlinKindNavigationExpression
+	kotlinKindValueArguments
+	kotlinKindValueArgument
+	kotlinKindAssignment
+	kotlinKindDirectlyAssignableExpression
+	kotlinKindJumpExpression
+	kotlinKindLambdaLiteral
+	kotlinKindAnonymousFunction
+	kotlinKindCallSuffix
+	kotlinKindNavigationSuffix
 )
 
 // kotlinKindNames maps every kotlin node-kind spelling the kotlin arms name
 // onto its class code.
 var kotlinKindNames = map[string]uint8{
-	"simple_identifier":      kotlinKindSimpleIdentifier,
-	"type_identifier":        kotlinKindTypeIdentifier,
-	"user_type":              kotlinKindUserType,
-	"type_arguments":         kotlinKindTypeArguments,
-	"modifiers":              kotlinKindModifiers,
-	"binding_pattern_kind":   kotlinKindBindingPatternKind,
-	"parameter":              kotlinKindParameter,
-	"class_parameter":        kotlinKindClassParameter,
-	"variable_declaration":   kotlinKindVariableDeclaration,
-	"property_declaration":   kotlinKindPropertyDeclaration,
-	"primary_constructor":    kotlinKindPrimaryConstructor,
-	"class_body":             kotlinKindClassBody,
-	"class_declaration":      kotlinKindClassDeclaration,
-	"object_declaration":     kotlinKindObjectDeclaration,
-	"function_declaration":   kotlinKindFunctionDeclaration,
-	"delegation_specifier":   kotlinKindDelegationSpecifier,
-	"constructor_invocation": kotlinKindConstructorInvocation,
-	"explicit_delegation":    kotlinKindExplicitDelegation,
+	"simple_identifier":              kotlinKindSimpleIdentifier,
+	"type_identifier":                kotlinKindTypeIdentifier,
+	"user_type":                      kotlinKindUserType,
+	"type_arguments":                 kotlinKindTypeArguments,
+	"modifiers":                      kotlinKindModifiers,
+	"binding_pattern_kind":           kotlinKindBindingPatternKind,
+	"parameter":                      kotlinKindParameter,
+	"class_parameter":                kotlinKindClassParameter,
+	"variable_declaration":           kotlinKindVariableDeclaration,
+	"property_declaration":           kotlinKindPropertyDeclaration,
+	"primary_constructor":            kotlinKindPrimaryConstructor,
+	"class_body":                     kotlinKindClassBody,
+	"class_declaration":              kotlinKindClassDeclaration,
+	"object_declaration":             kotlinKindObjectDeclaration,
+	"function_declaration":           kotlinKindFunctionDeclaration,
+	"delegation_specifier":           kotlinKindDelegationSpecifier,
+	"constructor_invocation":         kotlinKindConstructorInvocation,
+	"explicit_delegation":            kotlinKindExplicitDelegation,
+	"function_value_parameters":      kotlinKindFunctionValueParameters,
+	"call_expression":                kotlinKindCallExpression,
+	"navigation_expression":          kotlinKindNavigationExpression,
+	"value_arguments":                kotlinKindValueArguments,
+	"value_argument":                 kotlinKindValueArgument,
+	"assignment":                     kotlinKindAssignment,
+	"directly_assignable_expression": kotlinKindDirectlyAssignableExpression,
+	"jump_expression":                kotlinKindJumpExpression,
+	"lambda_literal":                 kotlinKindLambdaLiteral,
+	"anonymous_function":             kotlinKindAnonymousFunction,
+	"call_suffix":                    kotlinKindCallSuffix,
+	"navigation_suffix":              kotlinKindNavigationSuffix,
 }
 
 // kotlinKindTable memoizes the kotlin class table for the process, on the

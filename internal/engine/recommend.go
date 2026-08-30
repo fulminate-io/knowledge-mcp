@@ -10,11 +10,14 @@ import (
 
 // recommend.go owns the CLIENT-side recommendation/render cluster the
 // query(mode: metadata_stats) handler renders into the "Recommended Action"
-// column. Relocated from pkg/store/node_value_stats_recommend.go +
+// column. Relocated from
+// cmd/knowledge-server/internal/store/node_value_stats_recommend.go +
 // node_value_stats.go (T5.5): the descriptive RecommendAction + evaluate now
 // run CLIENT-side over the proto knowledgev1.KeyStats/OverrideConfig carriers,
-// while pkg/store KEEPS its own Apply/ForceDecision/Decision (the server
-// promote-executor + dream PROMOTE path) over its store.KeyStats/OverrideConfig.
+// while the server store package KEEPS its own Apply/ForceDecision/Decision
+// (cmd/knowledge-server/internal/store/node_value_stats_recommend.go, consumed by
+// node_value_apply.go and cloud/store/promotion_decision.go) over its
+// store.KeyStats/OverrideConfig.
 //
 // evaluate() is intentionally duplicated across the boundary: both derive from
 // the SAME hysteresis thresholds (1000/3000 distinct, 5/3 median) — the client
@@ -22,7 +25,8 @@ import (
 // parity is pinned by recommend_test.go (client) + the store-side Apply test.
 
 // Representation describes how a metadata key is physically stored. Mirrors the
-// pkg/store Representation string consts (node_value_registry.go) — the proto
+// server store's Representation string consts
+// (cmd/knowledge-server/internal/store/node_value_registry.go) — the proto
 // KeyStats.current_representation carries the same string values ("", "scalar",
 // "edge"), so the client compares against these consts directly.
 type Representation = string
@@ -107,7 +111,8 @@ func RecommendAction(ks *knowledgev1.KeyStats, ovr *knowledgev1.OverrideConfig, 
 // thresholds. It reads the proto accessors (nil-safe) rather than store fields:
 // ovr.GetForceScalar()/GetForceEdge() for the override precedence, and
 // ks.GetDistinctValues()/GetMedianNodesPerValue()/GetCurrentRepresentation()
-// for the hysteresis bands. Mirrors pkg/store's evaluate() over store types.
+// for the hysteresis bands. Mirrors the server store's evaluate() over store
+// types.
 func evaluate(ks *knowledgev1.KeyStats, ovr *knowledgev1.OverrideConfig, key string) Recommendation {
 	if isInList(ovr.GetForceEdge(), key) {
 		return RecommendForceEdge

@@ -85,22 +85,15 @@ func interpretServerStatus(port int, status map[string]any) checkResult {
 // consumer. Validation failure is a hard error since it'd block
 // server startup too.
 func checkConfig(configFile string) checkResult {
-	path := configFile
-	if path == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return checkResult{name: "config", status: statusErr, msg: "cannot resolve home dir: " + err.Error()}
-		}
-		path = filepath.Join(home, ".knowledge", "config")
-	}
-	cfg, err := config.Load(path)
+	path := doctorConfigPath(configFile)
+	cfg, err := loadDoctorConfig(configFile)
 	if err != nil {
 		return checkResult{
 			name: "config", status: statusErr,
 			msg: fmt.Sprintf("%s: %v", path, err),
 		}
 	}
-	if err := cfg.Validate([]config.Consumer{config.ConsumerSummarizer, config.ConsumerDream, config.ConsumerHiveSupervisor}); err != nil {
+	if err := cfg.Validate([]config.Consumer{config.ConsumerSummarizer, config.ConsumerSupervisor}); err != nil {
 		return checkResult{
 			name: "config", status: statusErr,
 			msg:    path,
@@ -108,16 +101,15 @@ func checkConfig(configFile string) checkResult {
 		}
 	}
 	sum, _ := cfg.Resolve(config.ConsumerSummarizer)
-	dream, _ := cfg.Resolve(config.ConsumerDream)
 	return checkResult{
 		name: "config", status: statusOK,
-		msg: fmt.Sprintf("%s valid (summarizer=%s/%s, dream=%s/%s)", path, sum.Provider, sum.Model, dream.Provider, dream.Model),
+		msg: fmt.Sprintf("%s valid (summarizer=%s/%s)", path, sum.Provider, sum.Model),
 	}
 }
 
 // checkConsumerCLIs surfaces the cli_bin field state for every consumer
-// whose resolved provider is a CLI provider — summarizer AND dream may
-// run different CLI providers (e.g. summarizer=codex-cli, dream=claude-
+// whose resolved provider is a CLI provider — summarizer AND supervisor may
+// run different CLI providers (e.g. summarizer=codex-cli, supervisor=claude-
 // cli) with distinct cli_bin paths. One row per consumer, labeled by the
 // actual provider so a codex-cli summarizer never prints a "claude-cli"
 // row. API-provider consumers get an info row (no binary needed). The
@@ -133,7 +125,7 @@ func checkConsumerCLIs(configFile string) []checkResult {
 	if err != nil {
 		return []checkResult{{name: "cli", status: statusInfo, msg: "config not loadable; see config check above"}}
 	}
-	consumers := []config.Consumer{config.ConsumerSummarizer, config.ConsumerDream, config.ConsumerHiveSupervisor}
+	consumers := []config.Consumer{config.ConsumerSummarizer, config.ConsumerSupervisor}
 	out := make([]checkResult, 0, len(consumers))
 	for _, consumer := range consumers {
 		out = append(out, checkConsumerCLI(cfg, consumer))
@@ -175,15 +167,25 @@ func checkConsumerCLI(cfg *config.Config, consumer config.Consumer) checkResult 
 	return checkResult{name: name, status: statusOK, msg: sec.CLIBin + " (executable)"}
 }
 
-// checkVoyage reports Voyage key presence via the canonical resolver
-// config.VoyageAPIKey() — [credentials].voyage_api_key first, then the
-// VOYAGE_API_KEY env var. A config-only key (set in the file but not
-// exported) correctly reports vector search ENABLED. Empty on both is
-// the documented BM25-only mode — info-level, not a warning.
+// checkVoyage reports the embed and rerank axes SEPARATELY: each axis's
+// resolved provider and whether that axis's own credential is present.
+// The two axes are independently configurable ([embedder] and [reranker]),
+// so one key report covering both would be wrong the moment an operator
+// runs Voyage embeddings and a different rerank provider — the shared-key
+// trap this ticket dissolves. The key is resolved FROM THE PROVIDER via
+// config.APIKeyForEmbedProvider, which is the same resolution the runtime
+// does, so a config-only key (set in the file but not exported) correctly
+// reports its axis ENABLED. Both keys empty is the documented BM25-only
+// mode — info-level, not a warning.
 //
-// VoyageAPIKey reads the loaded config singleton, so load the config
-// here first (config.Load calls setActive). A load error is left for
-// checkConfig to report; on error VoyageAPIKey falls back to env-only.
+// The name stays "voyage" because it is the check's stable output label,
+// and the function name is unchanged because eight landed criteria in
+// other plans select its tests by name.
+//
+// The resolvers read the loaded config singleton, so load the config here
+// first (config.Load calls setActive). A load error is left for
+// checkConfig to report; on error the resolvers see no config and fall
+// back to the default sections plus env-only credentials.
 func checkVoyage(configFile string) checkResult {
 	path := configFile
 	if path == "" {
@@ -191,16 +193,53 @@ func checkVoyage(configFile string) checkResult {
 		path = filepath.Join(home, ".knowledge", "config")
 	}
 	_, _ = config.Load(path)
-	if config.VoyageAPIKey() == "" {
+
+	var embSec config.EmbedSection
+	var rrSec config.RerankSection
+	if config.Loaded() {
+		var err error
+		if embSec, err = config.Active().ResolveEmbedder(); err != nil {
+			return checkResult{name: "voyage", status: statusErr, msg: "[embedder] section is unusable: " + err.Error()}
+		}
+		if rrSec, err = config.Active().ResolveReranker(); err != nil {
+			return checkResult{name: "voyage", status: statusErr, msg: "[reranker] section is unusable: " + err.Error()}
+		}
+	} else {
+		embSec = config.EmbedSection{Provider: config.EmbedProviderVoyage}
+		rrSec = config.RerankSection{Provider: config.EmbedProviderVoyage}
+	}
+
+	embOK, embClause := axisCredentialClause("embedder", embSec.Provider, embSec.ResolveEmbedKey(), "vector embeddings")
+	_, rrClause := axisCredentialClause("reranker", rrSec.Provider, rrSec.ResolveRerankKey(), "cross-encoder rerank")
+
+	if !embOK {
 		return checkResult{
 			name: "voyage", status: statusInfo,
-			msg: "VOYAGE_API_KEY unset — BM25-only search (no vector embeddings, no cross-encoder rerank)",
+			msg: "BM25-only search — " + embClause + "; " + rrClause,
 		}
 	}
-	return checkResult{
-		name: "voyage", status: statusOK,
-		msg: "VOYAGE_API_KEY set — vector embeddings + cross-encoder rerank enabled",
+	return checkResult{name: "voyage", status: statusOK, msg: embClause + "; " + rrClause}
+}
+
+// axisCredentialClause renders one axis's line of the doctor's key report
+// and reports whether that axis is usable. A non-API provider (the
+// deterministic fake) needs no credential and is usable without one.
+//
+// key is the ALREADY-RESOLVED credential for the axis — the caller applies
+// the per-section-key-over-provider-key precedence — so the doctor reports
+// exactly what the runtime would use rather than re-deriving it.
+//
+// The key's VALUE is never rendered. The clause reports presence only, and
+// no caller has a reason to print more than that; a doctor report is
+// pasted into issues.
+func axisCredentialClause(axis string, provider config.EmbedProvider, key, feature string) (bool, string) {
+	if !provider.IsAPI() {
+		return true, fmt.Sprintf("%s %s: no credential required — %s enabled", axis, provider, feature)
 	}
+	if key == "" {
+		return false, fmt.Sprintf("%s %s: no key — %s disabled", axis, provider, feature)
+	}
+	return true, fmt.Sprintf("%s %s: key set — %s enabled", axis, provider, feature)
 }
 
 // checkFulminateAuth checks for a stored OAuth refresh token in the

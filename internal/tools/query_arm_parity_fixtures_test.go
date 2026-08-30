@@ -61,6 +61,17 @@ const (
 	qpSeedCustom    = "parity-custom-node"
 	qpSeedFilePath  = "parity/file.go"
 	qpSeedFileOther = "parity/other.go"
+	// qpSinceProbe is the `since` probe: an RFC3339 stamp, already in UTC and
+	// already in the exact spelling the recent-browse arm re-formats its cutoff
+	// into, so the distinctive matches the predicate comparand byte for byte. A
+	// generic string probe is out of `since`'s value vocabulary and is refused.
+	qpSinceProbe = "2020-01-02T03:04:05Z"
+	// qpParityCustomGraph is BOTH the custom graph TYPE and its collected
+	// INSTANCE name in the armRegisteredGraphSearch fixture. Named once because
+	// three places now have to agree: the fixture's base payload, the graph-type
+	// registry queryParityDeps wires, and the collected-graph catalog
+	// queryParitySeed serves — the selector gate reads all three.
+	qpParityCustomGraph = "parity-custom"
 )
 
 // queryParityVectorB64 is a base64 probe for `query_vector`. The value must
@@ -142,11 +153,18 @@ func (queryParitySearcher) SearchOverlay(
 	return []searchengine.Hit{{ID: qpSeedKnowledge, Score: 1}}, nil
 }
 
-// queryParityDeps wraps the fake with the two seams the search arms require:
-// interceptTestDeps reports PipelineReady() true already, and the searcher knob
-// supplies the segment engine those arms would otherwise report unavailable.
+// queryParityDeps wraps the fake with the three seams the search arms require:
+// interceptTestDeps reports PipelineReady() true already, the searcher knob
+// supplies the segment engine those arms would otherwise report unavailable, and
+// the graph-type registry knows "parity-custom" so the custom-graph arm's
+// selector gate resolves instead of refusing the row before the param under test
+// is ever read. The COLLECTED half of that gate rides queryParitySeed's
+// listGraphsResult.
 func queryParityDeps(fc *fakeGraphCaller) interceptTestDeps {
-	return interceptTestDeps{gc: fc, searcher: queryParitySearcher{}}
+	return interceptTestDeps{
+		gc: fc, searcher: queryParitySearcher{},
+		crud: registeredGraphTypes(qpParityCustomGraph),
+	}
 }
 
 // queryParitySeed builds the fake with every fixture node seeded, in every graph
@@ -210,6 +228,14 @@ func queryParitySeed(t *testing.T) *fakeGraphCaller {
 		statsResp: &knowledgev1.GraphStats{
 			NodeCount: 2, EdgeCount: 1, NodesByType: map[string]int64{"finding": 2},
 		},
+		// The collected-graph catalog the custom-graph arm's selector gate reads.
+		// TWO instances, for the same reason the logs fixture seeds a "probe-name"
+		// log graph above: `name` IS this arm's instance selector, so the `name`
+		// row probes a DIFFERENT instance than the base, and both have to exist for
+		// that row to measure routing rather than the not-found path.
+		listGraphsResult: listGraphsResultJSON(t,
+			[2]string{qpParityCustomGraph, qpParityCustomGraph},
+			[2]string{qpParityCustomGraph, "probe-name"}),
 	}
 }
 
@@ -244,6 +270,7 @@ func qpNode(t *testing.T, id, typ string) kgtools.ToolResult {
 func queryParityFixtures() map[armID]queryParityFixture {
 	fx := map[armID]queryParityFixture{}
 	maps.Copy(fx, queryParityGraphFixtures())
+	maps.Copy(fx, queryParityLinkageWebPDFFixtures())
 	maps.Copy(fx, queryParityModeFixtures())
 	return fx
 }
@@ -298,6 +325,13 @@ func queryParityGraphFixtures() map[armID]queryParityFixture {
 
 		// routePracticeClient checks Language FIRST, so an empty language reaches
 		// list-graphs before mode is ever read.
+		// THE ONE PRACTICE ARM THAT DOES NOT DESELECT ON id/ids, and the reason is
+		// its base: it is the only practice fixture carrying NO language. A by-id
+		// read with no language names no graph and can resolve nowhere — not here
+		// and not on the engineDispatch path either, whose resolver refuses it — so
+		// the entry point CLAIMS it to say which call works instead of handing it on
+		// to a worse refusal. The other four practice arms pin a language, so their
+		// id/ids rows still re-route and keep the shared deselect set.
 		armPracticeListGraphs: {
 			entry:         InterceptQueryPracticeLinkage,
 			base:          map[string]any{"graph": "practice"},
@@ -308,6 +342,18 @@ func queryParityGraphFixtures() map[armID]queryParityFixture {
 			entry:         InterceptQueryPracticeLinkage,
 			base:          map[string]any{"graph": "practice", "language": "go", "mode": "stats"},
 			discriminants: map[string]any{"graph": "practice", "mode": "stats"},
+			deselecting:   queryParityPracticeForeignDeselects(),
+		},
+
+		armPracticeBrowse: {
+			entry: InterceptQueryPracticeLinkage,
+			base:  map[string]any{"graph": "practice", "language": "go"},
+			discriminants: map[string]any{
+				"graph": "practice", "mode": "", "text": "", "queries": []any{},
+			},
+			deselecting: queryParityPracticeForeignDeselects(),
+			// `fields` projects only on the json render path this probe does not take.
+			opaque: map[string]bool{"fields": true},
 		},
 
 		armPracticeSearchFanOut: {
@@ -316,7 +362,11 @@ func queryParityGraphFixtures() map[armID]queryParityFixture {
 				"graph": "practice", "language": "all", "text": "probe-text",
 			},
 			discriminants: map[string]any{"graph": "practice", "mode": "", "language": "all"},
-			opaque:        map[string]bool{"queries": true, "text": true},
+			deselecting:   queryParityPracticeForeignDeselects(),
+			// `limit` rides mgr.Search — a segment searcher, not a GraphCaller read —
+			// so the probe value lands in no captured request; `fields` projects only
+			// on the json render path this probe does not take.
+			opaque: map[string]bool{"queries": true, "text": true, "limit": true, "fields": true},
 		},
 
 		armPracticeSearch: {
@@ -325,51 +375,13 @@ func queryParityGraphFixtures() map[armID]queryParityFixture {
 				"graph": "practice", "language": "go", "text": "probe-text",
 			},
 			discriminants: map[string]any{"graph": "practice", "mode": ""},
+			deselecting:   queryParityPracticeForeignDeselects(),
 			// resourceQueryText-style precedence: the base's text shadows a queries[]
-			// probe, so that probe cannot reach the search downstream.
-			opaque: map[string]bool{"queries": true},
-		},
-
-		// routeLinkageClient's list-graphs gate reads id, text, mode and queries in
-		// that order; all four are emptiness-gated here.
-		armLinkageListGraphs: {
-			entry: InterceptQueryPracticeLinkage,
-			base:  map[string]any{"graph": "linkage"},
-			discriminants: map[string]any{
-				"graph": "linkage", "id": "", "text": "", "mode": "", "queries": []any{},
-			},
-		},
-
-		armLinkageStats: {
-			entry:         InterceptQueryPracticeLinkage,
-			base:          map[string]any{"graph": "linkage", "mode": "stats"},
-			discriminants: map[string]any{"graph": "linkage", "mode": "stats"},
-		},
-
-		armLinkageGetNode: {
-			entry:         InterceptQueryPracticeLinkage,
-			base:          map[string]any{"graph": "linkage", "id": qpSeedLinkage},
-			discriminants: map[string]any{"graph": "linkage", "mode": "", "id": qpSeedLinkage},
-		},
-
-		// The retired arms answer from a fixed string and touch nothing —
-		// precondition class (b).
-		armLinkageSearchRetired: {
-			entry:         InterceptQueryPracticeLinkage,
-			base:          map[string]any{"graph": "linkage", "text": "probe-text"},
-			discriminants: map[string]any{"graph": "linkage", "mode": "", "id": ""},
-			opaque:        map[string]bool{"text": true, "queries": true},
-			behavior:      qBehavesWithoutRead,
-			precondition:  "class (b): a retired ranked-search arm serving a fixed message",
-		},
-
-		armWebPDFSearchRetired: {
-			entry:         InterceptQueryPracticeLinkage,
-			base:          map[string]any{"graph": "web", "text": "probe-text"},
-			discriminants: map[string]any{"graph": "web", "mode": "", "id": ""},
-			opaque:        map[string]bool{"text": true, "queries": true},
-			behavior:      qBehavesWithoutRead,
-			precondition:  "class (b): a retired ranked-search arm serving a fixed message",
+			// probe, so that probe cannot reach the search downstream. `limit` rides
+			// mgr.Search — a segment searcher, not a GraphCaller read — so the probe
+			// value lands in no captured request; `fields` projects only on the json
+			// render path this probe does not take.
+			opaque: map[string]bool{"queries": true, "limit": true, "fields": true},
 		},
 
 		// Bare mode:recent (EMPTY text) is the temporal browse; a non-empty text
@@ -383,6 +395,13 @@ func queryParityGraphFixtures() map[armID]queryParityFixture {
 			base:          map[string]any{"graph": "knowledge", "mode": "recent"},
 			discriminants: map[string]any{"graph": "knowledge", "mode": "recent", "text": ""},
 			deselecting:   queryParityThoughtFilterDeselects(),
+			// `since` carries a VALUE VOCABULARY beyond its JSON type — RFC3339 or a
+			// relative window — and an out-of-vocabulary value is REFUSED rather than
+			// dropped, so the generic "probe-since" string makes the arm error instead
+			// of reaching the read, measuring nothing. This is the same reason `fields`
+			// overrides its probe. An RFC3339 stamp is both vocabulary-valid and freely
+			// distinctive: it lands verbatim as the updated_at predicate's comparand.
+			probeValues: map[string]any{"since": qpSinceProbe},
 			// The browse pages at a fixed size and applies the caller's limit AFTER
 			// the temporal sort, so the limit never reaches a plan; `fields` projects
 			// only on the json render path this probe does not take.
@@ -414,9 +433,10 @@ func queryParityGraphFixtures() map[armID]queryParityFixture {
 		armRegisteredGraphSearch: {
 			entry: InterceptQueryRegisteredGraphSearch,
 			base: map[string]any{
-				"graph": "parity-custom", "name": "parity-custom", "mode": "text", "text": "probe-text",
+				"graph": qpParityCustomGraph, "name": qpParityCustomGraph,
+				"mode": "text", "text": "probe-text",
 			},
-			discriminants: map[string]any{"graph": "parity-custom", "mode": "text"},
+			discriminants: map[string]any{"graph": qpParityCustomGraph, "mode": "text"},
 			deselecting:   queryParityThoughtFilterDeselects(),
 			opaque: map[string]bool{
 				"type": true, "types": true, "meta": true,
@@ -468,21 +488,5 @@ func queryParityGraphFixtures() map[armID]queryParityFixture {
 			// TestInterceptQueryRules_BareBrowseStaysBounded) are what pin the routing.
 			opaque: map[string]bool{"fields": true, "limit": true, "offset": true},
 		},
-	}
-}
-
-// queryParityThoughtFilterDeselects is the shared `deselecting` set for the three
-// arms that bail to the recall surface on a non-empty thought filter
-// (hasThoughtQueryFilter, intercept_query_knowledge_search.go). Each of the six
-// re-routes the call BEFORE the arm's gate runs, so the cell is unreachable —
-// harness header class (h). Probing with a ZERO value instead does not rescue the
-// row: accounting counts a key as supplied only when its value is non-empty
-// (isEmptyJSONValue), so a zero-valued probe produces neither the re-route nor
-// the declared rejection.
-func queryParityThoughtFilterDeselects() map[string]bool {
-	return map[string]bool{
-		"valence_min": true, "valence_max": true,
-		"magnitude_min": true, "consistency_max": true,
-		"session": true, "connected_to": true,
 	}
 }

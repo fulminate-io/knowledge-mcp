@@ -33,7 +33,7 @@ func ThoughtsToolDef() kgtools.MCPTool {
 
 				// think
 				"content":       {Type: "string", Description: "(think) The thought content — what you're thinking and why."},
-				"summary":       {Type: "string", MaxLength: 500, Description: "(think, REQUIRED) Search-optimized one-line summary of the thought, max 500 chars. Authored deliberately — this is what makes the thought findable via recall. NOT auto-derived from content."},
+				"summary":       {Type: "string", MaxLength: 500, Description: "(think and charge, REQUIRED on both) Search-optimized one-line summary, max 500 chars, authored deliberately — this is what makes the node findable via recall, and nothing composes one for you. On think it summarizes the THOUGHT'S CLAIM; on charge it summarizes the EVIDENCE the charge records, which is a different sentence from the thought it attaches to."},
 				"session":       {Type: "string", Description: "(think, recall filter) Session name to group related thoughts (e.g., 'backend-auth-design'). Creates session if new on think."},
 				"ticket_id":     {Type: "string", Description: "(think) Active ticket/project ID — born-linked as ticket--contains-->thought so the thought is grouped under the work item that produced it. An unresolvable ticket_id is dropped with a warning, never blocking the think."},
 				"branches_from": {Type: "string", Description: "(think) Thought ID this branches from (usually after invalidation of the original)."},
@@ -62,7 +62,7 @@ func ThoughtsToolDef() kgtools.MCPTool {
 				"connected_to":    {Type: "string", Description: "(recall) Must be connected to this node ID."},
 				"time_start":      {Type: "string", Description: "(recall) Start of time range (ISO date, e.g. 2026-03-01)."},
 				"time_end":        {Type: "string", Description: "(recall) End of time range (ISO date)."},
-				"mode":            {Type: "string", Description: "(recall) Output format.", Enum: []string{"search", "timeline", "charges", "graph", "clusters"}},
+				"mode":            {Type: "string", Description: "(recall) Which recall view to run. search (default), timeline and charges are renders of the thought pipeline, and graph renders as search does; clusters and context are separate arms — clusters runs cluster detection, and context composes the five-section session-start context pack (cross-type seed search, bounded edge expansion, charge state, recency overlay, open tickets), so it is NOT thought-only.", Enum: []string{"search", "timeline", "charges", "graph", "clusters", "context"}},
 				"limit":           {Type: "number", Description: "(recall) Max results (default 20, max 50)."},
 				"format":          {Type: "string", Description: "(recall) Output format: 'text' (default) or 'json' (structured)."},
 
@@ -100,7 +100,7 @@ const thoughtsToolDescription = `Persistent reasoning graph: hypothesize, charge
 
   - think       : Record a thought (hypothesis / observation / plan). Required: content, summary (search-optimized one-line, max 500 chars). Optional: session, ticket_id, branches_from, links, status, origin (developer-origin role: planner|implementer|reviewer|researcher|tester|orchestrator|main; absent => main).
   - charge      : Attach evidence that SUPPORTS (positive) or CONTRADICTS (negative) the thought's claim. Required: thought, polarity, weight, reasoning. Optional: evidence.
-  - recall      : Search thoughts by composable filters (semantic query, valence/magnitude/consistency thresholds, status, session, time, connected-to). Modes: search (default), timeline, charges, graph, clusters.
+  - recall      : Search thoughts by composable filters (semantic query, valence/magnitude/consistency thresholds, status, session, time, connected-to). Modes: search (default), timeline, charges, graph, clusters, context. mode:"context" is the SESSION-START pack and is NOT thought-only — it composes a cross-type seed search, a bounded edge expansion, charge state, a recency overlay and the open tickets into one bounded read.
   - trace       : Follow reasoning chains forward/backward from a starting thought. Required: thought. Optional: direction, depth, include_charges, include_artifacts.
   - propagate   : Manually trigger DeGroot valence/magnitude propagation across all thoughts. Normally runs automatically in the background. Optional: force_full (run the full-corpus backstop pass now — bypasses the quiet-tick skip + incremental scoping, resets the backstop cadence). With similarity:true it triggers the topic-similarity lever ASYNCHRONOUSLY: it starts the pass in the background and returns immediately with a copy-pasteable thoughts({"operation":"similarity_report"}) fetch call + a duration estimate (the pass can outlive the tool-call timeout); only one pass runs at a time (a second trigger coalesces).
   - adjacency   : Bulk graph adjacency read used by client-side cluster detection. Required: scope ('all' | 'all_types'). Optional: thought_ids (subset projection).
@@ -122,35 +122,44 @@ func SearchToolDef() kgtools.MCPTool {
 		InputSchema: kgtools.InputSchema{
 			Type: "object",
 			Properties: map[string]kgtools.Property{
-				"query":              {Type: "string", Description: "Single search query (keywords, function names, concepts)."},
-				"queries":            {Type: "array", Description: "Batch search: array of query strings. Results deduplicated and merged.", Items: &kgtools.Property{Type: "string"}},
-				"graph":              {Type: "string", Description: "Which graph to search: code (default), knowledge, practice, cloud, cicd, linkage, or logs."},
-				"name":               {Type: "string", Description: "Graph identifier. Required when graph=logs (the per-query log graph queryID). Ignored for other graph types."},
-				"account":            {Type: "string", Description: "Selects which inventoried external-provider account/org's resources to search within your own graph — an AWS/GCP account for graph=cloud, or a CI provider org (e.g. GitHub/GitLab) for graph=cicd. Required for graph=cloud/cicd; omit to list your available graphs."},
-				"resource_type":      {Type: "string", Description: "Cloud resource type filter prefix (e.g. 'ec2', 'ec2:instance'). Cloud graph only."},
-				"limit":              {Type: "number", Description: "Max results per query (default: 10, max: 50)."},
-				"include_source":     {Type: "boolean", Description: "Include full source code (default: true). Code graph only."},
-				"include_comments":   {Type: "boolean", Description: "Include comment nodes in code search results (default: false). Comments are excluded by default to reduce noise."},
-				"mode":               {Type: "string", Description: "Search mode, honored on the knowledge and registered custom-graph arms: 'hybrid' (default — BM25 and vector fused), 'text' (BM25 only — no query embedding and no rerank), 'vector' (vector only — requires an embedder). 'recent'/'temporal' are one recency boost (knowledge graph). Not honored on the code arm, which always fuses BM25 and vector when an embedder is available. 'similar' (knowledge graph). mode:'similar' takes a node_id and returns that node's nearest corpus neighbors by searching the node's OWN STORED vector (its embedding already on disk — NOT a fresh embedding of any query text), with the node itself EXCLUDED from results. Results are ranked by the client engine's reciprocal-rank fusion over the stored-vector (HNSW) arm — with no query text the order is pure stored-vector proximity — NOT a raw cosine similarity score."},
-				"node_id":            {Type: "string", Description: "The node whose nearest stored-vector neighbors to return when mode:'similar' is set (knowledge graph). The named node is resolved to its on-disk embedding and excluded from its own results."},
-				"group_by_file":      {Type: "boolean", Description: "Group results by file (default: false). Code graph only."},
-				"path_prefix":        {Type: "string", Description: "Filter to files under this path. Code graph only."},
-				"repo":               repoProp,
-				"repos":              {Type: "array", Description: "Search specific repos (e.g. [\"agent\",\"knowledge\"]). Alternative to repo='all'. Code graph only.", Items: &kgtools.Property{Type: "string"}},
-				"branch":             {Type: "string", Description: "Branch name for overlay search. Code graph only."},
-				"staleness":          {Type: "boolean", Description: "Include index staleness info (default: false). Code graph only."},
-				"current_head":       {Type: "string", Description: "Current git HEAD SHA (auto-populated by client intercept when staleness:true). Code graph only."},
-				"uncommitted_count":  {Type: "number", Description: "Count of uncommitted files (auto-populated when staleness:true). Code graph only."},
-				"commits_behind":     {Type: "number", Description: "Commits between sync_commit and HEAD (auto-populated when staleness:true). Code graph only."},
-				"types":              {Type: "array", Description: "Filter results by node type (e.g. [\"thought\",\"decision\",\"finding\"]). Applied on the knowledge graph and on registered custom graphs.", Items: &kgtools.Property{Type: "string"}},
-				"include_tests":      {Type: "boolean", Description: "Include test code (test/benchmark/example/fuzz/setup/teardown/fixture/mock/helper) in results. Default true. Code graph only — silently ignored on other graphs (mirrors path_prefix). Set false to exclude all test code from impl-style queries. Note: until per-language predicate-population tickets land, all code nodes have is_test=false so this filter is currently a no-op."},
-				"test_kinds":         {Type: "array", Description: "Filter set for test classification kinds: any of test, benchmark, example, fuzz, setup, teardown, fixture, mock, helper. Empty/absent means no filter (combined with include_tests=true: all results pass; with include_tests=false: tests of any kind are dropped). Code graph only. Note: until per-language predicate-population tickets land, all code nodes have test_kind=\"\" so this filter is currently a no-op.", Items: &kgtools.Property{Type: "string"}},
-				"format":             {Type: "string", Description: "Output format: 'text' (default, markdown) or 'json' (structured). JSON returns {results:[{id,name,type,score,...}]} instead of markdown text."},
-				"explain":            {Type: "boolean", Description: "Append per-result match-field annotations (which fields contain the literal query tokens) and a search-mode disclosure footer. Off by default — adds context without changing ranking."},
-				"include_tombstones": {Type: "boolean", Description: "Include tombstoned (deleted) nodes in results. Default false."},
-				"rerank":             {Type: "boolean", Description: "Apply post-fusion rerank when configured. Default true. Set false for cheap exact-symbol-name lookups where fan-in scoring suffices."},
-				"fields":             {Type: "array", Description: "Field projection (format=json only): list of fields to include per result, dramatically shrinking response size for high-volume queries. Top-level: id, name, type, score, description, source, status. Per-metadata-key: 'metadata.<key>' (e.g. 'metadata.dsl_pattern'). Bare 'metadata' includes the whole metadata map. Empty/absent = full hydration (current default). Unknown field names silently dropped. A per-metadata-key projection is OMITTED ENTIRELY from any result whose node lacks that key — absent from the row, never an empty string. So zero projected values across a result set means the key is unset on those nodes; it is NOT evidence that a write failed.", Items: &kgtools.Property{Type: "string"}},
-				"query_vector":       {Type: "string", Description: "Optional base64-encoded binary embedding for the query text (32 bytes / 256-bit decoded). Client-supplied: set by the client-side LLM pipeline's InterceptSearch so the server can serve hybrid-search results without holding a Voyage key. The server never embeds — when query_vector is unset the search runs BM25-only (no server-side embedding fallback). Decoded length mismatches return a structured validation error and no search is performed."},
+				"query":             {Type: "string", Description: "Single search query (keywords, function names, concepts)."},
+				"queries":           {Type: "array", Description: "Batch search: array of query strings. Results deduplicated and merged.", Items: &kgtools.Property{Type: "string"}},
+				"graph":             {Type: "string", Description: "Which graph to search: code (default), knowledge, practice, cloud, cicd, linkage, or logs."},
+				"name":              {Type: "string", Description: "Graph identifier. Required when graph=logs (the per-query log graph queryID). Ignored for other graph types."},
+				"account":           {Type: "string", Description: "Selects which inventoried external-provider account/org's resources to search within your own graph — an AWS/GCP account for graph=cloud, or a CI provider org (e.g. GitHub/GitLab) for graph=cicd. Required for graph=cloud/cicd; omit to list your available graphs."},
+				"resource_type":     {Type: "string", Description: "Cloud resource type filter prefix (e.g. 'ec2', 'ec2:instance'). Cloud graph only."},
+				"limit":             {Type: "number", Description: "Max results per query (default: 10, max: 50)."},
+				"include_source":    {Type: "boolean", Description: "Include full source code (default: true). Code graph only."},
+				"include_comments":  {Type: "boolean", Description: "Include comment nodes in code search results (default: false). Comments are excluded by default to reduce noise."},
+				"mode":              {Type: "string", Description: "Search mode, honored on the knowledge and registered custom-graph arms: 'hybrid' (default — BM25 and vector fused), 'text' (BM25 only — no query embedding and no rerank), 'vector' (vector only — requires an embedder). 'recent'/'temporal' are one recency boost (knowledge graph). Not honored on the code arm, which always fuses BM25 and vector when an embedder is available. 'similar' (knowledge graph). mode:'similar' takes a node_id and returns that node's nearest corpus neighbors by searching the node's OWN STORED vector (its embedding already on disk — NOT a fresh embedding of any query text), with the node itself EXCLUDED from results. Results are ranked by the client engine's reciprocal-rank fusion over the stored-vector (HNSW) arm — with no query text the order is pure stored-vector proximity — NOT a raw cosine similarity score."},
+				"node_id":           {Type: "string", Description: "The node whose nearest stored-vector neighbors to return when mode:'similar' is set (knowledge graph). The named node is resolved to its on-disk embedding and excluded from its own results."},
+				"group_by_file":     {Type: "boolean", Description: "Group results by file (default: false). Code graph only."},
+				"path_prefix":       {Type: "string", Description: "Filter to files under this path. Code graph only."},
+				"repo":              repoProp,
+				"repos":             {Type: "array", Description: "Search specific repos (e.g. [\"agent\",\"knowledge\"]). Alternative to repo='all'. Code graph only.", Items: &kgtools.Property{Type: "string"}},
+				"language":          {Type: "string", Description: "Practice graph selector: names ONE practice graph to search (e.g. 'go', 'go-idioms'). Omit it, or pass 'all', to fan out across every loaded practice graph — that fan-out is the default and stays the default. Practice graph only; the same spelling query uses."},
+				"branch":            {Type: "string", Description: "Branch name for overlay search. Code graph only."},
+				"staleness":         {Type: "boolean", Description: "Include index staleness info (default: false). Code graph only."},
+				"current_head":      {Type: "string", Description: "Current git HEAD SHA (auto-populated by client intercept when staleness:true). Code graph only."},
+				"uncommitted_count": {Type: "number", Description: "Count of uncommitted files (auto-populated when staleness:true). Code graph only."},
+				"types":             {Type: "array", Description: "Filter results by node type (e.g. [\"thought\",\"decision\",\"finding\"]). Applied on the knowledge graph and on registered custom graphs.", Items: &kgtools.Property{Type: "string"}},
+				"include_tests":     {Type: "boolean", Description: "Include test code (test/benchmark/example/fuzz/setup/teardown/fixture/mock/helper) in results. Default true. Code graph only — silently ignored on other graphs (mirrors path_prefix). Set false to exclude all test code from impl-style queries. Note: until per-language predicate-population tickets land, all code nodes have is_test=false so this filter is currently a no-op."},
+				"test_kinds":        {Type: "array", Description: "Filter set for test classification kinds: any of test, benchmark, example, fuzz, setup, teardown, fixture, mock, helper. Empty/absent means no filter (combined with include_tests=true: all results pass; with include_tests=false: tests of any kind are dropped). Code graph only. Note: until per-language predicate-population tickets land, all code nodes have test_kind=\"\" so this filter is currently a no-op.", Items: &kgtools.Property{Type: "string"}},
+				"format":            {Type: "string", Description: "Output format: 'text' (default, markdown) or 'json' (structured). JSON returns {results:[{id,name,type,score,...}]} instead of markdown text."},
+				// Three keys were retired from this schema — include_tombstones,
+				// explain and commits_behind. Each was declared here and read by no
+				// decode site on any search arm, so the tool accepted them and
+				// dropped them; commits_behind additionally advertised an
+				// auto-population that populateStaleness documents as removed.
+				// Undeclaring them hands them to rejectUndeclaredParams, which
+				// already runs over this map, so a caller supplying one is now
+				// refused by name instead of silently ignored. Tombstoned nodes are
+				// reachable through query, whose arm registry genuinely routes the
+				// flag; file_symbols keeps its own declaration below because it
+				// genuinely consumes it.
+				"rerank":       {Type: "boolean", Description: "Apply post-fusion rerank when configured. Default true. Set false for cheap exact-symbol-name lookups where fan-in scoring suffices."},
+				"fields":       {Type: "array", Description: "Field projection (format=json only): list of fields to include per result, dramatically shrinking response size for high-volume queries. Top-level keys accepted: content, created_at, description, file_path, graph, graph_instance, id, keywords, language, line, metadata, name, score, signature, source, status, summary, symbol_name, test_kind, tombstoned_at, type, updated_at — every search read is a ranked-search read, so the three hit properties (score, graph, graph_instance) are always available here. Per-metadata-key: 'metadata.<key>' (e.g. 'metadata.dsl_pattern'). Bare 'metadata' includes the whole metadata map. Empty/absent = full hydration (current default). An unsupported key is REFUSED, naming the offending key and the accepted vocabulary. A named top-level key is ALWAYS returned when you request it — empty string for an unset text field, 0 for an unset timestamp, empty map for absent metadata — so \"present and unset\" stays distinguishable from \"not in your projection\". tombstoned_at is the ONE exception to that always-returned rule: it is OMITTED ENTIRELY for a live node rather than returned as 0, because a sentinel 0 is indistinguishable at the wire from a real tombstone stamp. created_at and updated_at project as RAW int64 unix nanos, and an unset stamp returns 0 on these projection arms — UNLIKE query's mode:\"examine\" and mode:\"plan_tree\", which omit the key entirely when the stamp is zero. A per-metadata-key projection is OMITTED ENTIRELY from any result whose node lacks that key — absent from the row, never an empty string. So zero projected values across a result set means the key is unset on those nodes; it is NOT evidence that a write failed.", Items: &kgtools.Property{Type: "string"}},
+				"query_vector": {Type: "string", Description: "Optional base64-encoded binary embedding for the query text (32 bytes / 256-bit decoded). Client-supplied: set by the client-side LLM pipeline's InterceptSearch so the server can serve hybrid-search results without holding a Voyage key. The server never embeds — when query_vector is unset the search runs BM25-only (no server-side embedding fallback). Decoded length mismatches return a structured validation error and no search is performed."},
 			},
 		},
 	}
@@ -169,6 +178,7 @@ func FileSymbolsToolDef() kgtools.MCPTool {
 				"file_paths":         {Type: "array", Description: "Multiple file paths in one call (combined with file_path).", Items: &kgtools.Property{Type: "string"}},
 				"include_source":     {Type: "boolean", Description: "Include source code (default: true)."},
 				"include_tombstones": {Type: "boolean", Description: "Include tombstoned (deleted) symbols in results. Default false."},
+				"limit":              {Type: "number", Description: "Cap the RENDERED symbol rows. It bounds the response, not the read — the per-file fetch is unchanged. Omit to render every symbol. Across several paths the cap is a total spent in request order."},
 				"format":             {Type: "string", Description: "Output format: 'text' (default, markdown) or 'json' (structured rows: {id, symbol_name, type, file_path, start_line, end_line, signature, summary})."},
 				"repo":               repoProp,
 				"branch":             {Type: "string", Description: "Code-graph branch overlay to read instead of the base graph. Auto-filled by the client from the machine-local repo manifest when the caller omits it and repo is not 'all', so it arrives on the call even when unset by hand; supply it explicitly to pin a specific overlay."},
@@ -230,6 +240,10 @@ func CollectToolDef() kgtools.MCPTool {
 				"transformer":        {Type: "string", Description: "Web/PDF only: optional transformer name."},
 				"recipe":             {Type: "string", Description: "Web/PDF only, transformer=\"recipe\" only: name of a recipe node. The recipe's source_graph_type metadata must match `type`."},
 				"dry_run":            {Type: "boolean", Description: "Web/PDF only, transformer=\"recipe\" only: compute emissions but write nothing."},
+				"extract":            {Type: "boolean", Description: "Web/PDF only, transformer=\"recipe\" only: EXTRACT MODE — write nothing and return the emitted rows for inspection. Bounded by max_rows and max_bytes, with any truncation disclosed in the response."},
+				"recipe_body":        {Type: "string", Description: "Web/PDF only, transformer=\"recipe\" only: an INLINE recipe body to run instead of a saved recipe named by `recipe`. Requires extract=true — a write target comes from a saved recipe node, so to freeze an extraction save the same body as a recipe node and run it by name. Mutually exclusive with `recipe`."},
+				"max_rows":           {Type: "integer", Description: "Web/PDF only, transformer=\"recipe\" only, extract mode: cap on rows returned. 0 selects the default (200); the response reports rows matched alongside rows returned, so a truncated extract is never mistaken for a short one."},
+				"max_bytes":          {Type: "integer", Description: "Web/PDF only, transformer=\"recipe\" only, extract mode: cap on the rendered response size in bytes. 0 selects the default (65536). Truncation is stated in the response rather than applied silently."},
 				"max_download_bytes": {Type: "integer", Description: "Web only: per-(owner,repo,ref) cap on github materialization downloads. 0=default (50 MiB), -1=unlimited, >0=explicit cap (uncompressed bytes)."},
 			},
 			Required: []string{"type"},

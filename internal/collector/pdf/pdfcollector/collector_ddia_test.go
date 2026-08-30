@@ -30,8 +30,11 @@ import (
 // (line/heading/code classification), so the assertion is a generous
 // ≥200-nodes lower bound.
 func TestCollect_DDIA_Acceptance(t *testing.T) {
-	path := os.Getenv("PDF_DDIA_PATH")
-	if path == "" {
+	// Clean the operator-supplied path before it reaches any file operation. The
+	// value comes straight from the environment, so it is tainted by construction
+	// even though the only caller is a human running this acceptance gate by hand.
+	path := filepath.Clean(os.Getenv("PDF_DDIA_PATH"))
+	if path == "" || path == "." {
 		t.Skip("PDF_DDIA_PATH not set; skipping DDIA acceptance gate (set to absolute path of the book PDF to run)")
 	}
 	if _, err := os.Stat(path); err != nil {

@@ -21,7 +21,7 @@ import (
 //
 // All wire-shape concerns (provider selection, request marshaling,
 // retry classification, transient/terminal error mapping) live in the
-// per-provider sub-packages of domains/llm. This adapter only owns
+// per-provider sub-packages of internal/llm. This adapter only owns
 // the summarize-specific JSON-schema prompt shape.
 //
 // systemPrompt selects the system prompt sent on every SummarizeBatch.

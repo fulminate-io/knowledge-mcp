@@ -209,11 +209,12 @@ func (f *fakeWireClient) Execute(_ context.Context, req *knowledgev1.ExecuteRequ
 		items := make([]updateBatchItem, 0, len(m.GetUpdateItems()))
 		for _, ui := range m.GetUpdateItems() {
 			items = append(items, updateBatchItem{
-				ID:           ui.GetId(),
-				Summary:      ui.Summary,
-				Keywords:     ui.Keywords,
-				BinaryVector: ui.GetBinaryVector(),
-				Metadata:     ui.GetMetadata(),
+				ID:            ui.GetId(),
+				Summary:       ui.Summary,
+				Keywords:      ui.Keywords,
+				BinaryVector:  ui.GetBinaryVector(),
+				Metadata:      ui.GetMetadata(),
+				EmbedIdentity: ui.GetEmbedIdentity(),
 			})
 		}
 		f.recordedWrites = append(f.recordedWrites, items)

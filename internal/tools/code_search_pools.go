@@ -171,20 +171,38 @@ func rememberShippedComplete(overlay string, complete bool, now time.Time) {
 // THE TWO OPERANDS COME FROM DIFFERENT STAMPERS, AND THAT IS THE WHOLE
 // CORRECTNESS OF THE GATE.
 //
-//   - covered is the SEGMENT ENGINE's shipped HNSW doc count for the branch bucket
-//     (SegmentCoverageReader.ShippedSegmentDocCount): client-side on the OSS rail,
-//     where it is the L2 resident count, and server-side on the cloud rail, where
-//     it is summed from the shipped manifest's per-digest doc_count.
+//   - covered is the SEGMENT ENGINE's DISTINCT LIVE-SEARCHABLE doc count for the
+//     branch bucket (SegmentCoverageReader.LiveResidentDocCount) — how many
+//     documents a search could actually return, counted ONCE each. It used to be
+//     summed from the cloud rail's published metas; that rail is deleted, so the
+//     local reading is the only one.
 //   - the bar is the branch GRAPH's own embedded population — GraphStats
 //     .BinaryVectorCount, the count of nodes carrying a stored binary vector,
 //     maintained by the server's node store and read through the single
 //     GraphEmbeddedCount definition.
 //
-// A bar derived from the resident pool would make this an IDENTITY. On the OSS
-// rail ShippedSegmentDocCount RETURNS the resident count, so resident >= resident
-// is true for a bucket that is half seeded, and the gate would report complete for
-// exactly the corpus it exists to refuse. The server's counter is the one authority
-// available on both rails that the segment engine does not write.
+// COUNTED ONCE EACH ON BOTH SIDES IS WHAT MAKES THE COMPARISON MEAN ANYTHING, and
+// getting it wrong is how this gate served a partial corpus under a healthy banner.
+// It previously read the SUMMING resident count, which counts an id resident in two
+// segments TWICE — "the ordinary state after two rebuilds land without the first
+// being retired". The bar counts each node ONCE. So a bucket holding Rd distinct
+// documents against a bar of N read as complete whenever Rd + duplication >= N,
+// i.e. a genuinely short bucket passed on the strength of its own duplication. The
+// distinct-and-live reader removes that term: it cannot exceed the number of real
+// documents, so covered >= bar now means what it says.
+//
+// THE FIX MOVES ONLY IN THE SAFE DIRECTION. The distinct count is less than or
+// equal to the summing one, so this can turn a former "complete" into
+// "not complete" and never the reverse — a bucket that stops collapsing pays one
+// redundant base-pool read, which is the cost this gate exists to avoid paying
+// WRONGLY.
+//
+// A bar derived from the resident pool would make this an IDENTITY, and that hazard
+// is now UNIVERSAL rather than rail-specific. Both resident readers answer from the
+// same engine the covered count comes from, so resident >= resident is true for a
+// bucket that is half seeded, and the gate would report complete for exactly the
+// corpus it exists to refuse. The server's counter is the one authority the segment
+// engine does not write, which is why the bar must keep coming from there.
 //
 // THE COMPARISON IS NON-SHORTFALL WITH NO TOLERANCE, and the zero is earned rather
 // than assumed. The bar counts precisely the nodes that CAN appear in the HNSW
@@ -196,11 +214,16 @@ func rememberShippedComplete(overlay string, complete bool, now time.Time) {
 //
 // EVERY UNKNOWN READS AS NOT COMPLETE, because the two-pool union is the safe
 // direction and a wrong "complete" serves a partial corpus under a healthy banner:
-// anyUnknown (the conservative-unknown signal, true when a shipped segment predates
-// the doc_count field so the coverage is unknowable), a read error on either
-// operand, an unwired coverage seam, and a bar of zero — which a router-less caller
-// gets back from GraphEmbeddedCount, and which would otherwise make covered >= 0
-// the same always-true identity arriving by a different door.
+// a read error on either operand, an unwired coverage seam, and a bar of zero —
+// which a router-less caller gets back from GraphEmbeddedCount, and which would
+// otherwise make covered >= 0 the same always-true identity arriving by a different
+// door.
+//
+// ONE UNKNOWN CLASS IS GONE ENTIRELY rather than being handled here: the
+// conservative-unknown signal that fired when a shipped segment predated the
+// doc_count field. Its source was the manifest read, and no engine reports that
+// sentinel, so the term was removed rather than left as a permanently-true conjunct
+// that would read as a live guard.
 //
 // THE BAR IS ADDRESSED AT THE BRANCH, and that is what makes a sparse branch
 // safe without a special case. The server resolves a Branch-carrying code selector
@@ -219,9 +242,22 @@ func shippedCompleteForUnifiedSearch(ctx context.Context, cdeps codeSearchDeps, 
 		return verdict
 	}
 
-	covered, anyUnknown, err := cdeps.cov.ShippedSegmentDocCount(ctx, kgtypes.GraphCode, overlay)
-	complete := err == nil && !anyUnknown
+	// THIS CALL IS FOR ITS LOAD AND ITS ERROR, NOT FOR ITS NUMBER. It is what
+	// materializes the bucket's engine (the reader loads before answering) and it is
+	// the only "could this operand be read at all" signal the gate has. The COUNT it
+	// returns is the summing one, which is not commensurable with the bar — see the
+	// block above — so it is deliberately discarded and the distinct count is read
+	// below off the engine this call just loaded.
+	//
+	// IF A FUTURE CHANGE MAKES THIS READER NON-LOADING, the distinct read below sees
+	// an unloaded pool and answers 0, the gate reports not-complete, and the two-pool
+	// union stays. That is the safe direction — it costs a redundant base read, never
+	// a partial corpus served as whole — but it is a silent behaviour change, so the
+	// coupling is named here rather than left to be rediscovered.
+	_, err := cdeps.cov.ShippedSegmentDocCount(ctx, kgtypes.GraphCode, overlay)
+	complete := err == nil
 	if complete {
+		covered := cdeps.cov.LiveResidentDocCount(kgtypes.GraphCode, overlay)
 		target := graphsel.GraphSelectorFor(kgtypes.GraphCode, base, false)
 		target.Branch = branch
 		embedded, barErr := graphEmbeddedCountFor(ctx, cdeps.gc, target)

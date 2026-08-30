@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// manager_publish_resident.go — the REGISTRY-MODEL publish path: ship the new
-// content-hash blobs, then publish this writer's RESIDENT live set as its manifest
-// so the server refcount-GCs whatever dropped out of it. Relocated verbatim from
-// manager_prune.go, which keeps the superseded diff-prune mechanism (ship /
-// shipNew / reconcilePrune) that the in-package machinery tests still drive.
+// manager_publish_resident.go — the DURABILITY path: write this engine's resident
+// segments into the L2 disk cache, and refuse a prospective layer that would retire
+// a populated one in favor of nothing.
 //
 // The seam is the MODEL, not the line count: everything here decides what the LIVE
 // SET IS, while what stays behind decides which stale ids to DELETE.
@@ -12,372 +10,243 @@
 package segmentdist
 
 import (
-	"context"
-	"errors"
 	"log/slog"
+	"time"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
-// shipAndPublish is the embed/tail ship path's REGISTRY-MODEL replacement for the
-// diff-prune reconcile: it ships the new-content-hash blobs (the same
-// ship-new leg as ship()), then PUBLISHES this writer's current RESIDENT live set
-// as its manifest so the server reference-count-GCs whatever dropped out of the
-// live set. Unlike reconcilePrune — which deletes the diff of a caller-supplied
-// `against` set — the published manifest is the AUTHORITATIVE live set, and the
-// server reaps a blob only when NO writer's manifest references it (multi-writer
-// safe by construction).
+// THE L2 WRITE ATTEMPT POLICY, in one place because it is a policy rather than a
+// tuning constant and the two values only mean anything against each other.
 //
-// THE MANIFEST IS THIS ENGINE'S RESIDENT SET, FULL STOP. It used to be a UNION with a
-// sibling engine's digests, because the HNSW rebuild wrote a second engine while both
-// keyed one HNSW manifest — so an embed publish that named only its own set reaped the
-// blobs the rebuild was still responsible for. There is one engine per format now, so
-// there is no sibling to reference and no union to get wrong.
+// singleL2WriteAttempt is what every path has always done and what every path
+// except the delete re-emit keeps doing: write once, return the error. It is named
+// rather than spelled 1 at each call site so a reader of those sites sees a stated
+// policy instead of an unexplained literal.
 //
-// CRITICAL: the published set is the RESIDENT m.engine.Export(),
-// NOT a force-reloaded set. A force-reload (List(0)+load+Export) re-imports
-// merged-away constituents via publishImport, so they would resurface in the
-// manifest and never be reaped — breaking the bounded-server-set property. The
-// resident Export already omits merged-away constituents (the merge CAS removed
-// them), so the manifest omits them → their refcount drops to zero → GC reaps.
-//
-// reconcileAgainst encodes the caller's ROLE exactly as reconcilePrune's `against`
-// set does — it selects WHICH bookkeeping set is diffed against the published live
-// set to compute the dropped (superseded) ids returned + dropped from local
-// bookkeeping:
-//
-//   - ROLE B (embed/tail, against = m.locallyShipped): a fresh process's
-//     locallyShipped is empty, so it can only ever report its own merged-away tail
-//     — never the prior corpus it re-imported. The restart-tail guard.
-//   - ROLE A (reset rebuild, against = m.shippedIDs): the rebuild's resident Export IS
-//     the complete new corpus, so shippedIDs − liveSet is the old corpus it superseded
-//     — returned so FinalizeRebuild reports it per format and feeds the HNSW half to
-//     InvalidateLocal for local L2 eviction.
-//
-// RETURN: the ids that dropped out (per the role's set). The empty-set / coverage
-// gate inside publishResident protects against a degenerate publish.
-func (m *distManager[Q, S]) shipAndPublish(
-	ctx context.Context, reconcileAgainst map[searchengine.SegmentID]struct{},
-) ([]searchengine.SegmentID, error) {
-	if err := m.ensureShippedSeeded(ctx); err != nil {
-		return nil, err
-	}
+// l2WriteAttemptsOnDelete is the delete re-emit's bound. It exists because the
+// delete re-emit is ENTIRELY LOCAL — the rebuild is in memory, the swap is this
+// process's own compare-and-swap, and the L2 disk write is the only step that can
+// fail for an operational rather than a programming reason. A local disk write
+// failing is rare and is usually transient, so a couple of further attempts is
+// worth more than an immediate report. It is deliberately SMALL: this is a net for
+// a rare disk error, not an availability mechanism, and a delete that cannot be
+// made durable has to say so promptly rather than block on a disk that is not
+// coming back.
+const (
+	singleL2WriteAttempt    = 1
+	l2WriteAttemptsOnDelete = 3
+)
 
+// THE ABORTED-RECLAIM REPORT POLICY, stated here beside the write-attempt policy
+// because the two are the same kind of thing: a per-caller decision about what a
+// partition re-emit owes its caller, named rather than spelled as a bare literal at
+// each call site.
+//
+// A re-emit's group swap fires the engine's merge hook, and reclaimMerged ABORTS on a
+// failed Put of the consolidated blob — leaving the superseded constituents on disk,
+// logging at ERROR, and returning nothing (its signature is the engine's
+// OnMergeFunc, which has no return). surfaceAbortedReclaim makes the driver ASK for
+// that record and fold it into its own error; logAbortedReclaimOnly leaves the abort
+// exactly as it has always been, a log line and nothing more.
+//
+// IT IS THE DELETE PATH'S ALONE, and the scoping is behavioral rather than cautious.
+// Two other drivers reach the merge hook, and surfacing there would CHANGE WHAT THEIR
+// CALLERS OBSERVE. ReEmitRebuiltDelta's finalize takes the flag and holds it at
+// logAbortedReclaimOnly: an error from it reports swapped=false, which the rebuild
+// driver reads as a failed finalize. The reconcile drain does not take the flag at
+// all — drainFormat calls replaceBucketGroups and persistResident directly rather
+// than through this function — and an error there would return from
+// ReEmitDirtyBuckets BEFORE clearDirty, retaining the whole write backlog and
+// re-triggering the drain on every tick. Neither caller's failure model was examined
+// here, which is the same argument replaceBucket records for the write-attempt bound.
+const (
+	surfaceAbortedReclaim = true
+	logAbortedReclaimOnly = false
+)
+
+// l2WriteRetryBackoff is the pause before the FIRST retry; each further retry waits
+// a multiple of it. Short enough that an exhausted bound reports promptly, long
+// enough that a retry is not simply the same instant re-tried.
+const l2WriteRetryBackoff = 20 * time.Millisecond
+
+// persistResident makes this engine's resident set DURABLE: it exports the resident
+// segments, drops the ones whose content hash the L2 cache already holds, and writes
+// the rest. It returns how many blobs it newly wrote.
+//
+// IT MAKES ONE WRITE ATTEMPT, which is what every caller but the delete re-emit
+// wants. The retrying form is persistResidentWithWriteAttempts below; this is its
+// singleL2WriteAttempt case, so the reconcile drain, the rebuild finalize and Flush
+// keep exactly the behaviour they have always had.
+//
+// THE SHAPE OF THE DIFF IS WHAT SURVIVED from its predecessor. Then the diff
+// suppressed blobs the SERVER already held and the write to L2 was a side effect of
+// the upload response; now the diff asks the L2 cache directly and the write is the
+// whole point. The consequence is worth stating because it inverts a documented
+// hazard: under the old coupling only SHIPPED blobs were cached, so a
+// content-hash-suppressed blob was published but never written locally and the cache
+// ran short of the published set. Keying the diff on cache presence makes that
+// impossible — a blob is skipped precisely because it is already on disk.
+//
+// There is no manifest and no refcount-GC, so nothing here can reap anything: the
+// destructive act that the old publish gate protected against has moved to the layer
+// swap, and prospectiveLayerOK guards it there.
+func (m *distManager[Q, S]) persistResident() (int, error) {
+	return m.persistResidentWithWriteAttempts(singleL2WriteAttempt)
+}
+
+// persistResidentWithWriteAttempts is persistResident with the number of L2 write
+// attempts made explicit.
+//
+// THE EXPORT AND THE DIFF RUN ONCE, and only the WRITE is repeated. Re-exporting per
+// attempt would re-derive a resident set that cannot have changed — nothing here
+// mutates the engine — and would emit the write-diff record once per attempt, which
+// would make an operator read one delete's single write as several.
+//
+// A SUCCESS ON A LATER ATTEMPT IS INDISTINGUISHABLE FROM A FIRST-TRY SUCCESS to
+// every caller: the same blob count and a nil error. That is required rather than
+// merely tidy, because the delete's shipped-corpus verdict travels on this error
+// alone — the tools layer appends its not-durable qualifier exactly when
+// DeleteFromBuckets returns non-nil — so anything else surfaced on a recovered write
+// would tell a caller their durable delete was not durable.
+//
+// AN EXHAUSTED BOUND RETURNS THE LAST ATTEMPT'S ERROR UNWRAPPED, so that qualifier
+// names the disk's own failure rather than one this loop invented.
+func (m *distManager[Q, S]) persistResidentWithWriteAttempts(writeAttempts int) (int, error) {
 	all := m.engine.Export()
 
-	m.shipMu.Lock()
-	var diff []*knowledgev1.SegmentBlobProto
-	diffBlobs := make(map[string]searchengine.SegmentBlob)
+	var diff []searchengine.SegmentBlob
 	for _, b := range all {
-		if _, sent := m.shippedIDs[b.ID]; sent {
+		if _, present := m.cache.sizeOf(b.ID); present {
 			continue
 		}
-		diff = append(diff, blobToProto(b))
-		diffBlobs[b.ID] = b
+		diff = append(diff, b)
 	}
-	m.shipMu.Unlock()
 
-	// SHIPPED VERSUS SKIPPED-AS-PRESENT, and this line is the one an operator needed
-	// and did not have. The ship diff SUPPRESSES every blob whose content hash the
-	// server already holds, so a rebuild that emits 128 buckets can legitimately
-	// upload 32 — and because only shipped blobs are written to the L2 cache, the
-	// difference is precisely what leaves the local cache short of the published set.
-	// Without both numbers on one line the upload count reads as the whole story: the
-	// 78-second rebuild that truncated a served corpus to a quarter emitted no ship
-	// line at all, and the only detector was a human doing arithmetic after a restart.
-	slog.Info("segmentdist: ship diff resolved",
+	// WRITTEN VERSUS SKIPPED-AS-PRESENT, and this line is the one an operator needed
+	// and did not have. Without both numbers on one line the write count reads as the
+	// whole story: the 78-second rebuild that truncated a served corpus to a quarter
+	// emitted no line at all, and the only detector was a human doing arithmetic after
+	// a restart.
+	slog.Info("segmentdist: L2 write diff resolved",
 		"graph", m.target.GetGraph(), "name", m.target.GetName(), "repo", m.target.GetRepo(),
-		"format", m.format, "resident", len(all), "shipped", len(diff),
+		"format", m.format, "resident", len(all), "written", len(diff),
 		"skipped_as_present", len(all)-len(diff))
 
-	// Ship-new FIRST so the consolidated blobs land before the publish reaps their
-	// merged-away predecessors (never a server gap).
-	if err := m.shipNew(ctx, diff, diffBlobs); err != nil {
-		return nil, err
+	if err := m.writeNewBlobsToL2WithAttempts(diff, writeAttempts); err != nil {
+		return 0, err
 	}
-
-	return m.publishResident(ctx, all, reconcileAgainst)
+	return len(diff), nil
 }
 
-// publishResident publishes this writer's resident live set (the ids in
-// `all` = m.engine.Export()) as this writer's manifest for (graphKey, writerID,
-// format), then reconciles the local bookkeeping. It returns the ids in
-// reconcileAgainst that dropped out of the published set (the caller's ROLE choice —
-// locallyShipped for the embed path, shippedIDs for the reset rebuild). Separated from
-// shipAndPublish so the merge/reclaim paths can re-publish without re-running the
-// ship-new diff.
-func (m *distManager[Q, S]) publishResident(
-	ctx context.Context, all []searchengine.SegmentBlob,
-	reconcileAgainst map[searchengine.SegmentID]struct{},
-) ([]searchengine.SegmentID, error) {
-	liveSet := make(map[searchengine.SegmentID]struct{}, len(all))
-	// manifestDigests carries the per-digest doc_count to the wire (the GCS manifest
-	// stores it as the coverage-read denominator; the RPC path drops it). manifestIDs
-	// is the id-only view the coverage gate + dropped-reconcile below still use.
-	manifestDigests := make([]segmentDigest, 0, len(all))
-	manifestIDs := make([]searchengine.SegmentID, 0, len(all))
-	for _, b := range all {
-		if _, dup := liveSet[b.ID]; dup {
-			continue
+// writeNewBlobsToL2WithAttempts writes the blobs, retrying the WHOLE write up to
+// attempts times and returning the last attempt's error when the bound is exhausted.
+//
+// RE-OFFERING THE ALREADY-WRITTEN BLOBS COSTS NOTHING AND IS WHY THE RETRY IS THE
+// WHOLE SLICE. writeNewBlobsToL2 aborts at the first blob it cannot write, so a
+// failed attempt may have landed some of them; the cache is content-addressed, so
+// re-Putting a blob it already holds is the same bytes under the same name. Resuming
+// from the failing element instead would need the loop to report where it stopped,
+// for no behavioral gain.
+//
+// attempts BELOW ONE STILL WRITES ONCE. The loop is written so the write is
+// unconditional and the retries are what the bound governs — a caller that computed
+// a zero must not silently turn a durability step into a no-op that reports success.
+func (m *distManager[Q, S]) writeNewBlobsToL2WithAttempts(
+	blobs []searchengine.SegmentBlob, attempts int,
+) error {
+	var err error
+	for attempt := 1; ; attempt++ {
+		if err = m.writeNewBlobsToL2(blobs); err == nil {
+			return nil
 		}
-		liveSet[b.ID] = struct{}{}
-		manifestDigests = append(manifestDigests, segmentDigest{ID: b.ID, DocCount: b.DocCount})
-		manifestIDs = append(manifestIDs, b.ID)
-	}
-
-	// SAFETY GATE (empty/degenerate-publish corpus-wipe guard): a publish swaps this
-	// writer's manifest and drives a refcount-GC, so a DEGENERATE live set (empty
-	// Export, a partial/incomplete load, a not-yet-loaded fresh process) must NEVER
-	// reach PublishManifest or it would wipe the prior corpus. Two checks gate it:
-	//
-	//   (1) NON-EMPTY + COVERAGE-RATIO FLOOR: an empty manifest, or a resident set
-	//       far below the server's shipped doc count for this format, is rejected.
-	//       This reuses the read-side coverage backstop policy verbatim
-	//       (publishCoverageOK → shippedDocCountForRatio + residentBackstopFloor/
-	//       Ratio with the conservative-unknown + tiny-graph disarm) so the publish
-	//       path and the read-side recoverIfDegenerate share one coverage policy.
-	//   (2) SUBSET-COMPLETENESS: the live set must be a subset of the server's
-	//       List(0) for this format. A live set holding ids the server lacks signals
-	//       an incomplete/suspect view — skip rather than publish against it.
-	//
-	// On a skip the prior manifest + ALL blobs survive (the swap never runs), so a
-	// degenerate publish is a no-op, not a corpus wipe. Skips are logged (best-effort
-	// like the read-side backstop) and return nil — the embed ship treats a skipped
-	// publish as "nothing to reconcile this pass", self-healing on a later pass once
-	// the engine is fully loaded.
-	ok, reason, err := m.publishCoverageOK(ctx, liveSet, m.engine.ResidentDocCount())
-	if err != nil {
-		// The ship already stamped shippedIDs, but the coverage-read List failed
-		// before PublishManifest — set the retry bit so a later sub-threshold tick
-		// re-attempts the publish (hasUnshippedExport is now false).
-		m.setPublishPending()
-		return nil, err
-	}
-	if !ok {
-		// Coverage/subset gate skipped the publish (degenerate/incomplete live set).
-		// The ship landed but no manifest was published — mark the coverage skip so the
-		// publish is re-attempted once the live set heals. Unlike the transient causes
-		// (List error / 409 / transport) which retry indefinitely, this cause cannot
-		// self-clear by retrying (a re-attempt reads the SAME sub-ratio resident), so
-		// markCoverageSkip BOUNDS the re-arm: after coverageSkipMaxStreak consecutive
-		// skips at a non-rising resident it stops re-arming (terminal WARN) until the
-		// resident actually rises — breaking the self-sustaining publish-retry read loop.
-		m.markCoverageSkip()
-		// The identity trio leads every skip WARN — a skip logged without the
-		// manager's target cannot be attributed to a graph.
-		slog.Warn("segmentdist: publish SKIPPED (degenerate/incomplete live set — manifest+blobs left intact)",
+		if attempt >= attempts {
+			return err
+		}
+		slog.Warn("segmentdist: L2 write failed; retrying",
 			"graph", m.target.GetGraph(), "name", m.target.GetName(), "repo", m.target.GetRepo(),
-			"format", m.format, "live", len(manifestIDs), "reason", reason)
-		return nil, nil
+			"format", m.format, "blobs", len(blobs), "attempt", attempt, "attempts", attempts,
+			"error", err)
+		time.Sleep(time.Duration(attempt) * l2WriteRetryBackoff)
 	}
-
-	if _, err := m.source.PublishManifest(m.format, manifestDigests); err != nil {
-		// A server-side completeness failure (the GCS agent 409'd because a
-		// referenced blob is not yet present) is NOT a hard error: treat it as a
-		// logged SKIP — the prior manifest stays intact and no bookkeeping reconcile
-		// runs, matching the degenerate-publish skip semantics above. The unshipped
-		// blob heals on a later pass once its PUT succeeds and it re-enters the
-		// resident→published set.
-		if incomplete, ok := errors.AsType[*manifestIncompleteError](err); ok {
-			// 409: the agent HEAD-verify reported a referenced blob genuinely absent
-			// server-side. The ship stamped the ids but the manifest did not land —
-			// markIncompletePublish UN-STAMPS the missing ids so the next ship diff
-			// re-uploads them (without this the diff skips them forever and the 409
-			// wedges permanently), arms the retry bit, and escalates to a loud WARN if
-			// the re-upload is not converging.
-			m.markIncompletePublish(incomplete.Missing)
-			return nil, nil
-		}
-		// Transport error on PublishManifest — the ship landed but the publish did
-		// not; set the retry bit so a later tick re-attempts it.
-		m.setPublishPending()
-		return nil, err
-	}
-
-	// THE SWAP LANDED — say so, with its cardinality. A publish is skipped with a NIL
-	// ERROR on both the coverage gate and the agent 409, and each of those paths logs
-	// a WARN; before this line the SUCCESS path logged nothing, so an operator reading
-	// the daemon log could not distinguish "published 128" from "published" at all,
-	// let alone from a skip. The manifest count is the number a truncation claim is
-	// ultimately argued against.
-	slog.Info("segmentdist: manifest swap COMPLETED",
-		"graph", m.target.GetGraph(), "name", m.target.GetName(), "repo", m.target.GetRepo(),
-		"format", m.format, "published", len(manifestIDs), "resident", len(all))
-
-	// The manifest just swapped — it IS the new shipped denominator.
-	m.invalidateCoverageMemo()
-
-	// Reconcile bookkeeping: the ids in reconcileAgainst (the caller's ROLE set)
-	// that dropped out of the published live set are now reaped server-side (their
-	// refcount went to zero). The embed path passes locallyShipped (so a fresh
-	// process never drops the prior corpus it merely re-imported — the
-	// restart-tail guard); the rebuild path passes shippedIDs (the old corpus it
-	// superseded). The dropped ids are removed from BOTH bookkeeping views to keep
-	// them consistent.
-	m.shipMu.Lock()
-	// PublishManifest succeeded — clear the retry bit under the reconcile lock we
-	// already hold (no new acquisition), and reset the coverage-skip bound so a future
-	// degenerate publish re-arms fresh (streak from zero, lastSkipResident zeroed).
-	m.publishPending = false
-	m.coverageSkipStreak = 0
-	m.lastSkipResident = 0
-	// The suppression stamp goes with the streak that produced it: a landed swap is
-	// the strongest possible evidence the episode is over, so an age surviving it
-	// would report a graph as stalled while its publishes are demonstrably landing.
-	m.coverageSuppressedAtNanos = 0
-	// The swap landed, so any prior agent-409 incomplete streak converged — reset it
-	// so a future 409 re-arms fresh and escalates only on a NEW persistent episode.
-	m.incompletePublishStreak = 0
-	// The swap LANDED. This is the only site that increments, so a caller comparing
-	// the counter across a call learns whether a manifest swap actually happened —
-	// which the nil error it also gets on every skip cannot tell it.
-	m.completedSwaps++
-	var dropped []searchengine.SegmentID
-	for id := range reconcileAgainst {
-		if _, live := liveSet[id]; !live {
-			dropped = append(dropped, id)
-		}
-	}
-	for _, id := range dropped {
-		delete(m.shippedIDs, id)
-		delete(m.locallyShipped, id)
-	}
-	m.shipMu.Unlock()
-
-	// THE SINGLE WRITER of the manifest fingerprint. This is the one place a swap
-	// completes, so it is the one place that can honestly say "the published set for
-	// this (graph, format) is now exactly these ids". The off-hot-path completeness
-	// reconcile compares len(cache.Keys()) against this record to decide whether to
-	// pay a source read at all — and it is the L2 cache, NOT this manifest, that
-	// routinely ends up short: the ship diff above skips every content-hash-unchanged
-	// blob, so those never reach cache.Put even though they are published here.
-	//
-	// Fired OUTSIDE shipMu (a file write must not extend the ship lock) and
-	// best-effort: a failed record leaves the detector blind for this graph until the
-	// next publish, which is strictly better than failing a landed publish over it.
-	if m.onManifestPublished != nil {
-		m.onManifestPublished(manifestIDs)
-	}
-	return dropped, nil
 }
 
-// publishCoverageOK is the publish-path safety gate. It returns
-// (true, "") when liveSet is safe to publish as this writer's manifest, or
-// (false, reason) when the publish must be SKIPPED to avoid wiping the corpus.
-// The checks, in order:
+// prospectiveLayerOK is the WIPE GUARD. It returns (true, "") when a built layer may
+// replace the current one, or (false, reason) when the swap must be REFUSED.
 //
-//	(1) NON-EMPTY: an empty live set (∅ ⊆ anything is a vacuous subset) would pass
-//	    the subset gate yet drive a full refcount-GC — the exact corpus wipe. An
-//	    empty manifest is always rejected.
-//	(2) COVERAGE-RATIO FLOOR: the resident doc count vs the server's shipped doc
-//	    count for this format (read through the publish-path memo,
-//	    shippedDocCountForRatioCached), via the SAME shippedDocCountForRatio +
-//	    residentBackstopFloor/residentBackstopRatio policy the read-side
-//	    recoverIfDegenerate uses (conservative-unknown on a pre-doc_count blob,
-//	    sub-floor tiny-graph disarm). A resident set far below the shipped corpus is
-//	    a degenerate/partial load — skip rather than reap the corpus it has not yet
-//	    re-imported. A disarmed ratio (tiny graph / untrustworthy denominator) is
-//	    treated as SAFE: a small graph legitimately publishes its whole tiny set.
-//	(3) SUBSET-COMPLETENESS: the live set must be a subset of List(0) for this
-//	    format (liveSetSubsetOfList0). A live set referencing ids the server lacks
-//	    is an incomplete/suspect view — skip.
+// THE CHECK IS THAT THE LAYER IS NON-EMPTY, and that single check is the whole of the
+// corpus-wipe property: an empty live set must NEVER drive a destructive sweep. The
+// destructive act here is engine.ReplaceLayer, which retires the ENTIRE prior layer;
+// an empty prospective layer would therefore replace a populated corpus with nothing
+// and leave the engine serving an empty set until a restart reloaded it.
 //
-// prospectiveLayerOK evaluates the SAME degeneracy policy against a layer that has
-// been BUILT but is not yet resident: the built ids are the live set and their summed
-// DocCount is the resident count. It returns publishCoverageOK's own (ok, reason, err)
-// triple unchanged.
+// IT MUST BE CALLED BEFORE engine.ReplaceLayer. A gate that runs after the swap
+// passes every behavioral test and protects nothing: reads would already be served
+// from the degenerate layer.
 //
-// WHY THE GATE MOVES EARLIER FOR A BUILD-ASIDE SWAP. At publish time the gate is a
-// manifest guard, and that is sufficient while a degenerate rebuild lands in a second
-// engine — the serving engine keeps the good corpus and a refused publish leaves both
-// the prior manifest and every blob intact. Once a rebuild REPLACES the serving set in
-// place, the swap is the destructive act and publish time is too late: reads would be
-// served from the degenerate layer until a restart reloaded it, so the manifest would
-// be protected and the corpus would not. Calling the gate here refuses the layer
-// BEFORE it can serve anything.
+// The two checks that used to sit beside it are gone with the mechanism each judged.
+// The coverage-ratio floor compared the layer against the PRIOR MANIFEST's summed doc
+// count, and there is no manifest to compare against. The subset-completeness check
+// asked whether the live set was a subset of the source's List(0), and List(0) is now
+// the L2 cache the layer was just written to — it would compare the cache against
+// itself.
 //
-// A REFUSAL LEAVES THE RESIDENT SET UNTOUCHED, but it is NOT a costless no-op for the
-// caller: by the time this is consulted the built blobs have been shipped, and
-// unwinding that ship is the caller's obligation (it owns the ship, so it owns the
-// unwind). This function's contract stops at the verdict.
-func (m *distManager[Q, S]) prospectiveLayerOK(
-	ctx context.Context, built []searchengine.SegmentBlob,
-) (bool, string, error) {
+// ONE INSIGHT FROM THE RATIO ARM SURVIVES ITS DELETION, carried here at the merge so it
+// is not lost with the code that expressed it. A parallel lane had reached the same
+// hazard from the other side and fixed it by PROVENANCE: a rebuild whose scan covered
+// the whole embedded corpus was allowed to bypass the ratio, because "the full
+// derivation from the graph IS the truth and the manifest is the thing being
+// corrected" — otherwise a manifest inflated by duplication vetoes its own correction
+// and keeps growing by the mechanism that inflated it. That lane's machinery is gone
+// with the manifest it compared against, but its PRINCIPLE is the one this changeset
+// also acts on, and more strongly: completeness is no longer a flag a caller threads
+// in to be trusted, it is a precondition the driver cannot skip, because a scan that
+// did not run to exhaustion returns an error and never reaches staging or the
+// finalize at all.
+//
+// SO THIS IS NOT THE GUARD AGAINST A SLIVER REPLACING A CORPUS, and a reader who
+// assumes it is will build the wrong thing next. A one-segment layer holding four
+// documents passes here against a resident thousand. That shape is guarded ONE LAYER
+// UP, and by evidence rather than by size: the rebuild driver's scan returns an error
+// on any page failure and terminates only on an empty page, so a run whose drain did
+// not complete never reaches staging or this finalize at all
+// (tools.scanRebuildSegmentsAs, pinned by TestTruncatedDrainNeverReachesTheFinalize).
+// A numeric band HERE would be the wrong instrument regardless of where it sat: "far
+// fewer documents than last time" is also what a legitimate mass deletion looks like,
+// so a band tuned to catch the wipe refuses the correct rebuild.
+//
+// A REFUSAL LEAVES THE RESIDENT SET UNTOUCHED. By the time this is consulted the
+// built blobs have been written to L2, so a refusal leaves them on disk referenced by
+// no layer. Nothing needs un-stamping — the bookkeeping sets a refusal used to have to
+// unwind no longer exist.
+//
+// THOSE BLOBS ARE NOT REAPED BY PruneCache, and this comment used to say they were.
+// They went through the pool's L2 cache, so they are in its index, and the prune's
+// live set is force-loaded from that same index — see the reap paragraph at the top of
+// prune_cache.go. A refused layer's blobs occupy disk until a later write supersedes
+// them by content id.
+func (m *distManager[Q, S]) prospectiveLayerOK(built []searchengine.SegmentBlob) (bool, string) {
 	liveSet := make(map[searchengine.SegmentID]struct{}, len(built))
-	resident := 0
 	for _, b := range built {
-		if _, dup := liveSet[b.ID]; dup {
-			continue
-		}
 		liveSet[b.ID] = struct{}{}
-		resident += b.DocCount
 	}
-	return m.publishCoverageOK(ctx, liveSet, resident)
+	if len(liveSet) == 0 {
+		return false, "empty live set"
+	}
+	return true, ""
 }
 
-// THE RESIDENT COUNT IS THE CALLER'S TO SUPPLY, and that parameter is what lets one
-// policy serve two moments. Read inline off the engine, this gate could only ever
-// judge a layer that is ALREADY resident — which is safe while a degenerate rebuild
-// lands in a second engine and the serving engine keeps the good corpus (the skip
-// path's own reasoning above). It is not safe once a rebuild replaces the serving set
-// in place: by publish time the swap has happened and reads are already being served
-// from the degenerate layer. Taking the count as a parameter lets the SAME policy be
-// evaluated against a PROSPECTIVE layer before it becomes resident.
+// exportedIDs is the id set of an engine Export, used to compute what a layer swap
+// superseded: the ids present BEFORE the swap and absent after it.
 //
-// Every publish-path caller passes m.engine.ResidentDocCount() and is unchanged in
-// behavior; the swap-path caller passes the built layer's summed doc count. There is
-// deliberately ONE policy object rather than a swap-time copy — the publish gate and
-// the read-side backstop are already documented as sharing one expression, and two
-// copies of a degeneracy policy drift.
-func (m *distManager[Q, S]) publishCoverageOK(
-	ctx context.Context, liveSet map[searchengine.SegmentID]struct{}, resident int,
-) (bool, string, error) {
-	if len(liveSet) == 0 {
-		return false, "empty live set", nil
+// NAMED exportedIDs, NOT exportedIDSet, because reclaim_test.go already declares a
+// package-level exportedIDSet — a generic helper taking a *distManager rather than a
+// blob slice. Two package-level functions of that name do not compile, and the
+// collision would surface only when the test binary is built.
+func exportedIDs(blobs []searchengine.SegmentBlob) map[searchengine.SegmentID]struct{} {
+	ids := make(map[searchengine.SegmentID]struct{}, len(blobs))
+	for _, b := range blobs {
+		ids[b.ID] = struct{}{}
 	}
-
-	// Coverage-ratio floor — the read-side backstop policy verbatim, read through a
-	// short-TTL memo: a cached denominator may only CONFIRM a skip (see
-	// shippedDocCountForRatioCached for why a memo-derived pass is re-derived first).
-	shipped, disarm, cached, err := m.shippedDocCountForRatioCached(ctx)
-	if err != nil {
-		return false, "", err
-	}
-	// disarm == true means the denominator is untrustworthy (pre-doc_count blob) or
-	// the corpus is below the floor (tiny graph): the ratio is not meaningful, so the
-	// coverage check does not block — a tiny/legacy graph legitimately publishes its
-	// whole set. A non-disarmed below-ratio resident set is the degenerate case.
-	if belowCoverageRatio(resident, shipped, disarm) {
-		return false, "resident doc count below coverage ratio of shipped corpus", nil
-	}
-	if cached {
-		m.invalidateCoverageMemo()
-		shipped, disarm, _, err = m.shippedDocCountForRatioCached(ctx)
-		if err != nil {
-			return false, "", err
-		}
-		if belowCoverageRatio(resident, shipped, disarm) {
-			return false, "resident doc count below coverage ratio of shipped corpus", nil
-		}
-	}
-
-	// Subset-completeness against List(0). SKIPPED when the source verifies
-	// completeness server-side (the GCS agent HEAD-verifies + 409s on missing): there
-	// List(0) IS the published manifest, so a resident set that legitimately includes
-	// newly-shipped-but-not-yet-published blobs is NEVER a subset and would deadlock
-	// the first/every add-publish. The agent's manifest/publish HEAD-verify (surfaced
-	// as a manifestIncompleteError → logged skip in publishResident) is the
-	// completeness authority on that path instead.
-	if m.source.verifiesCompletenessServerSide() {
-		return true, "", nil
-	}
-	subset, err := m.liveSetSubsetOfList0(ctx, liveSet)
-	if err != nil {
-		return false, "", err
-	}
-	if !subset {
-		return false, "live set not a subset of List(0) — incomplete view", nil
-	}
-	return true, "", nil
+	return ids
 }

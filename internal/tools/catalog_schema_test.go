@@ -12,16 +12,15 @@ import (
 
 // openMaps is the allowlist of genuinely-arbitrary string→value object params
 // that legitimately stay OPEN (no additionalProperties:false). Keyed by
-// "<tool>.<param>". These five are the only open objects in the catalog: their
-// keys are unbounded at the wire (analyzer knobs, metadata, free-form payloads,
-// label filters), so closing them would reject valid calls. The guard skips the
-// closed-object assertion for paths in this set. Source of truth: the schema
-// audit + the plan's open-vs-closed lock.
+// "<tool>.<param>". These four are the only open objects in the catalog: their
+// keys are unbounded at the wire (analyzer knobs, metadata, label filters), so
+// closing them would reject valid calls. The guard skips the closed-object
+// assertion for paths in this set. Source of truth: the schema audit + the
+// plan's open-vs-closed lock.
 var openMaps = map[string]bool{
 	"query.extra":     true,
 	"query.meta":      true,
 	"mutate.metadata": true,
-	"worker.payload":  true,
 	"collect.filters": true,
 }
 
@@ -42,14 +41,14 @@ var composerKeys = map[string]bool{
 // call that does not use that field. (delete + collect have no operation enum
 // and a conditional shape, so their Required is empty — len<=1 covers both.)
 var dispatchTools = map[string]bool{
-	"mutate":   true,
-	"thoughts": true,
-	"ast":      true,
-	"worker":   true,
-	"manage":   true,
-	"sync":     true,
-	"collect":  true,
-	"delete":   true,
+	"mutate":        true,
+	"thoughts":      true,
+	"ast":           true,
+	"manage":        true,
+	"manage_checks": true,
+	"sync":          true,
+	"collect":       true,
+	"delete":        true,
 }
 
 // TestAllToolSchemas is the catalog-wide strict-validity guard. It walks

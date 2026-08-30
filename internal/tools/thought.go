@@ -13,7 +13,7 @@
 // server-side handlers return the client-intercept-required sentinel
 // (see cmd/knowledge-server/tools/tools_thought.go and tools_thought_query.go
 // and tools_query_routes.go); InterceptThoughts is the only path that
-// produces real results. Mirrors the shape of InterceptWorker — same
+// produces real results. Mirrors the shape of InterceptGraphType — same
 // name-filtering, same fall-through convention for non-thought paths
 // like examine of generic nodes.
 
@@ -23,7 +23,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strconv"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
@@ -125,6 +124,15 @@ func interceptThoughtsOp(ctx context.Context, deps ClientDeps, params kgtools.Ca
 	// The single accounting point for the thoughts tool. The per-operation
 	// handlers below are deliberately NOT gated: every thoughts call reaches
 	// this function first, so one check here covers the whole surface.
+	//
+	// The swallowed-parameter refusal goes FIRST for the reason accountMutateParams
+	// states: once a text field carries the mis-serialized tail, the supplied param
+	// set is known incomplete, so any message computed from it describes a call the
+	// caller did not make. This is the path the swallowed session/links parameters
+	// were actually observed on (swallowed_param_gate.go).
+	if err := rejectSwallowedParamValues("thoughts", params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	if err := rejectUndeclaredParams("thoughts", "", ThoughtsToolDef().InputSchema.Properties, params.Arguments); err != nil {
 		return true, errorResult(err.Error())
 	}
@@ -133,7 +141,13 @@ func interceptThoughtsOp(ctx context.Context, deps ClientDeps, params kgtools.Ca
 		// Claimed: post-cutover nothing downstream would surface a better
 		// message, so a malformed payload gets a parse error naming the tool
 		// rather than the engine's "no client intercept" deny.
-		return true, errorResult(fmt.Sprintf("thoughts: invalid arguments: %v", err))
+		//
+		// TRANSLATED like every other argument-decode site: the raw decoder error
+		// leaks an internal Go struct name and never says what to send instead.
+		// This site decodes only the DISPATCH fields (operation / mode /
+		// all_types / format), so it is the one a type mismatch on those four
+		// reaches — the per-operation decodes below own their own params.
+		return true, errorResult("thoughts: invalid arguments: " + decodeArgsError(params.Arguments, err))
 	}
 
 	switch a.Operation {

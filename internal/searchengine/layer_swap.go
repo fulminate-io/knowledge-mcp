@@ -109,7 +109,13 @@ func (e *SegmentedIndex[Q, S]) BuildLayer(work []BucketWork) (*BuiltLayer[Q, S],
 		if err != nil {
 			return nil, fmt.Errorf("searchengine: sealing partition %d of the replacement layer: %w", w.Bucket, err)
 		}
-		blob, err := entry.payload.Encode()
+		// blobParts rather than payload.Encode, so this site obeys the same rule as
+		// every other place an entry becomes bytes: what is stored is the payload plus
+		// whatever supersession record the entry holds. A freshly built partition holds
+		// none — a from-scratch build supersedes nothing by construction, and
+		// ReplaceLayer deliberately stamps none either (see the paragraph there) — so
+		// today this is byte-for-byte what payload.Encode returned.
+		envelope, payload, err := entry.blobParts()
 		if err != nil {
 			return nil, fmt.Errorf("searchengine: encoding partition %d of the replacement layer: %w", w.Bucket, err)
 		}
@@ -118,7 +124,8 @@ func (e *SegmentedIndex[Q, S]) BuildLayer(work []BucketWork) (*BuiltLayer[Q, S],
 			ID:       entry.meta.ID,
 			Format:   e.format.Name(),
 			DocCount: entry.meta.DocCount,
-			Bytes:    blob,
+			Bytes:    payload,
+			Envelope: envelope,
 			// Bytes come from a resident entry's payload. BuiltLayer happens to
 			// hold the entries alongside the blobs today, but that is a
 			// coincidence of this struct's shape rather than a guarantee, and
@@ -179,6 +186,22 @@ func (e *SegmentedIndex[Q, S]) ReplaceLayer(built *BuiltLayer[Q, S]) (published,
 		publishedIDs[entry.meta.ID] = true
 		published = append(published, entry.meta.ID)
 	}
+	retired = excluding(built.capturedOldIDs, publishedIDs)
+
+	// NO DURABLE SUPERSESSION RECORD IS STAMPED HERE, and the omission is a decision
+	// rather than an oversight. A record has to be IN the stored bytes to be worth
+	// anything, and this layer's stored bytes were encoded by BuildLayer — before this
+	// swap existed and before `retired` could be known — so a record stamped now would
+	// live on the resident entries while the files on disk said nothing, which is worse
+	// than no record at all: two sources that disagree. Re-encoding the whole layer
+	// here to fix that would undo the one thing BuildLayer's split exists for, which is
+	// that the caller has already shipped these exact bytes.
+	//
+	// AND THE SEMANTICS WOULD BE THE DANGEROUS ONES ANYWAY. A layer replaces the corpus
+	// as a SET; no single partition carries the retired segments' members, so a record
+	// here would only ever be honorable when every partition of the replacement is
+	// present — the condition a half-written layer fails. What retires the old layer
+	// stays what retired it before: the owner's own reclaim, driven from `retired`.
 
 	// ONE CAS. Only the snapshot is re-read on a lost race; the removal set is the
 	// captured one, untouched.
@@ -189,8 +212,6 @@ func (e *SegmentedIndex[Q, S]) ReplaceLayer(built *BuiltLayer[Q, S]) (published,
 			break
 		}
 	}
-
-	retired = excluding(built.capturedOldIDs, publishedIDs)
 
 	// Surface the supersession once for the whole layer, exactly as the group swap
 	// does: the first output carries the retired set and the rest report none, so the

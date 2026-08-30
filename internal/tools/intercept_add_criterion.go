@@ -36,6 +36,7 @@ import (
 	"strings"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/projects"
 	"github.com/fulminate-io/knowledge-mcp/internal/projects/render"
 	"github.com/fulminate-io/knowledge-mcp/internal/validate"
@@ -48,13 +49,15 @@ type criterionCreateArgs struct {
 	Type          string `json:"type"`
 	StepID        string `json:"step_id"`
 	Description   string `json:"description"`
+	Summary       string `json:"summary"`
 	Command       string `json:"command,omitempty"`
 	CriterionType string `json:"criterion_type,omitempty"`
 
 	// Status/Content/Metadata are routed onto the upserted criterion node.
-	// Name and summary are deliberately absent: both are DERIVED (name from
-	// description, summary from criterion_type + description + command), so the
-	// accounting table rejects them rather than letting a caller-supplied value
+	// Summary is caller-authored, required and clamped like every other
+	// embed-only-knowledge type. Name is deliberately absent: it is DERIVED from
+	// the description's first line via projects.DeriveCriterionName, so the
+	// accounting table rejects it rather than letting a caller-supplied value
 	// silently lose to the derivation.
 	Status   string            `json:"status,omitempty"`
 	Content  string            `json:"content,omitempty"`
@@ -98,30 +101,70 @@ func InterceptAddCriterion(ctx context.Context, deps ClientDeps, params kgtools.
 	}
 
 	criterionID := generateCriterionID()
-	if err := upsertCriterionNode(ctx, gc, criterionID, a); err != nil {
+	clampWarn, err := upsertCriterionNode(ctx, gc, criterionID, a)
+	if err != nil {
 		return true, errorResult(err.Error())
 	}
+	var warnings []string
+	if clampWarn != "" {
+		warnings = append(warnings, clampWarn)
+	}
 
-	// slog.Warn-and-continue on link failure mirrors server tolerance
-	// at tools_walk.go:355/359.
+	// A FAILED LINK IS AN ERROR THE CALLER SEES, not a daemon-log warning. The
+	// two edges are the criterion's whole attachment: without contains the
+	// criterion is invisible to plan_tree (which walks contains only), and
+	// without verifies the back-reference from criterion to step is gone. Either
+	// way the node exists and is unwired, and the caller is the only party that
+	// can repair it — reporting "Criterion added" over that state hands back a
+	// success for work that did not happen. The node is NOT rolled back: this
+	// path is four separate RPCs with no enclosing transaction, so the honest
+	// report is the orphan's id plus the exact links to issue.
+	//
+	// BOTH links are attempted before reporting, so the error names the FULL
+	// residual state rather than only the first failure. That is diagnostic
+	// completeness, not tolerance — the call fails either way.
+	var linkFailures []string
 	if linkErr := callMutateLink(ctx, gc, criterionID, a.StepID, "verifies"); linkErr != nil {
 		slog.Warn("failed to add verifies edge",
 			"from", criterionID, "to", a.StepID, "error", linkErr)
+		linkFailures = append(linkFailures, fmt.Sprintf(
+			"criterion--verifies-->step (%s → %s): %v", criterionID, a.StepID, linkErr))
 	}
 	if linkErr := callMutateLink(ctx, gc, a.StepID, criterionID, "contains"); linkErr != nil {
 		slog.Warn("failed to add contains edge",
 			"from", a.StepID, "to", criterionID, "error", linkErr)
+		linkFailures = append(linkFailures, fmt.Sprintf(
+			"step--contains-->criterion (%s → %s): %v", a.StepID, criterionID, linkErr))
+	}
+	if len(linkFailures) > 0 {
+		return true, errorResult(fmt.Sprintf(
+			"mutate(create, type=criterion): criterion node %s was created but is NOT attached to step %s — "+
+				"%d of its 2 attachment edges failed: %s. "+
+				"The criterion is unwired (plan_tree walks contains, so it will not render under the step). "+
+				"Re-issue the failed edge(s) with mutate(link), or delete %s and retry.",
+			criterionID, a.StepID, len(linkFailures), strings.Join(linkFailures, "; "), criterionID))
 	}
 
 	// Bare textResult — see file header for the [graph: <name>] suffix divergence.
-	return true, textResult(fmt.Sprintf("Criterion added: %s → ID: %s", a.Description, criterionID))
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Criterion added: %s → ID: %s", a.Description, criterionID)
+	writeClientWarningsSection(&sb, warnings)
+	return true, textResult(sb.String())
 }
 
-// validateCriterionArgs runs the three validation gates in the exact
-// order handleAddCriterion at cmd/knowledge-server/tools/tools_walk.go:325-332
-// uses: (1) step_id trim-non-empty, (2) step exists in store, (3)
-// description trim-non-empty. The (step exists BEFORE description
-// check) ordering is load-bearing for combined-violation parity.
+// validateCriterionArgs runs the four validation gates in order: (1) step_id
+// trim-non-empty, (2) step exists in store, (3) the found node is one of the
+// criteria-owning container types, (4) description trim-non-empty. The first,
+// second and fourth mirror handleAddCriterion at
+// cmd/knowledge-server/tools/tools_walk.go:325-332, and the (step exists BEFORE
+// description check) ordering is load-bearing for combined-violation parity.
+//
+// GATE 3 SITS BETWEEN THE EXISTENCE AND DESCRIPTION CHECKS deliberately: it
+// reads the node the existence check just fetched, and placing it after the
+// description check would reorder the documented step-exists-before-description
+// pairing. It refuses a target the close-out rollup cannot hold — the rollup
+// walks only clientRollupContainerTypes, so a criterion hanging off any other
+// type is announced at close-out and holds nothing.
 func validateCriterionArgs(ctx context.Context, gc GraphCaller, a criterionCreateArgs) error {
 	if strings.TrimSpace(a.StepID) == "" {
 		return fmt.Errorf("mutate(create, type=criterion): step_id is required (the parent step the criterion verifies)")
@@ -129,6 +172,17 @@ func validateCriterionArgs(ctx context.Context, gc GraphCaller, a criterionCreat
 	node, err := render.FetchNode(ctx, gc, a.StepID)
 	if err != nil || node == nil || node.Id == "" {
 		return fmt.Errorf("mutate(create, type=criterion): step %s not found", a.StepID)
+	}
+	if !isClientRollupContainer(kgtypes.NodeType(node.GetType())) {
+		accepted := make([]string, 0, len(clientRollupContainerTypes))
+		for _, ct := range clientRollupContainerTypes {
+			accepted = append(accepted, string(ct))
+		}
+		return fmt.Errorf(
+			"mutate(create, type=criterion): step_id %s is a %s, which cannot own criteria — "+
+				"the close-out rollup walks only the container types, so a criterion attached here "+
+				"is announced at close-out and holds nothing. Accepted types: %s",
+			a.StepID, node.GetType(), strings.Join(accepted, ", "))
 	}
 	if strings.TrimSpace(a.Description) == "" {
 		return fmt.Errorf("mutate(create, type=criterion): description is required (what the criterion verifies)")
@@ -138,16 +192,30 @@ func validateCriterionArgs(ctx context.Context, gc GraphCaller, a criterionCreat
 
 // upsertCriterionNode builds the criterion payload (mirroring
 // handleAddCriterion's SetValue calls at tools_walk.go:335-346) and
-// fires the mutate(upsert) RPC. Returns the descriptive error on
-// failure for the caller to surface.
-func upsertCriterionNode(ctx context.Context, gc GraphCaller, criterionID string, a criterionCreateArgs) error {
+// fires the mutate(upsert) RPC. Returns the non-fatal summary-clamp
+// warning, and the descriptive error on failure for the caller to surface.
+//
+// WHY THIS CLIENT CLAMP IS THE ONLY ENFORCEMENT ON THIS PATH: this arm writes
+// through mutate(upsert), and upsert is on the server's create-validation
+// BYPASS ALLOWLIST (cmd/knowledge-server/internal/bootstrap/
+// engine_mutate_upsert_allowlist.go lists proxy, graph_type_def, log-backend
+// and criterion). The server's !Summarizable non-empty-summary rule therefore
+// never runs for a criterion created this way. The create_plan and
+// create_test_plan paths DO reach that rule because they go through
+// create_batch; this one does not. Remove the clamp and a summary-less
+// criterion is written silently.
+func upsertCriterionNode(ctx context.Context, gc GraphCaller, criterionID string, a criterionCreateArgs) (string, error) {
 	criterionType := a.CriterionType
 	if criterionType == "" {
 		criterionType = "manual"
 	}
-	summary := projects.DeriveCriterionSummary(criterionType, a.Description, a.Command)
-	if err := validate.DerivedSummary("mutate(create, type=criterion)", "criterion.summary", a.Description+" + command", summary); err != nil {
-		return err
+	// POSITION IS DELIBERATE: the clamp sits where the derived-summary gate sat,
+	// i.e. after the step-exists and description gates in validateCriterionArgs
+	// and ahead of RunSelectorGuard, so the documented step-exists-before-
+	// description ordering is untouched.
+	summary, clampWarn, serr := validate.ClampSummary("mutate(create, type=criterion)", "criterion.summary", a.Summary)
+	if serr != nil {
+		return "", serr
 	}
 	// Caller metadata is seeded FIRST so the derived type/command keys win on a
 	// key collision. Copied, never aliased — see copyCallerMetadata.
@@ -162,7 +230,7 @@ func upsertCriterionNode(ctx context.Context, gc GraphCaller, criterionID string
 	// Lint the value about to be STORED, not the `command` param: the caller
 	// metadata seeded above can carry a command the param never held.
 	if err := validate.RunSelectorGuard("mutate(create, type=criterion)", "criterion.command", metadata["command"]); err != nil {
-		return err
+		return "", err
 	}
 	upsertArgs, err := json.Marshal(struct {
 		Operation   string            `json:"operation"`
@@ -177,22 +245,23 @@ func upsertCriterionNode(ctx context.Context, gc GraphCaller, criterionID string
 		Metadata    map[string]string `json:"metadata"`
 	}{
 		Operation: "upsert", Type: "criterion", ID: criterionID,
-		Name: a.Description, Description: a.Description, Summary: summary,
+		Name: projects.DeriveCriterionName(a.Description), Description: a.Description, Summary: summary,
 		Status: a.Status, Content: a.Content,
 		Source: "llm:claude", Metadata: metadata,
 	})
 	if err != nil {
-		return fmt.Errorf("create criterion: marshal upsert: %w", err)
+		return "", fmt.Errorf("create criterion: marshal upsert: %w", err)
 	}
 	if _, err := executeMutate(ctx, gc, upsertArgs); err != nil {
-		return fmt.Errorf("create criterion: %w", err)
+		return "", fmt.Errorf("create criterion: %w", err)
 	}
-	return nil
+	return clampWarn, nil
 }
 
 // generateCriterionID returns a 128-bit hex string suitable for
 // caller-supplied IDs to mutate(upsert). Mirrors the shape of
-// pkg/store/graph_graph.go generateID (private — duplicated 4 LoC to
+// cmd/knowledge-server/internal/store/graph_id_gen.go:23 generateID
+// (private — duplicated 4 LoC to
 // avoid exporting an ID generator across the wire boundary just for
 // this intercept).
 func generateCriterionID() string {
@@ -202,9 +271,10 @@ func generateCriterionID() string {
 }
 
 // callMutateLink issues a single mutate(link) RPC and returns the
-// error (or extracted text) on failure. Non-nil return signals the
-// caller should slog.Warn — server-side handleAddCriterion tolerates
-// link failures the same way.
+// error (or extracted text) on failure. A non-nil return FAILS the
+// enclosing create: the criterion node is already written by then, so
+// the caller reports the unwired node and the edges to re-issue rather
+// than logging a warning and answering "Criterion added".
 func callMutateLink(ctx context.Context, gc GraphCaller, from, to, relationship string) error {
 	args, err := json.Marshal(struct {
 		Operation    string `json:"operation"`

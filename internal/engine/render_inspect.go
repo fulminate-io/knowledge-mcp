@@ -13,8 +13,8 @@ import (
 // The InterceptQueryExamine composer (cmd/knowledge/internal/tools) walks the
 // subject ByID + edge-neighborhood + CONTAINS-backward ancestry over generic
 // Execute primitives and fills InspectData; renderInspectNode (added in the
-// chain-wiring step) ports the server renderInspectHeader/Ancestry/Edges
-// markdown (cmd/knowledge-server/tools/tools_query_inspect.go) over it.
+// chain-wiring step) ports the server's since-removed
+// renderInspectHeader/Ancestry/Edges markdown over it.
 //
 // The types are exported so the tools-package composer can fill them while the
 // renderer stays in the engine package alongside the other render_*.go bodies.
@@ -48,11 +48,17 @@ type InspectData struct {
 	Node     *knowledgev1.Node
 	Ancestry []InspectAncestor
 	Edges    []InspectEdge
+	// Truncated is the SERVER's verdict for this examine read. Today exactly one
+	// of the composition's reads can set it: the bulk peer+ancestor hydrate, an
+	// unbounded QueryPlan{Ids} the server clamps above 10,000 ids. The subject read
+	// is by-id (one row), and the edge neighborhood rides a drain that never
+	// returns a short union — it completes or errors by name.
+	Truncated bool
 }
 
 // inspectIDTrunc truncates an ID to its first 12 chars (or fewer) — the
-// load-bearing readability truncation the server applies on ancestry/edge lines
-// (tools_query_inspect.go).
+// load-bearing readability truncation the server applied on ancestry/edge
+// lines, carried forward by this port.
 func inspectIDTrunc(id string) string {
 	if len(id) > 12 {
 		return id[:12]
@@ -61,8 +67,8 @@ func inspectIDTrunc(id string) string {
 }
 
 // RenderInspectNode renders the markdown examine view from composed InspectData,
-// a port of the server renderInspectHeader + renderInspectAncestry +
-// renderInspectEdges (cmd/knowledge-server/tools/tools_query_inspect.go). Three
+// a port of the server's since-removed renderInspectHeader +
+// renderInspectAncestry + renderInspectEdges. Three
 // sections: Composite View, Ancestry (back-arrow chain, id truncated to 12,
 // orphan empty case), Edges (arrow lines with peer type+name, no-edges and
 // dangling-edge cases).

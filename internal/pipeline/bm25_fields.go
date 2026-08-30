@@ -17,9 +17,13 @@ import (
 // returns nil so no empty Document is built.
 // BuildBM25FieldsFromProto is the EXPORTED wrapper of bm25FieldsFromProto for the
 // cross-package segment_rebuild driver (cmd/knowledge/internal/tools), which reads
-// the same server-composed wire Bm25Fields off the segment_rebuild scan items and
-// must map them into searchengine.Document.Fields IDENTICALLY to the embed
-// writeback path — single-sourced here so the two callers never drift.
+// the same server-composed wire Bm25Fields off the segment_rebuild scan items.
+//
+// THE PATH IT MUST NOT DRIFT FROM IS NO LONGER THE EMBED WRITEBACK, which stopped
+// composing BM25 fields when the two axes were decoupled. The in-package caller is
+// now the BM25 arm (collector_bm25.go), which maps the Bm25Fields the CorpusDelta
+// feed carries. Both still route through the one unexported mapper below, so the
+// incremental and rebuild producers cannot disagree about a field key.
 func BuildBM25FieldsFromProto(m *knowledgev1.Bm25Fields) map[string]string {
 	return bm25FieldsFromProto(m)
 }

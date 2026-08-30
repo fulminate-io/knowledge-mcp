@@ -5,13 +5,21 @@ package thought
 import (
 	"encoding/binary"
 	"math/bits"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
 
-// Binary vectors in the thought layer are 256-bit (32-byte) packed bit
-// strings, matching the embedder's EmbedBinary output width.
+// Binary vectors in the thought layer are packed bit strings matching the
+// embedder's EmbedBinary output width.
+//
+// BOTH DERIVE FROM THE CLIENT MODULE'S SINGLE WIDTH AUTHORITY rather than
+// restating it. These were two bare numeric literals for a fact
+// hnsw.DefaultVecBytes already stated — so a width change had three places to
+// be applied and two of them were easy to miss. Deriving them means a change to
+// the authority reaches here by construction.
 const (
-	vectorBits  = 256
-	vectorBytes = 32
+	vectorBytes = hnsw.DefaultVecBytes
+	vectorBits  = vectorBytes * 8
 )
 
 // BitMajorityCentroid computes the per-bit majority over a set of 256-bit

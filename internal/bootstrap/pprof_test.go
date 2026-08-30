@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/profiling"
 )
 
 // TestServerSpawnArgvPprofBothDirections pins the argv the client starts
@@ -73,16 +75,26 @@ func TestPprofFlagDefaultIsOff(t *testing.T) {
 // port, in both directions and in that order.
 //
 // THE OFF CASE RUNS FIRST AND IS NOT DECORATION. profiling's server state is
-// process-global and sticky (one bind per process), so an off-case checked after
-// a successful bind could not distinguish "did not bind" from "already bound by
-// the previous case". Run first, a refused dial means applyPprof genuinely did
-// nothing; the on-case that follows is the known-positive proving the dial would
-// have succeeded had anything been listening.
+// process-global and, once bound, stays bound until profiling.Stop — so an
+// off-case checked after a successful bind could not distinguish "did not bind"
+// from "already bound by the previous case". Run first, a refused dial means
+// applyPprof genuinely did nothing; the on-case that follows is the
+// known-positive proving the dial would have succeeded had anything been
+// listening. Nothing calls Stop between the two cases, so the ordering argument
+// holds; the cleanup below runs after both.
 func TestApplyPprofBindsOnlyWhenAsked(t *testing.T) {
 	port := freePort(t)
+	// The endpoint is a process-global singleton the daemon releases in
+	// drainOnShutdown; this test binds it directly, so it releases it directly.
+	t.Cleanup(profiling.Stop)
+	// A dedicated probe client rather than http.DefaultClient: its pooled
+	// connection (and the read/write loops behind it) is released here instead of
+	// living in the shared default transport for the rest of the binary.
+	probe := &http.Client{}
+	t.Cleanup(probe.CloseIdleConnections)
 
 	applyPprof(&Config{Pprof: false, PprofPort: port})
-	if resp, err := http.Get(pprofURL(port)); err == nil { //nolint:noctx // short local probe
+	if resp, err := probe.Get(pprofURL(port)); err == nil { //nolint:noctx // short local probe
 		_ = resp.Body.Close()
 		t.Fatalf("applyPprof(Pprof:false) left something listening on %d", port)
 	}
@@ -93,7 +105,7 @@ func TestApplyPprofBindsOnlyWhenAsked(t *testing.T) {
 	var status int
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(pprofURL(port)) //nolint:noctx // short local probe
+		resp, err := probe.Get(pprofURL(port)) //nolint:noctx // short local probe
 		if err == nil {
 			status = resp.StatusCode
 			body, _ = io.ReadAll(resp.Body)

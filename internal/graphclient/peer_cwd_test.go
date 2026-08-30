@@ -26,8 +26,8 @@ func TestParsePeerPID_LocalSideAndSelfExclusion(t *testing.T) {
 	if pid != 4242 {
 		t.Fatalf("parsePeerPID: got PID %d, want 4242 (the client whose LOCAL side is :54321)", pid)
 	}
-	// The COMMAND column (fields[0]) is retained — comm selects the
-	// claude/codex transcript resolver in the hive daemon monitor.
+	// The COMMAND column (fields[0]) is retained — comm names the peer
+	// harness process in the resolution log line.
 	if comm != "node" {
 		t.Fatalf("parsePeerPID: got comm %q, want \"node\" (the COMMAND column of the client line)", comm)
 	}

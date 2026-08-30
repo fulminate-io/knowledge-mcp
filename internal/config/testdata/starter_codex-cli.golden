@@ -9,6 +9,8 @@
 #   openai    → OPENAI_API_KEY
 #   gemini    → GEMINI_API_KEY
 #   voyage    → VOYAGE_API_KEY  (embeddings + rerank; unset → BM25-only)
+#   cohere    → COHERE_API_KEY  (embeddings + rerank, when [embedder] or
+#                                [reranker] names the cohere provider)
 #   linear    → LINEAR_API_KEY  (Linear backend; unset → disabled)
 #
 # CLI providers (claude-cli, codex-cli) REQUIRE an explicit `cli_bin`
@@ -31,7 +33,7 @@ model    = "gpt-5.3-codex-spark"
 
 # Per-consumer overrides inherit unset fields from [default]. Summarizers
 # do simple text extraction (haiku-class is plenty); dream phases, the
-# hive supervisor, and topic summaries (the low-volume thought-cluster
+# supervisor, and topic summaries (the low-volume thought-cluster
 # summaries the similarity lever writes) run deeper reasoning and benefit
 # from an opus-class model. Uncomment and edit any block below to point a
 # single consumer at a different provider or model. All three fields
@@ -43,10 +45,6 @@ model    = "gpt-5.3-codex-spark"
 # provider = "anthropic"
 # model    = "claude-haiku-4-5-20251001"
 #
-# [dream]
-# provider = "anthropic"
-# model    = "claude-opus-4-7"
-#
 # [supervisor]
 # provider = "anthropic"
 # model    = "claude-opus-4-7"
@@ -55,10 +53,101 @@ model    = "gpt-5.3-codex-spark"
 # provider = "anthropic"
 # model    = "claude-opus-4-7"
 
+# The embedding and rerank axes are configured SEPARATELY from the LLM
+# consumers above — they have their own provider vocabulary (voyage,
+# cohere, gemini, openai-compatible, fake) because three of the LLM
+# providers publish no embeddings API at all — and they do NOT inherit
+# from [default]. Leave both blocks commented out to keep today's
+# behavior: the voyage provider with each arm's own default model.
+#
+# Each axis resolves its OWN key from its OWN provider (voyage →
+# VOYAGE_API_KEY, cohere → COHERE_API_KEY, gemini → GEMINI_API_KEY,
+# openai-compatible → OPENAI_API_KEY), so an embedder and a reranker on
+# different providers never read each other's credential. An API provider
+# needs a key OR a base_url — a keyless base_url points at a local
+# compatible server that handles auth out-of-band.
+#
+# `key` is an OPTIONAL per-section credential that OVERRIDES the
+# provider-resolved one above. It matters most for openai-compatible,
+# which serves many third-party endpoints: without it, pointing base_url
+# at a non-OpenAI provider would send them your OPENAI_API_KEY. Leave it
+# unset to keep the provider/env resolution. This override exists on
+# [embedder] and [reranker] only — the LLM sections above are unchanged.
+#
+# dimension and dtype are the quantization knobs. This build accepts
+# dimension = 256, 512, 1024 or 2048, and dtype = "ubinary" or "float32";
+# any other value is refused at startup with an error naming the value and
+# the accepted set. Leaving both unset keeps 256/ubinary, which is what
+# every existing deployment already runs — widening what the build accepts
+# does not move what you are running, because a graph's embed identity is
+# recorded at its first embed and no config edit re-embeds it.
+#
+# [embedder]
+# provider  = "voyage"
+# model     = "..."
+# base_url  = "..."
+# key       = "..."
+# dimension = 256
+# dtype     = "ubinary"
+#
+# [reranker]
+# provider = "voyage"
+# model    = "..."
+# base_url = "..."
+# key      = "..."
+
+# NAMED EMBEDDER PROFILES. Define as many complete embedders as you like
+# and choose among them per graph BY NAME. Each profile carries the same
+# fields as [embedder] and is read on its own — a profile is a complete
+# embedder config, not a patch over the default one, so anything it leaves
+# out takes the built-in default rather than a sibling's value.
+#
+# The [embedder] block above IS a profile: the one named "default". A
+# config with no profile tables defines exactly that one, which is why
+# every config written before profiles existed is still valid and still
+# means what it meant. "default" is reserved for it, so a profile table
+# may not reuse the name.
+#
+# [embedder.profile.code4]
+# provider  = "voyage"
+# model     = "voyage-code-4"
+# dimension = 1024
+# dtype     = "float32"
+#
+# [embedder.profile.text]
+# provider = "cohere"
+# model    = "embed-v4.0"
+#
+# [embedder.profile.local]
+# provider = "openai-compatible"
+# base_url = "http://127.0.0.1:8080"
+# key      = "..."
+
+# CREATION-TIME DEFAULTS PER GRAPH FAMILY. A family table names the
+# profile that a NEW graph of that family is embedded under. Accepted
+# families: knowledge, code, practice, cloud, cicd, transformers. A family
+# with no table here uses the "default" profile.
+#
+# THIS IS CONSULTED ONLY AT A GRAPH'S FIRST EMBED. A graph's embed identity
+# is recorded then and is authoritative afterwards, so editing a family
+# default — or editing, renaming or deleting the profile it points at —
+# never re-embeds a graph that already has an identity, and never changes
+# one. Changing an EXISTING graph's identity is a separate, explicit,
+# per-graph operation, because that is the one that costs an embedding bill.
+#
+# A family table pointing at a profile that is not defined is refused when
+# the config loads, rather than at the next new graph of that family.
+#
+# [embedder.family.code]
+# profile = "code4"
+#
+# [embedder.family.knowledge]
+# profile = "text"
+
 # Optional. API keys for the embedder, the Linear backend, and the HTTP
 # LLM providers. Each key falls back to the matching env var when unset
 # here (VOYAGE_API_KEY, LINEAR_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY,
-# GEMINI_API_KEY). Storing them here makes the daemon launch-method-
+# GEMINI_API_KEY, COHERE_API_KEY). Storing them here makes the daemon launch-method-
 # agnostic (brew services / systemd / k8s all read this file) — chmod the
 # file 600 if you do. The default provider="claude-cli" needs none of the
 # LLM keys (it auths via your `claude` login).
@@ -69,3 +158,4 @@ model    = "gpt-5.3-codex-spark"
 # anthropic_api_key = "..."
 # openai_api_key    = "..."
 # gemini_api_key    = "..."
+# cohere_api_key    = "..."

@@ -65,6 +65,12 @@ type CollectRunStatus struct {
 	StartedAt  time.Time
 	FinishedAt time.Time // zero while running
 	Err        string    // non-empty only for State=="failed"
+	// Composition is the run's rendered node-type census — what the harvest
+	// actually produced. It is the carrier that makes a DETACHED run's
+	// composition readable, since past the 60s cap the tool has already returned
+	// and its text can no longer say anything. Empty while running, by
+	// construction: a run in flight has no composition yet.
+	Composition string
 }
 
 // collectRun is the unexported in-flight bookkeeping for a running target.
@@ -79,12 +85,13 @@ type collectRun struct {
 }
 
 // CollectRunHandle is the completion handle Start returns for a freshly-launched
-// run. Done() closes when the run finishes; Err() is safe to read lock-free ONLY
-// after Done() closes — the store-before-close ordering in Start's goroutine is
-// the happens-before edge that makes that read race-free.
+// run. Done() closes when the run finishes; Err() and Composition() are safe to
+// read lock-free ONLY after Done() closes — the store-before-close ordering in
+// Start's goroutine is the happens-before edge that makes those reads race-free.
 type CollectRunHandle struct {
-	done chan struct{}
-	err  error
+	done        chan struct{}
+	err         error
+	composition string
 }
 
 // Done returns a channel closed when the run completes (success or failure).
@@ -94,6 +101,12 @@ func (h *CollectRunHandle) Done() <-chan struct{} { return h.done }
 // <-Done() has observed the channel closed; Start stores err BEFORE close(done),
 // so a reader gated on Done() observes the fully-written value with no lock.
 func (h *CollectRunHandle) Err() error { return h.err }
+
+// Composition returns the run's rendered node-type census (empty when the run
+// reported none). It carries the SAME read-only-after-Done() contract as Err:
+// Start stores it BEFORE close(done), so a reader gated on Done() observes the
+// fully-written value with no lock.
+func (h *CollectRunHandle) Composition() string { return h.composition }
 
 // CollectRuntime owns detached collect goroutines for the daemon's lifetime and
 // tracks per-target run status. Constructed once at boot (NewCollectRuntime),
@@ -111,6 +124,11 @@ type CollectRuntime struct {
 	mu      sync.Mutex
 	running map[string]*collectRun      // per-target in-flight state
 	last    map[string]CollectRunStatus // per-target last completed/failed outcome
+	// completed counts ENDED collects per BARE CODE-GRAPH NAME — the same identity
+	// CollectInFlightForGraph gates on, deliberately NOT the per-target key the two
+	// maps above use. It is the monotonic "collect epoch" a consumer stamps an
+	// observation against so the observation expires when a collect lands.
+	completed map[string]uint64
 
 	clock       func() time.Time // default time.Now; overridden in-package by tests
 	detachAfter time.Duration    // default collectDetachThreshold; overridden by tests
@@ -126,6 +144,7 @@ func NewCollectRuntime() *CollectRuntime {
 		baseCancel:  baseCancel,
 		running:     map[string]*collectRun{},
 		last:        map[string]CollectRunStatus{},
+		completed:   map[string]uint64{},
 		clock:       time.Now,
 		detachAfter: collectDetachThreshold,
 	}
@@ -164,17 +183,22 @@ func (r *CollectRuntime) clockNow() time.Time {
 //   - Otherwise: records the run, spawns the goroutine via inFlight.Go (so Stop
 //     drains it), and returns (handle, true, 0).
 //
+// work returns the run's rendered node-type composition alongside its error. The
+// composition is recorded on the registry outcome and on the handle, which is
+// what makes it readable for a DETACHED run through manage(status).
+//
 // The goroutine runs work under a panic-recover (degrade-not-die), fires ONE
 // loud slog.Error for any failure (normal error OR recovered panic), then in the
-// completion block updates the registry outcome, stores h.err, and closes h.done
-// LAST — that ordering is the happens-before edge for a lock-free Err()-after-
-// Done() read and is a plain data race if inverted.
+// completion block updates the registry outcome, stores h.err AND h.composition,
+// and closes h.done LAST — that ordering is the happens-before edge for a
+// lock-free Err()/Composition()-after-Done() read and is a plain data race if
+// inverted.
 // graph is the BARE code-graph name this run targets (empty for non-code
 // collectors); recording it on the same map entry is what lets
 // CollectInFlightForGraph answer, and what makes the completion block's
 // delete(r.running, key) release the gap-scan gate on success, on error and on a
 // recovered panic alike — with no second lifetime to keep in step.
-func (r *CollectRuntime) Start(key, label, graph string, work func() error) (h *CollectRunHandle, started bool, elapsed time.Duration) {
+func (r *CollectRuntime) Start(key, label, graph string, work func() (string, error)) (h *CollectRunHandle, started bool, elapsed time.Duration) {
 	r.mu.Lock()
 	if run, busy := r.running[key]; busy {
 		el := r.clockNow().Sub(run.startedAt)
@@ -191,6 +215,7 @@ func (r *CollectRuntime) Start(key, label, graph string, work func() error) (h *
 		// failed run rather than taking down the daemon (mirrors
 		// similarity_async.go). A recovered panic becomes err.
 		var err error
+		var composition string
 		func() {
 			defer func() {
 				if rec := recover(); rec != nil {
@@ -198,7 +223,7 @@ func (r *CollectRuntime) Start(key, label, graph string, work func() error) (h *
 					slog.Error("collect: detached run panicked, recovered", "target", key, "panic", rec)
 				}
 			}()
-			err = work()
+			composition, err = work()
 		}()
 
 		// One loud slog.Error for EVERY failing run — normal collect error or
@@ -220,16 +245,33 @@ func (r *CollectRuntime) Start(key, label, graph string, work func() error) (h *
 		r.mu.Lock()
 		delete(r.running, key)
 		r.last[key] = CollectRunStatus{
-			Target:     key,
-			Label:      label,
-			State:      state,
-			StartedAt:  startedAt,
-			FinishedAt: r.clockNow(),
-			Err:        errStr,
+			Target:      key,
+			Label:       label,
+			State:       state,
+			StartedAt:   startedAt,
+			FinishedAt:  r.clockNow(),
+			Err:         errStr,
+			Composition: composition,
+		}
+		// THE COUNTER MOVES INSIDE THE SAME CRITICAL SECTION that drops the running
+		// entry and records r.last, so the completion counter and the collect gate
+		// can never disagree about what a finished collect is. No interleaving can
+		// expose a gate that is already down beside an epoch that has not moved —
+		// which is the window a consumer stamping "drained at epoch N" would read as
+		// still valid across a collect that has in fact landed new rows.
+		//
+		// KEYED ON THE BARE GRAPH NAME, NOT ON key, so it answers the same question
+		// at the same granularity CollectInFlightForGraph does. key is the collect
+		// TARGET, which is a different identity; counting by it would make the epoch
+		// a consumer reads for a graph move for collects into other targets and
+		// never move for its own.
+		if graph != "" {
+			r.completed[graph]++
 		}
 		r.mu.Unlock()
 
 		h.err = err
+		h.composition = composition
 		close(h.done)
 	})
 	return h, true, 0
@@ -265,6 +307,38 @@ func (r *CollectRuntime) CollectInFlightForGraph(gt kgtypes.GraphType, name stri
 		}
 	}
 	return false
+}
+
+// CompletedCollectsForGraph returns how many collects into (gt, name) have ENDED,
+// by any route — success, error or recovered panic — i.e. the same transition that
+// records r.last and lowers the collect gate.
+//
+// IT IS AN EPOCH, NOT A STATISTIC. A consumer stamps an observation about a graph
+// with the value it read, and compares later: an equal value means no collect has
+// landed since, a larger one means the observation is stale. That is what makes a
+// cross-loop observation expire on its own rather than needing every observer to
+// notice a collect.
+//
+// THE COUNTER IS BUMPED IN THE SAME CRITICAL SECTION as the gate's own state
+// transition (see Start), so a reader can never see the gate down beside a
+// stale epoch.
+//
+// IT SHARES CollectInFlightForGraph's IDENTITY RULE, and must: the bare code-graph
+// name, never branch-qualified, because the pipeline registers one collector per
+// base code graph. A branch-suffixed key would count into a bucket nothing ever
+// reads, leaving the epoch pinned at zero and every stamp permanently fresh — the
+// staleness hole, silently reopened, with every test still green.
+//
+// It is 0 for a non-code graph type and for a graph no collect has finished, which
+// is a legal observation rather than a sentinel; callers that need to distinguish
+// "no epoch source at all" must do so by the absence of the accessor, not by 0.
+func (r *CollectRuntime) CompletedCollectsForGraph(gt kgtypes.GraphType, name string) uint64 {
+	if r == nil || gt != kgtypes.GraphCode || name == "" {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.completed[name]
 }
 
 // Snapshot returns one CollectRunStatus per running target (State=="running",

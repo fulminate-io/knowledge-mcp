@@ -5,7 +5,6 @@ package render
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
@@ -33,16 +32,29 @@ type assembleNode struct {
 
 // assembleJSON builds a recursive tree from any node and returns it
 // as JSON. Universal JSON path for assemble — walks EdgeKGContains
-// children recursively (same hierarchy as RenderTree) and includes
+// children recursively (same hierarchy as the text renders) and includes
 // linked research/decisions as extra top-level fields.
 //
 // Ported from cmd/knowledge-server/tools/tools_assemble_json.go:29
-// with the store reads swapped for wire-shape FetchNode + IterEdges.
+// with the store reads swapped for wire-shape calls; the whole subtree now
+// arrives from one AssembleSubtree traversal, so the recursion below issues no
+// wire call at all.
+//
+// THE ARM DISCLOSES TRUNCATION TWICE, AND BOTH ARE INTENTIONAL. The `truncated`
+// key goes on the ENVELOPE ROOT, unconditionally for both true and false,
+// because truncation is a property of the READ and not of a node — a per-row
+// key would say nothing and would inflate exactly the large payloads where
+// truncation matters most, and an absent key is indistinguishable from an old
+// binary. The prose notice rides alongside as its own block. The key is what a
+// machine reads; the block is what a caller reads.
 func assembleJSON(ctx context.Context, gc GraphCaller, node *knowledgev1.Node) kgtools.ToolResult {
-	tree := buildAssembleTree(ctx, gc, node, 0, 5)
-	result := map[string]any{"root": tree}
+	childIndex, byID, _, truncated := AssembleSubtree(ctx, gc, node.Id, 5)
+	tree := buildAssembleTree(node, 0, 5, childIndex)
+	result := map[string]any{"root": tree, "truncated": truncated}
 
-	research, decisions := collectLinkedNodes(ctx, gc, node.Id)
+	research, decisions, linkedTruncated := collectLinkedNodes(ctx, gc, node.Id)
+	truncated = truncated || linkedTruncated
+	result["truncated"] = truncated
 	if len(research) > 0 {
 		result["research"] = research
 	}
@@ -54,12 +66,22 @@ func assembleJSON(ctx context.Context, gc GraphCaller, node *knowledgev1.Node) k
 	if err != nil {
 		return kgtools.ErrorResult("json marshal: " + err.Error())
 	}
-	return kgtools.TextResult(string(b))
+	return AppendTruncationNotice(kgtools.TextResult(string(b)), truncated, len(byID))
 }
 
-// buildAssembleTree recursively builds a tree of assembleNode from
-// contains edges.
-func buildAssembleTree(ctx context.Context, gc GraphCaller, node *knowledgev1.Node, depth, maxDepth int) assembleNode {
+// buildAssembleTree recursively builds a tree of assembleNode from the
+// prefetched parent→child index. It takes no graph caller, which is the
+// structural guarantee that the recursion cannot issue a wire call.
+//
+// CHILDREN-KEY CONTRACT: Children is `omitempty`, so a node with no children
+// emits NO children key at all. The index path preserves that naturally —
+// childIndex holds no entry for a childless parent, so nothing is appended and
+// omitempty drops the key.
+func buildAssembleTree(
+	node *knowledgev1.Node,
+	depth, maxDepth int,
+	childIndex map[string][]*knowledgev1.Node,
+) assembleNode {
 	an := assembleNode{
 		ID:          node.Id,
 		Name:        node.SymbolName,
@@ -74,18 +96,8 @@ func buildAssembleTree(ctx context.Context, gc GraphCaller, node *knowledgev1.No
 		return an
 	}
 
-	childEdges, err := IterEdges(ctx, gc, node.Id, kgwire.OutgoingEdges, kgtypes.EdgeKGContains)
-	if err != nil {
-		slog.Warn("assembleJSON: children query failed", "id", node.Id, "error", err)
-		return an
-	}
-
-	for _, e := range childEdges {
-		cn, cerr := FetchNode(ctx, gc, e.ToId)
-		if cerr != nil || cn == nil {
-			continue
-		}
-		an.Children = append(an.Children, buildAssembleTree(ctx, gc, cn, depth+1, maxDepth))
+	for _, cn := range childIndex[node.Id] {
+		an.Children = append(an.Children, buildAssembleTree(cn, depth+1, maxDepth, childIndex))
 	}
 
 	return an
@@ -93,34 +105,37 @@ func buildAssembleTree(ctx context.Context, gc GraphCaller, node *knowledgev1.No
 
 // collectLinkedNodes finds research and decision nodes linked to
 // nodeID via EdgeInformedBy (outgoing for research, incoming for
-// decisions). Verbatim port of tools_assemble_json.go:79 with the
-// store reads swapped for wire-shape calls.
-func collectLinkedNodes(ctx context.Context, gc GraphCaller, nodeID string) ([]assembleNode, []assembleNode) {
+// decisions). Ported from tools_assemble_json.go:79; both sides share ONE bulk
+// hydrate, and each renders by walking its own EDGE slice so the emitted arrays
+// keep edge order rather than the hydrated map's undefined one. The third
+// return is the hydrate's truncation verdict.
+func collectLinkedNodes(ctx context.Context, gc GraphCaller, nodeID string) ([]assembleNode, []assembleNode, bool) {
 	var research, decisions []assembleNode
 
 	outEdges, _ := IterEdges(ctx, gc, nodeID, kgwire.OutgoingEdges, kgtypes.EdgeInformedBy)
+	inEdges, _ := IterEdges(ctx, gc, nodeID, kgwire.IncomingEdges, kgtypes.EdgeInformedBy)
+
+	peerIDs := make([]string, 0, len(outEdges)+len(inEdges))
 	for _, e := range outEdges {
-		n, err := FetchNode(ctx, gc, e.ToId)
-		if err != nil || n == nil {
-			continue
-		}
-		if kgtypes.NodeType(n.Type) == kgtypes.NodeResearch {
+		peerIDs = append(peerIDs, e.ToId)
+	}
+	for _, e := range inEdges {
+		peerIDs = append(peerIDs, e.FromId)
+	}
+	peers, truncated, _ := FetchNodesByIDs(ctx, gc, peerIDs)
+
+	for _, e := range outEdges {
+		if n, ok := peers[e.ToId]; ok && kgtypes.NodeType(n.Type) == kgtypes.NodeResearch {
 			research = append(research, nodeToAssembleNode(n))
 		}
 	}
-
-	inEdges, _ := IterEdges(ctx, gc, nodeID, kgwire.IncomingEdges, kgtypes.EdgeInformedBy)
 	for _, e := range inEdges {
-		n, err := FetchNode(ctx, gc, e.FromId)
-		if err != nil || n == nil {
-			continue
-		}
-		if kgtypes.NodeType(n.Type) == kgtypes.NodeDecision {
+		if n, ok := peers[e.FromId]; ok && kgtypes.NodeType(n.Type) == kgtypes.NodeDecision {
 			decisions = append(decisions, nodeToAssembleNode(n))
 		}
 	}
 
-	return research, decisions
+	return research, decisions, truncated
 }
 
 // nodeToAssembleNode converts a wire node to a flat assembleNode

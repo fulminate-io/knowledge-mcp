@@ -4,6 +4,13 @@
 // persistent enriched-transcript parquet cache the sync path writes under
 // ~/.knowledge/transcripts-cache/{source}/{session}.parquet.
 //
+// That cache is APPEND-ONLY: the sync path writes a lane's parquet and nothing prunes it,
+// so it RETAINS a session long after the CLI has trimmed that session's own transcript
+// file. The corpus this engine reads is therefore strictly larger than the live transcript
+// directory, and its lane and per-tool counts legitimately exceed what is on disk there.
+// Every report discloses the basis it was computed over (CorpusProvenance, run.go) so a
+// number can be reconciled against a stated corpus rather than against an assumed one.
+//
 // It is a PURE-GO in-memory aggregator: each run globs the cache to an EXPLICIT
 // list of local parquet paths via Go-side filepath.Glob, decodes them file-by-file in
 // parallel via transcripts.ReadSessionParquet, folds every kept row into a corpus-wide
@@ -80,7 +87,12 @@ func (s *Service) cachePaths() ([]string, error) {
 // establishes happens-before, so the fan-out is race-free) via the associative
 // corpus.merge. An EMPTY glob short-circuits to an empty corpus and a nil error without
 // decoding. Bounded memory: at most NumCPU files' rows resident at once.
-func (s *Service) loadCorpus(ctx context.Context) (*corpus, error) {
+//
+// The caller's Filters are applied at intake, so a narrowed population is strictly CHEAPER
+// than the whole corpus — the dropped rows never reach an accumulator. The decode still
+// reads every cached file either way, because a lane's identity lives in its rows rather
+// than in its filename; that cost is unchanged from the whole-corpus load.
+func (s *Service) loadCorpus(ctx context.Context, base Filters) (*corpus, error) {
 	paths, err := s.cachePaths()
 	if err != nil {
 		return nil, err
@@ -89,10 +101,10 @@ func (s *Service) loadCorpus(ctx context.Context) (*corpus, error) {
 	if len(paths) == 0 {
 		return agg, nil
 	}
+	// The disclosed lane count is the glob's own result, recorded past the empty
+	// short-circuit so an empty cache reports 0 rather than going unreported.
+	agg.laneCount = int64(len(paths))
 
-	// Baseline filter only: RunDetectors is unfiltered, so a zero Filters applies just the
-	// synthetic-model + is_meta baseline exclusions uniformly at intake.
-	var base Filters
 	partials := make([]*corpus, len(paths))
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -107,11 +119,15 @@ func (s *Service) loadCorpus(ctx context.Context) (*corpus, error) {
 				return err
 			}
 			part := newCorpus()
+			part.collectLane = base.resolved() == ScopeSingle
 			for j := range rows {
 				if base.keep(rows[j]) {
 					part.add(rows[j])
 				}
 			}
+			// Reduce this file's per-agent instants to active time while they are still
+			// resident; the merge below sees only the accumulated int64.
+			part.finalizeActive()
 			partials[i] = part
 			return nil
 		})

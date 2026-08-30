@@ -120,7 +120,7 @@ func assertMergeConsolidation(t *testing.T, blobs []searchengine.SegmentBlob, de
 		segs = append(segs, seg)
 		accept = append(accept, func(id searchengine.ExternalID) bool { return id != deadID })
 	}
-	merged, err := f.Merge(segs, accept)
+	merged, err := mergeSegments(t, segs, accept)
 	require.NoError(t, err)
 
 	mergedStats := f.AggregateStats([]searchengine.Segment[Query, *CorpusStats]{merged})

@@ -7,7 +7,7 @@
 // ordered context wrappers compilePattern tries when re-parsing a fragment,
 // and the identifier-validation rule the substituted reserved-prefix names
 // must satisfy. Registration mirrors the init-time registry pattern used by
-// domains/topology/registry.go.
+// internal/topology/foundation/registry.go.
 //
 // This file declares the LangConfig + ContextWrapper structs and the
 // register / lookup helpers (registerLangConfig, langConfigFor). Per-
@@ -232,6 +232,24 @@ func pathBase(rel string) string {
 //     test-resident because no matcher path reads it. Every registered grammar
 //     emits at least one comment kind, so unlike IsTestFile there is no
 //     documented-nil disposition — the list is non-empty for all 21.
+//   - OpaqueTextKinds holds the NODE KINDS this grammar parses with children that
+//     do NOT cover the node's own byte span, leaving the node's own content in a
+//     gap the child-by-child comparison never reads. Go's
+//     interpreted_string_literal is the paradigm case: two anonymous children,
+//     the quotes, and content between them that produces no node. The matcher
+//     compares these kinds' WHOLE TEXT and does not descend, which is what makes
+//     an inlined literal in a pattern constrain rather than behave as a wildcard.
+//     THIS IS A THIRD MECHANISM, not a generalization of the two above:
+//     LayoutTokens and CommentKinds REMOVE children from the comparison, while
+//     this one suppresses the child walk and compares the span. The zero value —
+//     descend and compare children — is correct for every grammar whose literals
+//     surface their content as a child, which the census in
+//     testdata/opaque_text_census.txt measures per grammar. A kind is admissible
+//     here only when its content carries no sub-structure a caller could bind a
+//     placeholder to; a span-gap kind that DOES host bindable children is
+//     recorded in the census with that verdict instead, because comparing it
+//     whole would trade a silent wildcard for a silent never-match. Membership is
+//     MEASURED by TestOpaqueTextCensus and never hand-guessed.
 type LangConfig struct {
 	Lang                     treesitter.Language
 	Reserved                 string
@@ -240,13 +258,14 @@ type LangConfig struct {
 	LayoutTokens             []string
 	TrimsAnonTokenWhitespace bool
 	CommentKinds             []string
+	OpaqueTextKinds          []string
 	IsTestFile               func(string) bool
 }
 
 // langRegistry holds the per-language config registered at init time. The
 // mutex covers registerLangConfig writes; reads via langConfigFor are
 // concurrent-safe under the standard "register once at init, read forever"
-// discipline mirrored from domains/topology/registry.go.
+// discipline mirrored from internal/topology/foundation/registry.go.
 var (
 	langRegistryMu sync.RWMutex
 	langRegistry   = map[treesitter.Language]LangConfig{}

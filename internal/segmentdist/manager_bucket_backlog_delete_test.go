@@ -72,8 +72,8 @@ func TestDrainCannotResurrectDeletedNode(t *testing.T) {
 	gt := kgtypes.GraphCode
 
 	dir := t.TempDir()
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc)))
+
+	mgr := closeOnCleanup(t, NewManager(dir, 0))
 
 	docs := bothFormatDocs(deleteFixtureN, "resurrect-")
 	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, docs))
@@ -81,7 +81,7 @@ func TestDrainCannotResurrectDeletedNode(t *testing.T) {
 	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, gt, name))
 
 	victim := docs[0]
-	require.True(t, residentInFreshEngine(t, ctx, gc, dir, gt, name, victim),
+	require.True(t, residentInFreshEngine(t, ctx, dir, gt, name, victim),
 		"PRECONDITION: the node must be in the shipped corpus before the delete, or this test proves nothing")
 
 	// The backlog at delete time: a re-embedding writeback re-queued every document
@@ -95,8 +95,16 @@ func TestDrainCannotResurrectDeletedNode(t *testing.T) {
 
 	require.NoError(t, mgr.DeleteFromBuckets(ctx, gt, name, []searchengine.ExternalID{victim.ID}))
 
-	require.Equal(t, deleteFixtureN-1, hnswDM.engine.DistinctResidentDocCount(),
-		"PRECONDITION: the delete must land on the vector corpus before the drain runs")
+	// THE TWO FORMATS ARE MEASURED DIFFERENTLY BECAUSE THE DELETE NOW TREATS THEM
+	// DIFFERENTLY. The vector leg kills the live bit and defers the partition re-emit, so
+	// the document is still a resident MEMBER and only the LIVE count moves; the field leg
+	// re-emits inline, so its member count moves. Measuring the vector pool by its member
+	// count here would assert the inline re-emit this ticket removed.
+	require.Equal(t, deleteFixtureN-1, hnswDM.engine.LiveResidentCount(),
+		"PRECONDITION: the delete must have killed the id in the vector corpus before the drain runs")
+	require.Equal(t, deleteFixtureN, hnswDM.engine.DistinctResidentDocCount(),
+		"PRECONDITION: and it must NOT have re-emitted the vector partition — that is the deferral this "+
+			"drain is about to perform")
 	require.Equal(t, deleteFixtureN-1, bm25DM.engine.DistinctResidentDocCount(),
 		"PRECONDITION: the delete must land on the field corpus before the drain runs")
 
@@ -106,9 +114,9 @@ func TestDrainCannotResurrectDeletedNode(t *testing.T) {
 		"the drain rebuilt the deleted node back into the vector corpus")
 	require.Equal(t, deleteFixtureN-1, bm25DM.engine.DistinctResidentDocCount(),
 		"the drain rebuilt the deleted node back into the field corpus")
-	require.False(t, residentInFreshEngine(t, ctx, gc, dir, gt, name, victim),
+	require.False(t, residentInFreshEngine(t, ctx, dir, gt, name, victim),
 		"the drain shipped the deleted node back into the blob")
-	require.True(t, residentInFreshEngine(t, ctx, gc, dir, gt, name, docs[1]),
+	require.True(t, residentInFreshEngine(t, ctx, dir, gt, name, docs[1]),
 		"CONTROL: an undeleted neighbor is still shipped")
 }
 
@@ -127,8 +135,8 @@ func TestDrainSkipsTombstonedBacklogDoc(t *testing.T) {
 	gt := kgtypes.GraphKnowledge
 
 	dir := t.TempDir()
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc)))
+
+	mgr := closeOnCleanup(t, NewManager(dir, 0))
 
 	docs := bothFormatDocs(deleteFixtureN, "tombdrain-")
 	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, docs))
@@ -136,7 +144,7 @@ func TestDrainSkipsTombstonedBacklogDoc(t *testing.T) {
 	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, gt, name))
 
 	victim := docs[0]
-	require.True(t, residentInFreshEngine(t, ctx, gc, dir, gt, name, victim),
+	require.True(t, residentInFreshEngine(t, ctx, dir, gt, name, victim),
 		"PRECONDITION: the node must be in the shipped corpus before the delete, or this test proves nothing")
 
 	hnswDM := mgr.managerFor(gt, name)
@@ -145,8 +153,16 @@ func TestDrainSkipsTombstonedBacklogDoc(t *testing.T) {
 	mgr.SetGraphTombstones(gt, name, []searchengine.ExternalID{victim.ID})
 	require.NoError(t, mgr.DeleteFromBuckets(ctx, gt, name, []searchengine.ExternalID{victim.ID}))
 
-	require.Equal(t, deleteFixtureN-1, hnswDM.engine.DistinctResidentDocCount(),
-		"PRECONDITION: the delete must land on the vector corpus before the drain runs")
+	// THE TWO FORMATS ARE MEASURED DIFFERENTLY BECAUSE THE DELETE NOW TREATS THEM
+	// DIFFERENTLY. The vector leg kills the live bit and defers the partition re-emit, so
+	// the document is still a resident MEMBER and only the LIVE count moves; the field leg
+	// re-emits inline, so its member count moves. Measuring the vector pool by its member
+	// count here would assert the inline re-emit this ticket removed.
+	require.Equal(t, deleteFixtureN-1, hnswDM.engine.LiveResidentCount(),
+		"PRECONDITION: the delete must have killed the id in the vector corpus before the drain runs")
+	require.Equal(t, deleteFixtureN, hnswDM.engine.DistinctResidentDocCount(),
+		"PRECONDITION: and it must NOT have re-emitted the vector partition — that is the deferral this "+
+			"drain is about to perform")
 	require.Equal(t, deleteFixtureN-1, bm25DM.engine.DistinctResidentDocCount(),
 		"PRECONDITION: the delete must land on the field corpus before the drain runs")
 
@@ -161,9 +177,9 @@ func TestDrainSkipsTombstonedBacklogDoc(t *testing.T) {
 		"a tombstoned backlog document was built back into the vector corpus")
 	require.Equal(t, deleteFixtureN-1, bm25DM.engine.DistinctResidentDocCount(),
 		"a tombstoned backlog document was built back into the field corpus")
-	require.False(t, residentInFreshEngine(t, ctx, gc, dir, gt, name, victim),
+	require.False(t, residentInFreshEngine(t, ctx, dir, gt, name, victim),
 		"the drain shipped the tombstoned node back into the blob")
-	require.True(t, residentInFreshEngine(t, ctx, gc, dir, gt, name, docs[1]),
+	require.True(t, residentInFreshEngine(t, ctx, dir, gt, name, docs[1]),
 		"CONTROL: an undeleted neighbor is still shipped")
 
 	// DROPPED FROM THE BUILD IS NOT ENOUGH — the entries must also be CONSUMED from
@@ -195,7 +211,7 @@ func TestClearKeepsWritesDuringTick(t *testing.T) {
 	const name = "clearDuringTick"
 	gt := kgtypes.GraphCode
 
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	early := bothFormatDocs(4, "tick-")
 	mgr.recordDirty(gt, name, false, early, []searchengine.SegmentID{"tail-early"}, mgr.nextWriteSeq())
@@ -236,7 +252,7 @@ func TestClearKeepsRequeuedSameIDDuringTick(t *testing.T) {
 	gt := kgtypes.GraphCode
 
 	t.Run("recreated_write_survives_the_tick", func(t *testing.T) {
-		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
+		mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 		early := bothFormatDocs(4, "tick-")
 		mgr.recordDirty(gt, name, false, early, []searchengine.SegmentID{"tail-early"}, mgr.nextWriteSeq())
@@ -262,7 +278,7 @@ func TestClearKeepsRequeuedSameIDDuringTick(t *testing.T) {
 	t.Run("unpurged_snapshot_entry_is_still_consumed", func(t *testing.T) {
 		// THE CONTROL that keeps the fix from being "stop consuming": with no purge and
 		// no late write, everything the snapshot named must go.
-		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
+		mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 		docs := bothFormatDocs(4, "consume-")
 		mgr.recordDirty(gt, name, false, docs, []searchengine.SegmentID{"tail-only"}, mgr.nextWriteSeq())

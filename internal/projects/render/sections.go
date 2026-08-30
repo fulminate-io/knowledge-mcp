@@ -3,19 +3,32 @@
 package render
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
-	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 )
 
+// countChildrenOfType counts a parent's already-indexed contains children of one
+// node type. It replaces what used to be an IterEdges plus a FetchNode per
+// grandchild at each of these call sites — reads issued solely to compute an
+// integer, which is the worst shape of N+1 in this file.
+func countChildrenOfType(childIndex map[string][]*knowledgev1.Node, parentID string, typ kgtypes.NodeType) int {
+	n := 0
+	for _, c := range childIndex[parentID] {
+		if kgtypes.NodeType(c.Type) == typ {
+			n++
+		}
+	}
+	return n
+}
+
 // renderTicketPlans renders the Plans section for a ticket assembly.
-// Ported from cmd/knowledge-server/tools/tools_assemble_containers.go:226
-// with the store reads swapped for wire-shape FetchNode + IterEdges calls.
-func renderTicketPlans(ctx context.Context, gc GraphCaller, plans []*knowledgev1.Node) string {
+// Ported from cmd/knowledge-server/tools/tools_assemble_containers.go:226; each
+// plan's phases are read from the caller's prefetched index rather than fetched
+// per plan, so this function issues no wire call.
+func renderTicketPlans(plans []*knowledgev1.Node, childIndex map[string][]*knowledgev1.Node) string {
 	if len(plans) == 0 {
 		return ""
 	}
@@ -28,11 +41,9 @@ func renderTicketPlans(ctx context.Context, gc GraphCaller, plans []*knowledgev1
 		}
 		fmt.Fprintf(&sb, "- [%s] %s — ID: %s\n", statusLabel, p.SymbolName, p.Id)
 		// Show phase summary.
-		phaseEdges, _ := IterEdges(ctx, gc, p.Id, kgwire.OutgoingEdges, kgtypes.EdgeKGContains)
 		total, done := 0, 0
-		for _, e := range phaseEdges {
-			pn, err := FetchNode(ctx, gc, e.ToId)
-			if err != nil || pn == nil || kgtypes.NodeType(pn.Type) != kgtypes.NodePhase {
+		for _, pn := range childIndex[p.Id] {
+			if kgtypes.NodeType(pn.Type) != kgtypes.NodePhase {
 				continue
 			}
 			total++
@@ -48,8 +59,9 @@ func renderTicketPlans(ctx context.Context, gc GraphCaller, plans []*knowledgev1
 }
 
 // renderTicketResearch renders the Research section for a ticket assembly.
-// Ported from cmd/knowledge-server/tools/tools_assemble_containers.go:261.
-func renderTicketResearch(ctx context.Context, gc GraphCaller, researches []*knowledgev1.Node) string {
+// Ported from cmd/knowledge-server/tools/tools_assemble_containers.go:261; the
+// per-research question count comes from the prefetched index.
+func renderTicketResearch(researches []*knowledgev1.Node, childIndex map[string][]*knowledgev1.Node) string {
 	if len(researches) == 0 {
 		return ""
 	}
@@ -60,14 +72,7 @@ func renderTicketResearch(ctx context.Context, gc GraphCaller, researches []*kno
 		if statusLabel == "" {
 			statusLabel = "active"
 		}
-		qEdges, _ := IterEdges(ctx, gc, r.Id, kgwire.OutgoingEdges, kgtypes.EdgeKGContains)
-		qCount := 0
-		for _, e := range qEdges {
-			qn, err := FetchNode(ctx, gc, e.ToId)
-			if err == nil && qn != nil && kgtypes.NodeType(qn.Type) == kgtypes.NodeQuestion {
-				qCount++
-			}
-		}
+		qCount := countChildrenOfType(childIndex, r.Id, kgtypes.NodeQuestion)
 		fmt.Fprintf(&sb, "- [%s] %s (%d questions) — ID: %s\n", statusLabel, r.SymbolName, qCount, r.Id)
 	}
 	return sb.String()
@@ -112,9 +117,11 @@ func renderTicketFindings(findings []*knowledgev1.Node) string {
 
 // renderProjectTickets renders the Tickets section for a project
 // container assembly. Ported from
-// cmd/knowledge-server/tools/tools_assemble_containers.go:360 with
-// store reads swapped for wire-shape calls.
-func renderProjectTickets(ctx context.Context, gc GraphCaller, tickets []*knowledgev1.Node) string {
+// cmd/knowledge-server/tools/tools_assemble_containers.go:360; each ticket's
+// plan and research counts come from the caller's prefetched index, so this
+// function issues no wire call. It previously hydrated EVERY grandchild of
+// every ticket in full to compute two integers.
+func renderProjectTickets(tickets []*knowledgev1.Node, childIndex map[string][]*knowledgev1.Node) string {
 	if len(tickets) == 0 {
 		return ""
 	}
@@ -133,20 +140,8 @@ func renderProjectTickets(ctx context.Context, gc GraphCaller, tickets []*knowle
 		}
 
 		// Summary of child plans and research.
-		gcEdges, _ := IterEdges(ctx, gc, t.Id, kgwire.OutgoingEdges, kgtypes.EdgeKGContains)
-		planCount, researchCount := 0, 0
-		for _, e := range gcEdges {
-			gcn, err := FetchNode(ctx, gc, e.ToId)
-			if err != nil || gcn == nil {
-				continue
-			}
-			switch kgtypes.NodeType(gcn.Type) {
-			case kgtypes.NodePlan:
-				planCount++
-			case kgtypes.NodeResearch:
-				researchCount++
-			}
-		}
+		planCount := countChildrenOfType(childIndex, t.Id, kgtypes.NodePlan)
+		researchCount := countChildrenOfType(childIndex, t.Id, kgtypes.NodeResearch)
 		if planCount > 0 || researchCount > 0 {
 			fmt.Fprintf(&sb, "  ")
 			if planCount > 0 {

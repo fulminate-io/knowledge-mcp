@@ -3,6 +3,9 @@
 package treesitter
 
 import (
+	"strconv"
+	"strings"
+
 	sitter "github.com/smacker/go-tree-sitter"
 )
 
@@ -154,6 +157,14 @@ func (c *Chunker) emitDeclarationEdges(
 		refEdges = append(refEdges,
 			aliasTypeRefTargets(c.extractTypeRefEdges(declNode, src, fileCtx.PackageName, symbolName, cqs), typeRefAlias)...)
 		result.Edges = append(result.Edges, attachRefSite(refEdges, declRef, ownSlot)...)
+
+		// FLOW FACTS. The registry answers nil for every language with no arm, so
+		// an unarmed language pays one failed map read per declaration and emits
+		// byte-identical output to what it emitted before this existed.
+		emitFlowEdges(result, flowClosure(flowStepsFor(lang, declNode, src), src),
+			qualifiedName(fileCtx.PackageName, symbolName),
+			qualifiedName(fileCtx.PackageName, parentName), parentName,
+			ownSlot, slots.containerSlot(declNode, ownSlot), declRef)
 	}
 
 	// For Go type declarations: extract EMBEDS edges. BOTH BODY KINDS, through
@@ -175,6 +186,103 @@ func (c *Chunker) emitDeclarationEdges(
 		}
 		result.Edges = append(result.Edges, attachRefSite(embedEdges, declRef, ownSlot)...)
 	}
+}
+
+// emitFlowEdges appends one edge per flow fact, with EVERY ADDRESSING SHAPE
+// BORROWED from a sibling emission rather than invented.
+//
+//   - FLOWS_TO_RETURN is a SELF-EDGE with both endpoints positional, so the
+//     parser's slot pre-pass makes both exact before resolution — the same
+//     addressing the file-to-declaration CONTAINS edge above uses. It carries no
+//     reference site, because it references nothing.
+//   - FLOWS_TO_ARG carries the callee spelling as its ToID and the declaration's
+//     reference site, BYTE-FOR-BYTE the addressing extractCallEdges' output gets
+//     from attachRefSite. That is what lets the parser resolve it against the
+//     same site and reach the same declaration the sibling CALLS edge reached.
+//     The spelling is the arm's normalizeCallee output and is NOT re-derived or
+//     post-processed here.
+//   - FLOWS_TO_FIELD is the parent-to-member CONTAINS addressing REVERSED, and
+//     it inherits that edge's documented split: a lexically enclosing container
+//     is exact by slot, while a Go method's receiver is a sibling that may live
+//     in another file, so its slot is 0 and the parser resolves the name.
+//
+// A DECLARATION WITH NO CONTAINER OWNS NO FIELD, so an empty parentName emits no
+// FLOWS_TO_FIELD edge at all rather than one pointing at the package.
+//
+// Weight is 0 on all three, matching CONTAINS / IMPORTS / USES_TYPE / EMBEDS. A
+// count does NOT go on Weight: the weighted analyzers normalize a zero weight to
+// the 1.0 baseline, so a cardinality there inverts the intent it looks like it
+// serves.
+func emitFlowEdges(
+	result *Result, facts []ParamFlow,
+	own, owner, parentName string,
+	ownSlot, containerSlot int, declRef *RefSite,
+) {
+	if len(facts) == 0 {
+		return
+	}
+	edges := make([]Edge, 0, len(facts))
+	for i := range facts {
+		f := &facts[i]
+		evidence := flowEvidence(f)
+		switch f.Kind {
+		case FlowToReturn:
+			edges = append(edges, Edge{
+				FromID: own, ToID: own, Type: EdgeFlowsToReturn,
+				FromChunk: ownSlot, ToChunk: ownSlot, Evidence: evidence,
+			})
+		case FlowToArg:
+			edges = append(edges, Edge{
+				FromID: own, ToID: f.Callee, Type: EdgeFlowsToArg,
+				FromChunk: ownSlot, Evidence: evidence, Ref: declRef,
+			})
+		case FlowToField:
+			if parentName == "" {
+				continue
+			}
+			edges = append(edges, Edge{
+				FromID: own, ToID: owner, Type: EdgeFlowsToField,
+				FromChunk: ownSlot, ToChunk: containerSlot, Evidence: evidence, Ref: declRef,
+			})
+		}
+	}
+	result.Edges = append(result.Edges, edges...)
+}
+
+// flowEvidence renders one fact's Evidence under the grammar the edge-type
+// vocabulary documents: the prefix, the source, ">", the sink.
+//
+// IT RENDERS FROM THIS PACKAGE'S OWN MIRROR OF THE PREFIX, deliberately. This
+// package has zero production kgtypes imports — the constants above say why —
+// so reaching for the producer's copy here would introduce the first one and
+// contradict a comment three lines from the mirror. The lockstep test is what
+// keeps the two spellings from drifting.
+//
+// THE OPTIONAL @ AND | COMPONENTS ARE NOT WRITTEN HERE. Both are decided by
+// resolution — the callee spelling on an unresolved callee, the group key on a
+// multi-candidate one — and neither is knowable at chunk time.
+func flowEvidence(f *ParamFlow) string {
+	var b strings.Builder
+	b.WriteString(EdgeEvidenceFlowPrefix)
+	if f.Source.Receiver {
+		b.WriteString("recv")
+	} else {
+		b.WriteByte('p')
+		b.WriteString(strconv.Itoa(f.Source.ParamIndex))
+	}
+	b.WriteByte('>')
+	switch f.Kind {
+	case FlowToReturn:
+		b.WriteByte('r')
+		b.WriteString(strconv.Itoa(f.ResultIndex))
+	case FlowToArg:
+		b.WriteByte('a')
+		b.WriteString(strconv.Itoa(f.ArgIndex))
+	case FlowToField:
+		b.WriteString("f:")
+		b.WriteString(f.Field)
+	}
+	return b.String()
 }
 
 // refForParent returns the reference site a declaration's edges carry.

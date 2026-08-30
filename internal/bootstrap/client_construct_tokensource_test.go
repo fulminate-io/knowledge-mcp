@@ -21,7 +21,9 @@ import (
 // source so it can refresh.
 func TestConstructClient_SharedCloudTokenSource(t *testing.T) {
 	dialer := func(int) *graphclient.GraphClient {
-		return graphclient.NewGraphClientForURL("http://local.invalid")
+		gc := graphclient.NewGraphClientForURL("http://local.invalid")
+		t.Cleanup(gc.CloseIdleConnections)
+		return gc
 	}
 
 	build := func(t *testing.T, cfg Config) *client {

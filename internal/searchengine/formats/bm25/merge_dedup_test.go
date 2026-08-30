@@ -41,7 +41,7 @@ func TestBM25MergeKeepsOneNodePerID(t *testing.T) {
 		t.Fatalf("build B: %v", err)
 	}
 
-	merged, err := f.Merge(
+	merged, err := mergeSegments(t,
 		[]searchengine.Segment[Query, *CorpusStats]{segA, segB},
 		[]func(searchengine.ExternalID) bool{nil, nil},
 	)

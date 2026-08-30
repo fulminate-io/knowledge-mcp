@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Weakness Catalog Entry: Shell Argument Assembly</title>
+</head>
+<body>
+
+<ul id="SiteMenu">
+  <li><a href="/index.html">Catalog Home</a></li>
+  <li><a href="/data/index.html">Browse Entries</a></li>
+  <li><a href="/about/index.html">About This Catalog</a></li>
+</ul>
+
+<a id="Masthead" href="/index.html">
+  <h1>Shell Argument Assembly</h1>
+  <p>An entry in the community catalog of software weakness descriptions.</p>
+</a>
+
+<table id="MainPane" width="100%" border="0" cellspacing="0" cellpadding="0">
+<tbody>
+<tr>
+  <td id="LeftPane" valign="top"></td>
+  <td style="height:1px"></td>
+  <td id="RightPane" valign="top"></td>
+</tr>
+<tr>
+  <td id="Contentpane" valign="top" width="100%">
+
+    <style>#Contentpane .heading { font-weight: bold; margin-top: 12px; }</style>
+    <script>function showEntryPopup(id) { return id; }</script>
+
+    <h2>Entry 78: Shell Argument Assembly</h2>
+
+    <div class="heading">Description</div>
+    <div class="detail">The product assembles a command string from values a caller supplies and hands the
+      result to a system shell, so the caller can steer what the shell actually runs. See the
+      <a href="/data/definitions/77.html">parent entry</a> for the general form of the problem.</div>
+
+    <p>A shell reads its argument string before running anything, and every character it treats as
+      punctuation is a chance for a caller to end one command and begin another.</p>
+
+    <p>The weakness appears whenever a value that crossed a trust boundary is concatenated into a
+      string that will later be interpreted rather than merely stored.</p>
+
+    <p>Whether the value arrives from a form field, a header, a queue message or a file name makes
+      no difference to the outcome; only the interpretation step matters.</p>
+
+    <p>Products that build their command strings once and reuse them are affected exactly as much
+      as products that rebuild them per request.</p>
+
+    <p>Escaping the value is a narrow repair, because the correct escaping rules depend on which
+      shell reads the string and on how that shell was invoked.</p>
+
+    <p>Passing an argument vector to the operating system directly, with no shell in between,
+      removes the interpretation step and with it the weakness.</p>
+
+    <div class="heading">Common Consequences</div>
+
+    <p>A caller who controls part of the command string generally gains the privileges of the
+      process that runs the shell, which is often broader than the feature required.</p>
+
+    <p>Where the process holds credentials for a downstream system, those credentials become
+      reachable as well, so the blast radius is rarely limited to the affected host.</p>
+
+    <p>Recovery is expensive because the surviving evidence is a shell history rather than an
+      application log, and the two are rarely correlated.</p>
+
+    <div class="heading">Demonstrative Examples</div>
+
+    <p>The listing below builds a directory listing command from a request parameter and executes
+      it through the shell, which is enough to reproduce the weakness.</p>
+
+    <div class="indent Bad">
+      <div id="ExampleCode">
+        <div class="shadow">
+          <div class="CodeHead">
+            <div style="float:right; font-style:italic">(bad code)</div>
+            <div class="optheading smaller"><span>Example Language: </span>PHP</div>
+          </div>
+          <div class="top">
+            <div>$account = $_GET["account"];<br/>$listing = 'ls -l /srv/accounts/' . $account;<br/>shell_exec($listing);</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <p>The parameter is placed into the string without any check on what it contains, so a caller
+      who appends a separator gets a second command executed under the same account.</p>
+
+    <p>Rewriting the same routine to call the directory listing facility of the language, with the
+      account name passed as a separate argument, removes the shell entirely.</p>
+
+    <div class="heading">Applicable Platforms</div>
+
+    <table id="LabelValue2x2" width="98%" cellpadding="0" cellspacing="0" border="0">
+    <tbody>
+      <tr><td class="label">Languages</td><td class="value"><div>Server-side scripting runtimes and shell wrappers</div></td></tr>
+      <tr><td class="label">Prevalence</td><td class="value"><div>Reported often in code that shells out to platform utilities</div></td></tr>
+    </tbody>
+    </table>
+
+    <div class="heading">Related Weaknesses</div>
+
+    <table id="RelatedWeaknesses" width="98%" cellpadding="0" cellspacing="0" border="0">
+      <tr>
+        <th valign="top" width="110px">Nature</th>
+        <th valign="top" width="40px">Type</th>
+        <th valign="top" width="50px">ID</th>
+        <th valign="top">Name</th>
+      </tr>
+      <tbody>
+        <tr class="primary">
+          <td valign="top">ChildOf</td>
+          <td valign="top" class="right"><span class="tool">Class</span></td>
+          <td valign="top"><a href="/data/definitions/77.html">77</a></td>
+          <td valign="top"><p>Assembly of a Command from Untrusted Parts</p></td>
+        </tr>
+        <tr>
+          <td valign="top">CanFollow</td>
+          <td valign="top" class="right"><span class="tool">Base</span></td>
+          <td valign="top"><a href="/data/definitions/88.html">88</a></td>
+          <td valign="top"><p>Argument Delimiter Confusion in a Command String</p></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="heading">Vulnerability Mapping Notes</div>
+
+    <table id="LabelValue4x2" width="98%" cellpadding="0" cellspacing="0" border="0">
+    <tbody>
+      <tr><td class="label">Usage</td><td class="value"><div>Allowed for mapping a reported issue</div></td></tr>
+      <tr><td class="label">Reason</td><td class="value"><div>The entry names a single, well bounded mistake</div></td></tr>
+      <tr><td class="label">Rationale</td><td class="value"><div>The description is specific enough to act on directly</div></td></tr>
+      <tr><td class="label">Comments</td><td class="value"><div>Prefer a more specific child entry where one applies</div></td></tr>
+    </tbody>
+    </table>
+
+    <div class="heading">Notes</div>
+
+    <p>Entries in this catalog describe mistakes rather than individual products, so a single entry
+      may be cited by reports against unrelated systems.</p>
+
+    <p>The taxonomy above is the authoritative statement of how this entry relates to its
+      neighbours, and it is maintained separately from the prose.</p>
+
+  </td>
+</tr>
+</tbody>
+</table>
+
+<ul id="FooterMenu">
+  <li><a href="/about/terms.html">Terms of Use</a></li>
+</ul>
+
+</body>
+</html>

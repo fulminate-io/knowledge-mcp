@@ -9,10 +9,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -25,17 +25,14 @@ type logE2EDeps struct {
 	gc GraphCaller
 }
 
-func (d *logE2EDeps) LocalLiveness() LocalLiveness                 { return nil }
-func (d *logE2EDeps) Sink() collector.Sink                         { return nil }
-func (d *logE2EDeps) RootDir() string                              { return "" }
-func (d *logE2EDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
-func (d *logE2EDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
-func (d *logE2EDeps) WorkerReady() bool                            { return true }
-func (d *logE2EDeps) PropReady() bool                              { return true }
-func (d *logE2EDeps) PipelineReady() bool                          { return true }
-func (d *logE2EDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
-func (d *logE2EDeps) BanSet() *hivemonitor.BanSet                  { return nil }
-func (d *logE2EDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d *logE2EDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d *logE2EDeps) Sink() collector.Sink            { return nil }
+func (d *logE2EDeps) RootDir() string                 { return "" }
+func (d *logE2EDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+
+func (d *logE2EDeps) PropReady() bool     { return true }
+func (d *logE2EDeps) PipelineReady() bool { return true }
+
 func (d *logE2EDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
 func (d *logE2EDeps) Embedder() embed.BinaryEmbedder               { return nil }
 func (d *logE2EDeps) BackendResolver() BackendResolver             { return nil }

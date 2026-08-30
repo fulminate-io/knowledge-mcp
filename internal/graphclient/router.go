@@ -68,6 +68,30 @@ type Router struct {
 	admitGraph func(gt kgtypes.GraphType, name, reason string)
 }
 
+// CloseIdleConnections releases the pooled connections of BOTH clients the Router
+// can hold: the local one it was constructed with, and the cloud one it builds
+// lazily on first cloud routing.
+//
+// THE LAZY CLOUD CLIENT IS THE REASON THIS EXISTS. A caller holding only the local
+// *GraphClient it passed to NewRouter cannot reach the cloud client at all — the
+// Router mints it internally under mu — so closing the local client leaves the
+// cloud connection pooled and, with it, whatever server is serving it. In the
+// daemon that is correct and irrelevant; in a test binary that constructs routers
+// per test it pins an HTTP/2 serve goroutine per router for the life of the
+// process.
+//
+// Safe on a nil Router and safe to call repeatedly.
+func (r *Router) CloseIdleConnections() {
+	if r == nil {
+		return
+	}
+	r.local.CloseIdleConnections()
+	r.mu.Lock()
+	cloud := r.cloud
+	r.mu.Unlock()
+	cloud.CloseIdleConnections()
+}
+
 // NewRouter wires a Router. local may be nil (cloud-first user with no
 // local server install). cloudURL is the Fulminate API base URL (no
 // trailing slash). tokenSource and authState must be non-nil — pass
@@ -229,21 +253,6 @@ func (r *Router) Index(
 		return nil, err
 	}
 	return gc.Index(ctx, req)
-}
-
-// Hive is the per-call-routed EngineService.Hive forwarder. Mirrors
-// (*GraphClient).Hive so the hive intercept's GraphCaller.Hive call routes cloud
-// when logged in via r.pick. The hive work-queue is cloud-only — a self-hosted
-// (unauthenticated) caller routes to the local OSS server, which fails loud.
-func (r *Router) Hive(
-	ctx context.Context,
-	req *knowledgev1.HiveRequest,
-) (*knowledgev1.HiveResponse, error) {
-	gc, err := r.pick(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return gc.Hive(ctx, req)
 }
 
 // MetadataStats is the per-call-routed EngineService.MetadataStats forwarder.

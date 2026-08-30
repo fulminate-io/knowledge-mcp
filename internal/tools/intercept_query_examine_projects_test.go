@@ -187,7 +187,7 @@ func TestInterceptQueryExamineProjects_Thought_FallsThrough(t *testing.T) {
 	deps := &parityDeps{gc: f.gc()}
 	args := mustMarshal(t, map[string]any{"mode": "examine", "id": id})
 	handled, _ := InterceptQueryExamineProjects(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
-	assert.False(t, handled, "NodeThought must fall through to server-side handleExamine")
+	assert.False(t, handled, "NodeThought must fall through to the general examine arm, InterceptQueryExamine")
 }
 
 func TestInterceptQueryExamineProjects_NonKnowledgeGraph_FallsThrough(t *testing.T) {

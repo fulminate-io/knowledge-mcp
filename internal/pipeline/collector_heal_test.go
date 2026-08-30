@@ -60,6 +60,48 @@ func TestMaybeHealCheck_FiresOnceOnEmbedDrain(t *testing.T) {
 	require.Equal(t, 1, *calls, "no re-fire across post-drain idle empty ticks (once per collect)")
 }
 
+// TestNoteWakeRearm_ArmsOnlyOnAnUndisarmedEmbedCollectWake pins each of the three
+// conjuncts the arm-site gate reads, one per case, plus the arming case itself as
+// the KNOWN POSITIVE — without it every "latch unchanged" assertion below is
+// equally satisfied by a gate that can never arm at all.
+//
+// EACH REFUSING CASE RETURNS THE CALLER'S LATCH UNCHANGED rather than false, and
+// the cases below drive that with armed=true so "unchanged" and "cleared" are
+// distinguishable answers. A gate that returned false on refusal would silently
+// clear a latch a previous wake had set.
+func TestNoteWakeRearm_ArmsOnlyOnAnUndisarmedEmbedCollectWake(t *testing.T) {
+	disarmed := &collector{gt: kgtypes.GraphCode, name: "repo"}
+	disarmed.healDisarmed.Store(true)
+
+	cases := []struct {
+		name   string
+		c      *collector
+		ax     loopAxis
+		byWake bool
+		armed  bool
+		want   bool
+	}{
+		// THE KNOWN POSITIVE: the one combination that arms.
+		{"embed_collect_wake_arms", &collector{gt: kgtypes.GraphCode, name: "repo"}, embedAxis, true, false, true},
+		// Conjunct 1: a plain timer expiry is not a collect-wake.
+		{"timer_expiry_does_not_arm", &collector{gt: kgtypes.GraphCode, name: "repo"}, embedAxis, false, false, false},
+		// Conjunct 2: the summary axis never arms the embed heal.
+		{"summary_axis_does_not_arm", &collector{gt: kgtypes.GraphKnowledge, name: "kg"}, summaryAxis, true, false, false},
+		// Conjunct 3: a breaker-disarmed collector stops re-arming — the property
+		// that ends the self-sustaining per-wake heal re-fire.
+		{"breaker_disarmed_does_not_arm", disarmed, embedAxis, true, false, false},
+		// The refusal paths must not CLEAR a latch a prior wake set.
+		{"timer_expiry_leaves_a_set_latch_set", &collector{gt: kgtypes.GraphCode, name: "repo"}, embedAxis, false, true, true},
+		{"breaker_disarmed_leaves_a_set_latch_set", disarmed, embedAxis, true, true, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, tc.c.noteWakeRearm(tc.ax, tc.byWake, tc.armed))
+		})
+	}
+}
+
 // TestMaybeHealCheck_NotOnSummaryAxis asserts the heal check is embed-axis only:
 // an armed drain edge on the summary axis fires NOTHING.
 func TestMaybeHealCheck_NotOnSummaryAxis(t *testing.T) {
@@ -111,15 +153,14 @@ func TestMaybeHealCheck_DisarmsOnBreakerSentinel(t *testing.T) {
 	ctx := context.Background()
 	c, calls := healCollector(kgtypes.GraphCode, "repo", ErrHealDisarmed)
 
-	// Model runLoop's per-wake cycle: a collect-wake re-arms the latch ONLY while the
-	// collector is not disarmed (the arm-site gate `!c.healDisarmed.Load()` at
-	// collector.go), then the drain edge consumes the latch via maybeHealCheck.
+	// Model runLoop's per-wake cycle. Both halves call the PRODUCTION functions
+	// runLoop calls — noteWakeRearm for the arm-site gate, maybeHealCheck for the
+	// drain edge — rather than a local re-implementation of either. A hand-rolled
+	// stand-in for the arm-site gate would agree with the production gate by
+	// construction and stay green through an inverted guard, which is the one
+	// failure this test exists to catch.
 	armed := false
-	wake := func() {
-		if !c.healDisarmed.Load() {
-			armed = true
-		}
-	}
+	wake := func() { armed = c.noteWakeRearm(embedAxis, true, armed) }
 	drain := func() { armed = c.maybeHealCheck(ctx, embedAxis, 0, 0, armed) }
 
 	// Wake 1 → drain: the heal fires, returns ErrHealDisarmed, maybeHealCheck latches

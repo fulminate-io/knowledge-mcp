@@ -19,14 +19,10 @@ import (
 // a real *segmentdist.Manager, the real adapter, and the real accessor nil-guard.
 // Every other test in this plan substitutes a fake for one of those, so this is the
 // catcher for a seam that compiles and is never actually wired.
-//
-// The nil first argument to NewManager is the established precedent for a
-// source-less fixture (segment_manager_wiring_test.go:29) and is safe here: it is
-// the loginState the SOURCE FACTORY consults, and DropGraphCache never reaches a
-// source — it touches the filesystem under the cache dir and nothing else.
 func TestClientSegmentCacheDropper_RemovesRealCacheDirs(t *testing.T) {
 	root := segmentCacheDirFor(t.TempDir())
-	mgr := segmentdist.NewManager(nil, root, 0)
+	mgr := segmentdist.NewManager(root, 0)
+	t.Cleanup(mgr.Close)
 	c := &client{segmentMgr: mgr}
 
 	dropper := c.SegmentCacheDropper()

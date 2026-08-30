@@ -69,10 +69,15 @@ func InterceptQueryRules(ctx context.Context, deps ClientDeps, params kgtools.Ca
 	}
 
 	// queryArgs (the shared client mirror at tools_logs_args.go) has
-	// no Scope field — and we intentionally do NOT widen it. Mirror
-	// the server-side handleRules pattern at
-	// cmd/knowledge-server/tools/tools_knowledge_query.go:395-398:
-	// decode a LOCAL anonymous struct for the scope filter.
+	// no Scope field — and we intentionally do NOT widen it. The scope
+	// filter decodes into a LOCAL anonymous struct instead.
+	//
+	// PROVENANCE, NOT A POINTER: that shape came from the since-deleted
+	// server handleRules, which decoded its own local struct rather than
+	// widening the shared args. Both the handler and the file that held it
+	// (cmd/knowledge-server/tools/tools_knowledge_query.go) are gone —
+	// verified repo-wide by symbol and by path — so the reason is recorded
+	// here rather than cited to a line that no longer resolves.
 	var scopeArgs struct {
 		Scope string `json:"scope"`
 	}
@@ -94,9 +99,10 @@ func InterceptQueryRules(ctx context.Context, deps ClientDeps, params kgtools.Ca
 		return true, errorResult(err.Error())
 	}
 
-	// Local scope substring filter — port of
-	// tools_knowledge_query.go:404-410. It runs over the WHOLE drained corpus,
-	// which is what makes the count below a true total rather than a page's worth.
+	// Local scope substring filter, carried over from the since-deleted server
+	// handleRules (the same scope+description containment rule the file header
+	// states). It runs over the WHOLE drained corpus, which is what makes the
+	// count below a true total rather than a page's worth.
 	var matched []*knowledgev1.Node
 	for _, n := range allRules {
 		if scopeArgs.Scope != "" && !strings.Contains(strings.ToLower(kgtypes.Value(n, "scope")+n.Description), strings.ToLower(scopeArgs.Scope)) {
@@ -107,14 +113,18 @@ func InterceptQueryRules(ctx context.Context, deps ClientDeps, params kgtools.Ca
 	page := rulesPage(matched, int(a.Offset), int(a.Limit))
 
 	// JSON callers (the agent graph-explorer) get the {graph, type, results,
-	// total} browse envelope — the SAME shape the server browse returns for every
-	// non-intercepted node type — reusing the rules already fetched+filtered, with
-	// the page as the rows and the matching count as the total. This MUST precede
-	// the markdown empty-case returns below so an empty result set serializes as
-	// results:[] rather than the "No rules recorded" prose (which would break the
-	// caller's JSON.parse).
+	// total, truncated} browse envelope — the SAME shape the server browse returns
+	// for every non-intercepted node type — reusing the rules already
+	// fetched+filtered, with the page as the rows and the matching count as the
+	// total. This MUST precede the markdown empty-case returns below so an empty
+	// result set serializes as results:[] rather than the "No rules recorded" prose
+	// (which would break the caller's JSON.parse).
+	//
+	// truncated is FALSE and that is a statement, not a placeholder: this arm
+	// drains the whole rule corpus in bounded keyset pages and computes its own
+	// total, so no server row ceiling can have engaged on any single read.
 	if a.Format == "json" {
-		return true, engine.BrowseJSONResult("knowledge", "rule", page, len(matched), a.Fields)
+		return true, engine.BrowseJSONResult("knowledge", "rule", page, len(matched), a.Fields, false, a.IncludeTombstones)
 	}
 
 	// Keyed on the MATCHING set, not the page: "no rules match" and "your offset
@@ -217,10 +227,16 @@ func rulesPage(matched []*knowledgev1.Node, offset, limit int) []*knowledgev1.No
 //
 // The header carries " of <matched>" only when the page is a strict subset. A
 // page that IS the whole matching set is already a complete answer, and its
-// header stays byte-identical to the port of handleRules's populated branch at
-// tools_knowledge_query.go:419-431 that the render goldens capture. Scope and
-// Enforcement lines emit ONLY when the corresponding node.Value returns
-// non-empty — load-bearing for that golden parity.
+// header drops the clause entirely.
+//
+// WHAT HOLDS THAT FORMAT STILL is intercept_query_rules_paging_test.go, which
+// pins both branches by exact prefix: the subset branch at "Rules (10 of 11):",
+// "Rules (3 of 11):" and "Rules (10 of 25):", the complete-set branch at
+// "Rules (3):" (complete_set_header_omits_the_of_clause). The wording was
+// ported byte-for-byte from the server handleRules, whose file is deleted, so
+// those assertions — not the vanished port source — are the standing contract.
+// Scope and Enforcement lines emit ONLY when the corresponding node.Value
+// returns non-empty; that too is part of the format those tests read.
 func renderRulesMarkdown(page []*knowledgev1.Node, matched int) string {
 	var sb strings.Builder
 	if len(page) == matched {

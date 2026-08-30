@@ -2,6 +2,25 @@
 
 package segmentdist
 
+// manager_test.go holds the shared distManager test constructors plus the
+// unload/reload-from-L2 unit.
+//
+// THREE TESTS WERE DELETED HERE, each with its successor named rather than assumed:
+//   - TestManagerShipDiffIdempotent asserted that a second ship() of an unchanged
+//     corpus sent zero blobs and stamped zero server generations. Ship and the
+//     generation axis are gone. The surviving half of that property — writing the
+//     same content-hash blobs twice adds nothing, because the cache is
+//     content-addressed — is asserted in TestSegmentDistributionE2E.
+//   - TestManagerShipWarmsCacheAndGen asserted ship warmed the L2 cache AND advanced
+//     the shipped/imported generation cursors. The cache-warming half is now
+//     writeNewBlobsToL2 and is covered by the same e2e hand-over; the cursor half has
+//     no successor and needs none, because L2 has no generation axis to advance —
+//     segment identity is the content hash and there is no ordering authority.
+//   - TestManagerLoadDeltaCacheAndImport asserted a delta-pull from the server
+//     populated the cache and imported into the engine. There is no delta and no
+//     server; the L2 import it ultimately verified is covered by
+//     TestSegmentDistributionE2E and by TestManagerUnloadReloadFromL2 below.
+
 import (
 	"context"
 	"testing"
@@ -12,27 +31,27 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
-// buildManager wires a distManager around a fakeSegmentSource view (bound to target)
-// + mock engine + cache. src is the harness view (from newSegmentHarness); buildManager
-// rebinds it to target and returns it so callers reading src.shipCalls / .fetchCalls /
-// etc. read the fake's per-leg counters (the successor to countingCaller).
+// buildManager wires a distManager around a mock engine + cache for one target.
+//
+// IT USED TO TAKE AND RETURN A SEGMENT SOURCE, rebinding the harness view to target
+// so callers could read its per-leg call counters. There is no source and there are
+// no legs to count: the manager reads its cache directly, so the cache dir is the
+// whole wiring.
 func buildManager(
 	engine *searchengine.SegmentedIndex[mockQuery, mockStats],
-	src *fakeSegmentSource,
 	target *knowledgev1.GraphSelector,
 	cacheDir string,
-) (*distManager[mockQuery, mockStats], *fakeSegmentSource) {
-	src.target = target
+) *distManager[mockQuery, mockStats] {
 	cache := newDiskSegmentCache(cacheDir, 0, adviceRandom)
-	return newDistManager(engine, src, cache, target, ""), src
+	return newDistManager(engine, cache, target, "")
 }
 
 // evictAllResidentForTest drops every resident segment out of the engine and the
 // resident-tracking map, returning the ids it dropped. It lets a test construct the
-// "gone from the engine, still live on the server and on disk" state that the prune,
-// force-load and reload-from-L2 paths have to survive. Note the resident map is
-// populated by load()/reload() (recordResident), NOT by Add/ship, so a test must load
-// before it can evict.
+// "gone from the engine, still on disk" state that the prune, force-load and
+// reload-from-L2 paths have to survive. Note the resident map is populated by
+// load()/reload() (recordResident), NOT by an engine Add, so a test must load before
+// it can evict.
 //
 // TEST SCAFFOLDING ONLY — production has no eviction path at all. The unprotected
 // unloadUnderPressure this replaces was retired on 2026-08-02: it CAS-removed
@@ -55,167 +74,38 @@ func (m *distManager[Q, S]) evictAllResidentForTest() []searchengine.SegmentID {
 	return ids
 }
 
-// TestManagerShipDiffIdempotent verifies that after an initial ship() of N
-// segments, a second ship() with no intervening Add sends ZERO blobs (empty
-// diff), the server stamps ZERO new generations, and ZERO new RPCs fire.
-func TestManagerShipDiffIdempotent(t *testing.T) {
-	t.Parallel()
-
-	svc, gc := newSegmentHarness(t)
-	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "shipdiff"}
-	ctx := context.Background()
-
-	eng := newMockEngine(t)
-	require.NoError(t, eng.Add([]searchengine.Document{doc("d1", "alpha")}))
-	require.NoError(t, eng.Add([]searchengine.Document{doc("d2", "beta")}))
-
-	mgr, cc := buildManager(eng, gc, target, t.TempDir())
-
-	_, err := mgr.ship(ctx, mgr.locallyShipped)
-	require.NoError(t, err)
-	firstShips := cc.shipCalls.Load()
-	firstBlobs := cc.shipBlobs.Load()
-	require.Equal(t, int64(1), firstShips, "first ship issues one batched Ship RPC")
-	require.Equal(t, int64(2), firstBlobs, "first ship sends both segments")
-
-	// Server now holds 2 segments with generations 1,2.
-	svc.mu.Lock()
-	genAfterFirst := svc.gen
-	svc.mu.Unlock()
-	require.Equal(t, uint64(2), genAfterFirst)
-
-	// Second ship — no intervening Add → empty diff → ZERO Ship RPC, ZERO blobs.
-	_, err = mgr.ship(ctx, mgr.locallyShipped)
-	require.NoError(t, err)
-	require.Equal(t, firstShips, cc.shipCalls.Load(), "second ship must issue ZERO new Ship RPCs")
-	require.Equal(t, firstBlobs, cc.shipBlobs.Load(), "second ship must send ZERO new blobs")
-
-	svc.mu.Lock()
-	genAfterSecond := svc.gen
-	svc.mu.Unlock()
-	require.Equal(t, genAfterFirst, genAfterSecond, "second ship must stamp ZERO new generations")
-}
-
-// TestManagerShipWarmsCacheAndGen verifies ship() warms the L2 cache with each
-// shipped blob and advances last-seen generation to the max stamped generation.
-func TestManagerShipWarmsCacheAndGen(t *testing.T) {
-	t.Parallel()
-
-	_, gc := newSegmentHarness(t)
-	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "warmcache"}
-	ctx := context.Background()
-
-	eng := newMockEngine(t)
-	require.NoError(t, eng.Add([]searchengine.Document{doc("d1", "alpha")}))
-	require.NoError(t, eng.Add([]searchengine.Document{doc("d2", "beta")}))
-
-	mgr, _ := buildManager(eng, gc, target, t.TempDir())
-	_, err := mgr.ship(ctx, mgr.locallyShipped)
-	require.NoError(t, err)
-
-	// Each shipped segment is in the L2 cache.
-	exported := eng.Export()
-	require.Len(t, exported, 2)
-	for _, b := range exported {
-		_, ok := mgr.cache.Get(b.ID)
-		require.True(t, ok, "shipped blob %s must be warm in L2 cache", b.ID)
-	}
-	require.Equal(t, uint64(2), mgr.shippedGen.Load(), "shippedGen advances to max stamped generation (ship tracking; importedGen untouched)")
-	require.Equal(t, uint64(0), mgr.importedGen.Load(), "ship-only path must NOT advance the load floor (importedGen)")
-}
-
-// TestManagerLoadDeltaCacheAndImport verifies the SERVER-import path
-// (loadFromServer — the cold-L2 fallback of the L2-first load()): a fresh
-// loadFromServer Lists 3 metas, Fetches all 3 cold, Imports, search hits; a second
-// loadFromServer at advanced gen Lists an empty delta and issues ZERO Fetch; a
-// loadFromServer with 2 of 3 cached issues ONE Fetch for the 1 miss. These delta /
-// batched-Fetch / importedGen-advance mechanics are precisely the loadFromServer
-// contract; the L2-first wrapper (load()) is covered by
-// TestLoadL2FirstPrimaryPathIssuesZeroList.
-func TestManagerLoadDeltaCacheAndImport(t *testing.T) {
-	t.Parallel()
-
-	svc, gc := newSegmentHarness(t)
-	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "loaddelta"}
-	ctx := context.Background()
-
-	// Shipper engine ships 3 segments to the server.
-	shipEng := newMockEngine(t)
-	require.NoError(t, shipEng.Add([]searchengine.Document{doc("d1", "alpha")}))
-	require.NoError(t, shipEng.Add([]searchengine.Document{doc("d2", "alpha beta")}))
-	require.NoError(t, shipEng.Add([]searchengine.Document{doc("d3", "gamma")}))
-	shipMgr, _ := buildManager(shipEng, gc, target, t.TempDir())
-	_, err := shipMgr.ship(ctx, shipMgr.locallyShipped)
-	require.NoError(t, err)
-
-	// Loader engine (distinct cache dir) loads cold.
-	loadEng := newMockEngine(t)
-	loadMgr, loadCC := buildManager(loadEng, gc, target, t.TempDir())
-
-	require.NoError(t, loadMgr.loadFromServer(ctx))
-	require.Equal(t, int64(1), loadCC.fetchCalls.Load(), "cold load issues one batched Fetch for all 3 misses")
-	hits := loadEng.Search(mockQuery{term: "alpha"}, 10)
-	require.Len(t, hits, 2, "search must hit the imported segments (d1, d2)")
-	require.Equal(t, uint64(3), loadMgr.importedGen.Load(), "load advances the load floor (importedGen) to the max imported generation")
-
-	// Second load at advanced gen → empty delta → ZERO Fetch.
-	beforeSecond := loadCC.fetchCalls.Load()
-	require.NoError(t, loadMgr.loadFromServer(ctx))
-	require.Equal(t, beforeSecond, loadCC.fetchCalls.Load(), "second load must issue ZERO Fetch (empty delta)")
-
-	// Ship a 4th segment; a fresh loader with 3 of 4 already cached issues ONE
-	// Fetch for the 1 miss. Pre-seed the new loader's cache with the first 3.
-	require.NoError(t, shipEng.Add([]searchengine.Document{doc("d4", "delta")}))
-	_, err = shipMgr.ship(ctx, shipMgr.locallyShipped)
-	require.NoError(t, err)
-	svc.mu.Lock()
-	require.Equal(t, uint64(4), svc.gen)
-	svc.mu.Unlock()
-
-	partialEng := newMockEngine(t)
-	partialMgr, partialCC := buildManager(partialEng, gc, target, t.TempDir())
-	// Warm the partial cache with 3 of the 4 server segments so only one is a
-	// miss. The server orders segments by ascending generation; cache the 3
-	// lowest-generation ids (everything except the newest, d4's segment).
-	delta, err := partialMgr.source.List(ctx, 0)
-	require.NoError(t, err)
-	require.Len(t, delta, 4)
-	prime, err := partialMgr.source.Fetch(ctx, []searchengine.SegmentID{delta[0].ID, delta[1].ID, delta[2].ID})
-	require.NoError(t, err)
-	require.Len(t, prime, 3)
-	for _, b := range prime {
-		partialMgr.cache.Put(b.ID, b.Bytes)
-	}
-	// Reset the Fetch counter so the assertion below counts only the load()'s Fetch.
-	partialCC.fetchCalls.Store(0)
-	require.NoError(t, partialMgr.loadFromServer(ctx))
-	require.Equal(t, int64(1), partialCC.fetchCalls.Load(), "partial load issues ONE Fetch for the single miss")
-}
-
-// TestManagerUnloadReloadFromL2 verifies: load N segments; evicting them via
-// engine.Unload drops the unloaded hits out of search; reload(unloadedIds) restores
-// them from L2 (ZERO Source.Fetch) and search hits return.
+// TestManagerUnloadReloadFromL2 is the focused unit for re-materialization: load N
+// segments, evict them so search loses the hits, then reload the evicted ids from L2
+// and get exactly those hits back.
+//
+// IT IS NOT REDUNDANT WITH THE E2E TEST. That one proves the whole path hands over
+// across two processes; this one isolates the evict/reload leg so a regression in
+// re-materialization reports here with a small blast radius rather than only as a
+// failure somewhere in a six-stage flow.
+//
+// THE TWO MANAGERS SHARE ONE CACHE DIRECTORY, and that is a change from the original.
+// They used to point at separate directories because the SERVER was the medium
+// between them; with the cache as the only store, separate directories would mean the
+// loader had nothing to load and the test would assert against an empty engine.
 func TestManagerUnloadReloadFromL2(t *testing.T) {
 	t.Parallel()
 
-	_, gc := newSegmentHarness(t)
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "unloadreload"}
 	ctx := context.Background()
+	cacheDir := t.TempDir()
 
-	shipEng := newMockEngine(t)
-	require.NoError(t, shipEng.Add([]searchengine.Document{doc("d1", "alpha")}))
-	require.NoError(t, shipEng.Add([]searchengine.Document{doc("d2", "alpha")}))
-	require.NoError(t, shipEng.Add([]searchengine.Document{doc("d3", "alpha")}))
-	shipMgr, _ := buildManager(shipEng, gc, target, t.TempDir())
-	_, err := shipMgr.ship(ctx, shipMgr.locallyShipped)
-	require.NoError(t, err)
+	writeEng := newMockEngine(t)
+	require.NoError(t, writeEng.Add([]searchengine.Document{doc("d1", "alpha")}))
+	require.NoError(t, writeEng.Add([]searchengine.Document{doc("d2", "alpha")}))
+	require.NoError(t, writeEng.Add([]searchengine.Document{doc("d3", "alpha")}))
+	writeMgr := buildManager(writeEng, target, cacheDir)
+	require.NoError(t, writeMgr.writeNewBlobsToL2(writeEng.Export()))
 
 	loadEng := newMockEngine(t)
-	loadMgr, loadCC := buildManager(loadEng, gc, target, t.TempDir())
+	loadMgr := buildManager(loadEng, target, cacheDir)
 	require.NoError(t, loadMgr.load(ctx))
-	require.Len(t, loadEng.Search(mockQuery{term: "alpha"}, 10), 3)
-
-	fetchAfterLoad := loadCC.fetchCalls.Load()
+	require.Len(t, loadEng.Search(mockQuery{term: "alpha"}, 10), 3,
+		"fixture: all three segments must be resident before eviction, or the reload proves nothing")
 
 	// Evict the whole resident set.
 	unloaded := loadMgr.evictAllResidentForTest()
@@ -223,10 +113,10 @@ func TestManagerUnloadReloadFromL2(t *testing.T) {
 	require.Less(t, len(loadEng.Search(mockQuery{term: "alpha"}, 10)), 3,
 		"search must drop the unloaded hits")
 
-	// Reload from L2 — the bytes are cached, so ZERO Source.Fetch.
-	require.NoError(t, loadMgr.reload(ctx, unloaded, false))
-	require.Equal(t, fetchAfterLoad, loadCC.fetchCalls.Load(),
-		"reload must restore from L2 with ZERO Source.Fetch")
+	// Reload the evicted ids from L2. STRICT (tolerateMisses=false): an id absent
+	// from the cache must ERROR rather than yield a short set, because the cache is
+	// the only place it could have been recovered from.
+	require.NoError(t, loadMgr.reload(unloaded, false))
 	require.Len(t, loadEng.Search(mockQuery{term: "alpha"}, 10), 3,
 		"search hits must return after reload")
 }

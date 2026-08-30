@@ -81,11 +81,6 @@ func TestGraphCallerSeamsSurviveAdmissionWiring(t *testing.T) {
 		MetadataStats(context.Context, *knowledgev1.MetadataStatsRequest) (*knowledgev1.MetadataStatsResponse, error)
 	})
 	assert.True(t, ok, "the MetadataStats seam must survive")
-
-	_, ok = gc.(interface {
-		Hive(context.Context, *knowledgev1.HiveRequest) (*knowledgev1.HiveResponse, error)
-	})
-	assert.True(t, ok, "the Hive seam must survive")
 }
 
 // TestCoverageBandSeamsAreSatisfiedByTheClient pins the two OPTIONAL deps

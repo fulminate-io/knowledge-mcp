@@ -28,7 +28,7 @@ type ThoughtProperties struct {
 }
 
 // baseSelfTrust is the minimum self-trust for any thought (even with no
-// charges). Mirrors the server-side constant in domains/thought.
+// charges). Client-side only — the server binary declares no counterpart.
 const baseSelfTrust = 0.1
 
 // recencyTauDays is the time constant (in days) of the logarithmic read-time

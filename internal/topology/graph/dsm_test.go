@@ -5,6 +5,7 @@ package graph
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -102,9 +103,17 @@ func TestDSM_FilesystemViolation(t *testing.T) {
 	}
 }
 
-// TestDSM_NoGoMod verifies a RepoRoot without go.mod (non-Go repo) skips
-// cleanly with no findings — the filesystem-sourced module path is empty.
-func TestDSM_NoGoMod(t *testing.T) {
+// TestDSM_NoGoModuleSurfacesAsAFinding verifies a RepoRoot without go.mod is
+// STATED rather than returned as an empty result.
+//
+// It replaces the assertion that the analyzer skipped with nil findings. An
+// empty finding set is indistinguishable from "this repo has no layering
+// violations", so the test asserts on the finding's CONTENT — its title and the
+// resolved root it names — and never merely that the slice is non-empty, which a
+// placeholder finding would also satisfy. The root is the leg that ties this to
+// the resolved walk root: a finding naming no path would leave a reader unable to
+// tell a genuinely non-Go tree from a mis-resolved one.
+func TestDSM_NoGoModuleSurfacesAsAFinding(t *testing.T) {
 	root := t.TempDir() // no go.mod
 	f := buildDSMFixture()
 	req := foundation.Request{Caller: f, Graph: kgtypes.GraphCode, Name: "repo", RepoRoot: root, TopK: 0}
@@ -113,8 +122,39 @@ func TestDSM_NoGoMod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DSMAnalyzer.Run: %v", err)
 	}
-	if findings != nil {
-		t.Errorf("missing go.mod should skip with nil findings, got %v", findings)
+	if len(findings) != 1 {
+		t.Fatalf("a non-Go tree must produce exactly one informational finding, got %d: %v", len(findings), findings)
+	}
+	got := findings[0]
+	if got.Title != DSMNoGoModuleTitle {
+		t.Errorf("title = %q, want %q", got.Title, DSMNoGoModuleTitle)
+	}
+	if got.Severity != foundation.SeverityNotice {
+		t.Errorf("severity = %q, want %q — a stated inability is informational, not a violation", got.Severity, foundation.SeverityNotice)
+	}
+	if !strings.Contains(got.Summary, root) {
+		t.Errorf("summary %q does not name the resolved root %q, so a reader cannot tell a non-Go tree from a mis-resolved one", got.Summary, root)
+	}
+	if !strings.Contains(got.Summary, "go.mod") {
+		t.Errorf("summary %q does not name the absent module file", got.Summary)
+	}
+	// The control the emptiness assertion above cannot supply on its own: the
+	// SAME fixture WITH a go.mod produces real violation findings, so "exactly
+	// one finding" is a statement about this input rather than about an analyzer
+	// that can only ever emit one thing.
+	withModule := writeDSMRepoRoot(t, layerYAMLStoreBase)
+	req.RepoRoot = withModule
+	violations, err := DSMAnalyzer{}.Run(newTestCtx(t), req)
+	if err != nil {
+		t.Fatalf("DSMAnalyzer.Run (control): %v", err)
+	}
+	if len(violations) == 0 {
+		t.Fatal("control: the same fixture WITH a go.mod must still produce violation findings")
+	}
+	for _, v := range violations {
+		if v.Title == DSMNoGoModuleTitle {
+			t.Errorf("control: an analyzable tree must not carry the not-a-Go-module disclosure")
+		}
 	}
 }
 

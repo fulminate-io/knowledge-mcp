@@ -73,7 +73,7 @@ func TestBranchSeed_SeededBucketIsVisibleToTheSeedingEngine(t *testing.T) {
 	t.Run("same_process_search_hits", func(t *testing.T) {
 		t.Parallel()
 		cacheDir := t.TempDir()
-		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, cacheDir, 0))
+		mgr := closeOnCleanup(t, NewManager(cacheDir, 0))
 		warmSeedVisibilityBase(t, ctx, mgr, repo)
 
 		// Touching the branch constructs its engines, which is what runs the seed;
@@ -95,7 +95,7 @@ func TestBranchSeed_SeededBucketIsVisibleToTheSeedingEngine(t *testing.T) {
 	t.Run("restart_control_hits", func(t *testing.T) {
 		t.Parallel()
 		cacheDir := t.TempDir()
-		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, cacheDir, 0))
+		mgr := closeOnCleanup(t, NewManager(cacheDir, 0))
 		warmSeedVisibilityBase(t, ctx, mgr, repo)
 		_, err := mgr.Search(ctx, kgtypes.GraphCode, branch, seedVisibilityTerm, nil, 10)
 		require.NoError(t, err)
@@ -106,7 +106,7 @@ func TestBranchSeed_SeededBucketIsVisibleToTheSeedingEngine(t *testing.T) {
 		// even against the defect — the finding observed exactly it — so a run where
 		// BOTH arms are red means the fixture never indexed anything or the blobs
 		// never landed, which is a broken probe rather than the defect.
-		restarted := closeOnCleanup(t, NewManager(loginStateStub{}, cacheDir, 0))
+		restarted := closeOnCleanup(t, NewManager(cacheDir, 0))
 		hits, err := restarted.Search(ctx, kgtypes.GraphCode, branch, seedVisibilityTerm, nil, 10)
 		require.NoError(t, err)
 		require.Contains(t, seedVisibilityHitIDs(hits), searchengine.ExternalID(seedVisibilityDoc),
@@ -117,7 +117,7 @@ func TestBranchSeed_SeededBucketIsVisibleToTheSeedingEngine(t *testing.T) {
 	t.Run("engine_cache_keys_include_seeded", func(t *testing.T) {
 		t.Parallel()
 		cacheDir := t.TempDir()
-		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, cacheDir, 0))
+		mgr := closeOnCleanup(t, NewManager(cacheDir, 0))
 		warmSeedVisibilityBase(t, ctx, mgr, repo)
 		_, err := mgr.Search(ctx, kgtypes.GraphCode, branch, seedVisibilityTerm, nil, 10)
 		require.NoError(t, err)

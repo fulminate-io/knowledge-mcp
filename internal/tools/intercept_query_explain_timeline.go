@@ -201,17 +201,48 @@ func renderExplainWithNames(ctx context.Context, exec engine.ExecuteFn, target *
 		ids = append(ids, id)
 	}
 	nameByID := map[string]*knowledgev1.Node{}
+	// hydrateClamped is captured OUT of the branch: the id set is both endpoints
+	// of every incident edge, drained up to the 50,000-row edge cap, so it can
+	// exceed the 10,000-id bound the server flags on the request alone. This arm
+	// bypasses engine.Render, so an undisclosed clamp renders unresolved endpoint
+	// names as though the peers simply had none.
+	hydrateClamped := false
 	if len(ids) > 0 {
 		resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
 			Plan:   &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{Ids: ids}},
 			Target: target,
 		})
-		if err == nil {
-			if nodes, derr := engine.DecodeNodes(resp); derr == nil {
-				for _, n := range nodes {
-					nameByID[n.Id] = n
-				}
-			}
+		// A FAILED HYDRATE IS AN ERROR, not a nameless render. Both failures used to
+		// be swallowed — `if err == nil { if ..., derr := ...; derr == nil {...} }` —
+		// so a broken read rendered EVERY endpoint under the truncated-id fallback
+		// name RenderExplainEdges falls back to, indistinguishable from peers that
+		// genuinely have no SymbolName. That is the silent-narrowing class the sibling
+		// fetchTypeSamples fix (intercept_query_cloud_cicd.go) split apart: a fault
+		// the reader must know about is never reported as an ordinary answer.
+		//
+		// THE GENUINELY-ABSENT CASE IS UNTOUCHED and still renders its fallback name
+		// (explainEndpointName's truncated id): an id the hydrate simply did not
+		// return is an ordinary answer, and only the READ's own failure is raised
+		// here. The two causes are named separately because they fail for different
+		// reasons and a reader retries them differently.
+		//
+		// THE DECODE LEG IS DECLARED BUT NOT REACHABLE TODAY, stated so no reader
+		// mistakes it for a tested path: engine.DecodeNodes delegates to decodeNodes,
+		// which is `return resp.GetNodes(), nil` over the typed carrier
+		// (engine_decode.go) and cannot fail. It is handled rather than discarded
+		// because the signature declares an error and a discarded error return is the
+		// exact shape this fix removes — the day that carrier decodes again, the
+		// failure is already loud. The exec leg is the one with a fixture.
+		if err != nil {
+			return errorResult(fmt.Sprintf("explain endpoint hydrate failed: %v", err))
+		}
+		hydrateClamped = resp.GetTruncated()
+		nodes, derr := engine.DecodeNodes(resp)
+		if derr != nil {
+			return errorResult(fmt.Sprintf("explain endpoint decode failed: %v", derr))
+		}
+		for _, n := range nodes {
+			nameByID[n.Id] = n
 		}
 	}
 	// Collapse multi-candidate groups: only the UNGROUPED remainder gets a
@@ -222,7 +253,9 @@ func renderExplainWithNames(ctx context.Context, exec engine.ExecuteFn, target *
 	// the source, and the honest render is the partial block plus its declared
 	// count.
 	groups, ungrouped := engine.GroupCandidateEdges(edges)
-	return textResult(engine.RenderExplainEdges(label, ungrouped, nameByID, groups))
+	return engine.WithTruncationNoticeFor(
+		textResult(engine.RenderExplainEdges(label, ungrouped, nameByID, groups)),
+		hydrateClamped, len(ids))
 }
 
 // composeTimeline ports handleGenericTimeline: require time_field (non-logs),

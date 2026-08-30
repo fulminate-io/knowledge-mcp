@@ -12,7 +12,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
@@ -113,8 +112,7 @@ var twoLayerBlobs = sync.OnceValue(func() []searchengine.SegmentBlob {
 		}
 		defer os.RemoveAll(dir)
 
-		src := newSharedServerFake().viewFor(&knowledgev1.GraphSelector{}, "")
-		mgr := NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(src))
+		mgr := NewManager(dir, 0)
 		// Closed here rather than registered with a test, because this builder runs
 		// under a package-level sync.OnceValue and has no test to attach to. Close
 		// retires the engines' background mergers ONLY — the returned distManager's
@@ -155,8 +153,7 @@ func twoLayerFixture(t *testing.T) (*Manager, *distManager[[]byte, struct{}], []
 
 	require.Equal(t, 8, searchengine.BucketCountFor(dupLayerCorpus), "layout count")
 
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	dm := mgr.managerFor(gt, dupLayerName)
 	require.NoError(t, dm.engine.Import(twoLayerBlobs(), nil))
 

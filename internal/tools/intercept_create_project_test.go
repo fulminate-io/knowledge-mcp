@@ -13,11 +13,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/backends"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
@@ -205,19 +205,16 @@ func (f fakeTensionsProvider) GetTensions() ([]clientthought.TensionReport, bool
 	return f.tensions, f.computed
 }
 
-func (d interceptTestDeps) LocalLiveness() LocalLiveness         { return nil }
-func (d interceptTestDeps) Sink() collector.Sink                 { return nil }
-func (d interceptTestDeps) RootDir() string                      { return "" }
-func (d interceptTestDeps) UsageAnalyzer() UsageAnalyzerAPI      { return nil }
-func (d interceptTestDeps) WorkerRuntime() WorkerRuntimeAPI      { return nil }
-func (d interceptTestDeps) WorkerReady() bool                    { return true }
-func (d interceptTestDeps) PropReady() bool                      { return !d.propNotReady }
-func (d interceptTestDeps) PipelineReady() bool                  { return true }
-func (d interceptTestDeps) ClaimRegistry() *hivemonitor.Registry { return nil }
-func (d interceptTestDeps) BanSet() *hivemonitor.BanSet          { return nil }
-func (d interceptTestDeps) WorkerCRUD() WorkerCRUDAPI            { return nil }
-func (d interceptTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI      { return d.crud }
-func (d interceptTestDeps) Embedder() embed.BinaryEmbedder       { return nil }
+func (d interceptTestDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d interceptTestDeps) Sink() collector.Sink            { return nil }
+func (d interceptTestDeps) RootDir() string                 { return "" }
+func (d interceptTestDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+
+func (d interceptTestDeps) PropReady() bool     { return !d.propNotReady }
+func (d interceptTestDeps) PipelineReady() bool { return true }
+
+func (d interceptTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI { return d.crud }
+func (d interceptTestDeps) Embedder() embed.BinaryEmbedder  { return nil }
 func (d interceptTestDeps) BackendResolver() BackendResolver {
 	return fakeResolver{def: d.backend, byName: d.byName}
 }

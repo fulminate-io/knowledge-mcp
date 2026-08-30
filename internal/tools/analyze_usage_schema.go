@@ -2,10 +2,13 @@
 
 package tools
 
-import "github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+import (
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/transcriptanalytics"
+)
 
 // AnalyzeUsageToolDef returns the analyze_usage tool definition. Modeled on
-// WorkerToolDef (op-dispatched: one tool with an `operation` enum rather than
+// GraphTypeToolDef (op-dispatched: one tool with an `operation` enum rather than
 // several top-level tools), so a new analysis operation is a schema edit + a
 // dispatch case.
 //
@@ -20,8 +23,12 @@ import "github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 //     output when no LLM is configured.
 //
 // The analysis runs entirely on the local machine over a parquet cache the transcript
-// upload writes; no transcript data leaves the device. This definition is client-side;
-// the intercept (intercept_analyze_usage.go) handles the call in-process.
+// upload writes; no transcript data leaves the device. That cache RETAINS a session after
+// the CLI has removed the session's own transcript file, so it is a strictly larger corpus
+// than the live transcript directory — the Description says so, because a reader who
+// compares the two without knowing it reads the difference as inflated counts. This
+// definition is client-side; the intercept (intercept_analyze_usage.go) handles the call
+// in-process.
 func AnalyzeUsageToolDef() kgtools.MCPTool {
 	return kgtools.MCPTool{
 		Name: "analyze_usage",
@@ -31,7 +38,16 @@ func AnalyzeUsageToolDef() kgtools.MCPTool {
 			"per-session and per-subagent token hotspots, prompt-cache efficiency, subagent wall-time, " +
 			"agent-chain over-orchestration, and waste (API errors, interrupts, max-token truncations). " +
 			"recommend: run the detectors AND synthesize ranked, actionable recommendations using your locally-configured LLM " +
-			"(degrades to detector-only output when no LLM is configured). " +
+			"(degrades to detector-only output when no LLM is configured, always naming why). " +
+			"SCOPE: every operation runs over a selectable population, and every detector is the same implementation reading a " +
+			"narrower set of records, so numbers stay comparable across scopes. all analyzes the whole retained cache. " +
+			"session-tree analyzes one main session plus every subagent lane it spawned. single analyzes one lane on its own and " +
+			"adds a lane_detail breakdown of where that lane's time went. time-range bounds the records by since/until. " +
+			"CORPUS: the analysis runs over the local parquet cache the transcript upload writes, which RETAINS a session " +
+			"after the CLI has removed that session's own transcript file — so its lane count and per-tool call counts " +
+			"legitimately exceed what is currently on disk, and comparing the two directly reads as inflation when it is not. " +
+			"Every report states the exact basis it was computed over in its corpus block (lane, record, session and agent " +
+			"counts, the first and last record timestamp, and the cache root). " +
 			"COLD-CACHE NOTE: the local cache is populated on transcript upload, and unchanged sessions are skipped — so on an " +
 			"established install run the transcript upload once with --seed to backfill the cache before analyzing.",
 		InputSchema: kgtools.InputSchema{
@@ -43,14 +59,33 @@ func AnalyzeUsageToolDef() kgtools.MCPTool {
 					Enum:        []string{"run-detectors", "recommend"},
 				},
 				"format": {Type: "string", Description: "Output format: 'json' (default)."},
+				"scope": {
+					Type: "string",
+					Description: "Population to analyze. all: the whole retained cache (default). " +
+						"session-tree: one main session plus every subagent lane it spawned — requires session. " +
+						"single: one lane on its own, which additionally returns a lane_detail breakdown — requires exactly one of session or agent. " +
+						"time-range: records bounded by since/until — requires at least one of them.",
+					Enum: transcriptanalytics.ScopeValues(),
+				},
+				"session": {Type: "string", Description: "Session id selecting the population, for scope session-tree or single."},
+				"agent":   {Type: "string", Description: "Agent id selecting one subagent lane, for scope single."},
+				"since":   {Type: "string", Description: "RFC3339 timestamp; records at or after it are included (inclusive). For scope time-range."},
+				"until":   {Type: "string", Description: "RFC3339 timestamp; records before it are included (exclusive). For scope time-range."},
 			},
 			Required: []string{"operation"},
 		},
 	}
 }
 
-// analyzeUsageArgs holds parsed arguments for the analyze_usage tool.
+// analyzeUsageArgs holds parsed arguments for the analyze_usage tool. Every field here has a
+// declared property above and vice versa — a parity the residue table pins, so a selector
+// declared but never decoded (or decoded but never declared) fails the suite.
 type analyzeUsageArgs struct {
 	Operation string `json:"operation"`
 	Format    string `json:"format"`
+	Scope     string `json:"scope"`
+	Session   string `json:"session"`
+	Agent     string `json:"agent"`
+	Since     string `json:"since"`
+	Until     string `json:"until"`
 }

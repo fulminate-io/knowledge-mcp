@@ -43,6 +43,7 @@ var helpTopics = map[string]string{
 	"assemble":         helpAssemble,
 	"sync":             helpSync,
 	"ast":              helpAst,
+	"manage_checks":    helpManageChecks,
 }
 
 // handleHelpClient returns hardcoded documentation for the requested topic.
@@ -52,7 +53,7 @@ func handleHelpClient(args json.RawMessage) kgtools.ToolResult {
 	}
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &a); err != nil {
-			return errorResult("invalid arguments: " + err.Error())
+			return errorResult("invalid arguments: " + decodeArgsError(args, err))
 		}
 	}
 	if a.Topic == "" {

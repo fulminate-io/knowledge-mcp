@@ -9,6 +9,7 @@ import (
 	"sort"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
 // densify.go is the post-link within-topic kNN densification primitive.
@@ -44,10 +45,27 @@ type densifyCandidate struct {
 // WRITTEN (the per-run budget), NOT comparisons computed — these are different
 // quantities and only the former is capped.
 //
-// Pairs with sim >= threshold are kept; m then takes its TOP-K by descending sim
-// with a deterministic tie-break (higher sim first, then lexicographically smaller
-// partner nodeID — NEVER Go map-iteration order, mirroring RunMergeCascade's
-// determinism discipline). Each selected pair is canonicalized to an unordered
+// Pairs with sim >= threshold are offered to a BOUNDED top-k selector
+// (searchengine.HitHeap, the same k-sized window the search engine merges segment
+// hits through) rather than accumulated into a per-member list and sorted: m
+// compares against every co-member either way, but only k neighbors are ever
+// resident, so the selection costs O(members log k) per member instead of
+// O(members log members).
+//
+// THE TIE-BREAK IS UNCHANGED, and the reason is a property of THIS function
+// rather than of the selector. m takes its TOP-K by descending sim, ties broken
+// by lexicographically smaller partner nodeID — NEVER Go map-iteration order,
+// mirroring RunMergeCascade's determinism discipline. HitHeap.Offer breaks ties
+// by ARRIVAL ORDER (first offered wins), and candidates are offered by ranging
+// the SORTED members slice above, so first-offered IS lexicographically-smallest
+// and the two rules select the same neighbors. THE MEMBER SORT AT THE TOP OF
+// THIS FUNCTION IS THEREFORE LOAD-BEARING FOR THE TIE-BREAK, not merely for
+// output determinism.
+//
+// The selector's output is NOT ordered, and does not need to be: the loop below
+// records each neighbor into an unordered pair SET, and the function's own
+// return is sorted by canonical (A,B) at the end. Each selected pair is
+// canonicalized to an unordered
 // (min,max) key and unioned across members into a per-topic candidate SET, so the
 // kNN-from-each-endpoint overlap does not double-count (m picks n AND n picks m →
 // ONE undirected edge). Members lacking a vector are skipped (defensive, mirroring
@@ -57,12 +75,6 @@ func selectTopicKNN(memberIDs []string, vectorIndex map[string][]byte, k int, th
 	members := append([]string(nil), memberIDs...)
 	sort.Strings(members)
 
-	// neighbor is one scored co-member candidate for a given source member.
-	type neighbor struct {
-		id    string
-		score float64
-	}
-
 	seen := make(map[string]densifyCandidate) // canonical pair key → candidate (dedup)
 
 	for _, m := range members {
@@ -70,7 +82,10 @@ func selectTopicKNN(memberIDs []string, vectorIndex map[string][]byte, k int, th
 		if !ok {
 			continue // vectorless member — skip (cannot score)
 		}
-		var cands []neighbor
+		// Top-k by descending sim, tie-break by lexicographically smaller partner
+		// ID — obtained here by offering in the sorted members order (see the
+		// tie-break note on this function).
+		top := make(searchengine.HitHeap, 0, k)
 		for _, other := range members {
 			if other == m {
 				continue
@@ -81,29 +96,19 @@ func selectTopicKNN(memberIDs []string, vectorIndex map[string][]byte, k int, th
 			}
 			s := BitSimilarity(vm, vo)
 			if s >= threshold {
-				cands = append(cands, neighbor{id: other, score: s})
+				top.Offer(searchengine.Hit{ID: other, Score: s}, k)
 			}
 		}
-		// Top-k by descending sim, tie-break by lexicographically smaller partner ID.
-		sort.Slice(cands, func(i, j int) bool {
-			if cands[i].score != cands[j].score {
-				return cands[i].score > cands[j].score
-			}
-			return cands[i].id < cands[j].id
-		})
-		if len(cands) > k {
-			cands = cands[:k]
-		}
-		for _, n := range cands {
-			key := unorderedPairKey(m, n.id)
+		for _, n := range top {
+			key := unorderedPairKey(m, n.ID)
 			if _, dup := seen[key]; dup {
 				continue // the reciprocal pick already recorded this undirected pair
 			}
-			a, b := m, n.id
+			a, b := m, n.ID
 			if a > b {
 				a, b = b, a
 			}
-			seen[key] = densifyCandidate{A: a, B: b, Score: n.score}
+			seen[key] = densifyCandidate{A: a, B: b, Score: n.Score}
 		}
 	}
 

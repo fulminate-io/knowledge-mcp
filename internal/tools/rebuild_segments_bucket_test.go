@@ -4,7 +4,6 @@ package tools
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -92,12 +91,18 @@ func (s *groupRecordingShipper) ReEmitRebuiltDelta(
 	return RebuildDeltaResult{Swapped: true, Applicable: true, DerivedBucketCount: count}, nil
 }
 
-// PublishedManifestCount: this double records GROUP MEMBERSHIP, never a published
-// manifest, so it has no cardinality to report and says so. The driver skips its
-// read-back check on the error, which is the correct outcome for a fixture that
-// models no server.
-func (s *groupRecordingShipper) PublishedManifestCount(context.Context, kgtypes.GraphType, string, string) (int, error) {
-	return 0, errors.New("groupRecordingShipper: no published manifest modelled")
+// ResidentSegmentCount: this double records GROUP MEMBERSHIP rather than running an
+// engine, so the honest stand-in for "how many sealed segments are resident" is how
+// many distinct groups it has recorded.
+//
+// IT CAN NO LONGER DECLINE. Its predecessor returned an error meaning "no manifest
+// modelled", and the driver skipped the cardinality check on it. The real reader
+// cannot fail, so there is no error for a fake to return and no skip for the driver
+// to take — which means this fixture now participates in the cardinality gate instead
+// of opting out of it. Reporting the recorded group count is what keeps that
+// participation truthful rather than arbitrary.
+func (s *groupRecordingShipper) ResidentSegmentCount(kgtypes.GraphType, string, string) int {
+	return len(s.identities())
 }
 
 // identities returns one stable identity per recorded group: the sorted member

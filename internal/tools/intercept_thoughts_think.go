@@ -318,7 +318,7 @@ func handleThinkClient(ctx context.Context, deps ClientDeps, params kgtools.Call
 
 	var a thinkArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
-		return errorResult("invalid arguments: " + err.Error())
+		return errorResult("invalid arguments: " + decodeArgsError(params.Arguments, err))
 	}
 	if strings.TrimSpace(a.Content) == "" {
 		return errorResult("thoughts(think): content is required and must be non-empty (the hypothesis / observation / plan being recorded)")
@@ -353,18 +353,20 @@ func handleThinkClient(ctx context.Context, deps ClientDeps, params kgtools.Call
 
 	var sb strings.Builder
 	sb.WriteString(renderThinkTail(receipt))
-	// Non-fatal warnings, in one section below the receipt: the summary clamp,
+	// Non-fatal warnings, in one section beside the receipt: the summary clamp,
 	// then the parameter-shaped-tail advisory. The advisory NEVER refuses — see
-	// intercept_thoughts_think_receipt.go — so it is appended after a successful
-	// write, alongside the receipt it defers to for what actually landed.
+	// intercept_thoughts_think_receipt.go — so it rides a successful write,
+	// alongside the receipt it defers to for what actually landed. The shape that
+	// DOES refuse never reaches here: rejectSwallowedParamValues runs at
+	// interceptThoughtsOp, above this handler and before any write.
 	var warnings []string
 	if clampWarn != "" {
 		warnings = append(warnings, clampWarn)
 	}
-	if tailWarn := paramShapedTailWarning(a.Content); tailWarn != "" {
+	if tailWarn := paramShapedTailWarning("content", a.Content); tailWarn != "" {
 		warnings = append(warnings, tailWarn)
 	}
-	writeClientWarningsSection(&sb, warnings, "\n\n")
+	writeClientWarningsSection(&sb, warnings)
 	return textResult(sb.String())
 }
 

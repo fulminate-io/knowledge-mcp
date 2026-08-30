@@ -147,7 +147,7 @@ func computeResourceSpec(selfLink string, inst *computepb.Instance, content []by
 //
 // Conventions:
 //   - label/<key>=<value>   — mirrors cloud/k8s/helpers.go:labelsToMeta so
-//     dream analyzers and extractLabels work uniformly across clouds.
+//     extractLabels works uniformly across clouds.
 //   - tag/<name>=""         — presence of the key is the signal; empty value
 //     keeps symmetry with the label/ prefix for search.
 //   - primary_ip / external_ip — first NIC only; subnet/network remain as

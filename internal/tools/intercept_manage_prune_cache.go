@@ -8,6 +8,11 @@
 // and removes the orphans — the accumulated superseded blobs the
 // invalidation-driven reclaim never unlinked.
 //
+// ITS TARGET SET IS THE WORKING SET, not the catalog. The force-full-load is
+// required for safety and is exempt from any attempt to make it cheaper, so the
+// gate is applied to WHICH graphs reach it rather than to what it does — see the
+// argument at the enumeration in handleClientPruneCache.
+//
 // It PREVIEWS by default (execute=false renders a would-remove report and deletes
 // NOTHING); execute=true performs the removal. The data-loss-critical logic lives
 // in segmentdist.Manager.PruneCache behind the SegmentPruner seam — this handler
@@ -49,15 +54,43 @@ func handleClientPruneCache(ctx context.Context, deps ClientDeps, a manageArgs) 
 	// reconcile loop, this is an EXPLICIT operator command: a code-repo enumeration
 	// error ABORTS the whole op (all-or-nothing on the target set) rather than
 	// silently scoping down to knowledge/default.
-	graphTypes := []kgtypes.GraphType{kgtypes.GraphKnowledge}
-	names := []string{"default"}
+	//
+	// THE TARGET SET IS THEN NARROWED TO THE WORKING SET, and that narrowing is the
+	// gate this op owes the operative rule. prune-cache is a manage operation, so it
+	// admits nothing, and it is by far the heaviest per-graph reader in the client:
+	// PruneCache force-full-loads BOTH pools of every target (forceCompleteLiveSet,
+	// prune_cache.go) — for code/platform that is 512 HNSW segments — on the PREVIEW
+	// run as much as the executing one, because execute is not consulted until after
+	// the live set exists. Running that across every enumerated repo materializes
+	// exactly the graphs nothing on this machine maintains.
+	//
+	// THE FORCE-FULL-LOAD ITSELF IS EXEMPT AND STAYS, and the safety argument is
+	// worth restating where the gate is applied rather than leaving it a file away:
+	// PruneCache decides what to UNLINK by diffing the on-disk .seg ids against the
+	// live set, so a live set that is merely the resident-only view condemns every
+	// segment that is not currently loaded and an executing prune DELETES THE WHOLE
+	// CORPUS. The load is what makes the diff safe, so it is not something to skip or
+	// weaken — it is something to only ever perform on a graph this client is
+	// entitled to touch. Narrowing the SET is therefore the whole of the fix; nothing
+	// about the load changes.
+	graphTypes := []kgtypes.GraphType{}
+	names := []string{}
+	if inWorkingSetFor(deps, kgtypes.GraphKnowledge, "default") {
+		graphTypes = append(graphTypes, kgtypes.GraphKnowledge)
+		names = append(names, "default")
+	}
 	repos, err := ListGraphNamesOfType(ctx, deps, string(kgtypes.GraphCode))
 	if err != nil {
 		return errorResult(fmt.Sprintf(
 			"manage(prune-cache): could not enumerate code repos (%v) — aborted before pruning; "+
 				"knowledge/default was not pruned either. Retry once the repo list is reachable.", err))
 	}
+	var declined []string
 	for _, repo := range repos {
+		if !inWorkingSetFor(deps, kgtypes.GraphCode, repo) {
+			declined = append(declined, "code/"+repo)
+			continue
+		}
 		graphTypes = append(graphTypes, kgtypes.GraphCode)
 		names = append(names, repo)
 	}
@@ -66,6 +99,7 @@ func handleClientPruneCache(ctx context.Context, deps ClientDeps, a manageArgs) 
 	if err != nil {
 		return errorResult("manage(prune-cache): " + err.Error())
 	}
+	report.Declined = declined
 
 	if a.Format == "json" {
 		return jsonResult(report)
@@ -126,6 +160,17 @@ func renderPruneCacheReport(report PruneCacheReport, execute bool) string {
 
 	if aborted > 0 {
 		fmt.Fprintf(&b, "%d pool(s) were SKIPPED by the List(0) subset-abort safety (computed live set incomplete) — nothing was removed for those.\n", aborted)
+	}
+
+	// THE DECLINED SET IS NAMED RATHER THAN LEFT TO A ZERO. A graph withheld from
+	// the target set contributes no pool at all, so without this line its absence
+	// from the breakdown reads exactly like a pool that was scanned and found clean.
+	// "Nobody looked" and "nothing to remove" are different facts.
+	if len(report.Declined) > 0 {
+		fmt.Fprintf(&b, "%d graph(s) were NOT SCANNED because no direct interaction has admitted them on this "+
+			"machine (%s). prune-cache is a manage operation and admits nothing, and scanning a graph "+
+			"force-loads its whole segment pool — search, collect into or write to a graph and it becomes "+
+			"a prune-cache target.\n", len(report.Declined), strings.Join(report.Declined, ", "))
 	}
 	return b.String()
 }

@@ -8,7 +8,7 @@ package tools
 // sibling partition test (query_param_accounting_test.go) proves the table is
 // structurally complete; the bijection test proves every arm is wired; this
 // proves the classification is TRUE of the code. The grid is
-// queryArmCount x the live schema — 47 x 61 = 2867 cells.
+// queryArmCount x the live schema — 48 x 61 = 2928 cells.
 //
 // Not parallel by construction: fakeGraphCaller accumulates call state on
 // unsynchronised slices, so t.Parallel() would race it — the same constraint
@@ -83,8 +83,10 @@ package tools
 //	    clusters) answer from the propagation loop's cache. Against a nil provider
 //	    they return a NON-ERROR cold message and issue ZERO reads, so "behaves" for
 //	    them is non-error-WITH-zero-reads (qBehavesWithoutRead).
-//	(b) RETIRED SEARCH ARMS (armLinkageSearchRetired, armWebPDFSearchRetired) return
-//	    a fixed retirement message and read nothing — same class as (a).
+//	(b) THE RETIRED LINKAGE SEARCH (armLinkageSearchRetired) returns a fixed
+//	    retirement message and reads nothing — same class as (a). It is the ONLY
+//	    member of this class: the web/pdf ranked search now drains and ranks its
+//	    graph client-side, so it reads and belongs to the default class.
 //	(c) SEARCH ARMS (knowledge, practice, practice fan-out, cloud/cicd, registered-
 //	    custom, code) return the not-ready / degraded error unless deps supply
 //	    PipelineReady AND a SegmentSearcher. Both are supplied here — see the
@@ -202,7 +204,7 @@ func TestQueryArmParity_DeclaredClassMatchesObservedBehavior(t *testing.T) {
 	assert.Equal(t, len(queryArmRegistry)*len(schema), evaluated,
 		"every (arm, param) cell must be driven — a skipped cell is an unasserted claim")
 
-	// KNOWN POSITIVE for the whole run. "2867 cells green" is also satisfied by a
+	// KNOWN POSITIVE for the whole run. "2928 cells green" is also satisfied by a
 	// grid where every cell fell into a weak disposition — every row selection-only
 	// would prove nothing about routing at all. Asserting each disposition is
 	// POPULATED is the control: it pins that the two REAL-evidence dispositions

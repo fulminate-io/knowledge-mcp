@@ -2,76 +2,43 @@
 
 package projects
 
-// DeriveCriterionSummary produces the auto-derived summary for a criterion
-// node from its (already-defaulted) type, description, and command. It is the
-// single source for the criterion-summary format: callers that previously
-// concatenated these strings inline (BuildCriterionNode, upsertCriterionNode)
-// route through this function so the persisted summary cannot drift between
-// the node builder and the client validator. The output is byte-identical to
-// the historical inline expressions — do NOT change the format (the persisted
-// summaries of existing nodes depend on it).
+import (
+	"strings"
+)
+
+// DeriveCriterionName produces the auto-derived NAME for a criterion node from
+// its description. It is the single source for the Name==Description convention
+// the three name-derivation sites share (BuildCriterionNode, upsertCriterionNode,
+// and the per-type update router's criterion re-stamp), so the persisted name
+// cannot drift between them.
 //
-// cType is the already-defaulted criterion type (callers pass "manual" when
-// the supplied type is empty); this function does not default it.
-func DeriveCriterionSummary(cType, description, command string) string {
-	summary := cType + " criterion: " + description
-	if command != "" {
-		summary = cType + " criterion: " + description + " (" + command + ")"
+// IT CLAMPS TO THE FIRST LINE. A criterion's description is routinely a
+// multi-line block — the assertion, then the command, then the reasoning — and
+// carrying the whole block into the name made the name unusable as a label
+// wherever a name is rendered as one. Authors were already working around it by
+// leading the description with a one-line claim so the first line read as the
+// pass condition; this makes that the behavior instead of a convention nobody
+// stated. A single-line description is returned byte-identical, which is why
+// every existing single-line derivation is unchanged.
+//
+// THE ALTERNATIVE, AND WHY IT IS NOT THIS. The other direction is to accept a
+// caller-supplied `name` on a criterion update. It was rejected on blast radius,
+// not taste: update and create must agree about whether a criterion may carry an
+// independent name (intercept_mutate_update.go states that rule), so opening
+// update forces the criterion CREATE arm open too — armCriterionCreate's rejected
+// set, justifyCriterionDerived, and criterionCreateArgs, which deliberately
+// carries no Name field. The clamp changes no contract and removes no rejection.
+//
+// Trailing whitespace on the first line is trimmed; leading blank lines are
+// skipped so a description that opens with a newline still yields a name.
+func DeriveCriterionName(description string) string {
+	for line := range strings.SplitSeq(description, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			return trimmed
+		}
 	}
-	return summary
-}
-
-// DeriveFindingSummary produces the auto-derived summary for a finding node
-// from its description and optional evidence, used when a caller supplies no
-// explicit summary. It is the single source for the finding-summary fallback
-// (buildFindingNode on create, the per-type update re-derive). The output is
-// byte-identical to the historical inline expression at buildFindingNode — do
-// NOT change the format (existing nodes' persisted summaries depend on it).
-func DeriveFindingSummary(description, evidence string) string {
-	summary := description
-	if evidence != "" {
-		summary += ". Evidence: " + evidence
-	}
-	return summary
-}
-
-// DeriveRuleSummary produces the auto-derived summary for a rule node from its
-// name and optional scope, used when a caller supplies no explicit summary. It
-// is the single source for the rule-summary fallback (handleClientMutateCreate-
-// Rule on create, the per-type update re-derive). The output is byte-identical
-// to the historical inline expression — do NOT change the format.
-func DeriveRuleSummary(name, scope string) string {
-	summary := "Rule: " + name
-	if scope != "" {
-		summary += " (scope: " + scope + ")"
-	}
-	return summary
-}
-
-// DeriveQuestionSummary produces the auto-derived summary for an open-question
-// node from its question text and optional context. It is the single source
-// for the question-summary fallback used when a caller supplies no explicit
-// summary (BuildPlanGraph open_questions, buildResearchGraph). The output is
-// byte-identical to the historical inline expressions — do NOT change the
-// format.
-func DeriveQuestionSummary(question, context string) string {
-	summary := "Question: " + question
-	if context != "" {
-		summary += ". Context: " + context
-	}
-	return summary
-}
-
-// DerivePatternSummary produces the auto-derived summary for an eager-created
-// "emerging" pattern node from its name and optional sketch. proposed_patterns
-// supply only name + sketch (no summary), but pattern nodes are summary-required
-// (embed-only) — an empty summary fails create-time validation and rolls back
-// the whole create_batch. Derive a non-empty one here. Mirrors the other
-// Derive*Summary helpers; do NOT change the format.
-func DerivePatternSummary(name, sketch string) string {
-	summary := "Proposed pattern: " + name
-	if sketch != "" {
-		summary += ". Sketch: " + sketch
-	}
-	return summary
+	// Whitespace-only (or empty) description: return it verbatim rather than
+	// inventing a name. The callers' own validators own the empty-description
+	// rejection; silently substituting something here would hide it.
+	return description
 }

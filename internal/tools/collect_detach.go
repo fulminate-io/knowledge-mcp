@@ -4,6 +4,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"runtime/debug"
@@ -21,10 +22,18 @@ import (
 
 // builtinCollectWork runs the builtin collector.Collect for a target plus its
 // post-collect tail (repo-manifest record, cross-graph linker, postpopulate hook,
-// pipeline wake). It is the unit collectWaitOrDetach runs either synchronously
-// (rt==nil fallback) or on the standing runtime's detached goroutine — identical
-// work on both paths — and returns collector.Collect's error verbatim.
-func builtinCollectWork(ctx context.Context, deps ClientDeps, a collectArgs, opts collector.CollectOptions) error {
+// pipeline wake, composition verdict). It is the unit collectWaitOrDetach runs
+// either synchronously (rt==nil fallback) or on the standing runtime's detached
+// goroutine — identical work on both paths.
+//
+// It returns collector.Collect's error verbatim when the collect itself fails.
+// Past that point the returned error joins the postpopulate hook's error with the
+// composition verdict, so a harvest that captured nothing usable reports failure.
+//
+// It returns the RENDERED node-type composition of the run alongside that error,
+// so the caller can state what the harvest produced. Empty on the
+// collector.Collect error path, where there is no composition to report.
+func builtinCollectWork(ctx context.Context, deps ClientDeps, a collectArgs, opts collector.CollectOptions) (string, error) {
 	// A collect spikes the heap hard — the chunker holds every file's parse
 	// results live until upload. This is a
 	// long-lived daemon process, so once the collect is done that working set is pure
@@ -59,12 +68,13 @@ func builtinCollectWork(ctx context.Context, deps ClientDeps, a collectArgs, opt
 	if filepath.IsAbs(a.ID) {
 		recordCollectedRepo(a.Type, a.ID)
 	}
-	if err := collector.Collect(ctx, a.Type, a.ID, opts); err != nil {
+	comp, err := collector.Collect(ctx, a.Type, a.ID, opts)
+	if err != nil {
 		// collector.Collect already wraps with "collect <type>:" — adding our own
 		// "collect <type> <id>:" prefix produces a duplicate "collect <type>:"
 		// stutter. Return the inner error verbatim; type information survives via
 		// the pipeline's wrap.
-		return err
+		return "", err
 	}
 	// Post-collect linker tail-call. Replaces the former server-side
 	// runPostCollectLinker that ran on the collect-write path. Gated on the same
@@ -93,11 +103,24 @@ func builtinCollectWork(ctx context.Context, deps ClientDeps, a collectArgs, opt
 	// its idle interval. Best-effort, optional capability (no pipeline wired →
 	// skipped). Deliberately fired BEFORE the error return: a failed enrichment
 	// hook must not also suppress the pipeline nudge, since the nodes the collect
-	// DID upload still need summarizing.
+	// DID upload still need summarizing. The SAME reasoning governs the
+	// composition verdict below: the nodes were written, so the linker, the
+	// postpopulate hook and this wake all run BEFORE any verdict is returned.
 	if w, ok := deps.(pipelineWaker); ok {
 		w.WakePipeline()
 	}
-	return ppErr
+	// The composition verdict — the SINGLE top-level dispatch of the per-collector
+	// invariant, so a harvest that captured nothing usable reports failure instead
+	// of plain success. It is here rather than inside collector.Collect because
+	// the four cloud collectors call Collect recursively per cascade target, and an
+	// assertion inside Collect would fire per cascade sub-collect and let a
+	// sub-collect's composition fail the parent.
+	//
+	// DESTROY-BEFORE-PERSIST: this runs strictly AFTER sink.WriteResult. Nothing is
+	// deleted, skipped or rolled back — the graph the harvest produced stays on the
+	// server exactly as today, which is what made the originating incident
+	// diagnosable at all. Only the REPORT changes.
+	return comp.Render(), errors.Join(ppErr, collector.CheckComposition(a.Type, comp))
 }
 
 // collectRuntimeProvider is the OPTIONAL deps capability the collect interceptor
@@ -114,20 +137,24 @@ type collectRuntimeProvider interface {
 //     exact behavior (the FreeOSMemory scavenge now fires from work's defer).
 //   - already running (single-flight coalesce): return the "already running" text
 //     and spawn nothing.
-//   - completes within the cap: return successText (byte-identical to today) or the
-//     collect error.
+//   - completes within the cap: return successText suffixed with the run's
+//     rendered composition, or the collect error. A run that reports no
+//     composition returns successText byte-identically to today.
 //   - exceeds the cap: return the STILL-RUNNING message; the run finishes detached
-//     under the runtime.
+//     under the runtime. The composition is readable for that run through
+//     manage(status), which is the surface the detach decision designated for
+//     detached outcomes.
 //
 // graph is the BARE code-graph name the run targets (empty for non-code
 // collectors). It is recorded on the in-flight entry so the LLM pipeline can hold
 // its gap scan off that graph until the collect finishes.
-func collectWaitOrDetach(rt *CollectRuntime, key, label, graph, successText string, work func() error) kgtools.ToolResult {
+func collectWaitOrDetach(rt *CollectRuntime, key, label, graph, successText string, work func() (string, error)) kgtools.ToolResult {
 	if rt == nil {
-		if err := work(); err != nil {
+		composition, err := work()
+		if err != nil {
 			return errorResult(err.Error())
 		}
-		return textResult(successText)
+		return textResult(withComposition(successText, composition))
 	}
 	h, started, elapsed := rt.Start(key, label, graph, work)
 	if !started {
@@ -144,10 +171,21 @@ func collectWaitOrDetach(rt *CollectRuntime, key, label, graph, successText stri
 		if err := h.Err(); err != nil {
 			return errorResult(err.Error())
 		}
-		return textResult(successText)
+		return textResult(withComposition(successText, h.Composition()))
 	case <-t.C:
 		return textResult(stillRunningMsg(label))
 	}
+}
+
+// withComposition suffixes the collect success text with the run's rendered
+// node-type composition, so the caller sees WHAT the harvest produced without a
+// follow-up query. An empty composition degrades to the success text unchanged —
+// the same empty-degrades-to-nothing contract the manage(status) renderers carry.
+func withComposition(successText, composition string) string {
+	if composition == "" {
+		return successText
+	}
+	return successText + " " + composition
 }
 
 // stillRunningMsg is the all-good early-return the collect handler returns when a

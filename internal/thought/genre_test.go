@@ -19,23 +19,27 @@ func mkGenreNode(facets map[string]string) *knowledgev1.Node {
 	return n
 }
 
-// TestIsMachineGenre (FAILS-WHEN-ABSENT) asserts the classifier flags BOTH observed
-// live machine families — the legacy source="dream:analyze" facet and the current
+// TestIsMachineGenre (FAILS-WHEN-ABSENT) asserts the classifier flags BOTH
+// observed machine families — the source="dream:analyze" facet and the
 // origin="worker:..." facet — plus the session-marker fallback, and classifies a
 // human implementer/main node as NON-machine. Goes red if any facet is dropped.
+//
+// EVERY MACHINE FIXTURE BELOW IS A HISTORICAL SHAPE, not a live one: nothing
+// produces these stamps any more. They are asserted precisely because thoughts
+// carrying them are still stored, so the classifier must keep firing on them.
 func TestIsMachineGenre(t *testing.T) {
-	// (1) Legacy source facet: source="dream:analyze" → machine.
+	// (1) Historical source facet: source="dream:analyze" → machine.
 	dreamSource := mkGenreNode(map[string]string{"source": "dream:analyze", "origin": "main"})
 	assert.True(t, isMachineGenreThought(dreamSource, ""),
 		`source="dream:analyze" must classify as machine-genre`)
 
-	// (2) Current origin facet: origin="worker:code-smell-scanner" → machine.
+	// (2) Historical origin facet: origin="worker:code-smell-scanner" → machine.
 	workerOrigin := mkGenreNode(map[string]string{"origin": "worker:code-smell-scanner"})
 	assert.True(t, isMachineGenreThought(workerOrigin, ""),
 		`origin="worker:..." must classify as machine-genre`)
 
 	// (3) Session-marker fallback: no machine source/origin, but enclosing session
-	// is "dream-code-smells" → machine.
+	// is the historical "dream-code-smells" session → machine.
 	noFacets := mkGenreNode(map[string]string{"origin": "main"})
 	assert.True(t, isMachineGenreThought(noFacets, "dream-code-smells"),
 		`an enclosing "dream-code-smells" session must classify as machine-genre`)

@@ -11,9 +11,13 @@
 //   - PersistBatch — single mutate(create_batch) with optional bundle_id.
 //   - LookupNode   — single query(id) with include_edges:false.
 //   - LinkOne      — single mutate(link) for one from→to edge.
-//   - TraverseDescendants — single traverse(start, edge, depth) returning hydrated nodes.
-//   - TraverseDescendantsWithEdges — like TraverseDescendants but also returns the subtree's structure edges (one RPC).
 //   - UpdateBatchStatus   — single mutate(update_batch) carrying per-id status updates.
+//
+// The single-RPC subtree traversal helpers (TraverseDescendants,
+// TraverseDescendantsWithEdges) live in
+// cmd/knowledge/internal/projects/render/wire_traverse.go, beside the rest of
+// the batched-render prologue they feed; callers here reach them through the
+// render. qualifier.
 //
 // All return the underlying gc.Call error verbatim (no double-wrap with
 // "<feature>: ..." prefixes). Callers pre-add their tool-name prefix.
@@ -35,58 +39,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/projects/render"
 )
 
-// persistBatchNode mirrors server-side nodeCreateItem
-// (tools_mutate_create_batch.go:52) plus the source carrier. The struct uses the
-// wire tags the server expects. Source is mapped from store.Node.Source so a
-// client-stamped provenance (e.g. buildFindingNode's 'llm:claude') survives onto
-// the create_batch carrier and through to the engine NodeBody.source field — the
-// Gap-2 fix (Source was previously lossy on the batch wire).
-type persistBatchNode struct {
-	Type        string            `json:"type"`
-	Name        string            `json:"name"`
-	Description string            `json:"description"`
-	Summary     string            `json:"summary"`
-	Content     string            `json:"content"`
-	Status      string            `json:"status"`
-	Metadata    map[string]string `json:"metadata"`
-	Source      string            `json:"source,omitempty"`
-}
-
-// persistBatchEdge mirrors server-side edgeCreateItem
-// (tools_mutate_create_batch.go:69). The from_idx / to_idx fields are
-// emitted explicitly so the server's UnmarshalJSON sentinel (-1 ==
-// "use string ID") applies even when both endpoints reference an
-// existing node by ID.
-//
-// It also carries the five edge-metadata fields
-// (weight/confidence/method/evidence/last_validated) with omitempty so a
-// Method/Weight/… set on a kgwire.BatchEdge survives the PersistBatch
-// projection onto the engine create_batch edgeBody (the json keys match the
-// engine's edgeBody decode tags so engine.Compile threads them onto the
-// BatchEdgeSpec). last_validated is the RFC3339 STRING shape the edgeBody
-// decodes — NOT the int64 unix-nanos proto carrier. omitempty makes an
-// all-unset edge marshal byte-identically to the pre-metadata shape, so every
-// existing PersistBatch caller is unaffected.
-type persistBatchEdge struct {
-	FromIdx       int     `json:"from_idx"`
-	ToIdx         int     `json:"to_idx"`
-	FromID        string  `json:"from_id,omitempty"`
-	ToID          string  `json:"to_id,omitempty"`
-	Type          string  `json:"type"`
-	Weight        float64 `json:"weight,omitempty"`
-	Confidence    float64 `json:"confidence,omitempty"`
-	Method        string  `json:"method,omitempty"`
-	Evidence      string  `json:"evidence,omitempty"`
-	LastValidated string  `json:"last_validated,omitempty"`
-}
-
-// persistBatchArgs is the wire-shape envelope sent to mutate(create_batch).
-type persistBatchArgs struct {
-	Operation string             `json:"operation"`
-	Nodes     []persistBatchNode `json:"nodes"`
-	Edges     []persistBatchEdge `json:"edges"`
-	BundleID  string             `json:"bundle_id,omitempty"`
-}
+// The create_batch wire-shape structs live in wire_persist_types.go.
 
 // PersistBatch fires a single mutate(create_batch) RPC and returns the
 // generated node IDs. bundleID is optional — empty is a no-op on the
@@ -111,6 +64,7 @@ func PersistBatch(ctx context.Context, gc GraphCaller, nodes []*knowledgev1.Node
 			Content:     n.Content,
 			Status:      n.Status,
 			Metadata:    nodeMetadataMap(n),
+			ID:          n.Id,
 			Source:      n.Source,
 		}
 	}
@@ -306,139 +260,6 @@ func LinkOneWithMeta(ctx context.Context, gc GraphCaller, e *knowledgev1.Edge) e
 	return nil
 }
 
-// persistTraverseArgs is the wire-shape envelope for a single traverse
-// RPC that walks edge_types from start to a bounded depth and returns
-// hydrated nodes. Named distinct from cmd/knowledge/internal/tools/
-// tools_logs_args.go::traverseArgs which mirrors a different wire shape.
-
-// TraverseDescendants walks the EdgeKGContains tree (or any edge type)
-// forward from rootID up to depth and returns the hydrated descendant
-// nodes in BFS-discovery order. Mirrors the
-// projects.descendantsForRollup contract (rootID NOT included).
-//
-// Single gc.Call — the server's traverse handler issues one store-side
-// bounded-depth query and returns the full BFS in one response.
-func TraverseDescendants(ctx context.Context, gc GraphCaller, rootID string, edgeType kgtypes.EdgeType, depth int) ([]*knowledgev1.Node, error) {
-	if gc == nil {
-		return nil, fmt.Errorf("TraverseDescendants: graph caller unavailable")
-	}
-	ex, err := persistExecutor(gc)
-	if err != nil {
-		return nil, fmt.Errorf("TraverseDescendants: %w", err)
-	}
-	// A forward (out) traversal over the edge type, returning the
-	// raw traversal_results_json carrier ([]store.TraversalResult — each carries a
-	// full store.Node), then the skip-root / skip-empty-ID filter client-side.
-	fwd := true
-	plan := &knowledgev1.QueryPlan{
-		Selection:  &knowledgev1.Selection{FromId: []string{rootID}, EdgeTypes: []string{string(edgeType)}},
-		Forward:    &fwd,
-		ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_TRAVERSAL,
-	}
-	if depth > 0 {
-		plan.MaxHops = int32(depth)
-	}
-	resp, err := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
-		Plan: &knowledgev1.ExecuteRequest_Query{Query: plan},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("TraverseDescendants: %w", err)
-	}
-	results, derr := engine.DecodeTraversal(resp)
-	if derr != nil {
-		return nil, fmt.Errorf("TraverseDescendants: decode: %w", derr)
-	}
-	return filterTraversalDescendants(results, rootID), nil
-}
-
-// TraverseDescendantsWithEdges is the edge-aware sibling of
-// TraverseDescendants: one forward traversal that returns BOTH the
-// hydrated descendant nodes (root filtered, BFS-discovery order) AND
-// the subtree's structure edges, in a single Execute. It carries the
-// same QueryPlan shape as TraverseDescendants and adds one field:
-// IncludeEdgeMetadata, which is what makes the server populate the
-// traversal_edges carrier (the edges walked during the traversal).
-// The whole flat (nodes, edges) result is the complete source a
-// client-side tree builder needs without any per-node fetch.
-//
-// It deliberately does NOT set IncludeTombstones. The structure-edge
-// carrier unconditionally drops any edge whose peer is tombstoned, so a
-// tombstoned child never reaches the index regardless of the flag; the
-// per-node walk this replaces dropped the same edges, so behavior is
-// preserved by the edge being absent. Setting the flag would only add
-// tombstoned nodes whose inbound edge is still dropped — orphans that
-// render in neither tree.
-//
-// A separate function (rather than extending TraverseDescendants) keeps
-// the two existing nodes-only callers of TraverseDescendants unchanged.
-//
-// The third return is the response's truncated flag, carried out rather than
-// dropped: a server ceiling engaging mid-walk (the traversal hop clamp, the
-// edge-row cap) yields a PARTIAL subtree that is otherwise indistinguishable
-// from a complete one. Callers render their own output and so cannot route
-// through engine.Render's notice append — they must surface the clamp
-// themselves, or a caller reads a tree with silently missing branches.
-func TraverseDescendantsWithEdges(
-	ctx context.Context,
-	gc GraphCaller,
-	rootID string,
-	edgeType kgtypes.EdgeType,
-	depth int,
-) ([]*knowledgev1.Node, []*knowledgev1.Edge, bool, error) {
-	if gc == nil {
-		return nil, nil, false, fmt.Errorf("TraverseDescendantsWithEdges: graph caller unavailable")
-	}
-	ex, err := persistExecutor(gc)
-	if err != nil {
-		return nil, nil, false, fmt.Errorf("TraverseDescendantsWithEdges: %w", err)
-	}
-	fwd := true
-	plan := &knowledgev1.QueryPlan{
-		Selection:           &knowledgev1.Selection{FromId: []string{rootID}, EdgeTypes: []string{string(edgeType)}},
-		Forward:             &fwd,
-		ReturnMode:          knowledgev1.ReturnMode_RETURN_MODE_TRAVERSAL,
-		IncludeEdgeMetadata: true,
-	}
-	if depth > 0 {
-		plan.MaxHops = int32(depth)
-	}
-	resp, err := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
-		Plan: &knowledgev1.ExecuteRequest_Query{Query: plan},
-	})
-	if err != nil {
-		return nil, nil, false, fmt.Errorf("TraverseDescendantsWithEdges: %w", err)
-	}
-	results, derr := engine.DecodeTraversal(resp)
-	if derr != nil {
-		return nil, nil, false, fmt.Errorf("TraverseDescendantsWithEdges: decode: %w", derr)
-	}
-	nodes := filterTraversalDescendants(results, rootID)
-	// engine.EdgesFromProto returns a []knowledgev1.Edge value slice;
-	// take addresses into a pointer slice so the index builder consumes
-	// the same *knowledgev1.Edge shape the wire carriers use elsewhere.
-	edgeVals := engine.EdgesFromProto(resp.GetTraversalEdges())
-	edges := make([]*knowledgev1.Edge, len(edgeVals))
-	for i := range edgeVals {
-		edges[i] = &edgeVals[i]
-	}
-	return nodes, edges, resp.GetTruncated(), nil
-}
-
-// filterTraversalDescendants applies the skip-root / skip-empty-ID filter over a
-// decoded []engine.TraversalResult and returns the surviving nodes in order. The
-// carrier already carries full typed nodes, so there is no wire→store conversion
-// (this is the filter half of the removed collectTraverseNodes).
-func filterTraversalDescendants(results []engine.TraversalResult, rootID string) []*knowledgev1.Node {
-	out := make([]*knowledgev1.Node, 0, len(results))
-	for _, r := range results {
-		if r.Node.Id == "" || r.Node.Id == rootID {
-			continue
-		}
-		out = append(out, r.Node)
-	}
-	return out
-}
-
 // UpdateBatchStatus issues a single mutate(update_batch) RPC applying
 // status to every id in ids. bundleID is optional — empty is a no-op
 // on the server. Two RPCs total when combined with TraverseDescendants:
@@ -467,10 +288,30 @@ func UpdateBatchStatus(ctx context.Context, gc GraphCaller, ids []string, status
 		Selection: &knowledgev1.Selection{Ids: ids},
 		SetFields: map[string]string{"status": status},
 	}
-	if _, err := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
+	resp, err := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
 		Plan: &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("UpdateBatchStatus: %w", err)
+	}
+	// THE COUNT IS READ, NOT DISCARDED, because this function's callers ENUMERATE
+	// the ids they asked for in a success message. A batch that wrote fewer nodes
+	// than it names would make that message assert a write it never confirmed —
+	// the same silent-partial shape the cascade exists to remove, one layer down.
+	//
+	// EQUALITY IS THE SERVER'S CURRENT GUARANTEE ON THIS PATH, not an aspiration:
+	// a named-id selection is resolved intolerantly server-side, so an id that
+	// resolves to nothing aborts the batch with a not-found rather than being
+	// skipped, and the applied count is the size of the resolved set. So a
+	// shortfall is not a state a correct server produces today — which is exactly
+	// what makes asserting it cheap and what makes a future regression loud
+	// instead of invisible. It is a REFUSAL, not a fallback: nothing is retried,
+	// nothing degrades, and the caller is told the delta.
+	if got := resp.GetAffectedCount(); got != int64(len(ids)) {
+		return fmt.Errorf(
+			"UpdateBatchStatus: asked to write status %q to %d node(s) but the store reported %d applied "+
+				"(%d unaccounted for); the ids named in any success message would overstate what was written",
+			status, len(ids), got, int64(len(ids))-got)
 	}
 	return nil
 }

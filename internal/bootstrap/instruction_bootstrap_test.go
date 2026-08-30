@@ -3,9 +3,11 @@
 package bootstrap
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -133,6 +135,20 @@ func TestInstructionBootstrap_FreshRun_SeedsAgentsAndSkills(t *testing.T) {
 	assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_CREATE, m.GetKind())
 	assert.NotEmpty(t, m.GetBundleId(), "bundle_id must be threaded onto bootstrap create_batch")
 	assert.Len(t, m.GetNodeBodies(), 3, "2 agents + 1 skill = 3 node bodies")
+
+	// A skill node is named after its DIRECTORY, not its file stem. Every
+	// skill file is called SKILL.md, so a stem-derived name would name
+	// every skill "SKILL" — one indistinguishable node per skill, and the
+	// name users actually type would resolve to nothing. Asserting the
+	// count alone cannot catch that: three bodies arrive either way.
+	byType := map[string][]string{}
+	for _, b := range m.GetNodeBodies() {
+		byType[b.GetType()] = append(byType[b.GetType()], b.GetName())
+	}
+	assert.Equal(t, []string{"skill-a"}, byType["skill"],
+		"skill node is named after its directory, not the SKILL.md stem")
+	assert.Equal(t, []string{"agent-a", "agent-b"}, byType["agent"],
+		"agent nodes stay named after their file stem")
 }
 
 // TestInstructionBootstrap_BootstrapFailureNonFatal asserts that mutate
@@ -147,7 +163,7 @@ func TestInstructionBootstrap_BootstrapFailureNonFatal(t *testing.T) {
 	assert.Contains(t, err.Error(), "connect: refused")
 }
 
-// makeBootstrapDirs creates .claude/agents/*.md + .claude/skills/*.md
+// makeBootstrapDirs creates .claude/agents/*.md + .claude/skills/*/SKILL.md
 // fixtures under root. Each file has a minimal frontmatter block.
 func makeBootstrapDirs(t *testing.T, root string, nAgents, nSkills int) {
 	t.Helper()
@@ -159,8 +175,17 @@ func makeBootstrapDirs(t *testing.T, root string, nAgents, nSkills int) {
 		path := filepath.Join(agentsDir, makeFilename("agent", i)+".md")
 		require.NoError(t, os.WriteFile(path, fixtureMarkdownContent(), 0o600))
 	}
+	// NESTED, because that is the layout the repo ships:
+	// .claude/skills/<name>/SKILL.md. An earlier fixture wrote a FLAT
+	// .claude/skills/<name>.md, which is the layout the globbing code
+	// expected — so the fixture constructed the belief the code was
+	// tested against and the real tree seeded zero skills for as long
+	// as both agreed. A fixture that builds the input cannot also be
+	// the evidence the input looks that way.
 	for i := range nSkills {
-		path := filepath.Join(skillsDir, makeFilename("skill", i)+".md")
+		dir := filepath.Join(skillsDir, makeFilename("skill", i))
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		path := filepath.Join(dir, "SKILL.md")
 		require.NoError(t, os.WriteFile(path, fixtureMarkdownContent(), 0o600))
 	}
 }
@@ -171,4 +196,66 @@ func makeFilename(kind string, i int) string {
 
 func fixtureMarkdownContent() []byte {
 	return []byte("---\nname: fixture\ndescription: a fixture entry\n---\n\nBody paragraph.\n")
+}
+
+// TestInstructionBootstrap_NoFrontmatterFileIsSkippedWithNamedWarning pins the
+// warn-and-skip disposition for the two malformed file shapes, and the reason
+// both are needed rather than one.
+//
+// agent and skill are embed-only-knowledge types, so a body with no summary is
+// refused by the server — and every file rides ONE create_batch, so that refusal
+// rolls back EVERY agent and skill node. One malformed file must cost itself.
+//
+// THE THIRD FIXTURE FILE IS THE POINT. parseInstructionFrontmatter reports ok
+// for a well-formed block that carries no description: key, so that shape
+// reaches the populated return and emits an empty Summary exactly as the
+// no-frontmatter shape does. A two-file fixture greens against a fix that
+// handles only the absent-frontmatter case.
+//
+// Asserting the SURVIVOR COUNT and not merely the skips is what stops this
+// passing against an implementation that skips everything; asserting both paths
+// BY NAME is what stops it passing against one that skips the right number for
+// the wrong reason.
+func TestInstructionBootstrap_NoFrontmatterFileIsSkippedWithNamedWarning(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, ".claude", "agents")
+	require.NoError(t, os.MkdirAll(agentsDir, 0o750))
+
+	require.NoError(t, os.WriteFile(filepath.Join(agentsDir, "agent-good.md"),
+		fixtureMarkdownContent(), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(agentsDir, "agent-nofrontmatter.md"),
+		[]byte("Just a body paragraph with no frontmatter block at all.\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(agentsDir, "agent-nodescription.md"),
+		[]byte("---\nname: fixture\n---\n\nBody paragraph.\n"), 0o600))
+
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	fc := &fakeBootstrapGC{queryNodeCount: 0}
+	require.NoError(t, runInstructionBootstrap(context.Background(), fc, dir))
+
+	require.Len(t, fc.calls, 2)
+	m := fc.calls[1].req.GetMutation()
+	require.NotNil(t, m)
+	require.Len(t, m.GetNodeBodies(), 1, "only the well-formed file may reach the batch")
+	assert.Equal(t, "agent-good", m.GetNodeBodies()[0].GetName())
+
+	// The survivor's summary is the author's description, and EVERY body in the
+	// batch carries one — the property whose violation rolls the batch back.
+	for _, b := range m.GetNodeBodies() {
+		assert.NotEmpty(t, b.GetSummary(), "node %q reached the batch with no summary", b.GetName())
+	}
+	assert.Equal(t, "a fixture entry", m.GetNodeBodies()[0].GetSummary())
+
+	// BOTH skipped paths, each named with its own condition.
+	out := logs.String()
+	assert.Contains(t, out, "agent-nofrontmatter.md")
+	assert.Contains(t, out, "no frontmatter block")
+	assert.Contains(t, out, "agent-nodescription.md")
+	assert.Contains(t, out, "no `description:` key")
+	// The well-formed file must NOT be warned about — without this, a warn-on-
+	// everything implementation satisfies both assertions above.
+	assert.NotContains(t, out, "agent-good.md")
 }

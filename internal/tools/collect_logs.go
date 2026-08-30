@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -67,19 +66,24 @@ func runLogsCollect(ctx context.Context, deps ClientDeps, a collectArgs) kgtools
 	graphNames := candidateCloudGraphNames(entries)
 	subgraph, err := uploader.FetchCloudSubgraph(ctx, graphNames, nil)
 	if err != nil {
-		// Non-fatal: log, then proceed without cloud enrichment. The
-		// pipeline still produces templates / streams / chunks;
-		// correlations stay temporal-only — exactly today's behavior.
-		slog.Warn("collect logs: FetchCloudSubgraph failed; running without cloud enrichment", "error", err)
-		subgraph = nil
+		// FAIL LOUD. This used to warn and proceed with a nil subgraph,
+		// which silently downgraded the collect: no cloud resolver means
+		// no EMITTED_BY edges, and no dependency checker means the
+		// materializer's StructurallyConfirmed gate drops every
+		// CORRELATES_WITH edge. The caller got a log graph that looked
+		// complete, carried only temporal correlations, and reported
+		// success — the enrichment loss was invisible at the call site and
+		// unrecoverable without re-running the collect.
+		//
+		// A transport failure here is a condition the operator can act on
+		// (retry, check the backend), not one this path can repair, so it
+		// is an error rather than a degraded lane.
+		return errorResult(fmt.Sprintf("collect logs: fetch cloud subgraph: %v", err))
 	}
 
-	var opts []logs.PipelineOption
-	if subgraph != nil {
-		opts = append(opts,
-			logs.WithCloudResolver(cloudresolver.NewCloudResolver(subgraph)),
-			logs.WithDependencyChecker(cloudresolver.NewDependencyChecker(subgraph)),
-		)
+	opts := []logs.PipelineOption{
+		logs.WithCloudResolver(cloudresolver.NewCloudResolver(subgraph)),
+		logs.WithDependencyChecker(cloudresolver.NewDependencyChecker(subgraph)),
 	}
 	// nil dbStore = no-store mode. The client materializes the log graph
 	// in memory via logs.MaterializeLogGraph below; UploadSink.WriteResult

@@ -53,7 +53,7 @@ func assemblePatternIn(ctx context.Context, gc GraphCaller, node *knowledgev1.No
 	}
 	fmt.Fprintf(&sb, "ID: %s%s\n", node.Id, updatedSuffix(node))
 
-	appliesWhen, avoidWhen, examples, refs := bucketPatternChildrenIn(ctx, gc, node.Id, graphType, graphName)
+	appliesWhen, avoidWhen, examples, refs, truncated := bucketPatternChildrenIn(ctx, gc, node.Id, graphType, graphName)
 
 	sb.WriteString(renderPatternUseCases("## Applies when", appliesWhen))
 	sb.WriteString(renderPatternUseCases("## Avoid when", avoidWhen))
@@ -68,7 +68,12 @@ func assemblePatternIn(ctx context.Context, gc GraphCaller, node *knowledgev1.No
 		sb.WriteString(renderNodeMetadata(node))
 	}
 
-	return kgtools.TextResult(sb.String())
+	// This arm renders no contains tree, so the child hydrate's verdict is the
+	// only one it receives. A clamped hydrate would empty sections — and an
+	// emptied section here is indistinguishable from a thin pattern, which is
+	// exactly the reading the metadata fallback above is written for.
+	return AppendTruncationNotice(kgtools.TextResult(sb.String()),
+		truncated, len(appliesWhen)+len(avoidWhen)+len(examples)+len(refs))
 }
 
 // renderNodeMetadata emits a `## Metadata` section with the node's
@@ -102,23 +107,34 @@ func renderNodeMetadata(node *knowledgev1.Node) string {
 }
 
 // bucketPatternChildrenIn walks the outgoing edges of a pattern node
-// once and returns four slices, one per rendered section. Targets are
-// resolved via FetchNodeIn against the source graph (practice/<lang>);
-// unresolved targets are skipped silently (same broken-link
-// tolerance as the ticket renderer).
+// once and returns four slices, one per rendered section, plus the hydrate's
+// truncation verdict.
+//
+// Targets are resolved against the pattern's OWN SOURCE GRAPH — practice/<lang>,
+// not the knowledge graph — which is why this uses the cross-graph
+// FetchNodesByIDsIn rather than the knowledge-graph FetchNodesByIDs. Unresolved
+// targets are skipped silently, the same broken-link tolerance the ticket
+// renderer applies; with a bulk hydrate that skip is a miss in the map rather
+// than a per-target fetch error.
 //
 // Ported from tools_assemble_containers_pattern.go:104 with the
-// store.DB parameter replaced by (graphType, graphName) and the
-// per-target Query reads swapped for FetchNodeIn calls.
+// store.DB parameter replaced by (graphType, graphName) and the per-target
+// reads collapsed into one bulk hydrate. The bucketing walks the EDGE slice so
+// each section keeps edge order; ranging the hydrated map would reorder them.
 func bucketPatternChildrenIn(
 	ctx context.Context,
 	gc GraphCaller,
 	patternID, graphType, graphName string,
-) (applies, avoid, examples, refs []*knowledgev1.Node) {
+) (applies, avoid, examples, refs []*knowledgev1.Node, truncated bool) {
 	outEdges, _ := IterEdgesIn(ctx, gc, patternID, graphType, graphName, kgwire.OutgoingEdges)
+	targetIDs := make([]string, 0, len(outEdges))
 	for _, e := range outEdges {
-		n, err := FetchNodeIn(ctx, gc, e.ToId, graphType, graphName)
-		if err != nil || n == nil {
+		targetIDs = append(targetIDs, e.ToId)
+	}
+	children, truncated, _ := FetchNodesByIDsIn(ctx, gc, targetIDs, graphType, graphName)
+	for _, e := range outEdges {
+		n, ok := children[e.ToId]
+		if !ok {
 			continue
 		}
 		switch kgtypes.EdgeType(e.Type) {
@@ -140,7 +156,7 @@ func bucketPatternChildrenIn(
 			}
 		}
 	}
-	return applies, avoid, examples, refs
+	return applies, avoid, examples, refs, truncated
 }
 
 // renderPatternUseCases renders an Applies-when / Avoid-when section

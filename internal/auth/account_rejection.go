@@ -10,7 +10,7 @@ import (
 
 // The gateway's rejection vocabulary, frozen with the companion gateway
 // ticket. These are the slugs observable on this client's cloud traffic —
-// /v1/sync/*, /v1/segments/* and the Connect-forwarded /knowledge.v1.* calls.
+// /v1/sync/* and the Connect-forwarded /knowledge.v1.* calls.
 //
 // On those routes the gateway's tier gate owns account resolution and answers
 // first, so the `no_account` and `account_lookup_failed` slugs are NEVER

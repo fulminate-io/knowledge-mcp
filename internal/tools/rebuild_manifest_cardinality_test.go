@@ -4,7 +4,6 @@ package tools
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -106,9 +105,9 @@ func TestManifestCardinalityMatchesBuildCount(t *testing.T) {
 		require.Equal(t, []string{hnsw.New().Name()}, shipper.manifestFormats,
 			"the read-back must target the HNSW arm: the deterministic rebuild publishes exactly the buckets it built there, "+
 				"while the shared BM25 engine legitimately carries extra sealed tails")
-		require.Equal(t, out.Built, out.PublishedManifest,
+		require.Equal(t, out.Built, out.ResidentSegmentCount,
 			"the published manifest must hold as many entries as the rebuild reported building")
-		require.Empty(t, logs.linesContaining(slog.LevelWarn, "FEWER entries"),
+		require.Empty(t, logs.linesContaining(slog.LevelWarn, "FEWER sealed segments"),
 			"an agreeing cardinality must not WARN")
 	})
 
@@ -118,12 +117,15 @@ func TestManifestCardinalityMatchesBuildCount(t *testing.T) {
 		out, err := RebuildSegments(ctx, twoBucketScanner(), shipper, kgtypes.GraphCode, "shortrepo", true)
 		require.NoError(t, err)
 		require.Equal(t, 2, out.Built)
-		require.Equal(t, 1, out.PublishedManifest, "the outcome must carry what the source actually published")
+		require.Equal(t, 1, out.ResidentSegmentCount, "the outcome must carry what the source actually published")
 
-		warns := logs.linesContaining(slog.LevelWarn, "FEWER entries")
+		warns := logs.linesContaining(slog.LevelWarn, "FEWER sealed segments")
 		require.NotEmpty(t, warns, "a manifest shorter than the build count must be loud — nothing else on this path can check it")
-		require.Contains(t, warns[0], "built=2")
-		require.Contains(t, warns[0], "published_manifest=1")
+		// derived=, not built=: the WARN's key is the DERIVATION the corpus predicts,
+		// which is what the message says it compares against ("this full rebuild's
+		// corpus derives"). The two are the same number here and different claims.
+		require.Contains(t, warns[0], "derived=2")
+		require.Contains(t, warns[0], "resident_segments=1")
 	})
 
 	t.Run("a LONGER manifest is not a fault", func(t *testing.T) {
@@ -134,8 +136,8 @@ func TestManifestCardinalityMatchesBuildCount(t *testing.T) {
 		shipper := &fakeRebuildShipper{manifestConfigured: true, manifestCount: 5}
 		out, err := RebuildSegments(ctx, twoBucketScanner(), shipper, kgtypes.GraphCode, "longrepo", true)
 		require.NoError(t, err)
-		require.Equal(t, 5, out.PublishedManifest)
-		require.Empty(t, logs.linesContaining(slog.LevelWarn, "FEWER entries"),
+		require.Equal(t, 5, out.ResidentSegmentCount)
+		require.Empty(t, logs.linesContaining(slog.LevelWarn, "FEWER sealed segments"),
 			"a manifest longer than the build count is ordinary and must not warn")
 	})
 
@@ -152,9 +154,9 @@ func TestManifestCardinalityMatchesBuildCount(t *testing.T) {
 		out, err := RebuildSegments(ctx, twoBucketScanner(), shipper, kgtypes.GraphCode, "increpo", false)
 		require.NoError(t, err)
 		require.Equal(t, int64(1), shipper.deltaCalls.Load(), "a window-scoped run finalizes through the delta path")
-		require.Empty(t, logs.linesContaining(slog.LevelWarn, "FEWER entries"),
+		require.Empty(t, logs.linesContaining(slog.LevelWarn, "FEWER sealed segments"),
 			"the build-count invariant must NOT be applied to a window-scoped run")
-		require.Equal(t, manifestCardinalityUnmeasured, out.PublishedManifest,
+		require.Equal(t, derivedBucketCardinalityUnmeasured, out.ResidentSegmentCount,
 			"not measured must be distinguishable from a manifest of zero entries")
 	})
 
@@ -165,16 +167,17 @@ func TestManifestCardinalityMatchesBuildCount(t *testing.T) {
 		out, err := RebuildSegments(ctx, twoBucketScanner(), shipper, kgtypes.GraphCode, "zerowm", false)
 		require.NoError(t, err)
 		require.Zero(t, shipper.deltaCalls.Load(), "a zero watermark is a from-scratch run, not a delta")
-		require.Equal(t, 2, out.PublishedManifest, "the read-back must run without an explicit reset")
+		require.Equal(t, 2, out.ResidentSegmentCount, "the read-back must run without an explicit reset")
 	})
 
-	t.Run("a failed read-back never fails a landed rebuild", func(t *testing.T) {
-		shipper := &fakeRebuildShipper{manifestErr: errors.New("registry unreachable")}
-		out, err := RebuildSegments(ctx, twoBucketScanner(), shipper, kgtypes.GraphCode, "errrepo", true)
-		require.NoError(t, err, "the corpus is already published — a verification read must not discard work that landed")
-		require.True(t, out.Published)
-		require.Equal(t, manifestCardinalityUnmeasured, out.PublishedManifest)
-	})
+	// THE "a failed read-back never fails a landed rebuild" SUBTEST WAS DELETED HERE.
+	// It injected manifestErr to make the cardinality read FAIL and asserted the
+	// rebuild still succeeded. The read can no longer fail: its predecessor was a
+	// manifest fetched back from a registry, and it is now one atomic snapshot load
+	// plus a slice length. fakeRebuildShipper dropped manifestErr for exactly this
+	// reason — a fake offering a failure mode would let a test exercise a branch
+	// production cannot reach, which is a test that can only ever pass. No successor
+	// is owed: the error path is ABSENT, not unguarded.
 
 	t.Run("a refused swap is never read back", func(t *testing.T) {
 		shipper := &fakeRebuildShipper{noSwap: true, manifestConfigured: true, manifestCount: 2}
@@ -214,7 +217,7 @@ func TestRebuildEmitsOperatorVisiblePublishLines(t *testing.T) {
 		require.NotEmpty(t, lines, "a rebuild that reached a publish must say so in the daemon log")
 		line := lines[0]
 		for _, want := range []string{
-			"graph_type=", "name=", "scanned=", "built=2", "published=true", "pruned=1", "published_manifest=2",
+			"graph_type=", "name=", "scanned=", "built=2", "published=true", "pruned=1", "resident_segments=2",
 		} {
 			require.Contains(t, line, want, "the completion line is missing an interceptor-owned count")
 		}

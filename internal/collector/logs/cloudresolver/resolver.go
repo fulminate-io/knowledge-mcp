@@ -234,8 +234,8 @@ func (r *cloudResolver) resolveByTypePrefixes(
 		// which the in-memory adapter must replicate by hand —
 		// otherwise a NodeProxy with matching name+resource_type would
 		// shadow the underlying CloudResource. See
-		// domains/store/proxy.go:168-171 — production
-		// CreateCrossGraphProxy GraphCloud branch copies
+		// internal/store/proxy.go buildCloudProxy — the production
+		// CreateCrossGraphProxy cloud branch copies
 		// resource_type/region/provider onto cloud proxies, so a proxy
 		// can pass nameMatches + prefixRank for the wrong account.
 		all := r.subgraph.Nodes(account)

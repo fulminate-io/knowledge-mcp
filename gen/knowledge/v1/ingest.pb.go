@@ -972,7 +972,7 @@ func (x *FinalizeStatusResponse) GetFreshnessGen() uint64 {
 	return 0
 }
 
-// BatchEdge mirrors store.BatchEdge (pkg/store/db_types.go:11-26) AND the
+// BatchEdge mirrors store.BatchEdge (cmd/knowledge-server/internal/store/db_types.go:11-26) AND the
 // engine.proto BatchEdgeSpec field shape — the CREATE/collector edge payload
 // addressed by slot index OR endpoint ID. Method-free pure-data carrier.
 // last_validated rides as int64 unix-nanos (0 = unset), the EdgeSpec/BatchEdgeSpec

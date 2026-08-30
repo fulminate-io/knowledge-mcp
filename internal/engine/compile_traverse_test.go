@@ -3,7 +3,9 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -43,7 +45,7 @@ func TestCompileTraverse_DefaultDirectionIsOut(t *testing.T) {
 	require.True(t, ok)
 	q := req.GetQuery()
 	require.NotNil(t, q.Forward)
-	assert.True(t, q.GetForward(), "empty direction defaults to out (validateDirection)")
+	assert.True(t, q.GetForward(), "empty direction defaults to out (the default ValidateTraverseDirection admits)")
 }
 
 // TestCompileTraverse_EdgeTypesCanonicalized pins the client-side
@@ -91,6 +93,12 @@ func TestCompileTraverse_DepthNotInjectedWhenAbsent(t *testing.T) {
 	assert.Equal(t, int32(0), req.GetQuery().GetMaxHops(), "no depth → MaxHops 0 (engine defaults to 1)")
 }
 
+// TestCompileTraverse_DenyCases pins the shapes compileTraverse does not
+// reduce. ok=false is a DENY, not a fall-through: there is no legacy dispatch
+// path behind it. Two of these are claimed earlier (the logs intercept, and
+// dispatchGraphWideEdges for a start-less traverse); the invalid-direction leg
+// is the compile-side default-deny that guards the programmatic Compile callers
+// — Dispatch refuses that value ahead of Compile via precheckTraverse.
 func TestCompileTraverse_DenyCases(t *testing.T) {
 	cases := []struct {
 		name string
@@ -103,10 +111,131 @@ func TestCompileTraverse_DenyCases(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			req, ok := compileTraverse(json.RawMessage(tc.args))
-			assert.False(t, ok, "%s must fall through to legacy", tc.name)
+			assert.False(t, ok, "%s must be denied by the compiler", tc.name)
 			assert.Nil(t, req)
 		})
 	}
+}
+
+// TestValidateTraverseDirection_Vocabulary pins the accepted set and the
+// normalization. The normalization legs are not decoration: compileTraverse's
+// switch lowercases and trims the same value, so a spelling this validator
+// accepts but that switch would not recognize (or the reverse) is a drift bug —
+// these legs are what make the two agree by test rather than by hope.
+func TestValidateTraverseDirection_Vocabulary(t *testing.T) {
+	for _, ok := range []string{"", "out", "in", "both", "OUT", " both ", "In"} {
+		require.NoError(t, ValidateTraverseDirection(ok), "%q is in the published vocabulary", ok)
+		if ok == "" {
+			continue
+		}
+		_, compiled := compileTraverse(json.RawMessage(`{"start":"n1","direction":"` + ok + `"}`))
+		assert.True(t, compiled, "%q is accepted by the validator, so the compile switch must recognize it too", ok)
+	}
+	for _, bad := range []string{"sideways", "down", "up", "outward", "forward"} {
+		err := ValidateTraverseDirection(bad)
+		require.Error(t, err, "%q is outside the published vocabulary", bad)
+		assert.Contains(t, err.Error(), bad, "the refusal quotes the offending value")
+		assert.Contains(t, err.Error(), "out, in, both", "the refusal names the accepted vocabulary")
+	}
+}
+
+// TestDispatch_PrecheckTraverseUnknownDirection is the regression guard for the
+// bad-input rule on traverse's direction. An unknown direction used to reach the
+// GENERIC post-cutover deny ("tool traverse is not a recognized engine-reducible
+// shape"), which named neither the offending value nor the Enum{out,in,both} the
+// tool schema publishes. precheckTraverse now refuses it BEFORE Compile with a
+// message carrying both — exec NEVER runs (bounded-constant: 0).
+//
+// Driven END-TO-END through Dispatch, not precheckTraverse in isolation, so the
+// suite catches a future regression where the seam stops being invoked. The
+// start-less leg matters independently: it proves the precheck runs AHEAD of
+// dispatchGraphWideEdges, which would otherwise have served a graph-wide
+// enumeration while echoing the invalid direction back in its own JSON payload.
+func TestDispatch_PrecheckTraverseUnknownDirection(t *testing.T) {
+	cases := []struct {
+		name string
+		args string
+	}{
+		{"from_id walk", `{"start":"n1","direction":"sideways"}`},
+		{"start-less graph-wide", `{"direction":"sideways"}`},
+		{"logs graph", `{"start":"n1","graph":"logs","name":"q1","direction":"sideways"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &dispatchCounters{}
+			out, err := Dispatch(context.Background(),
+				d.exec(nil, errors.New("exec must not run — precheck rejects the direction")),
+				"traverse", json.RawMessage(tc.args))
+			require.NoError(t, err, "the validation error is rendered, not returned")
+			assert.True(t, out.IsError, "an unknown direction is a validation failure (IsError)")
+			assert.Contains(t, out.Content[0].Text, `"sideways"`,
+				"the refusal quotes the offending value back")
+			assert.Contains(t, out.Content[0].Text, "out, in, both",
+				"the refusal names the published vocabulary")
+			assert.NotContains(t, out.Content[0].Text, "not a recognized engine-reducible shape",
+				"the named refusal replaces the generic deny")
+			assert.Equal(t, 0, d.execCalls, "a precheck failure issues NO Execute RPC")
+		})
+	}
+}
+
+// TestDispatch_TraverseAcceptedDirectionsStillWalk is the known-positive control
+// for the refusal above: every published direction, plus the omitted-direction
+// default, still compiles and issues EXACTLY ONE Execute. Without it a
+// precheckTraverse that refused everything — or one wired to the wrong
+// normalization — would pass the refusal test while breaking the tool.
+func TestDispatch_TraverseAcceptedDirectionsStillWalk(t *testing.T) {
+	for _, dir := range []string{"", "out", "in", "both", "BOTH"} {
+		t.Run("direction="+dir, func(t *testing.T) {
+			d := &dispatchCounters{}
+			args := `{"start":"n1"}`
+			if dir != "" {
+				args = `{"start":"n1","direction":"` + dir + `"}`
+			}
+			out, err := Dispatch(context.Background(),
+				d.exec(&knowledgev1.ExecuteResponse{}, nil),
+				"traverse", json.RawMessage(args))
+			require.NoError(t, err)
+			assert.False(t, out.IsError, "%q is accepted and walks", dir)
+			assert.Equal(t, 1, d.execCalls, "an accepted direction issues exactly one Execute")
+		})
+	}
+}
+
+// TestDispatch_StartlessLogsTraverse_DeniedWhileOtherGraphsEnumerate pins the
+// disposition the logs intercept's fall-through comment now describes: a
+// start-less logs traverse is claimed by nobody — dispatchGraphWideEdges
+// declines graph=="logs" and compileTraverse declines it too — so it reaches the
+// Compile-miss deny with NO Execute RPC.
+//
+// The knowledge leg is the known-positive: the SAME start-less shape on another
+// graph is SERVED by the graph-wide arm and issues an Execute. Without it, a
+// wiring change that broke every start-less traverse would leave the logs leg
+// passing for the wrong reason.
+//
+// This pins the CURRENT disposition. Whether a logs graph-wide enumeration
+// should be served, and whether the deny should name the missing start instead
+// of the generic unrecognized-shape text, are open questions — if either is
+// answered, this test changes with the answer.
+func TestDispatch_StartlessLogsTraverse_DeniedWhileOtherGraphsEnumerate(t *testing.T) {
+	t.Run("logs is denied", func(t *testing.T) {
+		d := &dispatchCounters{}
+		out, err := Dispatch(context.Background(),
+			d.exec(nil, errors.New("exec must not run — a start-less logs traverse is denied")),
+			"traverse", json.RawMessage(`{"graph":"logs","name":"q1"}`))
+		require.NoError(t, err, "the deny is rendered, not returned as a Go error")
+		assert.True(t, out.IsError, "a start-less logs traverse is denied")
+		assert.Equal(t, 0, d.execCalls, "a denied shape issues NO Execute RPC")
+	})
+	t.Run("knowledge enumerates", func(t *testing.T) {
+		d := &dispatchCounters{}
+		out, err := Dispatch(context.Background(),
+			d.exec(&knowledgev1.ExecuteResponse{}, nil),
+			"traverse", json.RawMessage(`{"graph":"knowledge"}`))
+		require.NoError(t, err)
+		assert.False(t, out.IsError, "the same shape on knowledge is the graph-wide enumeration")
+		assert.Positive(t, d.execCalls, "the served shape reaches the wire")
+	})
 }
 
 // TestCompileTraverse_IncludeEdgeMetadata asserts an include_edge_metadata

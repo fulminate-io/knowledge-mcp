@@ -40,6 +40,7 @@ func TestPropagationVectorDeps_LazySegmentManager(t *testing.T) {
 		// an unreachable URL is enough to satisfy ensureSegmentManager's only guard.
 		authState := auth.NewAuthState(newFakeAuthStore(), time.Minute)
 		local := graphclient.NewGraphClientForURL("http://local.invalid")
+		t.Cleanup(local.CloseIdleConnections)
 		router := graphclient.NewRouter(local, "http://local.invalid", staticTokenSource{tok: "tok"}, authState)
 		return &client{local: local, router: router, authState: authState}
 	}
@@ -72,6 +73,8 @@ func TestPropagationVectorDeps_LazySegmentManager(t *testing.T) {
 		c.ensureSegmentManager(t.TempDir(), 0)
 		c.markPipelineReady()
 		require.NotNil(t, c.segmentMgr, "the production wiring path assigned the manager")
+		// Only Manager.Close stops the per-engine merger goroutines the Manager spawns.
+		t.Cleanup(c.segmentMgr.Close)
 
 		// The resident resolver now REACHES the manager. Against an empty local cache
 		// it resolves nothing, but the distinction that matters is the one the loop
@@ -114,6 +117,9 @@ func TestPropagationVectorDeps_LazySegmentManager(t *testing.T) {
 			c.markPipelineReady()
 		}()
 		wg.Wait()
+		// Only Manager.Close stops the per-engine merger goroutines the Manager spawns.
+		// Registered after Wait so the write to c.segmentMgr is already ordered.
+		t.Cleanup(c.segmentMgr.Close)
 
 		// Under -race, an adapter reading c.segmentMgr without the PipelineReady()
 		// gate fails the run above. Reaching here means the reads were ordered by the

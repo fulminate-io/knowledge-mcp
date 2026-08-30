@@ -11,12 +11,13 @@ import (
 )
 
 // pipeline_parse_test.go covers the parse-time / validation-time surface
-// of the rerank pipeline DSL. The executeSearch dispatch guard tests
-// split out to domains/store/query_executor_search_pipeline_hard_error_test.go
-// because they reference store-unexported identifiers (compositeDB,
-// executeSearch, q.pipeline). Shared fixture helpers (rawJSON,
-// fixtureNode, resultSpec, makeResults) live in pipeline_test.go and
-// are used here by package proximity.
+// of the rerank pipeline DSL. It is deliberately only that half: the
+// dispatch-guard half was once a separate server-side test file, kept apart
+// because it reached store-unexported identifiers this package cannot see,
+// and both that file and the executeSearch dispatch it guarded have since
+// been removed from the tree. Shared fixture helpers (rawJSON, fixtureNode,
+// resultSpec, makeResults) live in pipeline_test.go and are used here by
+// package proximity.
 
 // TestParsePipeline_Errors covers the ParsePipeline + Validate diagnostics
 // the user-facing error path. Unknown-op, missing-op, limit-in-pre, bad

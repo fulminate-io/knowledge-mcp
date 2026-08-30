@@ -106,87 +106,14 @@ func (c *Chunker) extractCallEdges(node *sitter.Node, src []byte, lang Language,
 			continue
 		}
 
-		// The span reproduces the source's own separator verbatim, so `$o->do`,
-		// `Bar::stat`, `obj:meth` and `obj.do` all emit exactly as written.
-		//
-		// EVERY whitespace rune is removed, not merely the ends. A qualified
-		// callee written across lines — `recv.\n\t\tmethod` — carries the line
-		// break and the indent INSIDE the span, where an end-only trim cannot
-		// reach them, and the resulting name matches no index key. Stripping
-		// throughout strictly subsumes the end-only trim: the pinned Lua
-		// grammar folds leading whitespace into node extents, which is the case
-		// the trim was added for, and that leading whitespace is removed here
-		// too.
-		//
-		// THE STRIP PRECEDES THE SEPARATOR TRIM BELOW, and the order is
-		// load-bearing. A chained tail whose FIRST character is the line break
-		// — `page.locator('a')\n    .filter(4)` composes a tail of
-		// "\n    .filter" — would stop the separator TrimLeft immediately if it
-		// ran first, leaving ".filter": whitespace-free, so a whitespace census
-		// reads it as clean, and unbindable, so the defect survives the gate
-		// built to catch it.
-		callee := stripSpace(string(src[minStart:maxEnd]))
-
-		// CHAINED-CALL AND SUBSCRIPT FALLBACK. An open paren or an open bracket
-		// can only appear between two callee captures when the composed span
-		// crossed an argument list or a subscript — `obj.a(1).b`, `arr[0].size`
-		// — and that text belongs to neither the qualifier nor the name. Cut
-		// after the LAST closing delimiter and strip the separator characters
-		// that joined the tail to what came before; when nothing follows that
-		// delimiter, fall back to the last kept capture's own text.
-		//
-		// THE CUT IS QUOTE-AWARE AND BRACE-DEPTH-AWARE, and both halves are
-		// load-bearing. A delimiter inside a string literal is DATA — a shell
-		// command word `"${BASH_SOURCE[0]}"` used to be sliced at that `]` and
-		// emitted as the garbage `}"` — and a delimiter inside a composite
-		// literal's BODY belongs to the literal, so a depth-blind cut takes the
-		// paren closing `unsafe.Slice(x, 2)` inside `protoimpl.TypeBuilder{...}`
-		// and slices the type name clean off.
-		//
-		// THE CUT ITSELF RUNS FOR EVERY LANGUAGE, including one with no profile
-		// row; the literal-body elision beside it is the profile-gated half.
-		//
-		// cutFired records that the span was reduced past an argument list or a
-		// subscript, which is what the chained-tail decline below keys on: what
-		// survives such a cut names a method on a receiver this emission threw
-		// away.
-		cutFired := false
-		sc := scanCalleeSpan(callee)
-		switch {
-		case sc.Balanced && sc.HasOpenAtDepth0 && sc.LastCloseAtDepth0 >= 0:
-			callee, cutFired = cutCalleeTail(callee, sc.LastCloseAtDepth0, lastCapture), true
-		case sc.Balanced:
-			if prof.ElideLiteralBodies {
-				callee = elideCalleeRuns(callee, sc.BraceRuns)
-			}
-		case strings.ContainsAny(callee, "(["):
-			// A span the structural read declines to interpret — an unterminated
-			// quote or an unbalanced delimiter, which a grammar produces from an
-			// ERROR node. Pre-existing behavior is retained verbatim for it; the
-			// declines below still decide whether the result is emittable, so
-			// nothing degraded reaches the graph by this path.
-			callee, cutFired = cutCalleeTail(callee, strings.LastIndexAny(callee, ")]"), lastCapture), true
-		}
-
-		// THE CUTSET OMITS `?` AND `!` DELIBERATELY. Adding them would "repair"
-		// `o.get(1)?.getAttribute('x')` into a bare `getAttribute`, which binds
-		// a same-named module-scope local as a BOUND edge where the unrepaired
-		// spelling binds it as a dynamic one — upgrading a fabrication into the
-		// graph's strongest claim. The optional-chain shapes this code DOES
-		// repair carry no parenthesis, never reach the cut, and are handled by
-		// the operator drop below.
-		callee = dropChainOperators(callee, prof.ChainOps, prof.ChainFollow)
-
-		if callee == "" {
-			continue
-		}
-		// THE THREE DECLINES, applied before the bookkeeping below so a
-		// declined callee never reaches weightedCallEdges: a bare name whose
-		// receiver the GRAMMAR elided, a bare name whose receiver THE CUT threw
-		// away, and a span that is not a name at all. Each emits NOTHING rather
-		// than a spelling that binds by accident, and all three are inert for a
-		// language with no profile row.
-		if calleeDeclined(callee, prof, cutFired, firstNode, minStart) {
+		// THE WHOLE NORMALIZATION TAIL LIVES IN normalizeCallee, and this call
+		// is not a tidiness refactor: the flow-step arms must derive the callee
+		// spelling from the SAME code this edge does, because a FLOWS_TO_ARG
+		// edge carries the spelling as its endpoint and resolves it against the
+		// same reference site. A spelling differing by one character binds a
+		// different declaration silently. See normalizeCallee's doc block.
+		callee, emit := normalizeCallee(string(src[minStart:maxEnd]), prof, lastCapture, firstNode, minStart)
+		if !emit {
 			continue
 		}
 		if _, ok := counts[callee]; !ok {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/workingset"
 )
 
 // intercept_search_registered_graph.go is the client-side search-read claim for
@@ -35,25 +36,61 @@ import (
 // post-filters, the mode=recent temporal rerank, the fields projection and the
 // search-mode footer. Sharing that tail is what makes this arm a twin of the
 // knowledge arm rather than a second implementation free to drift.
-// An un-collected / empty-name graph (no segments) renders zero
-// results cleanly — graceful empty, NOT an error (Manager.Search tolerates an
-// empty instance key the same way the cloud arm tolerates an empty account).
+//
+// THE SELECTOR IS VALIDATED BEFORE ANY OF THAT (validateRegisteredGraphSelector,
+// registered_graph_selector.go): an unregistered graph type and a registered type
+// whose named graph has never been collected are both ERRORS here, carrying the
+// same two classifications the server's resolveRegisteredCustom draws. Validating
+// in this composer rather than in the two claim gates is deliberate — the search
+// tool and the query tool both funnel through here, so the rule has one
+// derivation and the two tools cannot drift about which selectors are real.
 // During the bind-first wiring window (bind-first startup) the segment Manager is not yet
 // wired; the function gates on PipelineReady at its top and returns a not-ready
 // error before any deref. No server RETURN_MODE_SEARCH fallback exists — it is
 // never dispatched.
 func composeRegisteredGraphSearch(ctx context.Context, deps ClientDeps, mgr SegmentSearcher, gt kgtypes.GraphType, name string, a segmentSearchArgs) kgtools.ToolResult {
-	// Readiness gate (bind-first startup): the mgr==nil case below is already nil-safe (no
-	// panic) but emits a permanent-degrade message that misleads during the
-	// bind-first wiring window. Add the uniform not-ready pre-check so the window
-	// is distinguishable from a genuinely-unwired pipeline. Both entry points (the
-	// search tool and the query tool) funnel through here.
-	if !deps.PipelineReady() {
-		return errorResult(string(gt) + " search: daemon still starting — LLM pipeline not ready yet, retry shortly")
+	// Selector gate. Placed ahead of the embed below so an unresolvable selector
+	// never bills an embedding, and ahead of Manager.Search so a graph that does
+	// not exist can never render as a graph that matched nothing. The message is
+	// returned as-is: it already names the graph.
+	if res, notReady := segmentSearchNotReady(deps, mgr, gt); notReady {
+		return res
 	}
-	if mgr == nil {
-		return errorResult(string(gt) + " search: client segment engine unavailable")
+	if err := validateRegisteredGraphSelector(ctx, deps, gt, name); err != nil {
+		return errorResult(err.Error())
 	}
+	return composeSegmentGraphSearch(ctx, deps, mgr, gt, name, a)
+}
+
+// composeSegmentGraphSearch is the ranked-search body with NO selector gate of its
+// own — everything composeRegisteredGraphSearch does after validating a registered
+// selector: embed-if-the-mode-wants-one, Manager.Search, one bulk hydrate, and the
+// shared render tail.
+//
+// IT IS SPLIT OUT FOR A SECOND CALLER WHOSE SELECTOR RULE IS DIFFERENT. The checks
+// graph is a BUILTIN SINGLETON: validateRegisteredGraphSelector rejects it twice
+// over — it admits only registered custom types, and it then requires an instance
+// name a singleton addressing none can never supply. That arm applies the
+// singleton rule directly and reaches the ranked body here, so both arms share ONE
+// derivation of what a ranked search over shipped segments is, rather than the
+// second one being a copy free to drift.
+//
+// THE ENGINE KEY AND THE WIRE SELECTOR ARE TWO DIFFERENT NAMES, resolved
+// separately below, and collapsing them is a defect this repo has now paid for
+// three times. `name` is what the CALLER may legally put on a selector; the
+// segment engine is keyed by the name this process seals segments under. They
+// agree for every family that carries a real instance field and DIVERGE for a
+// singleton whose selector policy admits no name: the engine holds it under the
+// canonical instance while the wire must still be sent an empty one. A single
+// variable serving both addressed an engine instance nothing had written to and
+// returned a confident zero.
+func composeSegmentGraphSearch(ctx context.Context, deps ClientDeps, mgr SegmentSearcher, gt kgtypes.GraphType, name string, a segmentSearchArgs) kgtools.ToolResult {
+	if res, notReady := segmentSearchNotReady(deps, mgr, gt); notReady {
+		return res
+	}
+	// The INTERNAL key. Identity for every family with a real instance field, so
+	// this is safe on the shared path and changes nothing for custom graphs.
+	engineName := workingset.CanonicalInstanceName(gt, name)
 	mode := normalizeSegmentSearchMode(a.Mode)
 	// The embed is GATED on the mode rather than issued and discarded: a BM25-only
 	// search that still pays for an embedding is the cost this contract removes,
@@ -76,10 +113,14 @@ func composeRegisteredGraphSearch(ctx context.Context, deps ClientDeps, mgr Segm
 	if k <= 0 {
 		k = knowledgeSearchDefaultLimit
 	}
-	hits, err := mgr.Search(ctx, gt, name, engineText, engineVec, k)
+	hits, err := mgr.Search(ctx, gt, engineName, engineText, engineVec, k)
 	if err != nil {
 		return errorResult(string(gt) + " search: client engine: " + err.Error())
 	}
+	// THE WIRE SELECTOR KEEPS THE CALLER'S NAME, not the engine key. hydrateEngineHits
+	// marshals Name straight into the query args, and a singleton's server-side
+	// selector policy REJECTS a set name — so sending the canonical instance here
+	// would trade a silent zero for a refused hydrate.
 	results, err := hydrateEngineHits(ctx, deps.GraphCaller(), hydrateSelector{Graph: string(gt), Name: name}, hits)
 	if err != nil {
 		return errorResult(string(gt) + " search: hydrate: " + err.Error())
@@ -107,8 +148,11 @@ func InterceptQueryRegisteredGraphSearch(ctx context.Context, deps ClientDeps, p
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
 		return false, kgtools.ToolResult{}
 	}
-	// Only a registered custom graph: empty/builtin graphs are owned by the
-	// knowledge / cloud / cicd / practice / code arms upstream.
+	// Only a custom graph: empty/builtin graphs are owned by the knowledge /
+	// cloud / cicd / practice / code arms upstream. This gate is SHAPE, not
+	// registration — an unregistered string is claimed here so that
+	// composeRegisteredGraphSearch can refuse it by name instead of letting it
+	// fall through to a dispatch that renders an indistinguishable zero.
 	if a.Graph == "" || kgtypes.IsBuiltinGraphType(a.Graph) {
 		return false, kgtools.ToolResult{}
 	}
@@ -187,4 +231,24 @@ func registeredGraphQueryToSearchArgs(a queryArgs) segmentSearchArgs {
 		out.HalfLife = recentTemporalHalfLifeDays
 	}
 	return out
+}
+
+// segmentSearchNotReady is the shared readiness gate every segment-engine arm runs
+// FIRST, ahead of its own selector rule.
+//
+// ORDER IS THE WHOLE POINT AND IT IS BEHAVIORAL. The mgr==nil case below is
+// nil-safe on its own, but it emits a permanent-degrade message that misleads
+// during the bind-first wiring window; and a selector gate that ran first would
+// answer a starting daemon with a registry-unavailable complaint about the
+// SELECTOR, which sends the caller to fix a call that was fine. It is a shared
+// helper rather than two copies because both arms must give the same answer to
+// the same condition.
+func segmentSearchNotReady(deps ClientDeps, mgr SegmentSearcher, gt kgtypes.GraphType) (kgtools.ToolResult, bool) {
+	if !deps.PipelineReady() {
+		return errorResult(string(gt) + " search: daemon still starting — LLM pipeline not ready yet, retry shortly"), true
+	}
+	if mgr == nil {
+		return errorResult(string(gt) + " search: client segment engine unavailable"), true
+	}
+	return kgtools.ToolResult{}, false
 }

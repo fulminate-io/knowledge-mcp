@@ -13,10 +13,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
@@ -112,17 +112,14 @@ type ctxPackDeps struct {
 	emb    embed.BinaryEmbedder
 }
 
-func (d ctxPackDeps) LocalLiveness() LocalLiveness                 { return nil }
-func (d ctxPackDeps) Sink() collector.Sink                         { return nil }
-func (d ctxPackDeps) RootDir() string                              { return "" }
-func (d ctxPackDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
-func (d ctxPackDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
-func (d ctxPackDeps) WorkerReady() bool                            { return true }
-func (d ctxPackDeps) PropReady() bool                              { return true }
-func (d ctxPackDeps) PipelineReady() bool                          { return true }
-func (d ctxPackDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
-func (d ctxPackDeps) BanSet() *hivemonitor.BanSet                  { return nil }
-func (d ctxPackDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d ctxPackDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d ctxPackDeps) Sink() collector.Sink            { return nil }
+func (d ctxPackDeps) RootDir() string                 { return "" }
+func (d ctxPackDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+
+func (d ctxPackDeps) PropReady() bool     { return true }
+func (d ctxPackDeps) PipelineReady() bool { return true }
+
 func (d ctxPackDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
 func (d ctxPackDeps) Embedder() embed.BinaryEmbedder               { return d.emb }
 func (d ctxPackDeps) BackendResolver() BackendResolver             { return nil }

@@ -36,29 +36,32 @@ func reclaimEngineOpts[Q, S any](dmPtr **distManager[Q, S], countTarget int) sea
 // cacheDir), with reclaimMerged installed as OnMerge. countTarget gates the
 // count-driven merge trigger (pass a high value like 1<<30 to disable it; a low
 // value to force count-driven merges).
+//
+//nolint:unparam // gt is the intentional named API: it is half the cache-dir key this manager is rooted at, and these fixtures happen to exercise code graphs
 func buildHNSWReclaimManager(
 	t *testing.T, gt kgtypes.GraphType, name, cacheDir string, countTarget int,
 ) (*distManager[[]byte, struct{}], *instrumentedCache) {
 	t.Helper()
-	return buildHNSWReclaimManagerOn(t, newSharedServerFake().viewFor(graphSelector(gt, name), ""), gt, name, cacheDir, countTarget)
+	return buildHNSWReclaimManagerOn(t, gt, name, cacheDir, countTarget)
 }
 
-// buildHNSWReclaimManagerOn is buildHNSWReclaimManager over an EXISTING source +
-// cache dir — the seam restart tests need to reconstruct a fresh distManager (new
-// locallyShipped/importedGen) against the SAME server + same on-disk L2 (pass a view
-// over the same *sharedServerFake across the two phases), and the L2-fallback tests
-// pass a fault-injecting source wrapper.
+// buildHNSWReclaimManagerOn is buildHNSWReclaimManager over an EXISTING cache dir —
+// the seam restart tests need to reconstruct a fresh distManager (a cold process,
+// carrying none of the prior one's state) against the SAME on-disk L2.
+//
+// IT USED TO TAKE A SEGMENT SOURCE TOO, which the two phases shared so their reads
+// landed under one target key. The shared thing is now the DIRECTORY and nothing
+// else, which is the more honest fixture: a restart shares a disk, not an object.
 func buildHNSWReclaimManagerOn(
-	t *testing.T, src segmentSource, gt kgtypes.GraphType, name, cacheDir string, countTarget int,
+	t *testing.T, gt kgtypes.GraphType, name, cacheDir string, countTarget int,
 ) (*distManager[[]byte, struct{}], *instrumentedCache) {
 	t.Helper()
 	target := graphSelector(gt, name)
-	bindViewTarget(src, target)
 	ic := newInstrumentedCache(newDiskSegmentCache(cacheDir, 0, adviceRandom))
 
 	var dm *distManager[[]byte, struct{}]
 	engine := closeOnCleanup(t, searchengine.New[[]byte, struct{}](hnsw.New(), reclaimEngineOpts(&dm, countTarget)))
-	dm = newDistManager(engine, src, ic, target, hnsw.New().Name())
+	dm = newDistManager(engine, ic, target, hnsw.New().Name())
 	return dm, ic
 }
 
@@ -67,21 +70,20 @@ func buildBM25ReclaimManager(
 	t *testing.T, gt kgtypes.GraphType, name, cacheDir string, countTarget int,
 ) (*distManager[bm25.Query, *bm25.CorpusStats], *instrumentedCache) {
 	t.Helper()
-	return buildBM25ReclaimManagerOn(t, newSharedServerFake().viewFor(graphSelector(gt, name), ""), gt, name, cacheDir, countTarget)
+	return buildBM25ReclaimManagerOn(t, gt, name, cacheDir, countTarget)
 }
 
 // buildBM25ReclaimManagerOn is the BM25 counterpart of buildHNSWReclaimManagerOn.
 func buildBM25ReclaimManagerOn(
-	t *testing.T, src segmentSource, gt kgtypes.GraphType, name, cacheDir string, countTarget int,
+	t *testing.T, gt kgtypes.GraphType, name, cacheDir string, countTarget int,
 ) (*distManager[bm25.Query, *bm25.CorpusStats], *instrumentedCache) {
 	t.Helper()
 	target := graphSelector(gt, name)
-	bindViewTarget(src, target)
 	ic := newInstrumentedCache(newDiskSegmentCache(cacheDir, 0, adviceRandom))
 
 	var dm *distManager[bm25.Query, *bm25.CorpusStats]
 	engine := closeOnCleanup(t, searchengine.New[bm25.Query, *bm25.CorpusStats](bm25.New(), reclaimEngineOpts(&dm, countTarget)))
-	dm = newDistManager(engine, src, ic, target, bm25.New().Name())
+	dm = newDistManager(engine, ic, target, bm25.New().Name())
 	return dm, ic
 }
 

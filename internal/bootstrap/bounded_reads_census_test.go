@@ -87,19 +87,28 @@ var censusSurvivors = map[survivorKey]string{
 
 	// --- unbounded_type_browse ---
 	// Each "predicate-bounded" reason below was read in current source, not
-	// inherited from the ticket's prose. All four hivemonitor sites now hold up:
-	// reaperHives was the one genuinely unbounded read and was narrowed to a
-	// per-session predicate.
+	// inherited from the ticket's prose. The entries stay even though each read is
+	// narrowed: classify() cannot see MetadataPredicates, so a predicate-bounded
+	// browse still lands here as unbounded_type_browse. Deleting an entry whose
+	// site still exists turns the gate red.
 	{"engine/dispatch_byid.go", "findLinkageProxies", kindUnboundedTypeBrowse}:               "narrowed by a foreign_id OP_EQ metadata predicate on the requested node id — bounded in practice",
 	{"tools/cross_graph_migrate.go", "scanSlugLessPracticeProxies", kindUnboundedTypeBrowse}: "narrowed by a foreign_graph=practice OP_EQ metadata predicate — bounded in practice",
-	{"hivemonitor/monitor.go", "banEvictedMembers", kindUnboundedTypeBrowse}:                 "narrowed by a hive OP_EQ metadata predicate plus a status filter — bounded in practice",
-	{"hivemonitor/monitor_heartbeat.go", "memberHivesFor", kindUnboundedTypeBrowse}:          "narrowed by a session OP_EQ metadata predicate — bounded in practice",
-	{"hivemonitor/hive_reaper.go", "sweepHive", kindUnboundedTypeBrowse}:                     "narrowed by a hive OP_EQ metadata predicate — bounded in practice",
-	// The entry stays even though the read is now narrowed: classify() cannot see
-	// MetadataPredicates, so a predicate-bounded browse still lands here as
-	// unbounded_type_browse. Deleting the entry turns the gate red.
-	{"hivemonitor/hive_reaper.go", "reaperHives", kindUnboundedTypeBrowse}: "narrowed by a session OP_EQ metadata predicate — one browse per live local session, memberHivesFor's shape — bounded in practice",
-	{"bootstrap/hive_loops.go", "hasLiveMember", kindUnboundedTypeBrowse}:  "narrowed by a session OP_EQ metadata predicate — memberHivesFor's shape, one browse per session resolved inside the boot re-detection window and none at all outside it — bounded in practice",
+
+	// --- browse_no_skip_total ---
+	// The ROW read is bounded: Limit and Offset both ride the plan, so the arm
+	// fetches one page and never over-fetches. Only the Total is unbounded, and it
+	// is REQUIRED rather than incidental — renderBrowseResponse reads
+	// resp.GetTotal() for the "_Use offset=N to see more._" footer
+	// (engine/render_misc.go), so setting SkipTotal here would silently delete
+	// pagination from every practice browse. The sibling cloud/cicd browse now pays
+	// the same cost for the same reason: RenderResourceBrowse reads Total for its
+	// HEADER count as well as its footer, and skipping it put the page length in
+	// the header as a corpus figure. A keyset drain — the other
+	// legitimate response — is wrong for these arms: every practice browse filter
+	// (type, types, status, meta) lowers onto the Selection and is applied
+	// server-side, so there is no client-side filter to drain the corpus for.
+	{"tools/intercept_query_practice_browse.go", "practiceBrowse", kindBrowseNoSkipTotal}: "Limit+Offset bound the rows; the Total is what renderBrowseResponse's pagination footer reads, so skipping it would delete paging rather than bound anything",
+	{"tools/intercept_query_cloud_cicd.go", "resourceBrowse", kindBrowseNoSkipTotal}:      "Limit+Offset bound the rows; the Total is what RenderResourceBrowse's header count and pagination footer read, so skipping it would delete paging and put the page length back in the header as a corpus figure",
 
 	// --- ambiguous_selection ---
 	// (none: the recent-browse arm's double Selection assignment was collapsed to
@@ -399,7 +408,7 @@ func TestBoundedReadsCensus_SelfCheck(t *testing.T) {
 		want: []string{kindUnboundedTypeBrowse},
 	}, {
 		name: "single-line PLURAL NodeTypes (a pattern anchored on NodeType: misses this)",
-		body: `_ = &knowledgev1.QueryPlan{Selection: &knowledgev1.Selection{NodeTypes: []string{"hive_member"}}}`,
+		body: `_ = &knowledgev1.QueryPlan{Selection: &knowledgev1.Selection{NodeTypes: []string{"test_plan"}}}`,
 		want: []string{kindUnboundedTypeBrowse},
 	}, {
 		name: "singular NodeType with no limit",

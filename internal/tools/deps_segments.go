@@ -67,7 +67,7 @@ type SegmentVectorResolver interface {
 // all): the driver builds every partition's Documents concurrently, STAGES them one
 // call per bucket — nothing written to an engine, nothing shipped — then finalizes
 // exactly ONCE via the single serial FinalizeRebuild after the concurrent pool joins.
-// That is the fix for the concurrent-ship/reconcilePrune data-loss race: a single ship
+// That is the fix for the concurrent-rebuild data-loss race: a single finalize
 // over the fully-built layer can only prune genuinely superseded ids, never a live
 // concurrently-built sibling.
 //
@@ -103,17 +103,19 @@ type SegmentShipper interface {
 	StageRebuildPartition(ctx context.Context, gt kgtypes.GraphType, name string, hnswDocs, bm25Docs []searchengine.Document) error
 
 	// FinalizeRebuild is the ONE serial finalize of a reset rebuild, called after every
-	// partition has been staged. Each format's layer is built ASIDE, shipped, gated,
-	// swapped in with one CAS and published — so the corpus is never half-replaced.
+	// partition has been staged. Each format's layer is built ASIDE, written to the L2
+	// cache, gated and swapped in with one CAS — so the corpus is never half-replaced.
 	//
 	// IT REPORTS RETIREMENT PER FORMAT, and the split has a measured origin: a live run
 	// read "0 superseded segments pruned" while all eight bm25 blobs retired, because
 	// the finalize returned the HNSW set alone and that format had already converged.
-	// The two corpora carry separate manifests and retire independently.
+	// The two corpora retire independently.
 	//
-	// Swapped is NOT derivable from the error: both the coverage gate and the agent's
-	// 409 decline with a nil error, so a caller reading the error as the completion
-	// signal treats every skip as a success.
+	// THERE IS NO corpusComplete PARAMETER. It told the coverage gate that this run's
+	// scan covered the whole embedded corpus, so the gate would not compare the layer
+	// against a prior MANIFEST that duplication had inflated. The manifest is gone
+	// and with it that comparison, so there is nothing left to exempt: the one
+	// surviving gate — the built layer is non-empty — applies identically to every run.
 	FinalizeRebuild(ctx context.Context, gt kgtypes.GraphType, name string) (RebuildFinalizeResult, error)
 
 	// InvalidateLocal evicts superseded segments from the local L2 cache. It is fed the
@@ -128,19 +130,26 @@ type SegmentShipper interface {
 		ctx context.Context, gt kgtypes.GraphType, name string, hnswDocs, bm25Docs []searchengine.Document,
 	) (RebuildDeltaResult, error)
 
-	// PublishedManifestCount reads the manifest BACK FROM THE SOURCE and reports how
-	// many entries it holds for one format. The driver uses it on a FULL/RESET rebuild
-	// to check the published cardinality against what it reported building.
+	// ResidentSegmentCount reports how many sealed segments the engine HOLDS for one
+	// format, read after the swap. The driver uses it on a FULL/RESET rebuild to check
+	// what the engine ended up with against what the corpus DERIVES.
 	//
-	// IT IS A SOURCE READ ON PURPOSE. The driver already knows its own build count and
-	// could compare it to any number derived from the same in-process data — but that
-	// comparison is an identity, and cannot fail for the reason the check exists. Only
-	// what the server actually published can disagree with what the driver thinks it
-	// built, so only a read-back closes the gap. This is the ONE surface added for it —
-	// the finalize's result is deliberately NOT widened to carry a cardinality, because
-	// a number the finalize computed is exactly the in-process value this check exists
-	// to distrust.
-	PublishedManifestCount(ctx context.Context, gt kgtypes.GraphType, name, format string) (int, error)
+	// IT REPLACED A MANIFEST READ-BACK, AND THE OPERAND PAIR IS WHY IT IS STILL A REAL
+	// GATE. The old surface read the published manifest back from the server, on the
+	// stated reasoning that "only what the server actually published can disagree with
+	// what the driver thinks it built" — comparing the driver's build count against
+	// anything else in-process would be an identity that cannot fail. There is no
+	// server manifest any more, so a naive swap to any locally-reported number would
+	// have created exactly that identity.
+	//
+	// The pair that survives is NOT an identity: the DERIVED partition count
+	// (searchengine.BucketCountFor over the scanned corpus) says how many partitions
+	// the corpus SHOULD occupy, and this says how many the engine HOLDS. They diverge
+	// when a bucket failed to build or a swap landed short — which is the failure this
+	// check exists for.
+	//
+	// No ctx and no error: it is one atomic snapshot load and a slice length.
+	ResidentSegmentCount(gt kgtypes.GraphType, name, format string) int
 
 	// LoadRebuildState reads the durable per-graph record: the server-served horizon
 	// the last landed rebuild scanned up to, and the deleted ids the shipped blobs
@@ -152,6 +161,27 @@ type SegmentShipper interface {
 	// past ids the record never learned would mean those ids are never scanned
 	// again, and the window they describe would silently reopen.
 	SaveRebuildState(gt kgtypes.GraphType, name string, watermarkNanos int64, tombstoned []searchengine.ExternalID) error
+	// ResetBM25Cursors clears the BM25 arm's durable per-graph position on the
+	// CorpusDelta feed, so its next tick re-drains that graph from zero.
+	//
+	// IT IS HERE FOR THE REASON THE REBUILD-STATE PAIR ABOVE IS: this driver is the
+	// only thing that performs the event the record must react to. A reset rebuild
+	// REPLACES the BM25 layer whole, and that layer is built from a VECTOR-GATED scan
+	// — so it drops every document the arm indexed for a node that is embed-eligible
+	// but not yet embedded.
+	//
+	// THAT LOSS IS PERMANENT WITHOUT THIS RESET, which is why it is a seam method and
+	// not a nicety. The arm's cursor is already past those nodes; their later embed
+	// writeback does NOT move updated_at (a vector write plus a marker clear are
+	// derived data to ContentChanged), and the embed axis no longer ships BM25 at all.
+	// So nothing re-emits them until their TEXT changes, which on a stable corpus
+	// never happens.
+	//
+	// THE CALLER RESETS BEFORE THE SWAP, never after. The after-ordering's failure
+	// mode is permanent document loss on a crash between the two; the before-ordering's
+	// is one redundant drain. There is no window in which the cursor is ahead of the
+	// documents the engine holds.
+	ResetBM25Cursors(gt kgtypes.GraphType, name string) error
 	// LoadMergeWatermark reads the OTHER client-side consumer's durable position:
 	// the delta-merge horizon. It is here so the retention floor can be taken
 	// across BOTH consumers of the erase feed before any scan reports a position
@@ -237,13 +267,22 @@ type SegmentPruner interface {
 // searchengine.ExternalID values, so tools never imports segmentdist, exactly like
 // the sibling seams above.
 //
-// BEST-EFFORT BY CONTRACT: a removal must never be reported as failed because the
-// re-emit failed, so callers log and swallow. RECOVERY IS ASYMMETRIC between the
-// two callers. On the mutate(delete) path the row is only tombstoned, so a dropped
-// re-emit self-heals the next time anything touches the partition. On the
-// manage(prune) path the rows are HARD-deleted server-side and no later scan can
-// re-learn them, so a dropped re-emit leaves those documents in the shipped corpus
-// until a full rebuild.
+// NON-FATAL BY CONTRACT, AND REPORTED: a removal must never be reported as failed
+// because the re-emit failed, so callers log and continue — but they no longer
+// SWALLOW. reEmitDeletedFromSegments returns this error and both handlers append a
+// qualifier to their result text naming what did not land, because an unqualified
+// success told the caller the removal was durable in the shipped blobs when it was
+// not.
+//
+// RECOVERY IS ASYMMETRIC between the two callers. On the mutate(delete) path the
+// row is only tombstoned, so the segment-delta consumer can re-learn the id from a
+// server-side tombstone scan on a later reconcile pass and re-delete it
+// (tombstone_delta_consumer.go) — for a graph that pass actually visits, which is
+// a working-set member this machine holds locally. Nothing else re-drops it: the
+// mutate path writes no tombstone record, so a partition rebuilt before that pass
+// keeps carrying the document. On the manage(prune) path the rows are HARD-deleted
+// server-side and no later scan can re-learn them, so a dropped re-emit leaves
+// those documents in the shipped corpus until a full rebuild.
 type SegmentDeleter interface {
 	DeleteFromBuckets(ctx context.Context, gt kgtypes.GraphType, name string, ids []searchengine.ExternalID) error
 }
@@ -253,7 +292,8 @@ type SegmentDeleter interface {
 // types only (kgtypes.GraphType + searchengine.SegmentID). The client_segment.go
 // adapter copies it field-for-field across the package boundary. Orphans is the
 // would-remove (preview) OR did-remove set; Bytes is the summed .seg FileInfo size;
-// Aborted+AbortReason surface a List(0) subset-abort for a SKIPPED pool.
+// Aborted+AbortReason surface a REFUSED pool: an empty live set over a non-empty
+// directory, or a partial removal. Both mean the pool was skipped, not clean.
 type PruneCacheGraphReport struct {
 	GraphType   kgtypes.GraphType
 	Name        string
@@ -271,17 +311,32 @@ type PruneCacheReport struct {
 	Graphs       []PruneCacheGraphReport
 	Removed      int
 	RemovedBytes int64
+	// Declined names the enumerated graphs the op did NOT target because they are
+	// outside this client's working set — a manage operation admits nothing, so a
+	// graph no direct interaction has touched is one prune-cache may not force-load
+	// (handleClientPruneCache states the whole argument).
+	//
+	// IT IS FILLED BY THE HANDLER, NOT BY THE SEAM, and that is why it has no
+	// counterpart on segmentdist.PruneCacheReport: the pruner is handed a target set
+	// and never learns what was withheld from it. Reporting the withheld names is
+	// the difference between "this pool was clean" and "this pool was never looked
+	// at", which a total of zero cannot tell apart.
+	Declined []string
 }
 
 // SegmentCoverageReader is the narrow read seam the manage(status) segment-coverage
-// column uses to read a graph's segment-covered doc count (summed HNSW
-// meta.DocCount). *segmentdist.Manager satisfies it (Manager.ShippedSegmentDocCount).
-// A narrow per-purpose seam over the same concrete is the established deps.go
-// pattern (SegmentSearcher, SegmentShipper, SegmentVectorResolver). The renderer
-// consumes only the covered count; anyUnknown (the conservative-unknown signal the
-// auto-heal probe reads) is irrelevant to a display column and ignored there.
+// column uses to read a graph's segment-covered doc count — the L2 RESIDENT HNSW doc
+// count. *segmentdist.Manager satisfies it (Manager.ShippedSegmentDocCount). A narrow
+// per-purpose seam over the same concrete is the established deps.go pattern
+// (SegmentSearcher, SegmentShipper, SegmentVectorResolver).
+//
+// THE COVERED COUNT NO LONGER CARRIES AN UNKNOWN FLAG. It used to return a
+// conservative-unknown bool alongside the count, true when a shipped segment predated
+// the doc_count field and its coverage was therefore unknowable. That could only
+// happen on a manifest read; with the count coming from the engine's own resident
+// tally the flag was permanently false, so it was removed rather than pinned.
 type SegmentCoverageReader interface {
-	ShippedSegmentDocCount(ctx context.Context, gt kgtypes.GraphType, name string) (covered int, anyUnknown bool, err error)
+	ShippedSegmentDocCount(ctx context.Context, gt kgtypes.GraphType, name string) (covered int, err error)
 	// ResidentDocCount returns the LIVE in-memory engine resident doc count for one
 	// graph — the searchable pool's actual size, distinct from the SERVER's shipped
 	// count above. The status column renders both so a collapse (server intact, live

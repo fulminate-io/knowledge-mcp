@@ -7,6 +7,12 @@
 // (detectors_{latency,flow,efficiency}.go) materialize the unchanged DetectorReport DTOs
 // from those accumulators.
 //
+// This file holds the intake predicate, the histogram math and the add* fold; its three
+// siblings hold the rest of the same model. corpus_accumulators.go holds the accumulator
+// types the fold writes into plus their comparison helpers, corpus_finalize.go holds the
+// per-file reduction of quantities that depend on the whole lane, and corpus_merge.go holds
+// the associative merge that combines two partial corpora from the parallel loader.
+//
 // LOCKSTEP / provenance (re-authored per-repo, NOT imported — the sanctioned pattern;
 // the only shared cross-module contract is generated protobuf, AGENTS.md):
 //   - histPercentile + bucketRepresentative implement the same log2-histogram percentile
@@ -105,12 +111,19 @@ func wallMs(minTS, maxTS time.Time) int64 {
 
 // keep is the baseline row predicate that replaced the SQL where(): it drops the
 // synthetic-model marker and genuine is_meta==true rows from EVERY total, then applies the
-// Since/Until/Model/Tool/Project field filters. Per the CEO is_meta fix, a MISSING/false
-// is_meta is KEPT (parquet-go zero-fills the absent column to false) — the OPPOSITE of the
-// old duckdb NOT-NULL exclusion. Since is inclusive (record_ts >= Since); Until is
-// exclusive (record_ts < Until).
+// Since/Until/Model/Tool/Project field filters and the population predicate. Per the CEO
+// is_meta fix, a MISSING/false is_meta is KEPT (parquet-go zero-fills the absent column to
+// false) — the OPPOSITE of the old duckdb NOT-NULL exclusion. Since is inclusive
+// (record_ts >= Since); Until is exclusive (record_ts < Until).
+//
+// This is where a narrowed population is applied, and the only place: rows are dropped at
+// intake, before any accumulator sees them, so every detector fold downstream is the same
+// code reading a smaller corpus rather than a variant of itself.
 func (f Filters) keep(r transcripts.Row) bool {
 	if r.Model == syntheticModel || r.IsMeta {
+		return false
+	}
+	if !f.keepInPopulation(r) {
 		return false
 	}
 	if !f.Since.IsZero() && r.RecordTS.Before(f.Since) {
@@ -131,47 +144,28 @@ func (f Filters) keep(r transcripts.Row) bool {
 	return true
 }
 
-// Accumulators — each mirrors one agent read table (see corpus fields).
-
-// toolTimeAcc mirrors a usage_fact per-tool group: trustSum = SUM(trustworthy_duration_ms),
-// count = SUM(record_count) over ALL rows with that tool (trustworthy or not).
-type toolTimeAcc struct {
-	trustSum int64
-	count    int64
-}
-
-// tokenAcc is a per-dimension input/output token sum (usage_fact SUM(input/output_tokens)).
-type tokenAcc struct {
-	inSum  int64
-	outSum int64
-}
-
-// subagentAcc mirrors a usage_fact per-agent_id group: MIN(subagent_type), the min/max
-// record instants for the floor-epoch wall span, and the token sums.
-type subagentAcc struct {
-	subagentType  string
-	minTS, maxTS  time.Time
-	inSum, outSum int64
-}
-
-// chainAgentAcc mirrors the agentChainPG inner per-(session,agent_id) grain: MIN
-// subagent_type + the min/max instants for that agent's wall span.
-type chainAgentAcc struct {
-	subagentType string
-	minTS, maxTS time.Time
-}
-
-// dupKey is the (session,tool,hash) duplicate-command grain.
-type dupKey struct {
-	session, tool, hash string
-}
-
-// dupAcc mirrors a usage_duplicate_commands (session,tool,hash) group: run count, the
-// trustworthy-only wasted-duration sum, and MIN(sample_preview) byte-wise.
-type dupAcc struct {
-	count     int64
-	wastedSum int64
-	preview   string
+// keepInPopulation is the per-row half of the population selector.
+//
+// ScopeSessionTree matches on session id alone, which admits the main lane AND every
+// subagent lane it spawned: a subagent record carries its PARENT session id, measured
+// across all 2,042 on-disk subagent transcripts with zero mismatches.
+//
+// ScopeAll and ScopeTimeRange add nothing here. Since and Until are already applied above,
+// and duplicating the comparison would be a second implementation of one rule.
+func (f Filters) keepInPopulation(r transcripts.Row) bool {
+	switch f.resolved() {
+	case ScopeSessionTree:
+		return r.SessionID == f.SessionID
+	case ScopeSingle:
+		if f.AgentID != "" {
+			return r.AgentID == f.AgentID
+		}
+		return r.SessionID == f.SessionID && !r.IsSidechain
+	case ScopeAll, ScopeTimeRange:
+		return true
+	default:
+		return true
+	}
 }
 
 // corpus holds the corpus-wide accumulators built in a single pass over the kept rows.
@@ -197,9 +191,46 @@ type corpus struct {
 	sessions map[string]*tokenAcc
 	// DuplicateCommands (QueryDuplicateCommands): per (session,tool,hash).
 	dupes map[dupKey]*dupAcc
-	// TokensByTool / TokensBySubagentType (QueryBreakdown): per dimension token sums.
-	tokensByTool     map[string]*tokenAcc
+	// TokensBySubagentType (QueryBreakdown): per subagent-type token sums. There is no
+	// by-TOOL counterpart: the parser splits a turn into a zero-tool token row plus
+	// zero-token tool_use rows, so a per-tool token sum is structurally zero. What a tool
+	// actually costs is measured by the residency family below instead.
 	tokensBySubagent map[string]*tokenAcc
+	// ResultResidencyByTool: per-tool result size and its residency-weighted token cost.
+	residency map[string]*residencyAcc
+	// resultRows and modelInstants are PARTIAL-only working state for the residency fold,
+	// released by finalizeActive once the file's residency is computed.
+	resultRows    []residencyRow
+	modelInstants []time.Time
+	// lanesWithResultBytes counts lanes carrying at least one measured result size. It is
+	// 0 or 1 on a partial (a partial is one lane) and sums across the merge.
+	lanesWithResultBytes int64
+	// CorpusProvenance: the kept-row count and the record-instant window the report
+	// discloses as the basis its numbers rest on. Folded in the same pass as the totals.
+	recordCount  int64
+	minTS, maxTS time.Time
+	// laneCount is how many parquet files the loader's glob resolved. It is a LOADER-level
+	// fact assigned once by loadCorpus, not a per-row accumulation, so merge does not fold
+	// it — a partial corpus has no lane count of its own to contribute.
+	laneCount int64
+	// Lane-detail accumulators, folded ONLY when collectLane is set — that is, only when the
+	// corpus has been narrowed to a single lane and the family will actually be rendered.
+	// Over the whole corpus they would be per-row work for a family nobody reads.
+	collectLane  bool
+	laneTurns    int64
+	laneModelMs  int64
+	laneActiveMs int64
+	laneWaits    []LaneWaitRow
+	// laneInstants mirrors agentInstants for the lane fold: a MAIN-session lane carries no
+	// agent_id, so its active time has no per-agent list to be reduced from. Released by
+	// finalizeActive alongside agentInstants.
+	laneInstants []time.Time
+	// agentInstants holds one PARTIAL corpus's per-agent record instants while its file is
+	// being folded. Active time cannot be accumulated per row because nothing guarantees
+	// rows arrive in timestamp order, so the instants are collected and reduced once by
+	// finalizeActive — which then releases this map. A MERGED corpus never holds it, so the
+	// loader's per-file memory bound is unchanged.
+	agentInstants map[string][]time.Time
 }
 
 // newCorpus allocates an empty corpus with every accumulator map ready.
@@ -212,8 +243,9 @@ func newCorpus() *corpus {
 		chains:           map[string]map[string]*chainAgentAcc{},
 		sessions:         map[string]*tokenAcc{},
 		dupes:            map[dupKey]*dupAcc{},
-		tokensByTool:     map[string]*tokenAcc{},
 		tokensBySubagent: map[string]*tokenAcc{},
+		residency:        map[string]*residencyAcc{},
+		agentInstants:    map[string][]time.Time{},
 	}
 }
 
@@ -224,6 +256,7 @@ func (c *corpus) add(r transcripts.Row) {
 	trust := trustworthy(r)
 	c.addSessionAndGlobals(r)
 	c.addTokenDims(r)
+	c.addResidency(r)
 	if r.ToolName != "" {
 		c.addTool(r, trust)
 	}
@@ -233,11 +266,40 @@ func (c *corpus) add(r transcripts.Row) {
 	if r.ToolInputHash != "" {
 		c.addDuplicate(r, trust)
 	}
+	if c.collectLane {
+		c.addLane(r, trust)
+	}
+}
+
+// addLane folds one row into the single-lane accumulators. The model/tool split keys on
+// whether the row names a tool: the parser emits a turn as a zero-tool token row plus its
+// zero-token tool_use rows, so a row with no tool name carries the model's own latency and
+// a row with one carries that tool's execution span.
+func (c *corpus) addLane(r transcripts.Row, trust bool) {
+	c.laneInstants = append(c.laneInstants, r.RecordTS)
+	if r.ToolName == "" {
+		c.laneTurns++
+		if trust {
+			c.laneModelMs += r.DurationMs
+		}
+		return
+	}
+	if trust {
+		c.laneWaits = insertWait(c.laneWaits, LaneWaitRow{
+			ToolName: r.ToolName, DurationMs: r.DurationMs,
+			Background: r.RunInBackground, Preview: r.ToolInputPreview,
+		})
+	}
 }
 
 // addSessionAndGlobals folds the per-session token sums (avg-tokens) plus the global cache
-// + waste scalars. cache InputTokens == the global input sum used by cacheEfficiency.
+// + waste scalars, and the two provenance counters (kept-row count + record window) that
+// disclose what the totals were computed over. cache InputTokens == the global input sum
+// used by cacheEfficiency.
 func (c *corpus) addSessionAndGlobals(r transcripts.Row) {
+	c.recordCount++
+	c.extendWindow(r.RecordTS, r.RecordTS)
+
 	s := c.sessions[r.SessionID]
 	if s == nil {
 		s = &tokenAcc{}
@@ -263,11 +325,25 @@ func (c *corpus) addSessionAndGlobals(r transcripts.Row) {
 	}
 }
 
-// addTokenDims folds the per-tool and per-subagent-type token sums (QueryBreakdown). Both
-// dimensions COALESCE a missing value to the "" key, so every kept row participates.
+// addTokenDims folds the per-subagent-type token sums (QueryBreakdown), COALESCING a
+// missing value to the "" key so every kept row participates. subagent_type is a dimension
+// token rows genuinely carry, which is why it survives where the by-tool dimension did not.
 func (c *corpus) addTokenDims(r transcripts.Row) {
-	addToken(c.tokensByTool, r.ToolName, r)
 	addToken(c.tokensBySubagent, r.SubagentType, r)
+}
+
+// addResidency collects the working state the per-tool residency fold needs. A tool row
+// contributes its result's size; a token row contributes its instant, because a result's
+// cost is its size times the number of model calls that come AFTER it.
+func (c *corpus) addResidency(r transcripts.Row) {
+	if r.ToolName == "" {
+		c.modelInstants = append(c.modelInstants, r.RecordTS)
+		return
+	}
+	c.resultRows = append(c.resultRows, residencyRow{
+		tool: r.ToolName, ts: r.RecordTS,
+		bytes: r.ToolResultBytes, images: r.ToolResultImages, spilled: r.ToolResultSpilled,
+	})
 }
 
 // addTool folds a named-tool row into the per-tool time total (all rows) and — when
@@ -292,10 +368,13 @@ func (c *corpus) addTool(r transcripts.Row, trust bool) {
 	c.latencyTotal[r.ToolName]++
 }
 
-// addSubagent folds a sidechain row (agent_id<>”) into the per-agent wall accumulator
-// (QuerySubagentWallTime) AND the per-(session,agent) chain grain (agentChainPG). Caller
-// guarantees IsSidechain && AgentID != "".
+// addSubagent folds a sidechain row (agent_id non-empty) into the per-agent wall accumulator
+// (QuerySubagentWallTime) AND the per-(session,agent) chain grain (agentChainPG), and
+// collects the row's instant for the active-time reduction finalizeActive performs once the
+// whole file has been folded. Caller guarantees IsSidechain && AgentID != "".
 func (c *corpus) addSubagent(r transcripts.Row) {
+	c.agentInstants[r.AgentID] = append(c.agentInstants[r.AgentID], r.RecordTS)
+
 	sa := c.subagents[r.AgentID]
 	if sa == nil {
 		c.subagents[r.AgentID] = &subagentAcc{subagentType: r.SubagentType, minTS: r.RecordTS, maxTS: r.RecordTS, inSum: r.InputTokens, outSum: r.OutputTokens}
@@ -321,8 +400,8 @@ func (c *corpus) addSubagent(r transcripts.Row) {
 }
 
 // addDuplicate folds a hashed row into its (session,tool,hash) grain: run count over all
-// rows, wasted-duration over trustworthy rows only, and MIN(preview) byte-wise. Caller
-// guarantees ToolInputHash != "".
+// rows, wasted-duration AND its own trustworthy-row count over trustworthy rows only, and
+// MIN(preview) byte-wise. Caller guarantees ToolInputHash != "".
 func (c *corpus) addDuplicate(r transcripts.Row, trust bool) {
 	k := dupKey{session: r.SessionID, tool: r.ToolName, hash: r.ToolInputHash}
 	d := c.dupes[k]
@@ -333,120 +412,28 @@ func (c *corpus) addDuplicate(r transcripts.Row, trust bool) {
 		d.preview = minStr(d.preview, r.ToolInputPreview)
 	}
 	d.count++
+	if r.RunInBackground {
+		d.backgroundCount++
+	}
 	if trust {
+		d.trustCount++
 		d.wastedSum += r.DurationMs
 	}
 }
 
-// merge folds another partial corpus into c (associative, for the parallel file loader).
-// Every final ORDER BY has a deterministic tie-break, so merge order does not affect any
-// materialized result. Split across per-grain helpers to stay readable + under the
-// per-function budget.
-func (c *corpus) merge(o *corpus) {
-	c.mergeLatency(o)
-	c.mergeToolTime(o)
-	c.mergeScalars(o)
-	c.mergeSubagents(o)
-	c.mergeChains(o)
-	mergeTokens(c.sessions, o.sessions)
-	mergeTokens(c.tokensByTool, o.tokensByTool)
-	mergeTokens(c.tokensBySubagent, o.tokensBySubagent)
-	c.mergeDupes(o)
-}
-
-// mergeLatency folds the per-tool latency histogram + trustworthy totals.
-func (c *corpus) mergeLatency(o *corpus) {
-	for tool, buckets := range o.latencyHist {
-		dst := c.latencyHist[tool]
-		if dst == nil {
-			dst = map[int]int64{}
-			c.latencyHist[tool] = dst
-		}
-		for b, n := range buckets {
-			dst[b] += n
-		}
+// extendWindow widens the corpus's record-instant window to cover [minTS,maxTS]. A ZERO
+// minTS contributes nothing — it is the "folded no row yet" sentinel on the receiving side
+// and, on the contributing side, a row whose record_ts never decoded. Shared by the row
+// fold (one instant twice) and the partial merge (a whole partial's bounds).
+func (c *corpus) extendWindow(minTS, maxTS time.Time) {
+	if minTS.IsZero() {
+		return
 	}
-	for tool, n := range o.latencyTotal {
-		c.latencyTotal[tool] += n
+	if c.minTS.IsZero() {
+		c.minTS, c.maxTS = minTS, maxTS
+		return
 	}
-}
-
-// mergeToolTime folds the per-tool trustworthy-sum + all-row count.
-func (c *corpus) mergeToolTime(o *corpus) {
-	for tool, acc := range o.toolTime {
-		dst := c.toolTime[tool]
-		if dst == nil {
-			dst = &toolTimeAcc{}
-			c.toolTime[tool] = dst
-		}
-		dst.trustSum += acc.trustSum
-		dst.count += acc.count
-	}
-}
-
-// mergeScalars folds the global cache + waste sums.
-func (c *corpus) mergeScalars(o *corpus) {
-	c.cacheRead += o.cacheRead
-	c.inputTokens += o.inputTokens
-	c.cc1h += o.cc1h
-	c.cc5m += o.cc5m
-	c.apiErrorCount += o.apiErrorCount
-	c.interruptedCount += o.interruptedCount
-	c.maxTokCount += o.maxTokCount
-	c.maxTokOutput += o.maxTokOutput
-	c.maxTokDurationRaw += o.maxTokDurationRaw
-}
-
-// mergeSubagents folds the per-agent_id wall accumulators.
-func (c *corpus) mergeSubagents(o *corpus) {
-	for id, acc := range o.subagents {
-		dst := c.subagents[id]
-		if dst == nil {
-			cp := *acc
-			c.subagents[id] = &cp
-			continue
-		}
-		dst.subagentType = minStr(dst.subagentType, acc.subagentType)
-		dst.minTS, dst.maxTS = earlier(dst.minTS, acc.minTS), latest(dst.maxTS, acc.maxTS)
-		dst.inSum += acc.inSum
-		dst.outSum += acc.outSum
-	}
-}
-
-// mergeChains folds the per-(session,agent) chain grains.
-func (c *corpus) mergeChains(o *corpus) {
-	for sess, agents := range o.chains {
-		dst := c.chains[sess]
-		if dst == nil {
-			dst = map[string]*chainAgentAcc{}
-			c.chains[sess] = dst
-		}
-		for id, acc := range agents {
-			cur := dst[id]
-			if cur == nil {
-				cp := *acc
-				dst[id] = &cp
-				continue
-			}
-			cur.subagentType = minStr(cur.subagentType, acc.subagentType)
-			cur.minTS, cur.maxTS = earlier(cur.minTS, acc.minTS), latest(cur.maxTS, acc.maxTS)
-		}
-	}
-}
-
-// mergeDupes folds the per-(session,tool,hash) duplicate grains.
-func (c *corpus) mergeDupes(o *corpus) {
-	for k, acc := range o.dupes {
-		dst := c.dupes[k]
-		if dst == nil {
-			cp := *acc
-			c.dupes[k] = &cp
-			continue
-		}
-		dst.count += acc.count
-		dst.wastedSum += acc.wastedSum
-		dst.preview = minStr(dst.preview, acc.preview)
-	}
+	c.minTS, c.maxTS = earlier(c.minTS, minTS), latest(c.maxTS, maxTS)
 }
 
 // addToken folds a row's input/output tokens into a per-key token accumulator.
@@ -458,42 +445,4 @@ func addToken(m map[string]*tokenAcc, key string, r transcripts.Row) {
 	}
 	acc.inSum += r.InputTokens
 	acc.outSum += r.OutputTokens
-}
-
-// mergeTokens folds src token sums into dst (associative).
-func mergeTokens(dst, src map[string]*tokenAcc) {
-	for key, acc := range src {
-		d := dst[key]
-		if d == nil {
-			cp := *acc
-			dst[key] = &cp
-			continue
-		}
-		d.inSum += acc.inSum
-		d.outSum += acc.outSum
-	}
-}
-
-// minStr returns the byte-wise-lesser of two strings (MIN semantics).
-func minStr(a, b string) string {
-	if b < a {
-		return b
-	}
-	return a
-}
-
-// earlier / latest return the min / max of two record instants (INSTANT comparison, never
-// string comparison, which would misorder across differing UTC offsets).
-func earlier(a, b time.Time) time.Time {
-	if b.Before(a) {
-		return b
-	}
-	return a
-}
-
-func latest(a, b time.Time) time.Time {
-	if b.After(a) {
-		return b
-	}
-	return a
 }

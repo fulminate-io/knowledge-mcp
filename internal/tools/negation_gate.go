@@ -23,7 +23,9 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
@@ -31,9 +33,87 @@ import (
 
 // errFirstPartyEvidenceRequired is the rejection returned when a negation op
 // carries no quote, or a quote that does not match the contradicted node's
-// current source (a hallucinated or stale quote). The message tells the negator
-// exactly what to supply.
-const errFirstPartyEvidenceMsg = "first-party evidence required — quote the current source of %s you verified (supply verified_quote as a TOP-LEVEL param on this call — not inside metadata and not inside edge_evidence — holding a verbatim substring of the node's current source; a hallucinated or stale quote will not match)"
+// current source. The message tells the negator exactly what to supply.
+//
+// IT DESCRIBES THE CHECK, NEVER THE CALLER. The closing sentence states the test
+// that ran — a whitespace-normalized substring match against the source as it
+// reads now — because that is the only sentence a negator can act on. The earlier
+// wording ("a hallucinated or stale quote will not match") named a cause in the
+// caller instead, which is both an accusation and useless for the retry: the
+// commonest genuine failure is a quote taken verbatim from a SUPERSEDED revision,
+// and the mechanical statement tells that caller to re-read the node, where the
+// old wording told them they made something up. Do not reintroduce a good-faith
+// judgement here; the gate reads bytes and has no access to intent.
+const errFirstPartyEvidenceMsg = "first-party evidence required — quote the current source of %s you verified (supply verified_quote as a TOP-LEVEL param on this call — not inside metadata and not inside edge_evidence — holding a verbatim substring of the node's current source; the check is a whitespace-normalized substring match against that source as it reads now, so text absent from the current revision does not match)"
+
+// errComparedAgainstMsg is the clause appended to the base rejection above when
+// the quote was compared against CITED CODE. It names the origins the gate actually
+// read, which is the half the base message cannot supply: the base message states
+// the CHECK that ran, and this clause states WHAT it ran against, so a negator who
+// quoted a real line of the wrong node can see that rather than re-reading the node
+// they already quoted correctly.
+//
+// It is a SUFFIX to the fully-formatted base message, never a replacement for it,
+// and it is appended if and only if at least one resolved source carried a code:
+// origin. That condition is exactly "the code-ref path answered", because
+// resolveThoughtCurrentSource's two paths are mutually exclusive. So a rejection
+// that compared against the thought's own content carries no compared-against
+// clause.
+//
+// IT USED TO BE THE WHOLE STORY, AND IS NOT ANY MORE. Until the CEO amendment of
+// 2026-08-28 this clause's absence was load-bearing in the other direction too: a
+// rejection whose citations were ALL excluded — every edge method-less, or every
+// resolved node content-less — was byte-identical to one from a thought citing no
+// code at all, and that identity was a documented, test-pinned property. It cost
+// the caller in the worst position the only signal that would have helped them:
+// they had cited code, none of it was compared, and nothing said so. The
+// excluded-citations clause below now carries that half, so the two cases are
+// deliberately distinguishable. Do not restore the identity.
+const errComparedAgainstMsg = "; compared against the current source of: %s"
+
+// errExcludedCitationsMsg is the clause naming the code citations the comparison
+// set did NOT admit, each with the mechanical reason it was excluded. It is the
+// second half of the pair: errComparedAgainstMsg states what the gate read, this
+// states what it skipped and why, and together they leave no citation unaccounted
+// for.
+//
+// The two clauses are INDEPENDENT — a mixed citation set renders both — because
+// "some of your citations were compared and others were not" is the state a caller
+// is least able to infer and most needs told. Each entry states the check that
+// excluded the citation and the path to a verifiable one, in the same mechanical
+// register the base message keeps: it describes the EDGE or the NODE, never the
+// caller's good faith.
+const errExcludedCitationsMsg = "; code citations excluded from that comparison: %s"
+
+// The exclusion reasons. Each names the mechanical condition and the way out.
+//
+// THE TWO NO-CONTENT WORDINGS ARE NOT REDUNDANT. resolveThoughtCurrentSource
+// excludes a content-less citation unconditionally and deliberately does not
+// distinguish a file node (empty BY DESIGN — live source hangs off the symbol nodes
+// beneath it) from a symbol node with blank content (an indexing gap). That
+// identical treatment is correct for the RULE and wrong for the MESSAGE: telling a
+// caller their symbol node "is a file node" would be a confidently wrong
+// explanation, and pointing them at "a symbol-level node" when they already cited
+// one is advice they cannot act on. The id shape separates the two at zero cost
+// (pathBeforeLastColon), so the message discriminates where the rule does not.
+const (
+	excludedReasonMethodless    = "cited via links (method-less relates-to edge; cite born-linked code-refs to make a citation verifiable)"
+	excludedReasonFileNoContent = "file node carries no content (cite a symbol-level node)"
+	excludedReasonNoContent     = "cited node carries no content (the graph holds no source for it)"
+)
+
+// negationOriginRenderCap bounds how many entries EACH of the two clauses above
+// names — the compared-against origins and the excluded citations alike.
+//
+// No born-linked thought can reach it: codeReferentCap (code_referent_extract.go:17)
+// bounds a thought to ten distinct code referents, and bornLinkCodeEdges — called
+// once at thought create (intercept_thoughts_think.go:260) — is the only producer of
+// code-ref edges in the tree. The cap exists because a caller can hand-mint
+// unbounded relates-to edges through mutate(link) — carrying method "code-ref" for
+// the compared-against list, or carrying no method at all for the excluded one —
+// and an error message is a rendering path, which must declare its ceiling rather
+// than inherit whatever the graph happens to hold.
+const negationOriginRenderCap = 10
 
 // errNonNegationProofMsg is the rejection returned when a call that is NOT a
 // negation carries a negation-gate proof param. Naming the three shapes that DO
@@ -96,10 +176,12 @@ func recognizeNegationOp(toolName string, a mutateArgs, t thinkArgs) (negationOp
 // strings.Fields/Contains.
 func validateNegationQuote(ctx context.Context, gc GraphCaller, op negationOp) error {
 	if strings.TrimSpace(op.Quote) == "" {
-		// No quote = immediate miss. Fail-closed.
-		return firstPartyEvidenceError(op.ContradictedID)
+		// No quote = immediate miss. Fail-closed. Neither clause: nothing was resolved,
+		// nothing was compared and nothing was excluded, so naming sources OR
+		// exclusions here would assert reads that never happened.
+		return firstPartyEvidenceError(op.ContradictedID, nil, nil)
 	}
-	sources, err := resolveThoughtCurrentSource(ctx, gc, op.ContradictedID)
+	sources, contentLess, err := resolveThoughtCurrentSource(ctx, gc, op.ContradictedID)
 	if err != nil || len(sources) == 0 {
 		// Cannot fetch ground truth → cannot validate → reject: a negation of an
 		// unresolvable node has no first-party basis. Fail-closed.
@@ -114,13 +196,125 @@ func validateNegationQuote(ctx context.Context, gc GraphCaller, op negationOp) e
 			return nil // PASS: verbatim current-source substring, local to the cited range.
 		}
 	}
-	return firstPartyEvidenceError(op.ContradictedID)
+	// Every resolved source was read and none matched, so the rejection accounts for
+	// the whole citation set: the code origins it compared against (empty for the
+	// own-content path), and the citations it excluded (empty when there were none).
+	origins := codeOrigins(sources)
+	return firstPartyEvidenceError(op.ContradictedID, origins,
+		excludedCitationEntries(ctx, gc, op.ContradictedID, contentLess, origins))
 }
 
 // firstPartyEvidenceError builds the locked first-party-evidence rejection for a
-// contradicted node ID.
-func firstPartyEvidenceError(contradictedID string) error {
-	return fmt.Errorf(errFirstPartyEvidenceMsg, contradictedID)
+// contradicted node ID, appending the compared-against clause when origins is
+// non-empty and the excluded-citations clause when excluded is non-empty. With both
+// empty it reproduces the base message exactly, which is the case of a negation
+// against a node that cites no code at all.
+//
+// The clauses are appended in read order — what WAS compared, then what was NOT —
+// and each is omitted rather than rendered empty, so a message never claims a read
+// that returned nothing.
+func firstPartyEvidenceError(contradictedID string, origins, excluded []string) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, errFirstPartyEvidenceMsg, contradictedID)
+	if len(origins) > 0 {
+		fmt.Fprintf(&b, errComparedAgainstMsg, renderCappedList(origins))
+	}
+	if len(excluded) > 0 {
+		fmt.Fprintf(&b, errExcludedCitationsMsg, renderCappedList(excluded))
+	}
+	return errors.New(b.String())
+}
+
+// excludedCitationEntries renders one "code:<id> — <reason>" entry per code
+// citation the comparison set did not admit, sorted, or nil when none were.
+//
+// It unions the two exclusion mechanisms, which are discovered in different places
+// and cannot be found by one read: contentLess holds the citations that DID reach
+// resolution and were dropped for carrying no content (resolveThoughtCurrentSource
+// hands them over, having already paid for them), while the method-less citations
+// are the ones filtered out one layer earlier, before resolution, and cost a
+// dedicated read taken only here on the rejection path.
+//
+// SUBTRACTING comparedOrigins IS LOAD-BEARING, not tidying. A caller can cite the
+// same code node BOTH ways — a born-linked code-ref edge and a method-less
+// links-param edge to the same proxy — and that node IS in the comparison set. An
+// unsubtracted list would name it as excluded in the same message that names it as
+// compared against, which is not a cosmetic duplicate but a contradiction. Where a
+// node is excluded under both mechanisms, the content-less reason wins: that one
+// records how far the citation actually got.
+func excludedCitationEntries(ctx context.Context, gc GraphCaller, thoughtID string, contentLess, comparedOrigins []string) []string {
+	compared := make(map[string]bool, len(comparedOrigins))
+	for _, origin := range comparedOrigins {
+		compared[strings.TrimPrefix(origin, "code:")] = true
+	}
+	reasonByID := map[string]string{}
+	for _, id := range contentLess {
+		if id == "" || compared[id] {
+			continue
+		}
+		reasonByID[id] = contentLessCitationReason(id)
+	}
+	for _, id := range resolveMethodlessCitations(ctx, gc, thoughtID) {
+		if id == "" || compared[id] || reasonByID[id] != "" {
+			continue
+		}
+		reasonByID[id] = excludedReasonMethodless
+	}
+	if len(reasonByID) == 0 {
+		return nil
+	}
+	entries := make([]string, 0, len(reasonByID))
+	for id, reason := range reasonByID {
+		entries = append(entries, "code:"+id+" — "+reason)
+	}
+	// Sorted for the same reason codeOrigins sorts: the ids arrive in graph
+	// edge-read order, which is not stable, and an unsorted clause would render a
+	// non-deterministic message.
+	sort.Strings(entries)
+	return entries
+}
+
+// contentLessCitationReason picks between the two no-content wordings by ID SHAPE,
+// which is the only signal that distinguishes them without a second read: a code
+// symbol ID is path-then-symbol so pathBeforeLastColon yields its path, while a
+// file ID is a bare path with no colon and yields "". See the reason constants for
+// why the message discriminates where the resolution rule deliberately does not.
+func contentLessCitationReason(codeNodeID string) string {
+	if pathBeforeLastColon(codeNodeID) == "" {
+		return excludedReasonFileNoContent
+	}
+	return excludedReasonNoContent
+}
+
+// codeOrigins collects the Origin of every source that came from cited code, in
+// sorted order.
+//
+// THE SORT IS LOAD-BEARING, not tidiness. ResolveCitedCodeNodes builds each
+// thought's node slice in graph edge-read order (cited_code_staleness.go:87-97),
+// which is not a stable ordering, so an unsorted clause would render a
+// non-deterministic message and make any assertion over it flaky.
+func codeOrigins(sources []currentSource) []string {
+	var origins []string
+	for _, src := range sources {
+		if strings.HasPrefix(src.Origin, "code:") {
+			origins = append(origins, src.Origin)
+		}
+	}
+	sort.Strings(origins)
+	return origins
+}
+
+// renderCappedList joins at most negationOriginRenderCap items, and reports how
+// many it left out when there are more — an omitted item the reader cannot see is
+// worse than a longer message only if the omission is silent. It is shared by both
+// clauses (compared-against origins and excluded citations), which is why it is
+// named for the ceiling it applies rather than for either caller.
+func renderCappedList(items []string) string {
+	if len(items) <= negationOriginRenderCap {
+		return strings.Join(items, ", ")
+	}
+	return strings.Join(items[:negationOriginRenderCap], ", ") +
+		fmt.Sprintf(", +%d more", len(items)-negationOriginRenderCap)
 }
 
 // rejectNonNegationProofParams returns a non-nil error when a call the gate has

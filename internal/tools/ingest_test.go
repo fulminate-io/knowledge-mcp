@@ -58,15 +58,19 @@ func (c *capturingSink) last() *collectorwire.CollectResult {
 
 // h2cClient returns an *http.Client that dials plain TCP and speaks HTTP/2
 // prior-knowledge (h2c) to the httptest server — what the real MCP client does.
-func h2cClient() *http.Client {
-	return &http.Client{
-		Transport: &http2.Transport{
-			AllowHTTP: true,
-			DialTLSContext: func(_ context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-				return net.Dial(network, addr)
-			},
+// It takes t so it can drop its idle connections at cleanup: an httptest server's
+// Close does not unwind an h2c serverConn while a client still holds the connection
+// pooled, so an abandoned client pins that goroutine for the rest of the binary.
+func h2cClient(t *testing.T) *http.Client {
+	t.Helper()
+	tr := &http2.Transport{
+		AllowHTTP: true,
+		DialTLSContext: func(_ context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+			return net.Dial(network, addr)
 		},
 	}
+	t.Cleanup(tr.CloseIdleConnections)
+	return &http.Client{Transport: tr}
 }
 
 // testIngestHandler is a minimal in-process implementation of the
@@ -186,9 +190,9 @@ func TestIngest_CollectChunkFinalize_Roundtrip(t *testing.T) {
 
 	h2s := &http2.Server{}
 	srv := httptest.NewServer(h2c.NewHandler(mux, h2s))
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 
-	client := knowledgev1connect.NewIngestServiceClient(h2cClient(), srv.URL, connect.WithGRPC())
+	client := knowledgev1connect.NewIngestServiceClient(h2cClient(t), srv.URL, connect.WithGRPC())
 	sink := remote.NewUploadSink(client)
 
 	// A KNOWLEDGE GRAPH, NOT A CODE ONE, and the family is load-bearing for what
@@ -246,9 +250,9 @@ func TestIngest_MultiChunk_EdgesResolveAcrossChunks(t *testing.T) {
 	mux.Handle(path, h)
 	h2s := &http2.Server{}
 	srv := httptest.NewServer(h2c.NewHandler(mux, h2s))
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 
-	client := knowledgev1connect.NewIngestServiceClient(h2cClient(), srv.URL, connect.WithGRPC())
+	client := knowledgev1connect.NewIngestServiceClient(h2cClient(t), srv.URL, connect.WithGRPC())
 	sink := remote.NewUploadSink(client)
 
 	// Many nodes so DefaultBatchBytes is exceeded only if we shrink it; instead

@@ -150,28 +150,6 @@ func (c *client) RootDir() string { return c.rootDir }
 // than silently walking the process cwd.
 func (c *client) RootDirSet() bool { return c.rootDirSet }
 
-// WorkerRuntime returns the client-side dream runtime so the worker
-// trigger / status MCP intercepts (Phase H) can dispatch through it.
-// Returns a tools.WorkerRuntimeAPI rather than *dream.Runner so test
-// fakes in the tools package can satisfy ClientDeps without
-// instantiating a real Runner. *dream.Runner satisfies WorkerRuntimeAPI
-// structurally — no adapter needed in production.
-//
-// May return a nil interface (because c.runtime is a nil *dream.Runner)
-// if wireWorkerRuntime degraded at boot. InterceptWorker nil-checks
-// before dispatching. Note: a typed-nil *dream.Runner is NOT a nil
-// interface value, so the check inside InterceptWorker compares the
-// typed pointer indirectly via OnManualTrigger's own nil-receiver guard.
-func (c *client) WorkerRuntime() tools.WorkerRuntimeAPI {
-	if c.runtime == nil {
-		// Return an untyped nil so InterceptWorker's `rt == nil` check
-		// fires. Without this, the interface would carry a typed-nil
-		// *dream.Runner and the nil-check would pass through.
-		return nil
-	}
-	return c.runtime
-}
-
 // UsageAnalyzer returns the client-side agent-flow analyzer, lazily constructing it on
 // first use. It is built over the default ~/.knowledge/transcripts-cache root (no
 // router/network dependency). Returns a nil interface when the cache root cannot be
@@ -194,16 +172,8 @@ func (c *client) UsageAnalyzer() tools.UsageAnalyzerAPI {
 	return c.usageAnalyzer
 }
 
-// WorkerCRUD returns the client-side wire-loopback CRUD client for the worker
-// intercepts (nil-tolerant; see the workerCRUD/graphTypeCRUD field comment).
-func (c *client) WorkerCRUD() tools.WorkerCRUDAPI {
-	if c.workerCRUD == nil {
-		return nil
-	}
-	return c.workerCRUD
-}
-
-// GraphTypeCRUD mirrors WorkerCRUD for the graph_type intercepts (nil-tolerant).
+// GraphTypeCRUD returns the client-side wire-loopback CRUD client for the
+// graph_type intercepts (nil-tolerant; see the graphTypeCRUD field comment).
 func (c *client) GraphTypeCRUD() tools.GraphTypeCRUDAPI {
 	if c.graphTypeCRUD == nil {
 		return nil

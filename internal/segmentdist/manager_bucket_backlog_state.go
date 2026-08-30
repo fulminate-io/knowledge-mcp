@@ -270,12 +270,27 @@ func (m *Manager) snapshotDirty(gt kgtypes.GraphType, name string) (hnswSnap, bm
 // documents alongside the tombstoned one, and the drain's existing retiring/Unload
 // pair already retires spent tails correctly.
 //
-// A tombstoned id is DROPPED rather than re-offered as a superseded id. Re-offering
-// would dirty one partition per tombstoned id on every tick, and by the arithmetic at
-// the head of the drain file a set of ids the size of one segment already touches
-// essentially every partition — every tick would become a full-corpus re-emit.
-// Dropping suffices: the delete already killed those partition copies, and imported
-// blobs are seeded dead from this same set.
+// TWO DIFFERENT SETS DO TWO DIFFERENT JOBS HERE, and collapsing them is the mistake
+// this paragraph exists to prevent. THIS FILTER drops tombstoned ids from the pending
+// DOCUMENTS, unchanged and for the unchanged reason: a drain must not rebuild a
+// document that is already deleted. SEPARATELY, the drain offers a BOUNDED subset of
+// the same tombstone mask as SUPERSEDED ids, which is what takes the deleted documents
+// out of the blobs that still carry them.
+//
+// THE ARITHMETIC THAT ONCE FORBADE THAT RE-OFFER STILL HOLDS, AND IS WHY THE BOUND
+// EXISTS. Re-offering the WHOLE mask would dirty one partition per tombstoned id on
+// every tick, and by the arithmetic at the head of the drain file a set of ids the size
+// of one segment already touches essentially every partition — every tick would become
+// a full-corpus re-emit. The re-offer is therefore capped at
+// deferredReEmitPartitionBudget partitions per drain, and it DRAINS: an emitted
+// partition's ids leave the mask at the trim and are never offered again.
+//
+// WHAT THE DELETE ITSELF DID, stated precisely because the two halves are easy to
+// conflate. The delete killed the LIVE BIT for those ids: the copy is dead to every
+// reader and to every merge's accept predicate the moment the delete returns, and
+// imported blobs are seeded dead from this same set. What the delete no longer does is
+// re-emit the vector partition — the blob stops carrying the document when the deferred
+// re-emit lands.
 //
 // THE STALENESS BOUND, and what narrows it. The tombstone set remains
 // authoritative-but-stale for ids WITH NO LIVE DOCUMENT: it only grows as the delta

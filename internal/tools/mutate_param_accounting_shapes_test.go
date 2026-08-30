@@ -148,7 +148,7 @@ func TestInterceptMutate_CurrentlyWorkingShapes_NotRejected(t *testing.T) {
 		}
 		handled, res := InterceptMutate(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
 			Name:      "mutate",
-			Arguments: json.RawMessage(`{"operation":"answer","question_id":"q-1","conclusion":"the answer"}`),
+			Arguments: json.RawMessage(`{"operation":"answer","question_id":"q-1","summary":"the question is concluded","conclusion":"the answer"}`),
 		})
 		require.True(t, handled)
 		require.False(t, res.IsError, "question_id is the documented id alias: %s", toolResultText(res))
@@ -200,7 +200,7 @@ func TestInterceptMutate_CurrentlyWorkingShapes_NotRejected(t *testing.T) {
 		}
 		handled, res := InterceptMutate(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
 			Name: "mutate",
-			Arguments: json.RawMessage(`{"operation":"answer","id":"q-2","conclusion":"c",` +
+			Arguments: json.RawMessage(`{"operation":"answer","id":"q-2","summary":"the question is concluded","conclusion":"c",` +
 				`"findings":"fnd-1, fnd-2"}`),
 		})
 		require.True(t, handled)
@@ -276,7 +276,7 @@ func TestInterceptMutate_Upsert_RejectsUnroutableParams(t *testing.T) {
 			handled, res := InterceptMutate(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
 				Name: "mutate",
 				Arguments: json.RawMessage(
-					`{"operation":"upsert","id":"n-1","type":"worker","name":"w",` +
+					`{"operation":"upsert","id":"n-1","type":"graph_type_def","name":"w",` +
 						`"` + param + `":"x"}`),
 			})
 			require.True(t, handled, "a rejected param must be claimed, not fall through")
@@ -291,7 +291,7 @@ func TestInterceptMutate_Upsert_RejectsUnroutableParams(t *testing.T) {
 		handled, res := InterceptMutate(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
 			Name: "mutate",
 			Arguments: json.RawMessage(
-				`{"operation":"upsert","id":"n-1","type":"worker","name":"w",` +
+				`{"operation":"upsert","id":"n-1","type":"graph_type_def","name":"w",` +
 					`"description":"d","summary":"s","content":"c","status":"active",` +
 					`"source":"llm:claude","metadata":{"k":"v"}}`),
 		})
@@ -336,7 +336,7 @@ func TestInterceptMutate_BareLinkWithName_RoutesNotRejected(t *testing.T) {
 // `supports` in the schema newly buys. While it was undeclared it had no cell in
 // any arm's sets, so a rule create carrying it was SILENTLY DROPPED: the rule
 // arm never reads supports, and the gate cannot reject a key it has no cell for.
-// Declaring the param forced a classification on all 21 arms — consumed on
+// Declaring the param forced a classification on all 22 arms — consumed on
 // finding-create, rejected everywhere else — which converts that silent drop
 // into a loud error naming the field.
 //

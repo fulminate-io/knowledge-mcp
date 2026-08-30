@@ -33,6 +33,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 	"github.com/fulminate-io/knowledge-mcp/internal/projects/render"
 	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
+	"github.com/fulminate-io/knowledge-mcp/internal/validate"
 )
 
 // chargeArgs is the parsed thoughts(operation:charge) shape. Mirrors
@@ -44,6 +45,7 @@ type chargeArgs struct {
 	Polarity  string   `json:"polarity"`
 	Weight    float64  `json:"weight"`
 	Reasoning string   `json:"reasoning"`
+	Summary   string   `json:"summary"`
 	Evidence  []string `json:"evidence"`
 }
 
@@ -64,13 +66,17 @@ func handleChargeClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 
 	var a chargeArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
-		return errorResult("invalid arguments: " + err.Error())
+		return errorResult("invalid arguments: " + decodeArgsError(params.Arguments, err))
 	}
 	if a.Thought == "" {
 		a.Thought = a.ThoughtID
 	}
 	if verr := validateChargeArgs(a); verr != "" {
 		return errorResult(verr)
+	}
+	clampedSummary, summaryWarn, serr := validate.ClampSummary("thoughts(charge)", "summary", a.Summary)
+	if serr != nil {
+		return errorResult(serr.Error())
 	}
 
 	// Verify the parent exists and is a chargeable claim node — thought, finding,
@@ -107,10 +113,13 @@ func handleChargeClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 	resolvedEvidence := resolveChargeEvidence(ctx, gc, a.Evidence)
 
 	// Build the charge node + edges and lower onto the generic create_batch.
+	// SymbolName stays a truncation of the reasoning: that is a NAME derivation,
+	// which is out of scope. Summary is the author's.
 	chargeNode := knowledgev1.Node{
 		Type:       string(kgtypes.NodeCharge),
 		Source:     "llm:claude",
 		SymbolName: truncateAtWordCreate(a.Reasoning, 60),
+		Summary:    clampedSummary,
 		Content:    a.Reasoning,
 	}
 	kgtypes.SetValue(&chargeNode, "polarity", a.Polarity)
@@ -145,14 +154,22 @@ func handleChargeClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 	now := time.Now()
 	props := clientthought.ComputePropertiesFromCharges(chargesByThought[target], now)
 
-	// The charge-id line stays FIRST: the bench harness extracts the id by taking
-	// the first ID-like match in this text, so line ORDER is the contract. The
-	// Charged: line follows it and names the resolved node, so a caller who
-	// passed a prefix can copy the full id instead of guessing and re-charging.
-	msg := fmt.Sprintf("Charge recorded → ID: %s\nCharged: %s (%s)\nThought properties:\n  Valence: %.3f\n  Magnitude: %.3f\n  Consistency: %.3f\n  Self-trust: %.3f\n  Charges: %d (positive: %.1f, negative: %.1f)",
+	// The charge-id line stays first among the BODY lines: the bench harness
+	// extracts the id with `ID:\s*([0-9a-f]{16,})` (harness_battery.go
+	// idAfterMarkerPattern), so what it keys on is the "ID:" MARKER, and the
+	// Charged: line below carries none. The clamp advisory renders ABOVE the body
+	// through the shared warnings renderer like every other arm, and cannot be
+	// mistaken for the id because it carries no such marker. The Charged: line
+	// follows the id and names the resolved node, so a caller who passed a prefix
+	// can copy the full id instead of guessing and re-charging.
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Charge recorded → ID: %s\nCharged: %s (%s)\nThought properties:\n  Valence: %.3f\n  Magnitude: %.3f\n  Consistency: %.3f\n  Self-trust: %.3f\n  Charges: %d (positive: %.1f, negative: %.1f)",
 		chargeID, target, parent.Type, props.Valence, props.Magnitude, props.Consistency, props.SelfTrust,
 		props.ChargeCount, props.PositiveWeight, props.NegativeWeight)
-	return textResult(msg)
+	if summaryWarn != "" {
+		writeClientWarningsSection(&sb, []string{summaryWarn})
+	}
+	return textResult(sb.String())
 }
 
 // validateChargeArgs reproduces the charge validation gate. Returns "" when

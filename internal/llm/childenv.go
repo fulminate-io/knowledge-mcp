@@ -37,12 +37,3 @@ func ChildEnv(dropKeys []string, adds ...string) []string {
 	}
 	return append(out, adds...)
 }
-
-// NoWorkerRuntimeFlag is the cmd/knowledge flag that demotes a knowledge
-// process so it never starts the dream Runner: it short-circuits both
-// RunWorkerSubcommand and wireWorkerRuntime (see bootstrap.ParseFlags /
-// daemon wiring). It exists so a knowledge process can be run purely to
-// serve/exercise the graph without spinning its own background worker
-// runtime — e.g. the validation harness (cmd/server-bench) sets it on the
-// knowledge process it launches.
-const NoWorkerRuntimeFlag = "--no-worker-runtime"

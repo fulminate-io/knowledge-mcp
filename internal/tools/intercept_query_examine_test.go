@@ -21,9 +21,21 @@ import (
 // ids[] hydrate calls fire (the no-N+1 guarantee under test). It models a small
 // fixture: subject S with edges S→A (out) and B→S (in), and an ancestry chain
 // S ← P1 ← P2 (two CONTAINS-parents).
+// truncated makes the EDGE-neighborhood read answer with the response's
+// Truncated flag set, standing in for the 50,000-row edges ceiling engaging.
+// There is no live-corpus alternative: ceilingEngaged only fires when the result
+// actually FILLS the cap, which would need a node with 50,000 edges.
 type examineFake struct {
 	subjectID string
 	bulkCalls int
+	truncated bool
+}
+
+// Execute adapts the fake to the tools.GraphCaller seam InterceptQueryExamine
+// resolves through deps.GraphCaller(), so a test can drive the whole intercept
+// rather than the composer alone.
+func (f *examineFake) Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
+	return f.exec(ctx, req)
 }
 
 func (f *examineFake) exec(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
@@ -39,7 +51,7 @@ func (f *examineFake) exec(_ context.Context, req *knowledgev1.ExecuteRequest) (
 		return edgesResp(q, []*knowledgev1.Edge{
 			{FromId: f.subjectID, ToId: "A", Type: "relates-to"},
 			{FromId: "B", ToId: f.subjectID, Type: "informed-by"},
-		})
+		}, f.truncated)
 	case q.GetById() == f.subjectID:
 		// (1) subject node read (return mode unset → server defaults to nodes).
 		return nodesResp(t2nodes(knowledgev1.Node{Id: f.subjectID, SymbolName: "Subject", Type: "step", Status: "active"}))
@@ -84,9 +96,10 @@ func nodesResp(nodes []knowledgev1.Node) (*knowledgev1.ExecuteResponse, error) {
 	return enginetest.ResponseWithNodes(ptrs...), nil
 }
 
-// edgesResp takes the plan so the answer honors its from_id band.
-func edgesResp(q *knowledgev1.QueryPlan, edges []*knowledgev1.Edge) (*knowledgev1.ExecuteResponse, error) {
-	return &knowledgev1.ExecuteResponse{Edges: bandNarrow(edges, q)}, nil
+// edgesResp takes the plan so the answer honors its from_id band, and the
+// truncated flag so a fixture can stand in for a server row ceiling engaging.
+func edgesResp(q *knowledgev1.QueryPlan, edges []*knowledgev1.Edge, truncated bool) (*knowledgev1.ExecuteResponse, error) {
+	return &knowledgev1.ExecuteResponse{Edges: bandNarrow(edges, q), Truncated: truncated}, nil
 }
 
 func traversalResp(results []engine.TraversalResult) (*knowledgev1.ExecuteResponse, error) {

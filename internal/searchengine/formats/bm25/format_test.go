@@ -229,7 +229,7 @@ func TestMergeUnionMatchesScratch(t *testing.T) {
 		func(id searchengine.ExternalID) bool { return id != "b" },
 		func(searchengine.ExternalID) bool { return true },
 	}
-	mergedIface, err := Format{}.Merge(
+	mergedIface, err := mergeSegments(t,
 		[]searchengine.Segment[Query, *CorpusStats]{seg1Iface, seg2Iface}, accept)
 	require.NoError(t, err)
 	merged := mergedIface.(*mappedSegment)
@@ -271,7 +271,7 @@ func TestMergeUnionMatchesScratch(t *testing.T) {
 func TestBM25EmptySegmentRoundTrip(t *testing.T) {
 	// Merge over zero inputs yields an empty segment (the all-dead consolidation
 	// shape — every member dropped by accept reduces to this).
-	segIface, err := Format{}.Merge(nil, nil)
+	segIface, err := mergeSegments(t, nil, nil)
 	require.NoError(t, err)
 	require.Empty(t, segIface.IDs())
 

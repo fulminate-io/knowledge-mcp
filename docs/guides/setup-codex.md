@@ -120,8 +120,8 @@ argument tweaking. Point your editor at the daemon, install the assets, and the
 `codex-cli` provider runs as-is.
 
 See the [configuration guide](config.md) for the full `~/.knowledge/config` shape,
-including `[default]` and `[credentials]` (a Voyage key for vector search, a Linear
-key for the ticket backend).
+including `[default]`, `[embedder]`/`[reranker]` and `[credentials]` (an
+embedding-provider key for vector search, a Linear key for the ticket backend).
 
 ## See also
 

@@ -30,7 +30,7 @@ import (
 func TestActivityHookWakesPipelineOnWatermarkMove(t *testing.T) {
 	ctx := opCtx()
 	url, eng := startCountingEngine(t)
-	c := buildE2EClient(graphclient.NewGraphClientForURL(url), "http://cloud.invalid", newFakeAuthStore(), time.Hour)
+	c := closeRouterOnCleanup(t, buildE2EClient(graphclient.NewGraphClientForURL(url), "http://cloud.invalid", newFakeAuthStore(), time.Hour))
 
 	// A real pipeline over the same routing layer the client dispatches through
 	// — the production wiring, minus the LLM workers (nil summarizer + embedder

@@ -15,12 +15,15 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 )
 
-// voyageRerankURL is the Voyage rerank endpoint. Hardcoded — changing the
-// URL would mean a different model provider entirely.
+// voyageRerankURL is the Voyage rerank endpoint this arm posts to when the
+// resolved config supplies no base_url. This file is the ONE home of the
+// rerank endpoint literal.
 const voyageRerankURL = "https://api.voyageai.com/v1/rerank"
 
-// voyageRerankModel is the model used. rerank-2.5 is the current SOTA tier;
-// rerank-2.5-lite would be the cheaper/faster alternative if cost matters.
+// voyageRerankModel is the model this arm uses when the resolved config
+// supplies an empty model. The current SOTA tier; the lite variant is the
+// cheaper and faster alternative an operator can now name in [reranker]
+// rather than editing this constant.
 const voyageRerankModel = "rerank-2.5"
 
 // voyageRerankerInputCap is the absolute max documents per Voyage rerank
@@ -33,42 +36,83 @@ const voyageRerankModel = "rerank-2.5"
 const voyageRerankerInputCap = 1000
 
 // voyageReranker calls the Voyage AI rerank API to re-score a candidate set.
-// The production reranker diverges from the test-internal makeVoyageRerank
-// (in domains/store/rankeval/rerankers_voyage_test.go) in two ways:
+// Two properties of how it does so are worth stating outright, because both
+// were once recorded only as contrasts against a since-removed rank-evaluation
+// harness whose own windowing behaviour is no longer in the tree to compare
+// against:
 //
-//  1. NO client-side pre-windowing. The test ranks `min(len(in), windowSize)`
-//     docs; production sends ALL input docs (capped only by inputDocs at
-//     construction). This lets Voyage decide which top-K to surface using
-//     the request body's top_k field.
-//  2. The request body carries a top_k field — the rerank API returns only
+//  1. NO client-side pre-windowing. All input docs are sent, capped only by the
+//     inputDocs value supplied at construction (applyDocCap re-caps at
+//     voyageRerankerInputCap). Which top-K to surface is Voyage's decision,
+//     driven by the request body's top_k field rather than by trimming the
+//     candidate slice before the call.
+//  2. The request body carries that top_k field — the rerank API returns only
 //     this many scored docs back, rather than re-scoring all candidates.
 type voyageReranker struct {
 	apiKey    string
+	model     string // rerank model (defaults to voyageRerankModel)
 	inputDocs int    // max candidates per request; callers pass the operating pool, Rerank re-caps at voyageRerankerInputCap
 	topK      int    // top_k value sent in request body (response size)
 	baseURL   string // rerank endpoint URL (defaults to voyageRerankURL; overridden in tests)
 	client    *http.Client
 }
 
+func init() { RegisterProvider(ProviderVoyage, newVoyageFromConfig) }
+
+// newVoyageFromConfig is the registered factory. Empty cfg.BaseURL and
+// empty cfg.Model fall back to this arm's own defaults, so an operator
+// with no [reranker] section gets exactly today's behavior.
+func newVoyageFromConfig(_ context.Context, cfg *Config) (Reranker, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("%w: nil config", ErrInvalidConfig)
+	}
+	r := &voyageReranker{
+		apiKey:    cfg.APIKey,
+		model:     cfg.Model,
+		inputDocs: cfg.InputDocs,
+		topK:      cfg.TopK,
+		baseURL:   cfg.BaseURL,
+		client:    &http.Client{Timeout: 30 * time.Second},
+	}
+	if r.baseURL == "" {
+		r.baseURL = voyageRerankURL
+	}
+	if r.model == "" {
+		r.model = voyageRerankModel
+	}
+	return r, nil
+}
+
 // newVoyageReranker constructs a voyageReranker bound to the given
 // inputDocs cap and topK response size. inputDocs is defensively re-capped
 // at voyageRerankerInputCap in Rerank.
 func newVoyageReranker(apiKey string, inputDocs, topK int) *voyageReranker {
-	return &voyageReranker{
-		apiKey:    apiKey,
-		inputDocs: inputDocs,
-		topK:      topK,
-		baseURL:   voyageRerankURL,
-		client:    &http.Client{Timeout: 30 * time.Second},
+	r, err := newVoyageFromConfig(context.Background(), &Config{
+		Provider:  ProviderVoyage,
+		APIKey:    apiKey,
+		InputDocs: inputDocs,
+		TopK:      topK,
+	})
+	if err != nil {
+		// newVoyageFromConfig only errors on a nil config, which cannot
+		// happen here; the branch exists so the compiler is satisfied.
+		return nil
 	}
+	arm, ok := r.(*voyageReranker)
+	if !ok {
+		// Equally unreachable: the factory just above returns exactly this
+		// concrete type. Checked rather than asserted so a future factory
+		// change surfaces as a nil here instead of a panic in a caller.
+		return nil
+	}
+	return arm
 }
 
-// NewVoyage is the exported constructor for callers that need to inject
-// a real Voyage reranker outside the BootstrapConfig path — e.g. a serving
-// subcommand that bypasses kgstore.Init via DBOverride and must wire the
-// reranker manually so its search parity matches OSS.
-// Production OSS code goes through bootstrap. Mirrors
-// NewVoyageBinaryEmbedder.
+// NewVoyage is the exported constructor for a Voyage reranker at this
+// arm's defaults, built without going through the registry or the config
+// resolution. It is a thin wrapper over the config path, kept so callers
+// that hold a bare key and a pool size keep compiling; production goes
+// through rerank.NewReranker. Mirrors NewVoyageBinaryEmbedder.
 func NewVoyage(apiKey string, inputDocs, topK int) Reranker {
 	return newVoyageReranker(apiKey, inputDocs, topK)
 }
@@ -104,7 +148,7 @@ func (r *voyageReranker) buildRequestBody(query string, send []engine.SearchResu
 	body, err := json.Marshal(voyageRerankRequest{
 		Query:     query,
 		Documents: docs,
-		Model:     voyageRerankModel,
+		Model:     r.model,
 		TopK:      r.topK,
 	})
 	if err != nil {
@@ -137,8 +181,20 @@ type voyageRerankResponse struct {
 // Data[i].Index points back into the input docs slice. The output preserves
 // that descending-relevance order: out[i].Node = results[Data[i].Index].Node,
 // out[i].Score = Data[i].RelevanceScore.
+// The no-reranker short-circuit gates on having NEITHER a key NOR a custom
+// endpoint. It deliberately does NOT gate on the key alone: a KEYLESS
+// CUSTOM base_url is a valid configuration — the "key OR base_url, never
+// neither" rule the config layer enforces exists for exactly that case, a
+// local or compatible server that handles auth out-of-band. Gating on the
+// key alone made that configuration validate, construct, report itself
+// ready and then never issue a request, returning the input unreranked
+// with a nil error: a silent degrade indistinguishable from a reranker
+// that ran and preferred the input order. With no key and no custom
+// endpoint there is nothing to authenticate against the vendor endpoint,
+// so that case still short-circuits — today's documented behavior.
 func (r *voyageReranker) Rerank(ctx context.Context, query string, results []engine.SearchResult) ([]engine.SearchResult, error) {
-	if r.apiKey == "" || len(results) == 0 {
+	hasCustomEndpoint := r.baseURL != "" && r.baseURL != voyageRerankURL
+	if (r.apiKey == "" && !hasCustomEndpoint) || len(results) == 0 {
 		return results, nil
 	}
 

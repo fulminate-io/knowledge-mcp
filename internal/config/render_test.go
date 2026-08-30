@@ -84,7 +84,7 @@ func TestRenderStarter_Credentials(t *testing.T) {
 	// Unset credential keys are omitted entirely (they only appear
 	// lowercase inside the [credentials] table, never in the header
 	// comments which use the uppercase env-var names).
-	for _, omitted := range []string{"linear_api_key", "anthropic_api_key", "openai_api_key", "gemini_api_key"} {
+	for _, omitted := range []string{"linear_api_key", "anthropic_api_key", "openai_api_key", "gemini_api_key", "cohere_api_key"} {
 		if strings.Contains(body, omitted) {
 			t.Fatalf("unset credential %q must be omitted:\n%s", omitted, body)
 		}

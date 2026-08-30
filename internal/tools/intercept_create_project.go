@@ -55,12 +55,15 @@ func InterceptCreateProject(ctx context.Context, deps ClientDeps, params kgtools
 
 	var a createProjectArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
-		return true, errorResult("create_project: invalid arguments: " + err.Error())
+		return true, errorResult("create_project: invalid arguments: " + decodeArgsError(params.Arguments, err))
 	}
 	// Ahead of every validation and BEFORE any backend side-effect: the decode
 	// above discards any top-level key createProjectArgs has no field for, so an
 	// undeclared param would otherwise vanish into a successful create — and a
 	// rejection that ran later could leave an orphan remote project behind.
+	if err := rejectSwallowedParamValues("create_project", params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	if err := rejectUndeclaredParams("create_project", "", CreateProjectToolDef().InputSchema.Properties, params.Arguments); err != nil {
 		return true, errorResult(err.Error())
 	}
@@ -127,7 +130,7 @@ func InterceptCreateProject(ctx context.Context, deps ClientDeps, params kgtools
 	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Project created: %s → ID: %s", a.Name, projectID)
-	writeClientWarningsSection(&sb, warnings, "\n")
+	writeClientWarningsSection(&sb, warnings)
 	return true, textResult(sb.String() + " [graph: knowledge/default]")
 }
 
@@ -166,7 +169,7 @@ func createProjectLocalOnly(ctx context.Context, gc GraphCaller, a createProject
 	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Project created: %s → ID: %s", a.Name, projectID)
-	writeClientWarningsSection(&sb, warnings, "\n")
+	writeClientWarningsSection(&sb, warnings)
 	return textResult(sb.String() + " [graph: knowledge/default]")
 }
 

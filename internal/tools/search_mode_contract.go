@@ -2,7 +2,10 @@
 
 package tools
 
-import "encoding/json"
+import (
+	"context"
+	"encoding/json"
+)
 
 // search_mode_contract.go is the SINGLE definition of what each declared search
 // mode DOES on the client segment arms. Both segment arms (the knowledge/default
@@ -197,4 +200,35 @@ func searchModeConflict(raw json.RawMessage) string {
 			"vector to search with — drop query_vector, or use mode:hybrid or mode:vector"
 	}
 	return ""
+}
+
+// embedQueryForArm embeds a query for a client-side segment-search arm and
+// RETURNS THE ERROR rather than discarding it. Three outcomes: a usable vector, a
+// nil vector with a non-nil error (the embedder was configured and FAILED), or a
+// nil vector with a nil error (no embedder, or an empty query — nothing to embed).
+//
+// IT EXISTS BECAUSE THE DISCARD WAS THE DEFECT. Four composers each wrote
+// `if vec, err := emb.EmbedBinary(...); err == nil && len(vec) > 0` and dropped
+// the error inside the if-scope, so a failed embed silently degraded a hybrid
+// search to the BM25 arm with no signal at any layer. Spelling the capture ONCE is
+// what stops the fifth composer from reintroducing it: the honest shape is now the
+// shortest one to write.
+//
+// The caller pairs the returned vector with segmentSearchModeLabel to disclose
+// which arms actually ran, and surfaces the error on an empty result set — where
+// the degrade is least visible, because "no matches" and "the semantic arm never
+// ran" render identically.
+func embedQueryForArm(ctx context.Context, deps ClientDeps, query string) ([]byte, error) {
+	emb := deps.Embedder()
+	if emb == nil || query == "" {
+		return nil, nil
+	}
+	vec, err := emb.EmbedBinary(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	if len(vec) == 0 {
+		return nil, nil
+	}
+	return vec, nil
 }

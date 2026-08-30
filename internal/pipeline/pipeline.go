@@ -90,6 +90,12 @@ type Pipeline struct {
 	summaryProvider string
 	embedProvider   string
 
+	// embedDtype is the resolved [embedder] representation this pipeline's
+	// vectors are produced in (copied from cfg at New time). It is read by the
+	// HNSW ship path, which tags every document with it so the sealed segment
+	// carries the dtype its bytes actually are. See Config.EmbedDtype.
+	embedDtype string
+
 	// embedRPM is the shared PROACTIVE fixed-rate pacer for embed dispatch.
 	// One instance across all embed workers — the provider RPM limit is
 	// global. It is the proactive companion to the reactive backoff: it paces
@@ -177,12 +183,24 @@ type Pipeline struct {
 	// healFactory builds the per-graph auto-heal closure RegisterGraph injects
 	// into each collector. Built by BOOTSTRAP (the only layer where pipeline +
 	// segmentdist + tools are all visible) over the segment-presence probe
-	// (*segmentdist.Manager.HasShippedSegments) and rebuild driver core
+	// (the segment manager's presence probe) and rebuild driver core
 	// (tools.RebuildSegments) — kept OUT of this package so pipeline never
 	// imports tools (tools already imports pipeline). nil when no segment
 	// manager is wired (test fakes) → the heal closure is nil → the armed
 	// embed-drain heal-check no-ops.
 	healFactory func(gt kgtypes.GraphType, name string) func(ctx context.Context) error
+
+	// balanceFactory builds the per-graph QUIESCENCE-EDGE balance closure RegisterGraph
+	// injects into each collector. Built by BOOTSTRAP for the same reason healFactory
+	// is: it closes over the segment manager, the coverage read and the reap invoker,
+	// none of which this package may see (tools already imports pipeline, so the
+	// reverse edge would be a cycle).
+	//
+	// nil when nothing is wired (test fakes) → the per-collector closure is nil → the
+	// balance edge no-ops, exactly as an unwired heal factory leaves the heal edge
+	// inert. The factory itself also returns nil for a graph with no rebuildable
+	// segments, the same gate healFactory applies.
+	balanceFactory func(gt kgtypes.GraphType, name string) func(ctx context.Context) error
 
 	// workingSet is the set of graphs THIS client process has directly interacted
 	// with, and it is the sole source of the catalog pass's wanted set: the
@@ -210,6 +228,16 @@ type Pipeline struct {
 	// the gate is inert and every scan proceeds exactly as before.
 	collectGateFactory func(gt kgtypes.GraphType, name string) func() bool
 
+	// collectEpochFactory builds the per-graph COLLECT EPOCH source RegisterGraph
+	// injects into each collector. Built by BOOTSTRAP over the same collect runtime
+	// as collectGateFactory, for the same import-cycle reason.
+	//
+	// ITS NIL CASE IS THE OPPOSITE OF collectGateFactory's, deliberately: nil means
+	// the consumer has NO epoch source and must decline to answer, never that the
+	// epoch is zero. See AttachCollectEpochFactory for why a zero would silently
+	// disable the staleness expiry it exists to provide.
+	collectEpochFactory func(gt kgtypes.GraphType, name string) func() uint64
+
 	// activeSummarizer, when set, returns the "provider/model" label of the LIVE
 	// active summarizer entry (the fallback chain's highest-priority healthy
 	// entry). PipelineStatus reads it to surface the current summarizer rather
@@ -219,6 +247,18 @@ type Pipeline struct {
 	// calls, but the callback itself owns its synchronization (the production
 	// callback reads a thread-safe chainHealth).
 	activeSummarizer func() string
+
+	// segmentNudge, when set, records that a graph's segment cheap-tick stamp
+	// advanced past the last stamp this client poked on, so the segment reconcile
+	// loop pulls that graph's delta now rather than at its next periodic tick.
+	// Installed by the wiring layer via SetSegmentNudger; nil on a degraded or
+	// headless client that has no segment manager, where there is simply nothing to
+	// nudge.
+	//
+	// GUARDED BY genMu because RunGenPollLoop reads it while the wiring layer may
+	// still be installing it — the same publication hazard the rest of this struct's
+	// late-wired fields have, and the poll is the only reader.
+	segmentNudge func(gt kgtypes.GraphType, name string)
 
 	stopOnce sync.Once
 	stopErr  error
@@ -271,6 +311,7 @@ func New(cfg Config, client WireClient, summarizer SummarizerFunc, embedder Embe
 		embedCircuit:     newCircuitBreaker(cfg.CircuitBreakerThresholdOrDefault()),
 		summaryProvider:  cfg.SummaryProvider,
 		embedProvider:    cfg.EmbedProvider,
+		embedDtype:       cfg.EmbedDtype,
 		embedRPM:         newRPMGate(cfg.EmbedRPMOrDefault()),
 		summaryCh:        make(chan SummaryWork, cfg.SummaryChannelSizeOrDefault()),
 		embedCh:          make(chan EmbedWork, cfg.EmbedChannelSizeOrDefault()),
@@ -317,15 +358,18 @@ func (p *Pipeline) Start(ctx context.Context) error {
 	summaryOn := p.summaryEnabled()
 	embedOn := p.embedEnabled()
 
-	// Dispatchers — each axis only when its LLM function is configured.
+	// Dispatchers — each axis only when its LLM function is configured. The unit
+	// they batch to is the LEASE, not the provider-call cap: a worker takes a
+	// lease, spends it as N provider calls, and writes it back in ONE
+	// transaction. The provider-call cap still applies, inside the worker.
 	if summaryOn {
 		p.dispatcherWG.Go(func() {
-			runSummaryDispatcher(ctx, p.summaryCh, p.summaryBatchCh, p.cfg.SummaryBatchSizeOrDefault())
+			runSummaryDispatcher(ctx, p.summaryCh, p.summaryBatchCh, p.cfg.SummaryLeaseSizeOrDefault())
 		})
 	}
 	if embedOn {
 		p.dispatcherWG.Go(func() {
-			runEmbedDispatcher(ctx, p.embedCh, p.embedBatchCh, p.cfg.EmbedBatchSizeOrDefault())
+			runEmbedDispatcher(ctx, p.embedCh, p.embedBatchCh, p.cfg.EmbedLeaseSizeOrDefault())
 		})
 	}
 
@@ -343,58 +387,21 @@ func (p *Pipeline) Start(ctx context.Context) error {
 		}
 	}
 
+	// summary_lease / embed_lease are the writeback unit; summary_batch /
+	// embed_batch are the provider-call cap. Both are logged because they are now
+	// distinct and an operator sizing either one needs to see both without
+	// reading source.
 	slog.Info("pipeline: starting",
 		"summary_enabled", summaryOn,
 		"summary_workers", p.cfg.SummaryWorkersOrDefault(),
+		"summary_lease", p.cfg.SummaryLeaseSizeOrDefault(),
 		"summary_batch", p.cfg.SummaryBatchSizeOrDefault(),
 		"embed_enabled", embedOn,
 		"embed_workers", p.cfg.EmbedWorkersOrDefault(),
+		"embed_lease", p.cfg.EmbedLeaseSizeOrDefault(),
 		"embed_batch", p.cfg.EmbedBatchSizeOrDefault(),
 		"tick", p.cfg.TickOrDefault())
 	return nil
-}
-
-// Metrics returns a Snapshot of the current pipeline counters with the
-// channel-depth fields populated from len(channel).
-func (p *Pipeline) Metrics() Metrics {
-	m := p.metrics.snapshot()
-	m.SummaryQueued = int64(len(p.summaryCh))
-	m.EmbedQueued = int64(len(p.embedCh))
-	return m
-}
-
-// ResetFailedCounters zeroes the session-lifetime failed counters. Called
-// after clear_llm_failures removes the on-disk markers so the status
-// output reflects the live state.
-func (p *Pipeline) ResetFailedCounters() {
-	p.metrics.resetFailed()
-}
-
-// PausePipeline latches BOTH axes paused with an operator-supplied reason —
-// manual pause is deliberately WHOLE-PIPELINE (it pauses the summary AND embed
-// breakers), unlike an auto-trip which is per-axis. Both summary and embed
-// workers block at their wait sites until ResumePipeline is called. Manual pause
-// and an auto-trip share the same per-axis latch — there is no self-heal from
-// either.
-func (p *Pipeline) PausePipeline(reason string) {
-	p.summaryCircuit.pause(reason)
-	p.embedCircuit.pause(reason)
-}
-
-// ResumePipeline clears the paused latch on BOTH axes and wakes every parked
-// worker. It is the ONLY exit from a circuit break (auto-trip or manual pause),
-// and resumes whichever axis/axes are paused regardless of how they tripped.
-func (p *Pipeline) ResumePipeline() {
-	p.summaryCircuit.resume()
-	p.embedCircuit.resume()
-}
-
-// SetActiveSummarizer installs the live active-summarizer accessor the wiring
-// layer builds over the fallback chain's health state. fn returns the
-// "provider/model" label of the highest-priority healthy entry (or "" when the
-// chain is exhausted). Called once at wiring time, before status calls begin.
-func (p *Pipeline) SetActiveSummarizer(fn func() string) {
-	p.activeSummarizer = fn
 }
 
 // PipelineStatus returns the current per-axis paused state for operator

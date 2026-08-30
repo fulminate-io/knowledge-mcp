@@ -9,11 +9,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
@@ -55,17 +55,14 @@ type listDeps struct {
 	crud  GraphTypeCRUDAPI
 }
 
-func (d listDeps) LocalLiveness() LocalLiveness                 { return nil }
-func (d listDeps) Sink() collector.Sink                         { return nil }
-func (d listDeps) RootDir() string                              { return "" }
-func (d listDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
-func (d listDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
-func (d listDeps) WorkerReady() bool                            { return true }
-func (d listDeps) PropReady() bool                              { return true }
-func (d listDeps) PipelineReady() bool                          { return true }
-func (d listDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
-func (d listDeps) BanSet() *hivemonitor.BanSet                  { return nil }
-func (d listDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d listDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d listDeps) Sink() collector.Sink            { return nil }
+func (d listDeps) RootDir() string                 { return "" }
+func (d listDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+
+func (d listDeps) PropReady() bool     { return true }
+func (d listDeps) PipelineReady() bool { return true }
+
 func (d listDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return d.crud }
 func (d listDeps) Embedder() embed.BinaryEmbedder               { return nil }
 func (d listDeps) BackendResolver() BackendResolver             { return nil }

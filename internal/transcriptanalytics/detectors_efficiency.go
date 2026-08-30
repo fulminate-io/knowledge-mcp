@@ -73,7 +73,7 @@ func (c *corpus) avgTokensPerSession() AvgTokensPerSession {
 // tokenByDimension sums input/output tokens per dimension key and ranks them — mirroring the
 // agent's QueryBreakdown ordering (rollup_query.go:202): ordered by total tokens (in+out)
 // desc, then key asc. The empty-key group carries every row whose dimension value is empty
-// (COALESCE to ""). Shared by the by-tool and by-subagent-type detector families.
+// (COALESCE to ""). Used by the by-subagent-type detector family.
 func tokenByDimension(m map[string]*tokenAcc) []TokenByDimensionRow {
 	out := make([]TokenByDimensionRow, 0, len(m))
 	for key, acc := range m {
@@ -85,6 +85,68 @@ func tokenByDimension(m map[string]*tokenAcc) []TokenByDimensionRow {
 			return ti > tj
 		}
 		return out[i].Key < out[j].Key
+	})
+	return out
+}
+
+// ResultResidencyRow is one tool's share of the context its RESULTS occupied. It replaced a
+// per-tool token breakdown that was structurally zero: the parser splits a turn into a
+// zero-tool token row plus zero-token tool_use rows, so summing tokens by tool name put
+// every token under the empty key and every named tool at zero. What a tool actually costs
+// is not the tokens billed on its own row — there are none — but the context its result
+// occupies for the rest of the lane.
+//
+// RESIDENT TOKENS IS A DERIVED UPPER BOUND, NOT A MEASUREMENT. It assumes a result stays
+// resident for every model call that follows it in the lane, which context compaction
+// falsifies. Its inputs are estimates too: result tokens come from a bytes-per-token ratio
+// and a flat per-image cost, neither read from any usage record. SpilledResults is reported
+// beside them so a reader can see how much of a tool's figure rests on a size RECOVERED
+// from a spill notice rather than one directly observed.
+type ResultResidencyRow struct {
+	ToolName       string  `json:"tool_name"`
+	Calls          int64   `json:"calls"`
+	ResultBytes    int64   `json:"result_bytes"`
+	ResultTokens   int64   `json:"result_tokens"`
+	ResidentTokens int64   `json:"resident_tokens"`
+	PctBilledInput float64 `json:"pct_billed_input"`
+	SpilledResults int64   `json:"spilled_results"`
+}
+
+// resultResidencyByTool ranks tools by the context their results occupied — resident desc,
+// then tool asc, the same weight-desc-then-key-asc discipline tokenByDimension uses.
+//
+// PctBilledInput is measured against the corpus's TOTAL billed input, which is the sum of
+// cache reads, both ephemeral cache-creation splits and fresh input — the four quantities a
+// caller is actually charged for.
+//
+// A tool whose results measured NOTHING is omitted rather than emitted as a row of zeros.
+// Until a lane has been re-shipped, its result-size columns zero-fill, so an emit-always
+// fold would fill every report with a row per tool carrying no information — and a reader
+// could not tell those from a tool that genuinely returned nothing. The count of lanes
+// actually carrying measurements is disclosed as CorpusProvenance.LanesWithResultBytes,
+// which is where that question belongs.
+func (c *corpus) resultResidencyByTool() []ResultResidencyRow {
+	billed := float64(c.cacheRead + c.cc1h + c.cc5m + c.inputTokens)
+	out := make([]ResultResidencyRow, 0, len(c.residency))
+	for tool, acc := range c.residency {
+		if acc.resultBytes == 0 && acc.resultTokens == 0 {
+			continue
+		}
+		row := ResultResidencyRow{
+			ToolName: tool, Calls: acc.calls,
+			ResultBytes: acc.resultBytes, ResultTokens: acc.resultTokens,
+			ResidentTokens: acc.residentTokens, SpilledResults: acc.spilledResults,
+		}
+		if billed > 0 {
+			row.PctBilledInput = float64(acc.residentTokens) / billed * 100
+		}
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ResidentTokens != out[j].ResidentTokens {
+			return out[i].ResidentTokens > out[j].ResidentTokens
+		}
+		return out[i].ToolName < out[j].ToolName
 	})
 	return out
 }

@@ -15,11 +15,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/remote"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	logwire "github.com/fulminate-io/knowledge-mcp/internal/logwire"
@@ -37,17 +37,14 @@ type fakeDeps struct {
 	pipelineNotReady bool
 }
 
-func (d *fakeDeps) LocalLiveness() LocalLiveness                 { return nil }
-func (d *fakeDeps) Sink() collector.Sink                         { return d.sink }
-func (d *fakeDeps) RootDir() string                              { return "" }
-func (d *fakeDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
-func (d *fakeDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
-func (d *fakeDeps) WorkerReady() bool                            { return true }
-func (d *fakeDeps) PropReady() bool                              { return true }
-func (d *fakeDeps) PipelineReady() bool                          { return !d.pipelineNotReady }
-func (d *fakeDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
-func (d *fakeDeps) BanSet() *hivemonitor.BanSet                  { return nil }
-func (d *fakeDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d *fakeDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d *fakeDeps) Sink() collector.Sink            { return d.sink }
+func (d *fakeDeps) RootDir() string                 { return "" }
+func (d *fakeDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+
+func (d *fakeDeps) PropReady() bool     { return true }
+func (d *fakeDeps) PipelineReady() bool { return !d.pipelineNotReady }
+
 func (d *fakeDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return d.crud }
 func (d *fakeDeps) Embedder() embed.BinaryEmbedder               { return nil }
 func (d *fakeDeps) BackendResolver() BackendResolver             { return nil }
@@ -254,11 +251,18 @@ func TestRunLogsCollect_E2E(t *testing.T) {
 	assert.Positive(t, emittedByCount, "expected ≥1 EMITTED_BY edge into a proxy node in the materialized batch")
 }
 
-// TestRunLogsCollect_FetchSubgraphError validates the slog.Warn /
-// proceed-without-cloud-enrichment path: a transport error from
-// FetchCloudSubgraph must NOT fail the tool — runLogsCollect drops the
-// resolver/dep-checker and still ships the temporal-only pipeline output
-// via CollectChunk+Finalize (no proxy nodes, no resolver-dependent edges).
+// TestRunLogsCollect_FetchSubgraphError pins the FAIL-LOUD contract: a
+// transport error from FetchCloudSubgraph FAILS the collect and ships
+// nothing.
+//
+// It previously asserted the opposite — that the error was non-fatal and
+// the collect proceeded with a nil subgraph. That path silently downgraded
+// the result: no cloud resolver means no EMITTED_BY edges, and no
+// dependency checker means every CORRELATES_WITH edge is dropped by the
+// materializer's StructurallyConfirmed gate, so the caller received a log
+// graph that looked complete, carried only temporal correlations, and
+// reported success. The enrichment loss was invisible at the call site.
+// Log enrichment must not silently degrade to temporal-only.
 func TestRunLogsCollect_FetchSubgraphError(t *testing.T) {
 	provName := uniqueProviderName(t)
 	logwire.Register(provName, func() logwire.Provider {
@@ -275,23 +279,15 @@ func TestRunLogsCollect_FetchSubgraphError(t *testing.T) {
 		Type:     "logs",
 		Provider: provName,
 	})
-	require.False(t, result.IsError, "FetchCloudSubgraph error must be non-fatal; content=%q", resultText(result))
+	require.True(t, result.IsError,
+		"a FetchCloudSubgraph transport error must FAIL the collect, not degrade it; content=%q", resultText(result))
+	assert.Contains(t, resultText(result), "fetch cloud subgraph",
+		"the error must name the failed step so the operator can act on it")
+	assert.Contains(t, resultText(result), "simulated server outage",
+		"the underlying transport error must survive into the message")
 
-	require.NotNil(t, captured.req, "expected CollectChunk+Finalize to be called even after FetchCloudSubgraph failure")
-	assert.Equal(t, string(kgtypes.GraphLogs), captured.req.GraphType)
-
-	edges := batchEdgesFromProtoForTest(captured.req.GetEdges())
-	for _, e := range edges {
-		assert.NotEqualf(t, kgtypes.EdgeEmittedBy, e.Type,
-			"FetchCloudSubgraph error → no resolver → no EMITTED_BY edges should ship; got %+v", e)
-		if e.Type == kgtypes.EdgeCorrelatesWith {
-			// Temporal-only correlations may still ship, but the
-			// pipeline's StructurallyConfirmed gate should keep
-			// them out without a dep-checker. The materializer
-			// only emits CORRELATES_WITH for StructurallyConfirmed.
-			t.Fatalf("no dep-checker should mean no StructurallyConfirmed correlations on the wire; got %+v", e)
-		}
-	}
+	require.Nil(t, captured.req,
+		"nothing may ship after the fetch fails — a partial, silently un-enriched log graph is the outcome this gate exists to prevent")
 }
 
 // TestInterceptCollect_NotReadyGate (FAILS-WHEN-ABSENT) proves the bind-first

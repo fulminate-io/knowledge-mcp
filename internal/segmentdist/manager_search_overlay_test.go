@@ -14,6 +14,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/bm25"
 )
 
 // The two-pool fixture vocabulary. rareTerm is the query's TRUE match: it occurs
@@ -145,8 +146,8 @@ func TestSearchOverlayRanksByComparableScores(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	seedShippedFields(t, ctx, mgr, kgtypes.GraphCode, overlayBaseGraph, overlayBaseDocs())
 	seedShippedFields(t, ctx, mgr, kgtypes.GraphCode, overlayBranchGraph, overlayBranchDocs())
@@ -202,7 +203,7 @@ func TestSearchOverlayAdmitsBaseAndOverlay(t *testing.T) {
 		return append([]string(nil), admitted...)
 	}
 
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: false}, t.TempDir(), 0, WithGraphAdmitter(record)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0, WithGraphAdmitter(record)))
 
 	// Cold manager, no shipped segments: the result is empty rather than an error,
 	// and the admissions happen before any load.
@@ -223,8 +224,8 @@ func TestSearchOverlayFallsBackWhenOverlayPoolEmpty(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	seedShippedFields(t, ctx, mgr, kgtypes.GraphCode, overlayBaseGraph, overlayBaseDocs())
 
@@ -253,8 +254,8 @@ func TestSearchOverlayFusesHNSWArmAcrossPools(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	// BASE: the standard fixture — BM25-strong for the rare term.
 	baseDocs := overlayBaseDocs()
@@ -303,9 +304,16 @@ func TestSearchOverlayFusesHNSWArmAcrossPools(t *testing.T) {
 
 // TestSearchOverlayPoolErrors pins the ASYMMETRIC error contract in both
 // directions. Pool selectivity comes from the warm/cold asymmetry: load()
-// short-circuits on its once-guard, so a pool already searched never touches the
-// source again, while the other pool's cold cache falls through to the tripped
-// source.
+// short-circuits on its once-guard, so a pool already searched never re-reads L2,
+// while the other pool's cold cache falls through to a read that fails.
+//
+// THE FAILURE IS INJECTED AT THE L2 READ, not through a source double. Both legs used
+// to wrap the segment source and trip its List; nothing calls a source's List any
+// more, so a tripped double is never consulted — the hard-fail leg would see a nil
+// error and the degrade leg would pass vacuously, its "degraded" result being an
+// empty overlay pool that had nothing to contribute either way. An UNDECODABLE blob
+// planted in the cold pool's own cache root is the surviving way to make exactly one
+// pool's load fail, and it fails through the real read path rather than a stub.
 func TestSearchOverlayPoolErrors(t *testing.T) {
 	t.Parallel()
 
@@ -315,17 +323,20 @@ func TestSearchOverlayPoolErrors(t *testing.T) {
 		t.Parallel()
 
 		ctx := context.Background()
-		_, gc := newSegmentHarness(t)
-		fail := &failAfterWarmSource{inner: gc}
-		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(fail)))
+
+		cacheDir := t.TempDir()
+		mgr := closeOnCleanup(t, NewManager(cacheDir, 0))
 
 		// Warm the OVERLAY pool only; the base pool stays cold.
 		seedShippedFields(t, ctx, mgr, kgtypes.GraphCode, overlayBranchGraph, overlayBranchDocs())
 		warm, err := mgr.Search(ctx, kgtypes.GraphCode, overlayBranchGraph, query, nil, 10)
 		require.NoError(t, err)
-		require.NotEmpty(t, warm, "control: the overlay pool is warm and serving before the source is tripped")
+		require.NotEmpty(t, warm, "control: the overlay pool is warm and serving before the base read is broken")
 
-		fail.trip()
+		// The BASE pool is still cold, so its cache is indexed for the first time when
+		// SearchOverlay reaches it — after this file exists.
+		plantOrphan(t, graphCacheDirFor(cacheDir, kgtypes.GraphCode, overlayBaseGraph, bm25.New().Name()),
+			"undecodable-base", 64)
 
 		hits, err := mgr.SearchOverlay(ctx, kgtypes.GraphCode,
 			overlayBaseGraph, overlayBranchGraph, query, nil, 10)
@@ -337,9 +348,9 @@ func TestSearchOverlayPoolErrors(t *testing.T) {
 		t.Parallel()
 
 		ctx := context.Background()
-		_, gc := newSegmentHarness(t)
-		fail := &failAfterWarmSource{inner: gc}
-		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(fail)))
+
+		cacheDir := t.TempDir()
+		mgr := closeOnCleanup(t, NewManager(cacheDir, 0))
 
 		// Warm the BASE pool only; the overlay pool stays cold.
 		seedShippedFields(t, ctx, mgr, kgtypes.GraphCode, overlayBaseGraph, overlayBaseDocs())
@@ -347,7 +358,16 @@ func TestSearchOverlayPoolErrors(t *testing.T) {
 		require.NoError(t, err)
 		require.NotEmpty(t, want, "control: the base ranking the degrade must reproduce is non-empty")
 
-		fail.trip()
+		// THE OVERLAY POOL MUST FAIL, NOT MERELY BE EMPTY. An empty overlay contributes
+		// nothing and the result equals base for a reason that has nothing to do with
+		// degradation. It is seeded through a SEPARATE producer rooted at the same
+		// directory so THIS manager's overlay engine stays cold: an engine warmed here
+		// would short-circuit its load on the once-guard and never read the broken blob
+		// at all, and the leg would pass while proving nothing.
+		producer := closeOnCleanup(t, NewManager(cacheDir, 0))
+		seedShippedFields(t, ctx, producer, kgtypes.GraphCode, overlayBranchGraph, overlayBranchDocs())
+		plantOrphan(t, graphCacheDirFor(cacheDir, kgtypes.GraphCode, overlayBranchGraph, bm25.New().Name()),
+			"undecodable-overlay", 64)
 
 		got, err := mgr.SearchOverlay(ctx, kgtypes.GraphCode,
 			overlayBaseGraph, overlayBranchGraph, query, nil, 10)
@@ -366,8 +386,8 @@ func TestSearchOverlayAbsentTokenYieldsNoOverlayDomination(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	baseDocs := overlayBaseDocs()
 	branchDocs := overlayBranchDocs()

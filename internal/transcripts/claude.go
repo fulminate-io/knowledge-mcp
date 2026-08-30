@@ -16,9 +16,8 @@ import (
 
 // Claude transcripts are FLAT, self-contained records: every line carries its
 // own top-level cwd/gitBranch/version/sessionId/uuid/parentUuid envelope plus a
-// nested message. That is why these structs are richer than hivemonitor's
-// liveness-only claudeRecord (Type + Message.Content) — the column parser needs
-// the whole envelope, not just the tool-correlation fields.
+// nested message. These structs decode the whole envelope because that is what
+// the column parser needs, not just the tool-correlation fields.
 
 // claudeEnvelope is the top-level claude transcript line. Only the fields the
 // column parser reads are decoded; unknown fields are ignored.
@@ -90,9 +89,11 @@ type claudeUsage struct {
 }
 
 // claudeContentBlock is one content block: tool_use carries an id+name+input; a
-// tool_result carries the tool_use_id it answers and an is_error flag. Input is
-// the tool's argument payload (e.g. Bash {"command":...}), fingerprinted into
-// tool_input_hash/preview for duplicate-command detection.
+// tool_result carries the tool_use_id it answers, an is_error flag and the
+// content it returned. Input is the tool's argument payload (e.g. Bash
+// {"command":...}), fingerprinted into tool_input_hash/preview for
+// duplicate-command detection; Content is what the call handed back, sized into
+// tool_result_bytes/images (claude_result_size.go).
 type claudeContentBlock struct {
 	Type      string          `json:"type"`
 	ID        string          `json:"id"`
@@ -100,6 +101,7 @@ type claudeContentBlock struct {
 	ToolUseID string          `json:"tool_use_id"`
 	IsError   bool            `json:"is_error"`
 	Input     json.RawMessage `json:"input"`
+	Content   json.RawMessage `json:"content"`
 }
 
 // claudeBlocks decodes a message's content as a block array, tolerating the
@@ -269,7 +271,9 @@ func (s *claudeScan) tokenRow(base Row, msg *claudeMsg) Row {
 }
 
 // contentBlock handles one content block: tool_use appends a tool Row and
-// registers its id; tool_result correlates back to that Row by id.
+// registers its id; tool_result correlates back to that Row by id, stamping both
+// the call's duration and the size of what it returned onto the SAME row, so a
+// tool's cost in time and its cost in context sit side by side.
 func (s *claudeScan) contentBlock(base Row, msg *claudeMsg, b claudeContentBlock) {
 	switch b.Type {
 	case "tool_use":
@@ -278,6 +282,7 @@ func (s *claudeScan) contentBlock(base Row, msg *claudeMsg, b claudeContentBlock
 		tr.ToolName = b.Name
 		tr.ToolUseID = b.ID
 		tr.ToolInputHash, tr.ToolInputPreview = toolInputFingerprint(b.Input)
+		tr.RunInBackground = runInBackground(b.Input)
 		s.rows = append(s.rows, tr)
 		if b.ID != "" {
 			s.toolRowByID[b.ID] = len(s.rows) - 1
@@ -296,6 +301,8 @@ func (s *claudeScan) contentBlock(base Row, msg *claudeMsg, b claudeContentBlock
 		// tool_result.ts − tool_use.ts: the tool Row already carries its
 		// tool_use timestamp in RecordTS.
 		s.rows[idx].DurationMs = clampedDeltaMs(s.rows[idx].RecordTS, base.RecordTS)
+		s.rows[idx].ToolResultBytes, s.rows[idx].ToolResultImages, s.rows[idx].ToolResultSpilled =
+			measureToolResult(b.Content)
 	}
 }
 

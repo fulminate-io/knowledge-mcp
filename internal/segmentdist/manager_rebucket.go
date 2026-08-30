@@ -5,6 +5,7 @@ package segmentdist
 import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/bm25"
 )
 
 // distinctResidentDocCount exposes the engine's DISTINCT resident doc count through
@@ -19,6 +20,27 @@ func (m *distManager[Q, S]) distinctResidentDocCount() int {
 // which re-serializes every payload to answer what is only a set-size question.
 func (m *distManager[Q, S]) residentSegmentCount() int {
 	return len(m.engine.ResidentSegmentIDs())
+}
+
+// ResidentSegmentCount reports HOW MANY sealed segments one graph's engine for the
+// given format currently holds. It is the PRESENT-SET operand of the rebuild
+// cardinality gate: the derivation says how many partitions the corpus should
+// occupy, and this says how many the engine actually holds.
+//
+// IT TAKES NO ctx AND RETURNS NO ERROR, and that is a real consequence of the rail
+// deletion rather than a simplification. The operand it replaces was a manifest read
+// BACK FROM THE SERVER — a network call that could fail, which is why its caller had
+// a whole paragraph about a failed read-back not being a failed rebuild. This is one
+// atomic snapshot load and a slice length: it cannot fail, so no caller needs to
+// decide what a failure means.
+//
+// It counts the cheap id-only snapshot walk rather than Export, which re-serializes
+// every payload to answer what is only a set-size question.
+func (m *Manager) ResidentSegmentCount(gt kgtypes.GraphType, name, format string) int {
+	if format == bm25.New().Name() {
+		return m.bm25ManagerFor(gt, name).residentSegmentCount()
+	}
+	return m.managerFor(gt, name).residentSegmentCount()
 }
 
 // ReBucketNeeded reports whether a graph's resident layout is a FULL DOUBLING behind

@@ -49,11 +49,14 @@ func InterceptCreateResearch(ctx context.Context, deps ClientDeps, params kgtool
 	}
 	var a createResearchArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
-		return true, errorResult("invalid arguments: " + err.Error())
+		return true, errorResult("invalid arguments: " + decodeArgsError(params.Arguments, err))
 	}
 	// Ahead of every validation and every write: the decode above discards any
 	// top-level key createResearchArgs has no field for, so an undeclared param
 	// would otherwise vanish into a successful create.
+	if err := rejectSwallowedParamValues("create_research", params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	if err := rejectUndeclaredParams("create_research", "", CreateResearchToolDef().InputSchema.Properties, params.Arguments); err != nil {
 		return true, errorResult(err.Error())
 	}
@@ -103,22 +106,22 @@ func InterceptCreateResearch(ctx context.Context, deps ClientDeps, params kgtool
 	if ferr != nil || root == nil || root.Id == "" {
 		var oneLine strings.Builder
 		fmt.Fprintf(&oneLine, "Research created: %s → ID: %s [graph: knowledge/default]", a.Name, researchID)
-		writeClientWarningsSection(&oneLine, warnings, "\n\n")
+		writeClientWarningsSection(&oneLine, warnings)
 		return true, textResult(oneLine.String())
 	}
-	render.RenderTree(ctx, gc, &sb, root, 0, 3)
+	childIndex, byID, dependsOn, truncated := render.AssembleSubtree(ctx, gc, root.Id, 3)
+	render.RenderTreeFromIndex(&sb, root, 0, 3, childIndex, dependsOn)
 	sb.WriteString(" [graph: knowledge/default]")
-	writeClientWarningsSection(&sb, warnings, "\n\n")
-	return true, textResult(sb.String())
+	writeClientWarningsSection(&sb, warnings)
+	return true, render.AppendTruncationNotice(textResult(sb.String()), truncated, len(byID))
 }
 
 // clampResearchSummaries validates the research name and clamps the
 // author-supplied research + question summaries in place (a is a pointer so the
-// clamped values flow into buildResearchGraph). Each author summary is clamped
-// at a word boundary with a non-fatal warning rather than hard-rejected;
-// emptiness still hard-rejects. Questions WITHOUT an author summary keep the
-// hard DerivedSummary validation on the question+context derivation. Returns the
-// accumulated clamp warnings plus the first hard validation error.
+// clamped values flow into buildResearchGraph). Every summary is the author's:
+// each is clamped at a word boundary with a non-fatal warning rather than
+// hard-rejected, and emptiness hard-rejects under the indexed field path.
+// Returns the accumulated clamp warnings plus the first hard validation error.
 func clampResearchSummaries(a *createResearchArgs) (warnings []string, err error) {
 	if err := validate.Name("create_research", a.Name); err != nil {
 		return nil, err
@@ -132,23 +135,13 @@ func clampResearchSummaries(a *createResearchArgs) (warnings []string, err error
 		warnings = append(warnings, w)
 	}
 	for i := range a.Questions {
-		if a.Questions[i].Summary != "" {
-			c, qw, qerr := validate.ClampSummary("create_research", fmt.Sprintf("questions[%d].summary", i), a.Questions[i].Summary)
-			if qerr != nil {
-				return nil, qerr
-			}
-			a.Questions[i].Summary = c
-			if qw != "" {
-				warnings = append(warnings, qw)
-			}
-			continue
+		c, qw, qerr := validate.ClampSummary("create_research", fmt.Sprintf("questions[%d].summary", i), a.Questions[i].Summary)
+		if qerr != nil {
+			return nil, qerr
 		}
-		// No author summary — buildResearchGraph derives one from question +
-		// context. Validate that DERIVED text (same func, so validated text ==
-		// stored text) with an actionable over-length error.
-		derived := projects.DeriveQuestionSummary(a.Questions[i].Question, a.Questions[i].Context)
-		if err := validate.DerivedSummary("create_research", fmt.Sprintf("questions[%d].summary", i), "question + context", derived); err != nil {
-			return nil, err
+		a.Questions[i].Summary = c
+		if qw != "" {
+			warnings = append(warnings, qw)
 		}
 	}
 	return warnings, nil
@@ -174,16 +167,12 @@ func buildResearchGraph(args projects.ResearchArgs) (nodes []*knowledgev1.Node, 
 	prevQIdx := -1
 	for _, q := range args.Questions {
 		qIdx := len(nodes)
-		summary := q.Summary
-		if summary == "" {
-			summary = projects.DeriveQuestionSummary(q.Question, q.Context)
-		}
 		nodes = append(nodes, &knowledgev1.Node{
 			Type:        string(kgtypes.NodeQuestion),
 			Source:      "llm:claude",
 			SymbolName:  q.Question,
 			Description: q.Question,
-			Summary:     summary,
+			Summary:     q.Summary,
 			Content:     q.Context,
 			Status:      "open",
 		})

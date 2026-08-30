@@ -150,7 +150,7 @@ const systemPromptDelimiter = "\n\n----\n\n"
 //     default).
 //   - Tools → -c mcp_servers.knowledge.{url,enabled_tools} overrides.
 //     codex has no inline MCP-config flag (claude-cli's --mcp-config), so the
-//     dream-worker tool surface is injected as config: a streamable-HTTP MCP
+//     knowledge tool surface is injected as config: a streamable-HTTP MCP
 //     server "knowledge" whose url is the shared knowledge daemon's loopback
 //     /mcp endpoint (no spawned child — the daemon runs one shared runtime).
 //     enabled_tools is the bare-name allowlist (codex scopes it to the server

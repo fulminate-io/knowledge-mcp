@@ -11,8 +11,9 @@ import (
 )
 
 // TestRenderInspectNode_Golden asserts the three documented sections match the
-// server tools_query_inspect.go markdown: Composite View, Ancestry (back-arrow
-// chain with id truncated to 12), Edges (peer type+name).
+// markdown the server examine render emitted before it moved client-side:
+// Composite View, Ancestry (back-arrow chain with id truncated to 12), Edges
+// (peer type+name).
 func TestRenderInspectNode_Golden(t *testing.T) {
 	data := InspectData{
 		Node: &knowledgev1.Node{

@@ -65,7 +65,7 @@ func (c *AWSCollector) Collect(ctx context.Context, _ string, opts collector.Col
 			rm.Record(target.ID, target.ResolutionID)
 		}
 		slog.Info("aws: cascading", "collector", target.Collector, "id", target.ID)
-		if cascadeErr := collector.Collect(ctx, target.Collector, target.ID, opts); cascadeErr != nil {
+		if _, cascadeErr := collector.Collect(ctx, target.Collector, target.ID, opts); cascadeErr != nil {
 			slog.Warn("aws: cascade failed", "collector", target.Collector, "id", target.ID, "error", cascadeErr)
 		}
 	}

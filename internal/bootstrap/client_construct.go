@@ -11,10 +11,8 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/remote"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphtypecrud"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/tools"
-	"github.com/fulminate-io/knowledge-mcp/internal/workercrud"
 	"github.com/fulminate-io/knowledge-mcp/internal/workingset"
 )
 
@@ -149,15 +147,6 @@ func constructClient(f Config) *client {
 		// keychain source. This is also what carries the resolved
 		// Config.AuthToken (flag/config) into those transports.
 		cloudTokenSource: tokenSource,
-		// claimRegistry is created here so ClaimRegistry() (consumed by
-		// InterceptHive) and the daemon Monitor (wired in runServe) share the
-		// SAME instance — the claims InterceptHive records are the ones the
-		// Monitor renews.
-		claimRegistry: hivemonitor.NewRegistry(),
-		// banSet is created here so the InterceptHive ban gate (via BanSet())
-		// and the daemon Monitor (which records mcp→harness resolutions and bans
-		// cloud-evicted members) share the SAME instance.
-		banSet: hivemonitor.NewBanSet(),
 		// collectRuntime is constructed EARLY and unconditionally (zero
 		// dependencies — no router/pipeline) so a detached collect always has a
 		// runtime to launch under once it passes the PipelineReady gate.
@@ -185,14 +174,12 @@ func constructClient(f Config) *client {
 		inner: remote.NewUploadSinkFunc(c.router.IngestClient),
 		admit: func(gt kgtypes.GraphType, name string) { c.AdmitGraph(gt, name, "collect") },
 	}
-	// Wire the worker CRUD client through the login-aware Router so a
-	// logged-in (cloud-only, no local server) daemon serves worker CRUD
+	// Wire the graph-type CRUD client through the login-aware Router so a
+	// logged-in (cloud-only, no local server) daemon serves graph-type CRUD
 	// from cloud instead of dialing :15022. Every CRUD call rides the
 	// Router's per-call Execute dispatch (cloud when logged in, local
 	// otherwise) so the active backend stays the source of truth for
-	// graph-resident NodeWorker rows.
-	c.workerCRUD = workercrud.New(c.router)
-	// Same login-aware Router routing for graph-resident NodeGraphTypeDef rows.
+	// graph-resident NodeGraphTypeDef rows.
 	c.graphTypeCRUD = graphtypecrud.New(c.router)
 	// Install as the process-wide default factory too so call-sites that
 	// don't route through c.sink (e.g. codegraph.Sync in an intercept

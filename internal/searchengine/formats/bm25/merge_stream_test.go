@@ -3,6 +3,8 @@
 package bm25
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"math/rand/v2"
@@ -63,6 +65,45 @@ func mergeHeavyDocs(n, termsPerField int) []searchengine.Document {
 	return docs
 }
 
+// mergeToBytes runs the streamed merge into a caller-owned file and returns the
+// merged segment's bytes.
+//
+// IT IS TEST-ONLY PLUMBING, not a wrapper around anything production does. The
+// production path never reads its own output back: the engine maps the finished
+// file instead, which is the whole point of the change. A test that wants the
+// merged bytes in memory has to read them itself, so the write-size-read
+// sequence lives here rather than at each call site.
+//
+// IT TAKES kind BECAUSE MergeTo DOES NOT. MergeTo emits defaultDictKind, so
+// routing these per-encoding tests through it would silently collapse three
+// cases into one; streamMergeToFile is the layer that still carries the
+// parameter, and it is the layer these tests are about.
+func mergeToBytes(t *testing.T, ins []*mappedSegment, accept []func(searchengine.ExternalID) bool, kind byte) ([]byte, error) {
+	t.Helper()
+	f, err := os.Create(filepath.Join(t.TempDir(), "merged.seg")) //nolint:gosec // test-owned temp path
+	require.NoError(t, err)
+	defer func() { require.NoError(t, f.Close()) }()
+
+	n, err := streamMergeToFile(f, ins, accept, kind)
+	if err != nil {
+		return nil, err
+	}
+	// The engine owns this in production; here the test is the engine.
+	require.NoError(t, f.Truncate(n))
+	return os.ReadFile(f.Name()) //nolint:gosec // test-owned temp path
+}
+
+// mergeToSegment is mergeToBytes followed by the decode the engine performs, so
+// a test can assert on the merged SEGMENT rather than on its bytes.
+func mergeToSegment(t *testing.T, ins []*mappedSegment, accept []func(searchengine.ExternalID) bool, kind byte) (*mappedSegment, error) {
+	t.Helper()
+	blob, err := mergeToBytes(t, ins, accept, kind)
+	if err != nil {
+		return nil, err
+	}
+	return openSegmentV2(blob)
+}
+
 // dropEverySeventh is the liveness filter the merge tests run under. A merge
 // with nothing dropped never exercises the remap's -1 arm or the dropped-term
 // omission, so the filtered shape is the one worth asserting on.
@@ -113,7 +154,7 @@ func TestStreamedMergeMatchesMapMerge(t *testing.T) {
 	terms := sortedKeys(buildAccumulator(t, docs).docFreq)
 	for _, dk := range dictKinds {
 		t.Run(dk.name, func(t *testing.T) {
-			got, err := mergeSegmentsV2(ins, accept, dk.kind)
+			got, err := mergeToSegment(t, ins, accept, dk.kind)
 			require.NoError(t, err)
 			gotStats := Format{}.AggregateStats([]searchengine.Segment[Query, *CorpusStats]{got})
 
@@ -151,11 +192,11 @@ func TestStreamedMergeByteDeterministic(t *testing.T) {
 
 	for _, dk := range dictKinds {
 		t.Run(dk.name, func(t *testing.T) {
-			first, err := streamMergeToBlob(ins, accept, dk.kind)
+			first, err := mergeToBytes(t, ins, accept, dk.kind)
 			require.NoError(t, err)
 			require.NotEmpty(t, first)
 			for i := range 4 {
-				again, err := streamMergeToBlob(ins, accept, dk.kind)
+				again, err := mergeToBytes(t, ins, accept, dk.kind)
 				require.NoError(t, err)
 				require.Equal(t, first, again, "merge %d diverged from the first", i)
 			}
@@ -205,7 +246,7 @@ func TestMergeOmitsFullyDroppedTerms(t *testing.T) {
 
 	for _, dk := range dictKinds {
 		t.Run(dk.name, func(t *testing.T) {
-			got, err := mergeSegmentsV2(ins, accept, dk.kind)
+			got, err := mergeToSegment(t, ins, accept, dk.kind)
 			require.NoError(t, err)
 			require.ElementsMatch(t, []searchengine.ExternalID{"keep-1", "keep-2"}, got.IDs())
 
@@ -232,12 +273,15 @@ func TestMergeOmitsFullyDroppedTerms(t *testing.T) {
 // window that could miss a spike. A sampled peak could report a small number
 // simply by never looking while the spike existed.
 //
-// The measurement covers streamMergeToFile, which is the WRITER. The final
-// read-back in streamMergeToBlob is excluded deliberately and is stated here
-// rather than hidden: it allocates the output blob exactly once, and that
-// allocation is the segment's own payload — the thing the merge is FOR — not
-// writer scratch. It is also the allocation the distribution layer removes by
-// republishing the merged file as a mapping.
+// The measurement covers streamMergeToFile, which is the WRITER. There is no
+// longer a read-back to exclude: the merge path stopped reading its own output
+// back into a blob when the engine took over mapping the file, so this bound and
+// the whole-path bound in segmentdist now differ only by the engine's map and
+// decode rather than by an output-sized allocation.
+//
+// The 64 KiB of fixed coalescing windows the writer holds IS inside this
+// measurement, which is why the fixture has to produce a segment several times
+// that size for the bound to say anything.
 func TestStreamedMergePeakHeapBounded(t *testing.T) {
 	allocated, blobSize := measureMerge(t, mergeHeavyDocs(600, 40), 6)
 	t.Logf("streamed merge allocated %d bytes writing a %d-byte segment", allocated, blobSize)
@@ -274,10 +318,10 @@ func TestStreamedMergePeakHeapBounded(t *testing.T) {
 // bounds the peak with no sampling window that could miss a spike — a sampled
 // peak could report a small number simply by never looking while one existed.
 //
-// The measurement covers streamMergeToFile, the WRITER. The final read-back in
-// streamMergeToBlob is excluded deliberately, and stated here rather than
-// hidden: it allocates the output blob exactly once, and that allocation is the
-// segment's own payload — the thing the merge is FOR — not writer scratch.
+// The measurement covers streamMergeToFile, the WRITER, and the writer is now
+// the whole of what the format does: there is no read-back left to exclude,
+// because the engine maps the finished file rather than the format reading it
+// back into an output-sized blob.
 func measureMerge(t *testing.T, docs []searchengine.Document, n int) (allocated, blobSize int64) {
 	t.Helper()
 	ins := mergeInputs(t, docs, n)
@@ -290,69 +334,32 @@ func measureMerge(t *testing.T, docs []searchengine.Document, n int) (allocated,
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)
-	require.NoError(t, streamMergeToFile(f, ins, accept, defaultDictKind))
+	size, err := streamMergeToFile(f, ins, accept, defaultDictKind)
 	runtime.ReadMemStats(&after)
-
-	info, err := f.Stat()
 	require.NoError(t, err)
-	require.Positive(t, info.Size(), "the merge produced no output, so any bound over it is vacuous")
-	return int64(after.TotalAlloc - before.TotalAlloc), info.Size()
+
+	// THE REPORTED SIZE IS n, NOT f.Stat(). The writer no longer truncates — the
+	// engine does, from this same n — so the file on disk can be longer than the
+	// segment whenever the last aligned append moved the tail past the last byte
+	// carrying content. Reporting Stat here would silently loosen every bound
+	// taken against this number rather than break it, which is the worse failure.
+	require.Positive(t, size, "the merge produced no output, so any bound over it is vacuous")
+	return int64(after.TotalAlloc - before.TotalAlloc), size
 }
 
-// TestMergeLeavesNoTempFileAndNoMapping pins the merge's output contract: the
-// returned segment is backed by HEAP bytes rather than a live file mapping, and
-// the temp file is unlinked before Merge returns on the success path AND on the
-// error path.
+// THE MERGE FILE'S LIFECYCLE IS NO LONGER THIS PACKAGE'S TO TEST. This format
+// used to create, own and unlink its own temp file, and a test here asserted
+// that on both the success and the error path; the engine owns all of it now, so
+// that assertion lives in searchengine as
+// TestMergeLeavesNoScratchFileOnSuccessOrError.
 //
-// The error leg is driven through the real ceiling guard rather than a fake:
-// lowering the u32 blob ceiling makes a genuine merge fail AFTER its temp file
-// exists, which is the only window in which a leak is possible.
-func TestMergeLeavesNoTempFileAndNoMapping(t *testing.T) {
-	require.Equal(t, int64(math.MaxUint32), v2MaxBlobBytes,
-		"the shipped ceiling must be the full u32 range; this test lowers it and must not mask a lowered default")
-
-	docs := manyTermDocs(200)
-	ins := mergeInputs(t, docs, 2)
-	accept := dropEverySeventh(ins)
-
-	tmp := t.TempDir()
-	t.Setenv("TMPDIR", tmp)
-	countTemps := func() int {
-		entries, err := os.ReadDir(tmp)
-		require.NoError(t, err)
-		n := 0
-		for _, e := range entries {
-			if ok, _ := filepath.Match("bm25-merge-*.seg", e.Name()); ok {
-				n++
-			}
-		}
-		return n
-	}
-	require.Zero(t, countTemps())
-
-	got, err := mergeSegmentsV2(ins, accept, defaultDictKind)
-	require.NoError(t, err)
-	require.Zero(t, countTemps(), "the merge left its temp file behind on the SUCCESS path")
-
-	// Heap-backed, not a mapping: the bytes survive independently of any file,
-	// which is what the read-back-then-unlink contract buys.
-	require.NotEmpty(t, got.blob)
-	blob, err := got.Encode()
-	require.NoError(t, err)
-	require.Len(t, blob, len(got.blob))
-	require.NotEmpty(t, got.Search(NewQuery(equalityQueries[0]),
-		Format{}.AggregateStats([]searchengine.Segment[Query, *CorpusStats]{got}), 10, nil),
-		"the merged segment must still be searchable after its file is gone")
-
-	original := v2MaxBlobBytes
-	t.Cleanup(func() { v2MaxBlobBytes = original })
-	v2MaxBlobBytes = int64(len(blob)) - 1
-	failed, err := mergeSegmentsV2(ins, accept, defaultDictKind)
-	require.Error(t, err, "the lowered ceiling must make this merge fail")
-	require.Nil(t, failed)
-	require.Zero(t, countTemps(), "the merge left its temp file behind on the ERROR path")
-}
-
+// The same retired test also asserted the merged payload was HEAP-backed rather
+// than a mapping. That claim did not move — it INVERTS. A merged payload is now
+// deliberately mapping-backed in production, and the assertion lives in
+// segmentdist as TestMergedPayloadIsMappingBackedNotHeapBacked, which is where
+// the real mapping hook is wired; searchengine's default hook produces heap
+// bytes, so the property is not even present there.
+//
 // TestMergedPostingRunsAscend pins the property the cursor order buys: every
 // merged posting run is ascending by construction, never sorted afterwards. A
 // descending pair would break the reader's assumptions silently rather than
@@ -360,7 +367,7 @@ func TestMergeLeavesNoTempFileAndNoMapping(t *testing.T) {
 func TestMergedPostingRunsAscend(t *testing.T) {
 	docs := manyTermDocs(300)
 	ins := mergeInputs(t, docs, 3)
-	got, err := mergeSegmentsV2(ins, dropEverySeventh(ins), defaultDictKind)
+	got, err := mergeToSegment(t, ins, dropEverySeventh(ins), defaultDictKind)
 	require.NoError(t, err)
 
 	runs := 0
@@ -371,4 +378,85 @@ func TestMergedPostingRunsAscend(t *testing.T) {
 		})
 	}
 	require.Positive(t, runs, "the merged segment held no posting runs, so nothing was checked")
+}
+
+// The three constants below pin the merged payload's BYTES, one per dictionary
+// encoding. They were captured from the streamed writer as it stood before the
+// MergeSink restructure. NEVER REGENERATE THEM.
+//
+// Regenerating them destroys the only evidence that the stored format held
+// still across that restructure: the whole value of a golden is that it was
+// written down before the change, so a later mismatch means the bytes moved
+// rather than that the expectation was refreshed to agree with them. If one of
+// these has to be recovered, check the tree out at the commit before this
+// changeset and re-run the capture there — do not re-derive it from a tree that
+// carries the change.
+//
+// The capture procedure, for that recovery: set the constant to the empty
+// string, run TestStreamedMergeGolden, and read the observed hash out of the
+// failure output.
+//
+// Nothing else in this file may hold a 64-hex literal. A fourth one would make
+// the distinctness check that guards these three meaningless.
+const (
+	goldenMergeSHA256Flat    = "3d7272246aac55924c43d742aa267198dead27ef31cac0ca6a9b9d84cd470777"
+	goldenMergeSHA256Blocked = "6aa716eac9b123a8a9959be3bd493f8a67333d6aecd5c77339198a6ac49e763a"
+	goldenMergeSHA256Hash    = "4720fe48c7aafbc3129c5c8275e34a4a7077df7da455f1c441fb746f00107532"
+)
+
+// TestStreamedMergeGolden pins the merged payload byte-for-byte, for every
+// dictionary encoding, against a hash captured from the unmodified writer.
+//
+// WHY A GOLDEN AND NOT A DERIVED EQUIVALENCE. There is no in-tree equivalence to
+// lean on. bucket_swap_alias_test.go's "merge-of-one reproduces its build bytes"
+// is a statement about the mock format; bm25's Build (encodeSegmentV2) and its
+// Merge (the mergePlan layout) are two independent emitters, and nothing in this
+// tree asserts they agree. TestStreamedMergeByteDeterministic merges twice and
+// compares, which pins run-to-run stability rather than cross-version stability
+// — so it cannot serve as this pin either.
+//
+// The per-kind loop is not decoration: the merge writes the output dictionary
+// itself, so a defect in one encoding's writer would otherwise hide behind the
+// default kind.
+func TestStreamedMergeGolden(t *testing.T) {
+	docs := manyTermDocs(200)
+	ins := mergeInputs(t, docs, 2)
+	accept := dropEverySeventh(ins)
+
+	golden := map[string]string{
+		"flat":    goldenMergeSHA256Flat,
+		"blocked": goldenMergeSHA256Blocked,
+		"hash":    goldenMergeSHA256Hash,
+	}
+	for _, dk := range dictKinds {
+		t.Run(dk.name, func(t *testing.T) {
+			want, ok := golden[dk.name]
+			require.True(t, ok,
+				"dictionary kind %q has no golden constant — a new encoding was added and this pin was not extended, so its bytes are unpinned", dk.name)
+
+			f, err := os.Create(filepath.Join(t.TempDir(), "merged.seg")) //nolint:gosec // test-owned temp path
+			require.NoError(t, err)
+			defer func() { require.NoError(t, f.Close()) }()
+			n, err := streamMergeToFile(f, ins, accept, dk.kind)
+			require.NoError(t, err)
+
+			// THE TRUNCATE IS PART OF THE FIXTURE, not incidental cleanup. The
+			// writer no longer sizes its own destination — the engine does, from
+			// the returned n — so hashing the file without it would hash whatever
+			// the last aligned append reached rather than the segment. The three
+			// constants below were captured over a file sized to exactly this
+			// length, so omitting this would move the hash for a merge that had not
+			// changed at all.
+			require.NoError(t, f.Truncate(n))
+
+			blob, err := os.ReadFile(f.Name()) //nolint:gosec // test-owned temp path
+			require.NoError(t, err)
+			require.NotEmpty(t, blob,
+				"the merge wrote nothing, so hashing it pins an empty file rather than a segment")
+
+			sum := sha256.Sum256(blob)
+			require.Equal(t, want, hex.EncodeToString(sum[:]),
+				"the merged payload's bytes moved for dictionary kind %q (%d bytes written)", dk.name, len(blob))
+		})
+	}
 }

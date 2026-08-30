@@ -158,7 +158,7 @@ func TestBuiltinCollectWork_RecordsRepoBeforeUpload(t *testing.T) {
 	sink := &orderAssertingSink{repo: repo}
 	deps := &tailRoutingDeps{routed: &fakeGraphCaller{}, local: &fakeGraphCaller{}}
 
-	err := builtinCollectWork(context.Background(), deps,
+	_, err := builtinCollectWork(context.Background(), deps,
 		collectArgs{Type: recordOrderStubType, ID: repoDir},
 		collector.CollectOptions{Sink: sink})
 	require.NoError(t, err)
@@ -181,7 +181,7 @@ func TestBuiltinCollectWork_SkipsManifestForRelativePath(t *testing.T) {
 	recordOrderStubOnce.Do(func() { collector.Register(recordOrderStubCollector{}) })
 	m := withTestManifest(t)
 
-	_ = builtinCollectWork(context.Background(),
+	_, _ = builtinCollectWork(context.Background(),
 		&tailRoutingDeps{routed: &fakeGraphCaller{}, local: &fakeGraphCaller{}},
 		collectArgs{Type: recordOrderStubType, ID: "./relative-repo"},
 		collector.CollectOptions{Sink: &orderAssertingSink{repo: "relative-repo"}})
@@ -192,7 +192,7 @@ func TestBuiltinCollectWork_SkipsManifestForRelativePath(t *testing.T) {
 	// CONTROL, same manifest and same call path: an absolute id DOES land, so the
 	// absence above is the guard firing rather than the write being broken.
 	absDir := t.TempDir()
-	_ = builtinCollectWork(context.Background(),
+	_, _ = builtinCollectWork(context.Background(),
 		&tailRoutingDeps{routed: &fakeGraphCaller{}, local: &fakeGraphCaller{}},
 		collectArgs{Type: recordOrderStubType, ID: absDir},
 		collector.CollectOptions{Sink: &orderAssertingSink{repo: filepath.Base(absDir)}})

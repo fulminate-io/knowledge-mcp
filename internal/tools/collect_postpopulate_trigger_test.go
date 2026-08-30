@@ -11,11 +11,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/collectorwire"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/postpopulate"
@@ -52,17 +52,14 @@ type ppTriggerDeps struct {
 	gc   GraphCaller
 }
 
-func (d *ppTriggerDeps) LocalLiveness() LocalLiveness                 { return nil }
-func (d *ppTriggerDeps) Sink() collector.Sink                         { return d.sink }
-func (d *ppTriggerDeps) RootDir() string                              { return "" }
-func (d *ppTriggerDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
-func (d *ppTriggerDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
-func (d *ppTriggerDeps) WorkerReady() bool                            { return true }
-func (d *ppTriggerDeps) PropReady() bool                              { return true }
-func (d *ppTriggerDeps) PipelineReady() bool                          { return true }
-func (d *ppTriggerDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
-func (d *ppTriggerDeps) BanSet() *hivemonitor.BanSet                  { return nil }
-func (d *ppTriggerDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d *ppTriggerDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d *ppTriggerDeps) Sink() collector.Sink            { return d.sink }
+func (d *ppTriggerDeps) RootDir() string                 { return "" }
+func (d *ppTriggerDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+
+func (d *ppTriggerDeps) PropReady() bool     { return true }
+func (d *ppTriggerDeps) PipelineReady() bool { return true }
+
 func (d *ppTriggerDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
 func (d *ppTriggerDeps) Embedder() embed.BinaryEmbedder               { return nil }
 func (d *ppTriggerDeps) BackendResolver() BackendResolver             { return nil }

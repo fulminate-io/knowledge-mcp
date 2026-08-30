@@ -28,7 +28,7 @@ import (
 func (h *Handler) handleTraverse(ctx context.Context, raw []byte) kgtools.ToolResult {
 	var a traverseArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
-		return kgtools.ErrorResult("invalid arguments: " + err.Error())
+		return kgtools.ErrorResult("invalid arguments: " + decodeArgsError(raw, err))
 	}
 	if a.Graph != "logs" {
 		return kgtools.ErrorResult("client-side handleTraverse only handles graph='logs'; got " + a.Graph)

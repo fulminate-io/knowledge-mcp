@@ -10,12 +10,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -137,17 +137,14 @@ type pullDeps struct {
 	crud   GraphTypeCRUDAPI
 }
 
-func (d pullDeps) LocalLiveness() LocalLiveness                 { return nil }
-func (d pullDeps) Sink() collector.Sink                         { return nil }
-func (d pullDeps) RootDir() string                              { return "" }
-func (d pullDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
-func (d pullDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
-func (d pullDeps) WorkerReady() bool                            { return true }
-func (d pullDeps) PropReady() bool                              { return true }
-func (d pullDeps) PipelineReady() bool                          { return true }
-func (d pullDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
-func (d pullDeps) BanSet() *hivemonitor.BanSet                  { return nil }
-func (d pullDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d pullDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d pullDeps) Sink() collector.Sink            { return nil }
+func (d pullDeps) RootDir() string                 { return "" }
+func (d pullDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+
+func (d pullDeps) PropReady() bool     { return true }
+func (d pullDeps) PipelineReady() bool { return true }
+
 func (d pullDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return d.crud }
 func (d pullDeps) Embedder() embed.BinaryEmbedder               { return nil }
 func (d pullDeps) BackendResolver() BackendResolver             { return nil }

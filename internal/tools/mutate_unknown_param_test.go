@@ -55,7 +55,7 @@ func TestAccountMutateParams_UnknownTopLevelParamRejected(t *testing.T) {
 			mutateArgs{Operation: "update", ID: "n-1", Name: "renamed", Status: "active"},
 			`{"operation":"update","id":"n-1","name":"renamed","status":"active","metadata":{"k":"v"}}`,
 		))
-		assert.NoError(t, err, "a payload of only declared params must pass — this fences all 21 arms against a false block")
+		assert.NoError(t, err, "a payload of only declared params must pass — this fences all 22 arms against a false block")
 	})
 
 	t.Run("batch_sub_object_keys_are_not_top_level", func(t *testing.T) {

@@ -48,8 +48,8 @@ func TestDeletedNodeLeavesTheSearchableCorpus(t *testing.T) {
 	gt := kgtypes.GraphCode
 
 	dir := t.TempDir()
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc)))
+
+	mgr := closeOnCleanup(t, NewManager(dir, 0))
 
 	docs := bothFormatDocs(deleteFixtureN, "del-")
 	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, docs))
@@ -57,27 +57,54 @@ func TestDeletedNodeLeavesTheSearchableCorpus(t *testing.T) {
 	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, gt, name))
 
 	victim := docs[0]
-	require.True(t, residentInFreshEngine(t, ctx, gc, dir, gt, name, victim),
+	require.True(t, residentInFreshEngine(t, ctx, dir, gt, name, victim),
 		"PRECONDITION: the node must be in the shipped corpus before the delete, or this test proves nothing")
 
 	require.NoError(t, mgr.DeleteFromBuckets(ctx, gt, name, []searchengine.ExternalID{victim.ID}))
 
-	require.False(t, residentInFreshEngine(t, ctx, gc, dir, gt, name, victim),
+	require.False(t, residentInFreshEngine(t, ctx, dir, gt, name, victim),
 		"a deleted node must be absent from a FRESH engine loaded from the re-emitted segments — the delete has to reach the blob, not just the live bit")
 }
 
 // residentInFreshEngine loads a SECOND manager over the same segment source and
-// reports whether the vector engine still resolves the document — reading what was
+// reports whether the vector engine still serves the document — reading what was
 // written rather than what the writer remembers.
+//
+// IT IS A LIVE-CORPUS PROBE, NOT A PHYSICAL-RESIDENCE ONE. VectorByID consults
+// liveDocs, so this returns false for a document that is still physically in the
+// blob but masked dead — which is exactly the state a delete whose PARTITION
+// rewrite failed while its TOMBSTONE record landed leaves behind. For the ordinary
+// delete paths below the two readings coincide, because re-emitting the bucket
+// removes the document outright; where they can diverge, assert the counts through
+// freshEngineCounts instead and say which one the property is about.
 func residentInFreshEngine(
-	t *testing.T, ctx context.Context, src segmentSource, dir string,
+	t *testing.T, ctx context.Context, dir string,
 	gt kgtypes.GraphType, name string, doc searchengine.Document,
 ) bool {
 	t.Helper()
-	fresh := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(src)))
+	fresh := closeOnCleanup(t, NewManager(dir, 0))
 	_, ok, err := fresh.VectorByID(ctx, gt, name, doc.ID)
 	require.NoError(t, err)
 	return ok
+}
+
+// freshEngineCounts loads a SECOND manager over the same segment source and returns
+// its (physical, live) resident document counts: what the blobs on disk actually
+// contain, and what survives the tombstone seed applied at import.
+//
+// The pair exists so a test can say WHICH residence it means. A property about
+// whether a rebuilt partition reached disk is about the physical count; a property
+// about what a reader can see is about the live one. Reading either through the
+// other is how a failed write gets mistaken for a successful delete.
+func freshEngineCounts(
+	t *testing.T, ctx context.Context, dir string,
+	gt kgtypes.GraphType, name string,
+) (physical, live int) {
+	t.Helper()
+	fresh := closeOnCleanup(t, NewManager(dir, 0))
+	dm := fresh.managerFor(gt, name)
+	require.NoError(t, dm.load(ctx))
+	return dm.engine.ResidentDocCount(), dm.engine.LiveResidentCount()
 }
 
 // TestDeleteCoversBothFormats is THE CATCHER for the two-manifest requirement.
@@ -93,8 +120,7 @@ func TestDeleteCoversBothFormats(t *testing.T) {
 	const name = "deleteBothFormats"
 	gt := kgtypes.GraphCode
 
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	docs := bothFormatDocs(deleteFixtureN, "delboth-")
 	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, docs))
@@ -113,8 +139,18 @@ func TestDeleteCoversBothFormats(t *testing.T) {
 	// EACH FORMAT IS ASSERTED SEPARATELY. Omitting the field leg leaves the field
 	// corpus at its full count while the vector corpus drops, so a vector-only
 	// assertion would stay green through exactly the mistake this test exists for.
-	require.Equal(t, deleteFixtureN-1, hnswDM.engine.ResidentDocCount(),
-		"one delete must remove the node from the VECTOR corpus — exactly the one id, not its neighbors")
+	//
+	// AND EACH IS ASSERTED THROUGH THE COUNT ITS OWN LEG MOVES. The vector leg kills the
+	// live bit and defers the partition re-emit, so what drops there is the LIVE count
+	// while the member count holds until a drain serves that partition; the field leg
+	// re-emits inline, so its member count drops. Asserting the vector pool's member
+	// count would be asserting the inline re-emit this ticket removed, and asserting the
+	// field pool's live count would let a field leg that never ran pass on the mask.
+	require.Equal(t, deleteFixtureN-1, hnswDM.engine.LiveResidentCount(),
+		"one delete must remove the node from the searchable VECTOR corpus — exactly the one id, not its neighbors")
+	require.Equal(t, deleteFixtureN, hnswDM.engine.ResidentDocCount(),
+		"and it must do so WITHOUT re-emitting the vector partition: the document is still a resident "+
+			"member, dead, until the deferred re-emit lands")
 	require.Equal(t, deleteFixtureN-1, bm25DM.engine.ResidentDocCount(),
 		"one delete must ALSO remove it from the FIELD corpus — the two carry separate manifests, so re-emitting only the vector leg leaves it holding BM25 rank slots")
 

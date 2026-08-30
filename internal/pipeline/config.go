@@ -39,7 +39,11 @@
 // See the design doc, Section C, for the full design.
 package pipeline
 
-import "time"
+import (
+	"time"
+
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+)
 
 // DefaultCircuitBreakerThreshold is the default PER-AXIS number of consecutive
 // errored LLM calls (with zero intervening success on THAT axis) that latches
@@ -63,18 +67,50 @@ const DefaultCircuitBreakerThreshold = 20
 // must NOT fast-trip, only a same-class streak of 2.
 const DefaultDeterministicFastTripThreshold = 2
 
+// LeaseProviderCalls is the CEILING term of the lease derivation: at most this
+// many provider calls' worth of items are taken by one worker in one lease, so
+// the lease can never grow into an unbounded in-flight content buffer however
+// large a scan page the server serves or however few workers are configured.
+const LeaseProviderCalls = 10
+
+// maxClientScanPage is a client-side MIRROR of the server's per-request
+// pipeline-scan ceiling. THE AUTHORITY IS SERVER-SIDE — maxPipelineScanItems in
+// cmd/knowledge-server/internal/bootstrap/engine_limits.go — and it is
+// unexported there, so this constant exists ONLY to make the lease derivation
+// legible. It is deliberately NOT used as a request clamp: the server clamps
+// every scan regardless and reports the truncation, so a client that over-asks
+// is corrected by the server rather than by this number. Keeping it out of the
+// request path is what stops it becoming a second, silently-disagreeing
+// authority on the same bound.
+const maxClientScanPage = 10000
+
 // Config controls the pipeline's worker counts, batch sizes, channel
 // capacities, and tick cadence. Zero values fall back to defaults via the
 // *OrDefault accessors. Defaults match ticket Section C — channel=10000,
-// batch summary=20 / embed=100, workers summary=20 / embed=20, tick=250ms.
+// batch summary=20 / embed=100, workers summary=25 / embed=20, tick=250ms.
+//
+// BATCH SIZE AND LEASE SIZE ARE TWO DIFFERENT UNITS and both are configured
+// here. The *BatchSize knobs are the PROVIDER-CALL cap — how many items go into
+// one embedder or summarizer call. The *LeaseSize knobs are the WRITEBACK unit —
+// how many items one worker takes, processes as N provider calls, and writes
+// back in ONE transaction. Lease size defaults to a DERIVATION over the batch
+// size and the worker count rather than a literal; see the two accessors.
 type Config struct {
 	// SummaryChannelSize is the SummaryWork channel buffer. Default 10000.
 	SummaryChannelSize int
 
-	// SummaryBatchSize is the number of SummaryWork items each summary
-	// worker processes per LLM call. Default 20 — matches the existing
-	// summarize_pipeline batch shape.
+	// SummaryBatchSize is the PROVIDER-CALL cap on the summary axis: the number
+	// of SummaryWork items that go into ONE summarizer call. Default 20 —
+	// matches the existing summarize_pipeline batch shape. On this axis the cap
+	// is a PROMPT bound, not merely a request-size one: the summarizer puts
+	// every chunk of a call into one prompt.
 	SummaryBatchSize int
+
+	// SummaryLeaseSize is the number of SummaryWork items one summary worker
+	// takes per lease — the WRITEBACK unit, processed as ceil(lease/batch)
+	// summarizer calls and written back in ONE transaction. Zero means DERIVE;
+	// see SummaryLeaseSizeOrDefault.
+	SummaryLeaseSize int
 
 	// SummaryWorkers is the count of summary worker goroutines. Default 25.
 	SummaryWorkers int
@@ -82,10 +118,16 @@ type Config struct {
 	// EmbedChannelSize is the EmbedWork channel buffer. Default 10000.
 	EmbedChannelSize int
 
-	// EmbedBatchSize is the number of EmbedWork items each embed worker
-	// processes per embedder call. Default 100 — under voyageEmbedder's
-	// internal 128 chunk-size to avoid double-batching.
+	// EmbedBatchSize is the PROVIDER-CALL cap on the embed axis: the number of
+	// EmbedWork items that go into ONE embedder call. Default 100 — under
+	// voyageEmbedder's internal 128 chunk-size to avoid double-batching.
 	EmbedBatchSize int
+
+	// EmbedLeaseSize is the number of EmbedWork items one embed worker takes per
+	// lease — the WRITEBACK unit, processed as ceil(lease/batch) embedder calls
+	// and written back in ONE transaction. Zero means DERIVE; see
+	// EmbedLeaseSizeOrDefault.
+	EmbedLeaseSize int
 
 	// EmbedWorkers is the count of embed worker goroutines. Default 20.
 	EmbedWorkers int
@@ -151,6 +193,42 @@ type Config struct {
 	// default, and the test default). Provider-distinct axes never cross-trip.
 	SummaryProvider string
 	EmbedProvider   string
+
+	// EmbedDtype is the RESOLVED [embedder] representation this client's vectors
+	// are produced in — searchengine.DtypeUbinary or DtypeFloat32. It rides with
+	// every HNSW document the ship path builds, because a vector format derives a
+	// segment's dtype from its documents and therefore decides which metric ranks
+	// them.
+	//
+	// IT IS THE CONFIG'S ANSWER, NOT THE GRAPH'S, and the distinction is worth
+	// stating: this pipeline embeds under one resolved [embedder] section, so the
+	// bytes it ships ARE that section's representation. A graph whose recorded
+	// identity disagrees with that section is a mismatch to be reported by the
+	// identity machinery, not something for this field to second-guess.
+	//
+	// Empty is read as ubinary by the format, matching the on-disk tag-0
+	// convention, so a Config that never sets it behaves exactly as before.
+	EmbedDtype string
+
+	// EmbedIdentity is the RESOLVED identity this client's vectors are produced
+	// under — provider, model, dimension and dtype — stated on every
+	// vector-bearing writeback item and on every embed-axis scan. nil when no
+	// embedder is wired, which is also the only state in which no vector is
+	// produced, so a nil here never leaves a vector unlabeled.
+	//
+	// IT IS RESOLVED FROM THE CONSTRUCTED EMBEDDER CONFIG, not assembled here:
+	// llmproviders.ResolvedEmbedIdentity reads the same embed.Config the embedder
+	// is built from, and the model is filled by the same function each arm fills
+	// its own default from. A parallel constant would state one model while the
+	// arm embedded under another, and because a graph RECORDS the first identity
+	// offered to it, that mistake is permanent short of an explicit migration.
+	//
+	// STATING IT IS WHAT LETS A GRAPH BOOTSTRAP AT ALL. The server records a
+	// first-embed identity only when the batch OFFERS one; a vector writeback that
+	// states nothing takes the server's identity-less path, so a graph with no
+	// record can never acquire one and every vector-bearing write into it is
+	// refused for having no recorded shape.
+	EmbedIdentity *knowledgev1.EmbedIdentity
 }
 
 // SummaryChannelSizeOrDefault returns cfg.SummaryChannelSize or 10000.
@@ -167,6 +245,38 @@ func (c Config) SummaryBatchSizeOrDefault() int {
 		return c.SummaryBatchSize
 	}
 	return 20
+}
+
+// SummaryLeaseSizeOrDefault returns cfg.SummaryLeaseSize, or the DERIVED lease
+// size when it is zero. The derivation reads, in the order the expression
+// evaluates it:
+//
+//   - FLOOR — one provider call. A lease smaller than one summarizer call would
+//     make the lease the binding constraint on prompt size, which is the batch
+//     size's job.
+//   - OPERATIVE — what one server scan page can give EVERY worker:
+//     maxClientScanPage / SummaryWorkersOrDefault(). Asking for more than this
+//     per worker cannot fill every worker from one page, so it would trade
+//     provider concurrency for batching rather than adding batching.
+//   - CEILING — LeaseProviderCalls provider calls' worth of items.
+//
+// At the shipped defaults (workers=25, batch=20) this is 200: a 10x reduction in
+// writeback transactions, and therefore in acquisitions of the server's
+// per-graph advisory write mutex, with provider concurrency unchanged.
+//
+// PER-WORKER MEMORY BOUND: SummaryLeaseSizeOrDefault() * maxItemBytes * SummaryWorkersOrDefault()
+//
+// maxItemBytes is the largest server-composed SummarizeText this axis carries.
+// No byte figure is stated because no measurement of it exists in this tree, and
+// inventing one would be the magic number this derivation exists to avoid. Note
+// this bound covers the WORKERS' in-flight content only: the SummaryWork channel
+// buffer (SummaryChannelSize, 10000 items) is a separate and larger term.
+func (c Config) SummaryLeaseSizeOrDefault() int {
+	if c.SummaryLeaseSize > 0 {
+		return c.SummaryLeaseSize
+	}
+	batch := c.SummaryBatchSizeOrDefault()
+	return min(max(maxClientScanPage/c.SummaryWorkersOrDefault(), batch), LeaseProviderCalls*batch)
 }
 
 // SummaryWorkersOrDefault returns cfg.SummaryWorkers or 25.
@@ -191,6 +301,40 @@ func (c Config) EmbedBatchSizeOrDefault() int {
 		return c.EmbedBatchSize
 	}
 	return 100
+}
+
+// EmbedLeaseSizeOrDefault returns cfg.EmbedLeaseSize, or the DERIVED lease size
+// when it is zero. Same three terms, in the order the expression evaluates them:
+//
+//   - FLOOR — one provider call (EmbedBatchSizeOrDefault items).
+//   - OPERATIVE — what one server scan page can give EVERY worker:
+//     maxClientScanPage / EmbedWorkersOrDefault().
+//   - CEILING — LeaseProviderCalls provider calls' worth of items.
+//
+// At the shipped defaults (workers=20, batch=100) this is 500: a 5x reduction in
+// writeback transactions with provider concurrency unchanged at 20 in-flight
+// embedder calls. A FIXED 1000 — the figure the originating request named —
+// would need 20,000 items from a scan page the server clamps at 10,000, so half
+// the workers would get no lease and concurrent provider calls would halve. It
+// would also sit exactly ON the server's copy-from switchover threshold, one
+// item away from a write path the batched writeback does not cover. Raising the
+// server's page ceiling to restore the full 10x is a decision for whoever owns
+// that constant, not something this derivation takes on its own.
+//
+// PER-WORKER MEMORY BOUND: EmbedLeaseSizeOrDefault() * maxItemBytes * EmbedWorkersOrDefault()
+//
+// maxItemBytes is the largest server-composed EmbedText this axis carries; no
+// byte figure is stated for the reason given on the summary accessor. The
+// EmbedWork channel buffer (EmbedChannelSize, 10000 items) is a separate and
+// larger term this bound does not cover. The lease also raises the collector's
+// transient scan-response allocation, from a fixed 2,000 items to at most
+// maxClientScanPage.
+func (c Config) EmbedLeaseSizeOrDefault() int {
+	if c.EmbedLeaseSize > 0 {
+		return c.EmbedLeaseSize
+	}
+	batch := c.EmbedBatchSizeOrDefault()
+	return min(max(maxClientScanPage/c.EmbedWorkersOrDefault(), batch), LeaseProviderCalls*batch)
 }
 
 // EmbedWorkersOrDefault returns cfg.EmbedWorkers or 20.

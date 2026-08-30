@@ -110,6 +110,13 @@ limit (the page node is still emitted). The default request `User-Agent` is
 `knowledge-web-collector/0.1 (+github.com/fulminate-io/knowledge)`; override it
 with `user_agent` if a site needs a specific agent string.
 
+The crawler does not fetch or consult `robots.txt`. It runs on behalf of a person
+asking for a specific document, the way a browser does, rather than as an
+automated scraper discovering a site on its own schedule. Every link the crawl
+follows is bounded by the scoping parameters above — `follow_patterns`,
+`max_depth`, `max_pages`, `max_path_segments` and `max_pages_per_host` — and by
+the `politeness_ms` floor, which is what keeps request cadence reasonable.
+
 ### GitHub URLs are materialized
 
 When the crawl encounters a `github.com` URL, it materializes the referenced

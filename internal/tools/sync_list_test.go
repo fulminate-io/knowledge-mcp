@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
@@ -42,17 +42,14 @@ type fakeSyncListDeps struct {
 	host     string
 }
 
-func (d *fakeSyncListDeps) LocalLiveness() LocalLiveness                 { return nil }
-func (d *fakeSyncListDeps) Sink() collector.Sink                         { return nil }
-func (d *fakeSyncListDeps) RootDir() string                              { return "" }
-func (d *fakeSyncListDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
-func (d *fakeSyncListDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
-func (d *fakeSyncListDeps) WorkerReady() bool                            { return true }
-func (d *fakeSyncListDeps) PropReady() bool                              { return true }
-func (d *fakeSyncListDeps) PipelineReady() bool                          { return true }
-func (d *fakeSyncListDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
-func (d *fakeSyncListDeps) BanSet() *hivemonitor.BanSet                  { return nil }
-func (d *fakeSyncListDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d *fakeSyncListDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d *fakeSyncListDeps) Sink() collector.Sink            { return nil }
+func (d *fakeSyncListDeps) RootDir() string                 { return "" }
+func (d *fakeSyncListDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+
+func (d *fakeSyncListDeps) PropReady() bool     { return true }
+func (d *fakeSyncListDeps) PipelineReady() bool { return true }
+
 func (d *fakeSyncListDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
 func (d *fakeSyncListDeps) Embedder() embed.BinaryEmbedder               { return nil }
 func (d *fakeSyncListDeps) BackendResolver() BackendResolver             { return nil }

@@ -77,17 +77,16 @@ func TestOperationVocabulary(t *testing.T) {
 // bounded but useless. The catalog names are restated rather than imported to
 // avoid an import cycle (tools already depends on the client wiring).
 func TestOperationVocabularyCoversToolCatalog(t *testing.T) {
-	// Mirrors tools.AllToolSchemas() — 23 advertised tools.
+	// Mirrors tools.AllToolSchemas() — 22 advertised tools.
 	catalog := []string{
 		"query", "traverse", "mutate", "delete", "manage",
 		"sync",
 		"thoughts", "search", "file_symbols", "collect",
-		"worker", "custom_collector", "ast", "help", "record_decision",
-		"analyze_usage", "create_plan", "create_ticket", "create_project",
+		"custom_collector", "ast", "help", "record_decision",
+		"analyze_usage", "manage_checks", "create_plan", "create_ticket", "create_project",
 		"create_research", "create_test_plan", "assemble",
-		"hive",
 	}
-	require.Len(t, catalog, 23, "the advertised catalog is a closed 23-entry set")
+	require.Len(t, catalog, 22, "the advertised catalog is a closed 22-entry set")
 
 	for _, name := range catalog {
 		assert.NotEqual(t, OpToolUnknown, OperationForTool(name),

@@ -64,12 +64,11 @@ func searchCorpus(targetIdx int) (docs []searchengine.Document, targetID string,
 func TestManagerSearchFusesBothEngines(t *testing.T) {
 	t.Parallel()
 
-	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 
 	docs, targetID, targetVec, uniqueTerm := searchCorpus(7)
 
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	// Ship both formats for one graph.
 	seedShipped(t, ctx, mgr, kgtypes.GraphKnowledge, "kg", docs)
@@ -93,12 +92,11 @@ func TestManagerSearchFusesBothEngines(t *testing.T) {
 func TestManagerSearchTextOnlyArm(t *testing.T) {
 	t.Parallel()
 
-	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 
 	docs, targetID, _, uniqueTerm := searchCorpus(3)
 
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	seedShipped(t, ctx, mgr, kgtypes.GraphKnowledge, "kg", docs)
 	seedShippedFields(t, ctx, mgr, kgtypes.GraphKnowledge, "kg", docs)
 
@@ -113,10 +111,9 @@ func TestManagerSearchTextOnlyArm(t *testing.T) {
 func TestManagerSearchEmptyGraph(t *testing.T) {
 	t.Parallel()
 
-	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	fused, err := mgr.Search(ctx, kgtypes.GraphKnowledge, "never-shipped", "anything", make([]byte, 32), 10)
 	require.NoError(t, err)
 	require.Empty(t, fused, "search over an unbuilt graph returns empty, not error")

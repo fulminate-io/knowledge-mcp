@@ -200,7 +200,7 @@ func TestChargesFor_PrefixReadBackAgrees(t *testing.T) {
 
 	chargeRes := handleChargeClient(context.Background(), deps, kgtools.CallToolParams{
 		Name: "thoughts",
-		Arguments: json.RawMessage(`{"operation":"charge","thought":"` + chargePrefix + `",` +
+		Arguments: json.RawMessage(`{"operation":"charge","summary":"the charge fixture summary","thought":"` + chargePrefix + `",` +
 			`"polarity":"positive","weight":2.0,"reasoning":"read-back"}`),
 	})
 	require.False(t, chargeRes.IsError, "the charge must succeed: %s", toolResultText(chargeRes))

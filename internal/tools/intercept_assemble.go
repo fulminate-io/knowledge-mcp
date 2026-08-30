@@ -11,7 +11,7 @@
 // short args parse, gate on the tool name, hand the raw arguments
 // to the render package which walks the wire as needed via the
 // supplied GraphCaller. Non-assemble calls return (false, _) — chain
-// continues to InterceptWorker / InterceptCreateProject / ...
+// continues to InterceptGraphType / InterceptCreateProject / ...
 
 package tools
 

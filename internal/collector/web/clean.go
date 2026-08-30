@@ -7,34 +7,35 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
-	"strings"
 	"time"
 
 	readability "codeberg.org/readeck/go-readability/v2"
-	"codeberg.org/readeck/go-readability/v2/render"
 )
 
-// cleanedArticle is the post-chrome-strip view of a page. CleanedHTML carries
-// the readability-extracted content as HTML bytes; TextLen is the length of
-// the visible text (whitespace-collapsed). When readability fails, the
-// wrapper falls back to the raw HTML so the DOM walker in Phase 3 still has
-// something to chew on — we capture every page, even ones readability can't
-// parse.
+// cleanedArticle is what readability contributes to a page record: the
+// article's title, byline and publication date, and nothing else. The DOM
+// walker parses the RAW response bytes, not readability's cleaned tree (see
+// parsePage), so no extracted-HTML view is carried here.
 type cleanedArticle struct {
-	Title       string
-	Byline      string
-	SiteName    string
-	PubDate     string // RFC3339 string, empty when not present
-	CleanedHTML []byte
-	TextLen     int
+	Title   string
+	Byline  string
+	PubDate string // RFC3339 string, empty when not present
 }
 
 // cleanArticle runs go-readability (readeck/v2 fork) over rawHTML and returns
-// a cleanedArticle with title / byline / site-name / cleaned-HTML extracted.
-// If sourceURL fails to parse or readability errors, the function logs at
-// debug and falls through to a best-effort cleanedArticle whose CleanedHTML
-// is the raw bytes. Only returns error when rawHTML is empty — every
-// non-empty page gets a cleanedArticle.
+// a cleanedArticle with title / byline / publication date extracted. Only
+// returns error when rawHTML is empty — every non-empty page gets a
+// cleanedArticle.
+//
+// WARN-AND-CONTINUE ON A READABILITY FAILURE IS A DELIBERATE, EXPRESSLY
+// APPROVED DECISION, not an implementer's default. Hard-failing the page was
+// considered and rejected on these grounds: the full response HTML is retained
+// regardless, pickTitle falls back to the document's first H1, and only
+// Title/Byline/PubDate enrichment is at stake — so dropping the page would
+// lose far more than it protects. Both lanes below therefore warn loudly,
+// naming the URL and what was lost, and return an empty cleanedArticle so the
+// page is still captured. Do not silently downgrade these back to Debug, and
+// do not convert them to hard failures without the same explicit approval.
 func cleanArticle(rawHTML []byte, sourceURL string) (*cleanedArticle, error) {
 	if len(rawHTML) == 0 {
 		return nil, fmt.Errorf("clean: empty rawHTML")
@@ -42,52 +43,31 @@ func cleanArticle(rawHTML []byte, sourceURL string) (*cleanedArticle, error) {
 
 	parsedURL, urlErr := url.Parse(sourceURL)
 	if urlErr != nil || parsedURL == nil || parsedURL.Host == "" {
-		slog.Debug("web.clean: invalid sourceURL, falling back to raw",
+		slog.Warn("web.clean: invalid sourceURL — title, byline and pub_date unavailable for this page; title falls back to its first H1",
 			"url", sourceURL, "err", urlErr)
-		return rawFallback(rawHTML), nil
+		return rawFallback(), nil
 	}
 
 	article, err := readability.FromReader(bytes.NewReader(rawHTML), parsedURL)
 	if err != nil || article.Node == nil {
-		slog.Debug("web.clean: readability parse failed, falling back to raw",
+		slog.Warn("web.clean: readability parse failed — title, byline and pub_date unavailable for this page; title falls back to its first H1",
 			"url", sourceURL, "err", err)
-		return rawFallback(rawHTML), nil
-	}
-
-	cleanedHTML, renderErr := renderArticleHTML(article)
-	if renderErr != nil {
-		slog.Debug("web.clean: render failed, falling back to raw",
-			"url", sourceURL, "err", renderErr)
-		return rawFallback(rawHTML), nil
+		return rawFallback(), nil
 	}
 
 	return &cleanedArticle{
-		Title:       article.Title(),
-		Byline:      article.Byline(),
-		SiteName:    article.SiteName(),
-		PubDate:     pubDateString(article),
-		CleanedHTML: cleanedHTML,
-		TextLen:     articleTextLen(article),
+		Title:   article.Title(),
+		Byline:  article.Byline(),
+		PubDate: pubDateString(article),
 	}, nil
 }
 
-// rawFallback constructs a cleanedArticle from the raw HTML when readability
-// cannot produce a result. Title/Byline/SiteName are empty — Phase 3's DOM
-// walker will still process the raw bytes.
-func rawFallback(rawHTML []byte) *cleanedArticle {
-	return &cleanedArticle{
-		CleanedHTML: rawHTML,
-		TextLen:     visibleTextLen(rawHTML),
-	}
-}
-
-// renderArticleHTML writes the readability Node tree to HTML bytes.
-func renderArticleHTML(article readability.Article) ([]byte, error) {
-	var buf bytes.Buffer
-	if err := article.RenderHTML(&buf); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+// rawFallback is what a page gets when readability cannot contribute
+// anything: an EMPTY cleanedArticle. The page itself is still captured — the
+// DOM walker parses the raw response bytes rather than any readability output,
+// and pickTitle falls back to the document's first H1.
+func rawFallback() *cleanedArticle {
+	return &cleanedArticle{}
 }
 
 // pubDateString returns the published time as RFC3339, or "" when the
@@ -98,36 +78,4 @@ func pubDateString(article readability.Article) string {
 		return ""
 	}
 	return t.UTC().Format(time.RFC3339)
-}
-
-// articleTextLen returns the length of the visible text in the article's
-// node tree (whitespace-collapsed).
-func articleTextLen(article readability.Article) int {
-	if article.Node == nil {
-		return 0
-	}
-	var buf bytes.Buffer
-	if err := article.RenderText(&buf); err != nil {
-		return 0
-	}
-	return len(strings.Join(strings.Fields(buf.String()), " "))
-}
-
-// visibleTextLen approximates the visible-text length of raw HTML by using
-// go-readability's render helpers on a cheap parse. A byte-count fallback is
-// returned when parsing fails — any non-zero signal is better than zero.
-func visibleTextLen(rawHTML []byte) int {
-	// Cheap: trim tags via render.InnerText after a permissive parse through
-	// readability. We don't care about accuracy here — Phase 3 is authoritative.
-	if len(rawHTML) == 0 {
-		return 0
-	}
-	// readability.FromReader can fail on fragments; in that case we just
-	// report byte length as a coarse upper bound.
-	article, err := readability.FromReader(bytes.NewReader(rawHTML), nil)
-	if err != nil || article.Node == nil {
-		return len(bytes.TrimSpace(rawHTML))
-	}
-	text := render.InnerText(article.Node)
-	return len(strings.Join(strings.Fields(text), " "))
 }

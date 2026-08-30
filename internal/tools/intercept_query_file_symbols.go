@@ -49,6 +49,11 @@ type fileSymbolsArgs struct {
 	IncludeSource     *bool    `json:"include_source"`
 	IncludeTombstones bool     `json:"include_tombstones"`
 	Format            string   `json:"format"`
+	// Limit caps the RENDERED symbol rows. It is declared on BOTH schemas —
+	// FileSymbolsToolDef and QueryToolDef — because the single accountQueryParams
+	// call below sweeps a file_symbols payload against the QUERY schema, so a key
+	// missing from the standalone tool's own schema cannot be sent by that tool.
+	Limit int `json:"limit"`
 }
 
 // InterceptFileSymbols claims the standalone file_symbols tool and
@@ -119,6 +124,9 @@ func composeFileSymbols(ctx context.Context, exec engine.ExecuteFn, a fileSymbol
 	if totalNodes == 0 {
 		return errorResult(fmt.Sprintf("no symbols found in file(s) %v", paths))
 	}
+	if a.Limit > 0 {
+		results, totalNodes = capSymbolRows(results, a.Limit)
+	}
 
 	if a.Format == "json" {
 		return jsonResult(engine.BuildFileSymbolsJSONPayload(paths, results, totalNodes))
@@ -131,6 +139,30 @@ func composeFileSymbols(ctx context.Context, exec engine.ExecuteFn, a fileSymbol
 		sb.WriteString(engine.FormatFileSymbols(fr.Path, fr.Nodes, includeSource))
 	}
 	return textResult(engine.FormatCodeWithRepo(repoLabelFor(a.Repo, a.Branch), sb.String()))
+}
+
+// capSymbolRows truncates the collected symbols to the caller's limit and returns
+// the capped results with their new total. This is a RENDER cap, NOT a read cap:
+// the per-file reads above are already issued and unchanged, so the limit reduces
+// what is rendered, never what is fetched. The budget is spent across files in
+// request order, so a multi-path call renders at most `limit` rows in total.
+// A non-positive limit never reaches here — an absent limit renders every symbol.
+func capSymbolRows(results []engine.FileSymbolsResult, limit int) ([]engine.FileSymbolsResult, int) {
+	remaining := limit
+	total := 0
+	capped := make([]engine.FileSymbolsResult, 0, len(results))
+	for _, fr := range results {
+		if remaining <= 0 {
+			break
+		}
+		if len(fr.Nodes) > remaining {
+			fr.Nodes = fr.Nodes[:remaining]
+		}
+		remaining -= len(fr.Nodes)
+		total += len(fr.Nodes)
+		capped = append(capped, fr)
+	}
+	return capped, total
 }
 
 // fileSymbolsSuffixFileCap bounds how many files one suffix may resolve to. A

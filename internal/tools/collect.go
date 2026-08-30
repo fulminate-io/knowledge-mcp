@@ -51,7 +51,7 @@ func InterceptCollect(ctx context.Context, deps ClientDeps, params kgtools.CallT
 
 	var a collectArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
-		return true, errorResult("invalid arguments: " + err.Error())
+		return true, errorResult("invalid arguments: " + decodeArgsError(params.Arguments, err))
 	}
 	if a.Type == "" {
 		return true, errorResult("collect: 'type' is required")
@@ -132,6 +132,13 @@ func InterceptCollect(ctx context.Context, deps ClientDeps, params kgtools.CallT
 		Sink:    deps.Sink(),
 	}
 
+	// Refuse the extract params wherever they would be dropped, rather than
+	// accepting them and returning a success the caller misreads as the knob
+	// having taken effect.
+	if err := rejectRecipeOnlyArgs(a); err != nil {
+		return true, errorResult(err.Error())
+	}
+
 	if a.Type == "web" || a.Type == "pdf" {
 		if a.Transformer == "recipe" {
 			// Recipe runs CLIENT-SIDE: the client reads the source raw
@@ -143,10 +150,10 @@ func InterceptCollect(ctx context.Context, deps ClientDeps, params kgtools.CallT
 			// metadata does not match.
 			return true, runRecipeCollect(ctx, deps, a)
 		}
-		if a.Transformer != "" || a.Recipe != "" || a.DryRun {
+		if a.Transformer != "" || a.Recipe != "" || a.DryRun || a.Extract || a.RecipeBody != "" || a.MaxRows != 0 || a.MaxBytes != 0 {
 			return true, errorResult(fmt.Sprintf(
 				"collect %s transformer=%q not supported (only \"recipe\" today). "+
-					"recipe / dry_run / transformer fields require transformer=\"recipe\".",
+					"recipe / recipe_body / dry_run / extract / max_rows / max_bytes / transformer fields require transformer=\"recipe\".",
 				a.Type, a.Transformer))
 		}
 	}
@@ -164,9 +171,10 @@ func InterceptCollect(ctx context.Context, deps ClientDeps, params kgtools.CallT
 	// run past the cap. work is a NO-ARG closure over the fully-enriched ctx built
 	// above (cascade set + resolution map + web-crawl opts) — Start injects no ctx,
 	// so there is no bare-baseCtx an implementation could substitute and drop that
-	// enrichment. successText is the CURRENT literal so the sub-60s / fallback path
-	// stays byte-identical.
-	work := func() error { return builtinCollectWork(ctx, deps, a, opts) }
+	// enrichment. successText is the CURRENT literal; collectWaitOrDetach suffixes
+	// it with the run's rendered node-type composition on the sub-60s / fallback
+	// paths, and a run reporting no composition returns it byte-identically.
+	work := func() (string, error) { return builtinCollectWork(ctx, deps, a, opts) }
 	successText := fmt.Sprintf("Collected %s %s — streamed to server.", a.Type, a.ID)
 	return true, collectWaitOrDetach(rt, collectTargetKey(a.Type, a.ID), fmt.Sprintf("%s %s", a.Type, a.ID),
 		CollectGateGraphName(a.Type, a.ID), successText, work)
@@ -230,17 +238,16 @@ func runRecipeCollect(ctx context.Context, deps ClientDeps, a collectArgs) kgtoo
 	// heap-spike defer. Top-of-function placement wastes nothing: the sole earlier
 	// return is the cheap 'recipe required' validation error below.
 	defer debug.FreeOSMemory()
-	if a.Recipe == "" {
-		return errorResult(fmt.Sprintf("collect %s transformer=recipe: 'recipe' (the recipe name) is required", a.Type))
-	}
-	opts := recipe.Options{
-		SourceManifest: recipe.FormatSourceManifest(a.ID, a.Recipe),
-		Force:          a.Force,
-		DryRun:         a.DryRun,
+	opts, oerr := recipeRunOptions(a)
+	if oerr != nil {
+		return errorResult(oerr.Error())
 	}
 	res, err := recipe.RunRecipe(ctx, deps.GraphCaller(), deps.Sink(), a.ID, kgtypes.GraphType(a.Type), opts)
 	if err != nil {
 		return errorResult("collect " + a.Type + " recipe: " + err.Error())
+	}
+	if a.Extract {
+		return textResult(renderExtract(a, res))
 	}
 	verb := "Ran"
 	if a.DryRun {
@@ -378,9 +385,18 @@ type collectArgs struct {
 	// DryRun previews the projection without writing. Any other Transformer
 	// value is rejected; the fields are parsed so the error message can name
 	// them rather than "unknown argument".
+	// Extract turns a recipe run into EXTRACT MODE: nothing is written and the
+	// emitted rows come back for inspection, bounded by MaxRows and MaxBytes.
+	// Body is an INLINE recipe body run instead of a saved one, and requires
+	// Extract. MaxBytes deliberately does NOT travel through recipe.Options —
+	// only the renderer knows rendered sizes, so the byte cap is applied there.
 	Transformer string `json:"transformer,omitempty"`
 	Recipe      string `json:"recipe,omitempty"`
 	DryRun      bool   `json:"dry_run,omitempty"`
+	Extract     bool   `json:"extract,omitempty"`
+	RecipeBody  string `json:"recipe_body,omitempty"`
+	MaxRows     int    `json:"max_rows,omitempty"`
+	MaxBytes    int    `json:"max_bytes,omitempty"`
 
 	// Logs-specific. The collector resolves the provider config either by
 	// reading the configured log_backend node (when Backend is set) or

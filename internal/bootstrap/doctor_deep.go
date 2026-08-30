@@ -16,6 +16,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/config"
 	"github.com/fulminate-io/knowledge-mcp/internal/llm/precheck"
+	"github.com/fulminate-io/knowledge-mcp/internal/rerank"
 )
 
 // checkProvidersDeep exercises each configured consumer's provider path
@@ -37,8 +38,12 @@ func checkProvidersDeep(configFile string) checkResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	consumers := []config.Consumer{config.ConsumerSummarizer, config.ConsumerDream, config.ConsumerHiveSupervisor}
-	if err := precheck.RunAll(ctx, cfg, consumers, config.VoyageAPIKey()); err != nil {
+	consumers := []config.Consumer{config.ConsumerSummarizer, config.ConsumerSupervisor}
+	// rerank.CheckProvider is the rerank axis's check. It is passed rather
+	// than called by precheck itself because that package cannot import
+	// rerank without closing an import cycle; this package can, so the
+	// dependency is supplied from here.
+	if err := precheck.RunAll(ctx, cfg, consumers, rerank.CheckProvider); err != nil {
 		return checkResult{
 			name:   "providers",
 			status: statusErr,

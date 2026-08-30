@@ -4,6 +4,7 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
@@ -15,13 +16,10 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/tools"
 )
 
-// segmentCacheDirFor is the L2 disk-cache root for client-built/pulled HNSW
-// segment blobs, rooted at <root>/segments — where root is the already
-// tilde-expanded --graph-storage data root the daemon was started with. That is
-// the SAME expression the server resolves its own segment store under
-// (filepath.Join(<graph-storage>, "segments")), so client L2 and server store
-// co-locate over a shared root — the successor to the retired HOME-fixed
-// segmentCacheDir() that unconditionally returned <home>/.knowledge/segments.
+// segmentCacheDirFor is the L2 disk-cache root for client-built HNSW segment
+// blobs, rooted at <root>/segments — where root is the already tilde-expanded
+// --graph-storage data root the daemon was started with. It is the client's ONLY
+// segment store: nothing else reads or writes this tree.
 //
 // When a Fulminate account is selected the root is PARTITIONED BY ACCOUNT
 // (accountSegmentRoot), so two accounts' blobs for the same graph name can
@@ -42,13 +40,9 @@ func segmentCacheDirFor(root string) string {
 //
 // The L2 cache roots at segmentCacheDirFor(graphStorage) — i.e.
 // <graph-storage>/segments off the CLIENT's --graph-storage data root, not a
-// HOME-fixed path. Since the client spawns its auto-local server with the same
-// --graph-storage value (maybeSpawnLocalServer), the server resolves its segment
-// store under the identical <graph-storage>/segments, so client L2 and server
-// store co-locate. Under a manually-split client/server --graph-storage the cache
-// follows the CLIENT's root; either way it is strictly better than the old
-// unconditional HOME-fix. For the default root (~/.knowledge/, tilde-expanded by
-// the client to <home>/.knowledge) the location is unchanged: <home>/.knowledge/segments.
+// HOME-fixed path. Under a manually-split client/server --graph-storage the cache
+// follows the CLIENT's root. For the default root (~/.knowledge/, tilde-expanded by
+// the client to <home>/.knowledge) the location is <home>/.knowledge/segments.
 //
 // This is the PRODUCTION construction site: wireRuntimesBackground (daemon.go)
 // calls it BEFORE wirePipelineRuntime, where c.router is already set
@@ -63,22 +57,10 @@ func segmentCacheDirFor(root string) string {
 // --segment-residency-budget-bytes / KNOWLEDGE_SEGMENT_RESIDENCY_BUDGET_BYTES.
 func (c *client) ensureSegmentManager(graphStorage string, residencyBudgetBytes int64) {
 	if c.router != nil && c.segmentMgr == nil {
-		// WithSegmentTransport supplies the lazy agent /v1/segments control transport
-		// (c.buildCloudSyncTransport → *auth.Transport) so the source factory selects the
-		// GCS segment source on the logged-in cloud path; a not-logged-in / OSS caller
-		// still gets the L2-local source, and a logged-in caller whose transport build
-		// fails falls back to RPC. The transport shares the daemon's SINGLE cloud token
-		// source (one warm source, ~one refresh per token lifetime) instead of minting a
-		// fresh cold keychain source per manager. The closure adapts the *auth.Transport
-		// return to the segmentdist.SegmentControlTransport factory type (Go has no
-		// return-type covariance, so the bare method value is not assignable).
 		// WithGraphAdmitter records the search side of the working set: a user
 		// search IS the direct interaction that admits a graph, and it is the
 		// one admission that does not pass through Router.Execute.
-		c.segmentMgr = segmentdist.NewManager(c.router, segmentCacheDirFor(graphStorage), 0,
-			segmentdist.WithSegmentTransport(func() (segmentdist.SegmentControlTransport, error) {
-				return c.buildCloudSyncTransport()
-			}),
+		c.segmentMgr = segmentdist.NewManager(segmentCacheDirFor(graphStorage), 0,
 			segmentdist.WithGraphAdmitter(func(gt kgtypes.GraphType, name string) {
 				c.AdmitGraph(gt, name, "search")
 			}),
@@ -112,6 +94,45 @@ func (c *client) PoolEvicted(gt kgtypes.GraphType, name string) bool {
 		return false
 	}
 	return c.segmentMgr.PoolEvicted(gt, name)
+}
+
+// COMPILE-TIME PROOF THAT *client CARRIES THE LOADING DECIDER the tools layer's
+// optional seam type-asserts for. That seam (loadLiveResidentReader) is unexported in
+// tools and resolved by a type assertion, so a drift in this method's SHAPE would not
+// break the build — it would silently make the assertion fail, and
+// practiceSegmentGapNotice would answer every zero-hit practice search with its
+// "probe seam is unwired" caveat forever. A permanently-taken decline branch reads
+// exactly like a working one. This line is what turns that into a build error.
+var _ interface {
+	LoadLiveResidentDocCount(context.Context, kgtypes.GraphType, string) (int, error)
+} = (*client)(nil)
+
+// LoadLiveResidentDocCount is the DECIDER half of the live-resident read, exposed on
+// the client so the tools layer's optional loadLiveResidentReader seam resolves.
+//
+// IT IS THE LOADING VARIANT ON PURPOSE. The reporter (LiveResidentDocCount) takes no
+// load and legitimately reads 0 for a graph whose engine has not loaded yet, so a
+// caller qualifying a zero-hit search with it would announce "the ranked index is
+// missing" about a pool that is merely cold. This one loads first and returns its
+// load error rather than swallowing it, so a caller that could not load declines
+// instead of acting on an empty view.
+//
+// A CLIENT WITH NO MANAGER RETURNS AN ERROR, not zero — the opposite disposition from
+// PoolEvicted above, and for the same underlying reason. "Not evicted" is a TRUE
+// statement about a client that runs no residency budget; "zero live-resident
+// documents" is NOT a true statement about a client that has no engine to ask, it is
+// an inability to measure. Returning zero here would let a caller qualify a zero-hit
+// search as a missing index on the strength of a read nobody performed.
+//
+// CALLERS MUST STILL FENCE ON EVICTION FIRST. This deliberately loads, so calling it
+// on an evicted pool would re-materialize the pool and undo the residency decision.
+func (c *client) LoadLiveResidentDocCount(
+	ctx context.Context, gt kgtypes.GraphType, name string,
+) (int, error) {
+	if c == nil || c.segmentMgr == nil {
+		return 0, errors.New("bootstrap: no segment manager wired — the live-resident count cannot be measured")
+	}
+	return c.segmentMgr.LoadLiveResidentDocCount(ctx, gt, name)
 }
 
 // SegmentManager returns the SAME *segmentdist.Manager the client holds — the one
@@ -169,7 +190,7 @@ type segmentCoverageAdapter struct{ mgr *segmentdist.Manager }
 
 func (a segmentCoverageAdapter) ShippedSegmentDocCount(
 	ctx context.Context, gt kgtypes.GraphType, name string,
-) (int, bool, error) {
+) (int, error) {
 	return a.mgr.ShippedSegmentDocCount(ctx, gt, name)
 }
 
@@ -370,45 +391,51 @@ func (c *client) ClearHealLatch(gt kgtypes.GraphType, name string) {
 // The returned factory yields, per (gt, name), a per-collector heal closure (or
 // nil for any graph with no rebuildable segments). Auto-heal is scoped to the
 // embeddable builtins kgtypes.HasRebuildableSegments admits — knowledge, code,
-// cloud, cicd, practice — the SAME gate the manual rebuild_segments op uses
-// (handleClientRebuildSegments), so the auto-heal arm and the manual rebuild gate
-// cannot drift; the non-embeddable builtins (linkage, transformers) and the raw
-// graphs (logs, web, pdf) have no segments to heal and get a nil closure. The
+// cloud, cicd, practice, checks — the SAME gate the manual rebuild_segments op
+// uses (handleClientRebuildSegments), so the auto-heal arm and the manual rebuild
+// gate cannot drift; the non-embeddable builtins (linkage, transformers) and the
+// raw graphs (logs, web, pdf) have no segments to heal and get a nil closure. The
 // closure runs on the armed embed drain edge: a CHEAP presence + coverage probe
 // and, when a from-scratch rebuild is genuinely needed, the rebuild driver
 // (single-flight, shared with the manual rebuild_segments op). A healthy graph
 // (segments present AND covering enough of the embedded corpus) is a probe +
 // disarm, never a churn.
 //
-// The probe makes a THREE-way decision (the middle path is the fix):
-//  1. zero shipped segments (the never-shipped case) → rebuild from scratch.
-//  2. a degenerate-but-nonzero pool (segment-covered docs — summed HNSW doc_count —
-//     below tools.CoverageRatioThreshold × the graph's embedded-node count, once the
-//     embedded count clears tools.SegmentCoverageFloor) → try a one-shot read-engine
-//     load FIRST via Manager.ReconcileResidentDegenerate, which cache-first
-//     load()s the intact persisted corpus and re-probes coverage. If that load
-//     restores resident coverage (degenerate=false) the pool was intact-but-not-
-//     resident — a daemon restart whose searchable pool simply had not loaded yet
-//     — so SKIP the rebuild; the load alone healed it. Rebuild from scratch ONLY
-//     when the load cannot restore coverage (degenerate=true) — the genuinely
-//     missing/collapsed shipped case. (A ReconcileResidentDegenerate error is
-//     best-effort: WARN and do NOT rebuild — rebuilding against a down/timing-out
-//     server is futile, so wait for a successful probe and keep the existing
-//     resident instead.)
-//  3. healthy (segments present AND covering enough) → probe + disarm, never a churn.
+// The probe makes a TWO-way decision, and the operands are LOCAL on both sides:
+//  1. a LOST POOL on the HNSW arm — a resident doc count of zero against a non-empty
+//     embedded corpus, at any magnitude (hnswPoolLost) — or, on the BM25 arm, the
+//     ratio band that arm still carries → rebuild from scratch. The load happens FIRST
+//     regardless: the observation probe cache-first load()s the intact persisted
+//     corpus before the count is read, so a pool that was merely not-yet-resident — a
+//     daemon restart whose searchable pool had not loaded yet — heals without a
+//     rebuild.
+//  2. anything else → probe + disarm, never a churn.
 //
-// CONSERVATIVE-UNKNOWN guard: a segment whose doc_count is 0 predates the
-// doc_count wire plumbing, so its real coverage is UNKNOWN. When ANY shipped HNSW
-// segment reports doc_count==0 (ShippedSegmentDocCount's anyUnknown), the ratio
-// probe is DISARMED and the arm falls back to the zero-only trigger — without this
-// a fleet mid-migration (every shipped meta still 0) would read covered=0 on every
-// healthy graph and trigger a fleet-wide rebuild storm. The guard self-retires per
-// graph: the first heal/rebuild re-ships segments carrying real doc_count.
+// THIS CLOSURE IS THE AWAY-FROM-QUIESCENCE ARM, AND ITS SILENCE IS DELIBERATE. It
+// fires on the embed drain edge of ONE axis, which is not the same thing as the
+// pipeline being quiescent — the summary axis may still be working. The EXACT balance
+// verdict, which is where a partial shortfall is now detected, is formed by the
+// separate quiescence closure (buildBalanceFactory) that runs only once BOTH axes are
+// drained at the current collect epoch. So this arm asserting nothing but a lost pool
+// is not a coverage gap; it is the half of the split that can be answered honestly
+// while the corpus is still moving.
+//
+// AN EVICTED POOL IS DECLINED AHEAD OF BOTH, because its resident count reads zero
+// while every byte is still on disk: rebuilding it would undo the eviction at the
+// highest possible cost.
+//
+// THE CONSERVATIVE-UNKNOWN GUARD IS GONE WITH THE CONDITION IT GUARDED. It disarmed
+// the ratio whenever a shipped segment reported doc_count==0 — a blob predating the
+// doc_count wire plumbing, whose real coverage was therefore unknowable — so that a
+// fleet mid-migration would not read covered=0 on every healthy graph and storm a
+// fleet-wide rebuild. The numerator is now the LOCAL resident doc count, which the
+// engine computes from what it actually imported and which is never the
+// pre-doc_count sentinel, so there is no unknown state left to be conservative about.
 func (c *client) buildHealFactory() func(kgtypes.GraphType, string) func(context.Context) error {
 	return func(gt kgtypes.GraphType, name string) func(context.Context) error {
 		// Rebuildable-segments gate FIRST — the auto-heal closure is built only for
 		// graphs that carry rebuildable segments (the embeddable builtins: knowledge,
-		// code, cloud, cicd, practice). This is the SAME kgtypes.HasRebuildableSegments
+		// code, cloud, cicd, practice, checks). This is the SAME kgtypes.HasRebuildableSegments
 		// predicate handleClientRebuildSegments gates the manual rebuild_segments op
 		// on, so the auto-heal arm and the manual rebuild gate cannot drift. The
 		// non-embeddable builtins (linkage, transformers) and raw graphs (logs, web,
@@ -465,7 +492,7 @@ func (c *client) buildHealFactory() func(kgtypes.GraphType, string) func(context
 			if out.Ran {
 				c.armBM25HealProgress(gt, name)
 			}
-			c.classifyHealOutcome(ctx, gt, name, out.Ran, out.Scanned, out.Built, out.Partial)
+			c.classifyHealOutcome(gt, name, out.Ran, out.Scanned)
 			return nil
 		}
 	}

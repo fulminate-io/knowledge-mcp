@@ -121,7 +121,6 @@ type Config struct {
 	AllowedWebOrigins    []string
 	LogLevel             string
 	LogFile              string
-	NoWorkerRuntime      bool
 	NoPropagationRuntime bool
 	Pprof                bool
 	PprofPort            int
@@ -129,20 +128,15 @@ type Config struct {
 
 	// Headless is the umbrella flag for an embedded/supervisor-managed daemon.
 	// Populated from --headless. applyHeadless (headless.go) expands it into the
-	// implied gate set (the four --no-* bools above plus the three internal
-	// NoHive*/NoTranscriptUpload bools below); nothing reads Headless directly
-	// past applyHeadless.
+	// implied gate set — NoPropagationRuntime, SkipLLMPrecheck, NoLLMPipeline and
+	// the internal NoTranscriptUpload below; nothing reads Headless directly past
+	// applyHeadless.
 	Headless bool
-	// NoHiveMonitor, NoHiveReaper, and NoTranscriptUpload are the coordination-loop
-	// gates. applyHeadless sets all three when Headless is true, and each also has
-	// its own --no-* flag for a daemon that needs the LLM pipeline (which
-	// --headless disables) but must run no coordination loops.
-	// The hive lifecycle controller (hive_loops.go) captures NoHiveMonitor/
-	// NoHiveReaper at wiring time and suppresses that loop for the daemon's whole
-	// life, whatever its hive sessions do; maybeStartTranscriptUpload consults
-	// NoTranscriptUpload to skip the background transcript-upload loops.
-	NoHiveMonitor      bool
-	NoHiveReaper       bool
+	// NoTranscriptUpload is the coordination-loop gate. applyHeadless sets it when
+	// Headless is true, and it also has its own --no-* flag for a daemon that needs
+	// the LLM pipeline (which --headless disables) but must run no coordination
+	// loops. maybeStartTranscriptUpload consults it to skip the background
+	// transcript-upload loops.
 	NoTranscriptUpload bool
 
 	// LLM pipeline (lives client-side) worker-pool tuning.
@@ -183,7 +177,7 @@ type Config struct {
 // runServe (the `serve` daemon entry) so both accept an identical client-flag
 // surface from one definition — adding a knob in one place covers both.
 func registerConfigFlags(fs *flag.FlagSet, cfg *Config) {
-	fs.StringVar(&cfg.GraphStorage, "graph-storage", "~/.knowledge/", "Directory for graph storage: the server writes its .bin here, and the client roots its segment cache + worker runtime under it (default ~/.knowledge/)")
+	fs.StringVar(&cfg.GraphStorage, "graph-storage", "~/.knowledge/", "Directory for graph storage: the server writes its .bin here, and the client roots its segment cache under it (default ~/.knowledge/)")
 	fs.StringVar(&cfg.RootDir, "root", ".", "Project root the client walks for ast + topology, and the current-tree fallback for resolving a bare repo name (default \".\")")
 	fs.IntVar(&cfg.Port, "port", graphclient.DefaultPort, "TCP port the graph server listens on")
 	fs.StringVar(&cfg.AuthToken, "auth-token", os.Getenv("KNOWLEDGE_AUTH_TOKEN"), "Opaque machine bearer token presented on every request, bypassing the interactive browser login and the platform keychain. Defaults to the KNOWLEDGE_AUTH_TOKEN environment variable; an explicit flag value wins. Empty leaves the interactive login path intact.")
@@ -196,16 +190,13 @@ func registerConfigFlags(fs *flag.FlagSet, cfg *Config) {
 	cfg.AllowedWebOrigins = append([]string(nil), defaultWebOrigins...)
 	fs.Var(&csvOrigins{target: &cfg.AllowedWebOrigins}, "web-origin", "Comma-separated allow-list of browser web origins permitted to make cross-origin (CORS) requests to the daemon's loopback streamable-HTTP MCP endpoint. The Origin is reflected back only when it matches an entry; the list is never widened to '*'. An explicit value replaces the default (https://fulminate.io,https://dev.fulminate.io). Repeatable.")
 	fs.BoolVar(&cfg.NoAuth, "no-auth", false, "Force the client local-only: suppress BOTH cloud-selection triggers at the Router.pick chokepoint (machineAuth forced false WITHOUT consulting --auth-token/KNOWLEDGE_AUTH_TOKEN, and the keychain replaced with a no-op store so a live `knowledge login` refresh token reports IsLoggedIn==false). Fail-closed: no routed op can reach a fulminate.io host regardless of credentials present. Capability reduction only — the cloud endpoint is never overridden. Use for offline/OSS mode and as the safety floor for the bug-hunt harness.")
-	fs.BoolVar(&cfg.NoWorkerRuntime, "no-worker-runtime", false, "Skip dream Runner wiring. Run knowledge purely to serve/exercise the graph (e.g. the bench harness) without starting its own background worker runtime.")
 	fs.BoolVar(&cfg.NoPropagationRuntime, "no-propagation-runtime", false, "Skip client-side PropagationLoop wiring. The MCP daemon continues to serve and reflective tools still run on demand, but the hourly background cluster detection + valence propagation stops. Use for offline development or to silence background log noise.")
 	fs.BoolVar(&cfg.Pprof, "pprof", false, fmt.Sprintf("Start the pprof profiling HTTP endpoint on %s (/debug/pprof/) at boot, AND pass --pprof to the knowledge-server this daemon spawns so its own /debug/pprof/ mounts too. Both endpoints bind loopback only. Also reachable on demand for this process via manage(pprof_start). Use to profile client-side work such as collect.", profiling.Addr()))
 	fs.IntVar(&cfg.PprofPort, "pprof-port", profiling.DefaultPort, "TCP port for this process's pprof profiling HTTP endpoint (loopback only). Applied when --pprof is set; the spawned knowledge-server serves its own /debug/pprof/ on --port instead.")
 	fs.BoolVar(&cfg.SkipLLMPrecheck, "skip-llm-precheck", false, "Skip the live-ping check that runs against every configured (provider, model) tuple at client startup. Use for offline development or CI sandboxes; default is to fail-fast at boot rather than at first tool call.")
 	fs.BoolVar(&cfg.NoLLMPipeline, "no-llm-pipeline", false, "Skip client-side LLM pipeline (summarize + embed) wiring. The MCP daemon and other tools continue to work; only background summarization/embedding stops.")
-	fs.BoolVar(&cfg.Headless, "headless", false, "Run as an embedded/supervisor-managed daemon: serve the loopback /mcp endpoint and resolve query embeddings, but skip every background content + coordination loop. Implies --no-worker-runtime, --no-propagation-runtime, --skip-llm-precheck and --no-llm-pipeline, and additionally disables the hive monitor, hive reaper, and transcript upload loops. Still loads ~/.knowledge/config (so [credentials] resolve config-first) and still seeds .claude agents/skills. Does not change auth.")
-	fs.BoolVar(&cfg.NoHiveMonitor, "no-hive-monitor", false, "Skip the background hive monitor loop. Individually addressable form of one of the three gates --headless implies — for daemons that need the LLM pipeline (which --headless disables) but must not run coordination loops (e.g. the bench harness's corpus-pull daemon).")
-	fs.BoolVar(&cfg.NoHiveReaper, "no-hive-reaper", false, "Skip the background hive reaper loop. See --no-hive-monitor for when to use the individual gates instead of --headless.")
-	fs.BoolVar(&cfg.NoTranscriptUpload, "no-transcript-upload", false, "Skip the background transcript-upload loops, including their HOME-side transcript cache writes. See --no-hive-monitor for when to use the individual gates instead of --headless.")
+	fs.BoolVar(&cfg.Headless, "headless", false, "Run as an embedded/supervisor-managed daemon: serve the loopback /mcp endpoint and resolve query embeddings, but skip every background content + coordination loop. Implies --no-propagation-runtime, --skip-llm-precheck and --no-llm-pipeline, and additionally disables the transcript upload loops. Still loads ~/.knowledge/config (so [credentials] resolve config-first) and still seeds .claude agents/skills. Does not change auth.")
+	fs.BoolVar(&cfg.NoTranscriptUpload, "no-transcript-upload", false, "Skip the background transcript-upload loops, including their HOME-side transcript cache writes. Individually addressable form of one of the gates --headless implies — for daemons that need the LLM pipeline (which --headless disables) but must not run coordination loops (e.g. the bench harness's corpus-pull daemon).")
 	fs.IntVar(&cfg.SummaryChannelSize, "summary-channel-size", 10000, "Client-side LLM pipeline: SummaryWork channel buffer size (full = collector blocks)")
 	fs.IntVar(&cfg.SummaryBatchSize, "summary-batch-size", 20, "Client-side LLM pipeline: items per summary worker batch")
 	fs.IntVar(&cfg.SummaryWorkers, "summary-workers", 25, "Client-side LLM pipeline: count of summary worker goroutines")

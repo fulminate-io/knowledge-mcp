@@ -5,8 +5,10 @@
 // composer summary a new session node needs, and read the session's current last
 // thought (the EdgeNext lineage source). Split out of
 // intercept_thoughts_think.go, which owns the compose/persist path itself;
-// buildContextLinks (write_context_links.go) reuses the get-or-create here so the
-// finding/research/rule/decision creates file under sessions identically.
+// buildContextLinks (write_context_links.go) reuses the get-or-create here, so
+// every create carrying a session files under it identically —
+// every knowledge-graph create routes the context-link trio, and they all reach
+// sessions through this one seam.
 
 package tools
 
@@ -20,6 +22,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/paging"
+	"github.com/fulminate-io/knowledge-mcp/internal/projects/render"
 	"github.com/fulminate-io/knowledge-mcp/internal/validate"
 )
 
@@ -123,7 +126,7 @@ func thoughtSessionSummary(name string) string {
 // prev. Reads the session's contained thoughts via an EdgeKGContains traverse
 // and picks the latest by CreatedAt.
 func lastSessionThoughtID(ctx context.Context, gc GraphCaller, sessionID string) string {
-	nodes, err := TraverseDescendants(ctx, gc, sessionID, kgtypes.EdgeKGContains, 1)
+	nodes, err := render.TraverseDescendants(ctx, gc, sessionID, kgtypes.EdgeKGContains, 1)
 	if err != nil || len(nodes) == 0 {
 		return ""
 	}

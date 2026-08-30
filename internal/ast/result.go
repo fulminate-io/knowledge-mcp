@@ -5,7 +5,7 @@
 // enclosing_node_id / enclosing_signature fields populated against the code
 // graph.
 //
-// Reuse / shape: mirrors domains/topology/dead_code_review.go:96-145 verbatim.
+// Reuse / shape: mirrors internal/topology/dead_code_review.go verbatim.
 // Builds a per-call codeNodeIndex (no global cache — a cache shared across
 // calls would serve stale enclosing-node data after a re-collect) by iterating
 // function-ish nodes via the

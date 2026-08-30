@@ -30,13 +30,16 @@ const maxChunksPerLogTraversal = 20
 const maxExampleEntriesPerChunk = 3
 
 // traverseLogs dispatches a log-graph walk by inspecting the start
-// node's type. Two shapes are supported:
+// node's type. The START NODE'S TYPE is the ONLY thing that selects the
+// walk — the caller's `direction` is not read here or by either helper
+// below, so it does not narrow, reverse or widen what is returned. Two
+// shapes are supported:
 //
-//   - LogTemplate (direction='down'): the template's chunks and a short
-//     sample of their decompressed entries.
-//   - LogStream (direction='both'): the stream's shared labels, the
-//     chunks that belong to it, and any cloud-graph proxies reachable
-//     via EMITTED_BY edges from the labels.
+//   - LogTemplate: the template's chunks and a short sample of their
+//     decompressed entries.
+//   - LogStream: the stream's shared labels, the chunks that belong to
+//     it, and any cloud-graph proxies reachable via EMITTED_BY edges
+//     from the labels.
 //
 // Any other starting node type is a user error — the contract for a
 // log-graph traversal is that the caller already knows which node it

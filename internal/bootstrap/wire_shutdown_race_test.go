@@ -12,11 +12,11 @@ import (
 // TestDrainOnShutdown_SIGTERMMidWiring is the bind-first startup change T2-B race regression: a
 // SIGTERM arriving mid-wiring runs the cleanup drain (drainOnShutdown)
 // CONCURRENTLY with the background wiring goroutine's writes to
-// c.runtime/c.propLoop/c.pipeline. The shared cancelable ctx + bounded join +
+// c.propLoop/c.pipeline. The shared cancelable ctx + bounded join +
 // flag-gated drain must (1) be data-race-clean (run under -race), (2) cancel the
 // wiring ctx so a blocked stage unwinds, (3) return within the bounded join
 // deadline, and (4) never Stop a nil/half-wired handle — with no readiness flag
-// set, drainOnShutdown skips ALL three Stops.
+// set, drainOnShutdown skips BOTH Stops.
 //
 // The synthetic wiring goroutine mirrors the production publish-then-mark order:
 // it blocks on ctx.Done() at the first stage (so no flag is ever set and the
@@ -34,7 +34,7 @@ func TestDrainOnShutdown_SIGTERMMidWiring(t *testing.T) {
 	var stageEntered, ctxObserved atomic.Bool
 
 	// Synthetic background wiring goroutine: enters the first stage, then blocks
-	// until the wiring ctx is canceled (mimicking a slow/stuck wireWorkerRuntime).
+	// until the wiring ctx is canceled (mimicking a slow/stuck wiring stage).
 	// It sets NO readiness flag and writes NO handle, so the drain must skip every
 	// Stop. The deferred close(c.wireDone) always signals — even on this early
 	// ctx-canceled return — so the cleanup join completes promptly.
@@ -73,10 +73,10 @@ func TestDrainOnShutdown_SIGTERMMidWiring(t *testing.T) {
 		t.Fatal("the wiring goroutine never observed ctx cancellation — drainOnShutdown must cancel wireCtx")
 	}
 	// No readiness flag was set, so no handle was Stopped (the flag gate skipped
-	// all three). The handles are nil throughout; the test passing under -race
+	// both). The handles are nil throughout; the test passing under -race
 	// proves the concurrent flag reads + the goroutine's (absent) writes never
 	// race on a published field.
-	if c.WorkerReady() || c.PropReady() || c.PipelineReady() {
+	if c.PropReady() || c.PipelineReady() {
 		t.Fatal("no readiness flag should be set when wiring is canceled before any stage completes")
 	}
 }

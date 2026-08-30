@@ -106,6 +106,6 @@ func startInProcessIngestServer(
 	mux.Handle(path, h)
 	h2s := &http2.Server{}
 	srv := httptest.NewServer(h2c.NewHandler(mux, h2s))
-	client := knowledgev1connect.NewIngestServiceClient(h2cClient(), srv.URL, connect.WithGRPC())
+	client := knowledgev1connect.NewIngestServiceClient(h2cClient(t), srv.URL, connect.WithGRPC())
 	return &inProcessIngestServer{srv: srv, client: client}, captured, handler
 }

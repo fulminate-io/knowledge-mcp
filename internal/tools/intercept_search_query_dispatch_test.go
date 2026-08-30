@@ -20,11 +20,8 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
-	"github.com/fulminate-io/knowledge-mcp/internal/collector"
-	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
@@ -51,12 +48,18 @@ type dispatchEngineHandler struct {
 	// browse that carries a type filter from one that dropped it. Nil (the zero
 	// value) keeps the fixed-resp behavior every other test relies on.
 	typedCorpus []*knowledgev1.Node
+	// graphNames is what a RETURN_MODE_GRAPH_NAMES read answers — the set of
+	// COLLECTED graph names, discriminated by return mode the same way
+	// fanOutEngineHandler does it. Nil (the zero value) answers an EMPTY catalog,
+	// which is the never-collected state, so a fixture that means "this graph HAS
+	// been collected" has to name it.
+	graphNames []string
 }
 
 func (h *dispatchEngineHandler) Check(
-	_ context.Context, _ *connect.Request[knowledgev1.HealthCheckRequest],
-) (*connect.Response[knowledgev1.HealthCheckResponse], error) {
-	return connect.NewResponse(&knowledgev1.HealthCheckResponse{}), nil
+	_ context.Context, _ *connect.Request[knowledgev1.CheckRequest],
+) (*connect.Response[knowledgev1.CheckResponse], error) {
+	return connect.NewResponse(&knowledgev1.CheckResponse{}), nil
 }
 
 func (h *dispatchEngineHandler) Status(
@@ -73,7 +76,19 @@ func (h *dispatchEngineHandler) Execute(
 	h.lastReq = req.Msg
 	h.reqs = append(h.reqs, req.Msg)
 	corpus := h.typedCorpus
+	names := h.graphNames
 	h.mu.Unlock()
+	// A seeded catalog answers the graph-names read; an UNSEEDED one falls through
+	// to the canned resp, which is how the fixtures that hand-build a
+	// catalog-bearing response (the graph's recorded embedding identity rides the
+	// same carrier) keep serving their own.
+	if q := req.Msg.GetQuery(); names != nil && q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_GRAPH_NAMES {
+		infos := make([]*knowledgev1.GraphInfo, 0, len(names))
+		for _, n := range names {
+			infos = append(infos, &knowledgev1.GraphInfo{Name: n})
+		}
+		return connect.NewResponse(&knowledgev1.ExecuteResponse{GraphNames: infos}), nil
+	}
 	if corpus != nil {
 		return connect.NewResponse(h.serveTypedCorpus(req.Msg.GetQuery(), corpus)), nil
 	}
@@ -129,12 +144,6 @@ func (h *dispatchEngineHandler) MetadataStats(
 func (h *dispatchEngineHandler) Index(
 	context.Context, *connect.Request[knowledgev1.IndexRequest],
 ) (*connect.Response[knowledgev1.IndexResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, nil)
-}
-
-func (h *dispatchEngineHandler) Hive(
-	context.Context, *connect.Request[knowledgev1.HiveRequest],
-) (*connect.Response[knowledgev1.HiveResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, nil)
 }
 
@@ -201,54 +210,6 @@ func (s stubEmbedder) EmbedBinaryBatch(_ context.Context, texts []string) ([][]b
 	return out, nil
 }
 
-// interceptDeps satisfies ClientDeps for the intercept reroute tests: a real
-// GraphClient (pointed at the fake server) + an optional embedder.
-type interceptDeps struct {
-	gc     *graphclient.GraphClient
-	emb    embed.BinaryEmbedder
-	segMgr SegmentSearcher
-	segRes SegmentVectorResolver
-	// pipelineNotReady flips PipelineReady() to false so a test can exercise the
-	// bind-first wiring-window gate (bind-first startup) on the segment-engine search arms.
-	// Zero value keeps the pipeline ready, so every pre-existing test exercises
-	// the wired path.
-	pipelineNotReady bool
-}
-
-func (d *interceptDeps) LocalLiveness() LocalLiveness                 { return d.gc }
-func (d *interceptDeps) Sink() collector.Sink                         { return nil }
-func (d *interceptDeps) RootDir() string                              { return "" }
-func (d *interceptDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
-func (d *interceptDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
-func (d *interceptDeps) WorkerReady() bool                            { return true }
-func (d *interceptDeps) PropReady() bool                              { return true }
-func (d *interceptDeps) PipelineReady() bool                          { return !d.pipelineNotReady }
-func (d *interceptDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
-func (d *interceptDeps) BanSet() *hivemonitor.BanSet                  { return nil }
-func (d *interceptDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
-func (d *interceptDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
-func (d *interceptDeps) Embedder() embed.BinaryEmbedder               { return d.emb }
-func (d *interceptDeps) BackendResolver() BackendResolver             { return nil }
-func (d *interceptDeps) GraphCaller() GraphCaller                     { return d.gc }
-func (d *interceptDeps) LocalGraphCaller() GraphCaller                { return d.gc }
-func (d *interceptDeps) SegmentManager() SegmentSearcher              { return d.segMgr }
-func (d *interceptDeps) SegmentVectorResolver() SegmentVectorResolver { return d.segRes }
-func (d *interceptDeps) SegmentShipper() SegmentShipper               { return nil }
-func (d *interceptDeps) SegmentPruner() SegmentPruner                 { return nil }
-
-func (d *interceptDeps) SegmentCacheDropper() SegmentCacheDropper { return nil }
-func (d *interceptDeps) SegmentDeleter() SegmentDeleter           { return nil }
-func (d *interceptDeps) SegmentCoverage() SegmentCoverageReader   { return nil }
-func (d *interceptDeps) PipelineScanner() PipelineScanner         { return nil }
-
-func (d *interceptDeps) ClearHealLatch(kgtypes.GraphType, string) {}
-func (d *interceptDeps) ReflectionForcer() ReflectionForcer       { return nil }
-func (d *interceptDeps) SimilarityForcer() SimilarityForcer       { return nil }
-
-func (d *interceptDeps) BlindSpotProvider() BlindSpotProvider { return nil }
-func (d *interceptDeps) ClusterProvider() ClusterProvider     { return nil }
-func (d *interceptDeps) TensionsProvider() TensionsProvider   { return nil }
-
 func newInterceptHarness(t *testing.T, execHits *atomic.Int64, resp *knowledgev1.ExecuteResponse) *graphclient.GraphClient {
 	t.Helper()
 	gc, _ := newInterceptHarnessWithHandler(t, execHits, resp)
@@ -269,8 +230,10 @@ func newInterceptHarnessWithHandler(t *testing.T, execHits *atomic.Int64, resp *
 
 	h2s := &http2.Server{}
 	srv := httptest.NewServer(h2c.NewHandler(mux, h2s))
-	t.Cleanup(srv.Close)
-	return graphclient.NewGraphClientForURL(srv.URL), h
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
+	gc := graphclient.NewGraphClientForURL(srv.URL)
+	t.Cleanup(gc.CloseIdleConnections)
+	return gc, h
 }
 
 func cannedSearchResp(t *testing.T) *knowledgev1.ExecuteResponse {
@@ -294,7 +257,10 @@ func searchParams(t *testing.T, args map[string]any) kgtools.CallToolParams {
 // Execute is the ids[] hydrate read, which is NOT a server search plan.
 func TestInterceptSearch_EmbedThenClientEngine(t *testing.T) {
 	var execHits, embedCalls atomic.Int64
-	gc, handler := newInterceptHarnessWithHandler(t, &execHits, cannedNodesResp(
+	// The catalog-bearing response is what makes this a graph that HAS been
+	// embedded: the arm resolves its query embedder from the graph's RECORDED
+	// identity, so a fixture with no identity would (correctly) run BM25-only.
+	gc, handler := newInterceptHarnessWithHandler(t, &execHits, cannedEmbeddedNodesResp(
 		&knowledgev1.Node{Id: "n1", Type: "finding", SymbolName: "Hit"},
 	))
 	mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "n1", Score: 0.9}}}
@@ -302,9 +268,13 @@ func TestInterceptSearch_EmbedThenClientEngine(t *testing.T) {
 
 	handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"query": "x", "graph": "knowledge"}))
 	require.True(t, handled)
-	assert.GreaterOrEqual(t, embedCalls.Load(), int64(1), "client embed pre-step ran")
+	// The embed pre-step is proven by the VECTOR REACHING THE ENGINE below, not
+	// by the injected stub's counter: the arm no longer embeds with the
+	// process-wide configured embedder, it resolves one from the graph.
 	assert.Equal(t, int64(1), mgr.calls.Load(), "knowledge arm drove the CLIENT engine")
-	assert.NotEmpty(t, mgr.lastVec, "the client-embedded query vector reached the HNSW arm")
+	assert.Len(t, mgr.lastVec, cannedCatalogVecBytes,
+		"the vector reaching the HNSW arm must be the one built from the GRAPH's recorded identity, "+
+			"not the configured stub embedder's — the widths differ precisely so this can tell them apart")
 	assert.False(t, dispatchedAServerSearch(handler.recordedReqs()), "knowledge arm must NOT dispatch a server search")
 	assert.Contains(t, out.Content[0].Text, "Hit")
 }

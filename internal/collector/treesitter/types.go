@@ -2,6 +2,10 @@
 
 package treesitter
 
+import (
+	sitter "github.com/smacker/go-tree-sitter"
+)
+
 // ChunkType classifies the semantic unit a chunk represents.
 // Values are raw tree-sitter node types (e.g., "function_declaration", "comment",
 // "import_declaration") passed through without translation.
@@ -241,6 +245,33 @@ const (
 	// hand-written package is shared across the two binaries — not because
 	// anything in this package produces the edge.
 	EdgeImplements EdgeType = "IMPLEMENTS"
+
+	// EdgeFlowsToReturn, EdgeFlowsToArg and EdgeFlowsToField are the model-free
+	// flow facts, and unlike EdgeImplements above THIS PACKAGE EMITS THEM: the
+	// chunker runs the per-language flow-step arm and the closure engine inside
+	// emitDeclarationEdges and appends these edges itself.
+	//
+	// The wire literals mirror kgtypes.EdgeFlowsToReturn / EdgeFlowsToArg /
+	// EdgeFlowsToField verbatim, in the same per-module-duplicate idiom this
+	// file's other constants follow. kgtypes carries the single authoritative
+	// doc block — endpoints, the Evidence grammar, and the STRUCTURAL
+	// (Type == FLOWS_TO_ARG && FromID == ToID) test for an unresolved-callee
+	// self-edge — and it is not restated here.
+	EdgeFlowsToReturn EdgeType = "FLOWS_TO_RETURN"
+	EdgeFlowsToArg    EdgeType = "FLOWS_TO_ARG"
+	EdgeFlowsToField  EdgeType = "FLOWS_TO_FIELD"
+
+	// EdgeEvidenceFlowPrefix opens the Evidence string every flow edge carries,
+	// mirroring kgtypes.EdgeEvidenceFlowPrefix verbatim.
+	//
+	// THE CHUNKER RENDERS EVIDENCE FROM THIS MIRROR, NOT FROM kgtypes, and that
+	// is the point of mirroring it. This package has zero production kgtypes
+	// imports — deliberately, because no hand-written package is shared across
+	// the two binaries — so a kgtypes reference in the emission path would
+	// contradict the reason the constants above are duplicated at all.
+	// TestFlowVocabularyLockstep pins this spelling against the kgtypes
+	// declaration so the two cannot drift.
+	EdgeEvidenceFlowPrefix = "flow:"
 )
 
 // Edge represents a directed relationship between two code entities.
@@ -281,7 +312,12 @@ type Edge struct {
 	//
 	// SET on IMPORTS, where it names the import SITE (`import:<local>:<n>`) so two
 	// statements naming one specifier stay two rows under the four-part edge
-	// identity. Empty on every other kind emitted here: a reference's key can only
+	// identity. ALSO SET on FLOWS_TO_RETURN, FLOWS_TO_ARG and FLOWS_TO_FIELD,
+	// where it carries the flow key — the source and sink POSITIONS the fact is
+	// about, `flow:p0>a2` and the like — under the grammar the edge-type
+	// vocabulary documents. The optional callee and group-key components of that
+	// grammar are appended by the parser, which is the only layer that knows
+	// them. Empty on every other kind emitted here: a reference's key can only
 	// be built once resolution knows the candidate set, so the parser stamps it.
 	Evidence string
 
@@ -299,10 +335,83 @@ type Edge struct {
 	// declaration has no parent, plus one derived copy per parented
 	// declaration carrying that declaration's Parent.
 	//
-	// nil on IMPORTS and on positionally-addressed CONTAINS; SET on
-	// reference edges AND on a Go method's parent-to-member CONTAINS, whose
-	// receiver source is a sibling the chunker cannot address by slot.
+	// nil on IMPORTS, on positionally-addressed CONTAINS, and on
+	// FLOWS_TO_RETURN, which is a self-edge addressed by slot at both ends and
+	// references nothing; SET on reference edges, on a Go method's
+	// parent-to-member CONTAINS, whose receiver source is a sibling the chunker
+	// cannot address by slot, and on FLOWS_TO_ARG and FLOWS_TO_FIELD, which
+	// resolve a callee spelling and a field owner respectively against this same
+	// site.
 	Ref *RefSite
+}
+
+// FlowStepKind names one GRAMMAR SHAPE a per-language flow-step arm recognized
+// inside a declaration. The vocabulary is closed at five members.
+type FlowStepKind string
+
+const (
+	StepParam   FlowStepKind = "param"    // Target is a parameter's name node; Index is its position
+	StepDefine  FlowStepKind = "define"   // a local name is bound; Sources are the operands read
+	StepAssign  FlowStepKind = "assign"   // Sources flow into Target (or into Field on the receiver)
+	StepCallArg FlowStepKind = "call-arg" // Sources occupy argument Index of a call to Callee
+	StepReturn  FlowStepKind = "return"   // Sources occupy result Index of a return
+)
+
+// FlowStep is ONE syntactic observation a flow-step arm made inside a single
+// declaration: a name was bound, operands were read, a value occupied an
+// argument or result position.
+//
+// THE ARM SUPPLIES GRAMMAR SHAPE; THE ENGINE SUPPLIES DATAFLOW SEMANTICS. An
+// arm reports what the tree says and nothing more; deciding which parameter
+// reaches which sink — alias closure, rebinding, receiver-field tracking — is
+// the language-agnostic closure engine's job. That split is the whole reason a
+// fifth per-language registry beats fifteen closure implementations, and an arm
+// that computes reachability itself has misread the contract.
+//
+// THREE CONTRACT PROPERTIES ARE LOAD-BEARING:
+//
+//  1. STEPS ARE RETURNED IN SOURCE ORDER (ascending StartByte). The closure
+//     engine is order-sensitive — a rebind clears a binding — so an arm that
+//     returns QUERY order rather than source order produces wrong facts
+//     silently. tree-sitter yields matches in query order, not source order;
+//     populate.go already sorts chunks by StartByte for exactly this reason and
+//     its sort comment records the measured symptom.
+//  2. FlowStep HOLDS LIVE *sitter.Node POINTERS, valid only while the owning
+//     tree is alive. Consume within the parse; NEVER store a FlowStep on a
+//     Chunk or carry it past ChunkFile. This is why flow facts are computed and
+//     emitted inside emitDeclarationEdges rather than carried like TypeFacts.
+//  3. Callee IS NOT A FREE STRING. It is whatever normalizeCallee returns for
+//     that call — the SAME derivation extractCallEdges uses — and an arm that
+//     cannot reproduce that spelling emits no StepCallArg at all. The
+//     callee-spelling parity rule is stated authoritatively on the Go reference
+//     arm; see chunker_go_flowsteps.go.
+type FlowStep struct {
+	// Kind is the grammar shape this step observed.
+	Kind FlowStepKind
+
+	// Target is the bound name node on StepParam, StepDefine and StepAssign.
+	// Nil on StepCallArg and StepReturn, which bind nothing.
+	Target *sitter.Node
+
+	// Sources are the operand nodes this step READS. Empty when the step reads
+	// nothing the arm could name.
+	Sources []*sitter.Node
+
+	// Callee is the callee spelling on StepCallArg, under the parity rule
+	// property 3 states. Empty on every other kind.
+	Callee string
+
+	// Index is a StepCallArg argument index, a StepReturn result index, or a
+	// StepParam parameter position.
+	Index int
+
+	// Field is the field name when StepAssign writes into a field rather than
+	// into a plain local. Empty otherwise.
+	Field string
+
+	// Receiver marks the receiver parameter on StepParam, and marks a StepAssign
+	// whose target is a field ON THE RECEIVER rather than on some other value.
+	Receiver bool
 }
 
 // Result holds the complete output of parsing and chunking a single file.

@@ -81,10 +81,10 @@ func (h *cloudCaptureHandler) observed() []string {
 func TestNewCloudGraphClient_AttachesBearer(t *testing.T) {
 	h := &cloudCaptureHandler{}
 	srv := httptest.NewServer(h)
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 
 	src := auth.StaticTokenSource{AccessToken: "tok-abc"}
-	gc := NewCloudGraphClient(srv.URL, src)
+	gc := closeIdleOnCleanup(t, NewCloudGraphClient(srv.URL, src))
 
 	// Issue one Execute. The handler returns a malformed payload — we ignore
 	// the decode error; the assertion is on the request header captured server-side.
@@ -127,10 +127,10 @@ func TestNewCloudGraphClient_RetriesOn401(t *testing.T) {
 	h := &cloudCaptureHandler{}
 	h.first401.Store(true)
 	srv := httptest.NewServer(h)
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 
 	src := &cloudRefresher{current: "tok-stale"}
-	gc := NewCloudGraphClient(srv.URL, src)
+	gc := closeIdleOnCleanup(t, NewCloudGraphClient(srv.URL, src))
 
 	_, _ = gc.Execute(opCtx(), &knowledgev1.ExecuteRequest{})
 
@@ -154,10 +154,10 @@ func TestCloudAuth_StaticTokenSource_NoRetryOn401(t *testing.T) {
 	h := &cloudCaptureHandler{}
 	h.first401.Store(true) // armed, but a non-refreshing source must NOT retry past it
 	srv := httptest.NewServer(h)
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 
 	src := auth.StaticTokenSource{AccessToken: "machine-tok"}
-	gc := NewCloudGraphClient(srv.URL, src)
+	gc := closeIdleOnCleanup(t, NewCloudGraphClient(srv.URL, src))
 
 	// The Execute returns an error (the 401 surfaces, the payload never decodes);
 	// the assertion is purely on the upstream request count + bearer attachment.
@@ -215,9 +215,9 @@ func TestCloudClient_RoundTripAdvancesSocketMeter(t *testing.T) {
 	path, hdlr := knowledgev1connect.NewEngineServiceHandler(handler)
 	mux.Handle(path, hdlr)
 	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 
-	gc := NewCloudGraphClient(srv.URL, auth.StaticTokenSource{AccessToken: "tok"})
+	gc := closeIdleOnCleanup(t, NewCloudGraphClient(srv.URL, auth.StaticTokenSource{AccessToken: "tok"}))
 
 	before := SocketWriteSnapshot()
 	resp, err := gc.Execute(opCtx(), &knowledgev1.ExecuteRequest{
@@ -274,9 +274,9 @@ func TestCloudExecute_UnaryPOSTOverHTTP11(t *testing.T) {
 	cap := &protoCapture{next: mux}
 	// Plain (non-h2c) httptest server: HTTP/1.1-only front door.
 	srv := httptest.NewServer(cap)
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 
-	gc := NewCloudGraphClient(srv.URL, auth.StaticTokenSource{AccessToken: "tok"})
+	gc := closeIdleOnCleanup(t, NewCloudGraphClient(srv.URL, auth.StaticTokenSource{AccessToken: "tok"}))
 
 	req := &knowledgev1.ExecuteRequest{
 		Plan: &knowledgev1.ExecuteRequest_Query{

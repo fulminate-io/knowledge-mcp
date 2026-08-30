@@ -87,6 +87,12 @@ var bashLangConfig = LangConfig{
 		{Name: "stmt", Context: contextStmt, Prefix: "function __meta_wrapper__() {\n", Suffix: "\n}\n"},
 	},
 	CommentKinds: []string{"comment"},
+	// A heredoc body is a leaf until it contains an expansion; once it does, the
+	// expansion becomes its only child and every surrounding line of the document
+	// falls into a span gap. Comparing the body whole is what makes a heredoc
+	// written into a pattern mean its own text. A `$` meant literally inside one is
+	// written `$$`, the same escape every other literal dollar uses.
+	OpaqueTextKinds: []string{"heredoc_body"},
 	// IsTestFile is NIL: shell has no test runner that selects files by name.
 	// Measured on bash-ohmyzsh, the whole repo carries three test files under
 	// two different spellings — lib/tests/cli.test.zsh and
@@ -163,6 +169,11 @@ var csharpLangConfig = LangConfig{
 		{Name: "expr", Context: contextExpr, Prefix: "class __MetaWrapper__ {\n  void M() {\n    var __metaValue__ = ", Suffix: ";\n  }\n}\n"},
 	},
 	CommentKinds: []string{"comment"},
+	// An interpolation's format clause — the `:yyyyMMdd` half of `{when:yyyyMMdd}`
+	// — carries only its `:` as a child and leaves the format string itself in a
+	// span gap, so every format clause matched every other. C#'s ordinary and
+	// verbatim strings cover their content with children and are not affected.
+	OpaqueTextKinds: []string{"interpolation_format_clause"},
 	// IsTestFile is NIL: `dotnet test` discovers tests by ATTRIBUTE inside a
 	// test-project assembly, so no file name and no directory decides anything.
 	// The *Tests.cs habit is widespread — 2007 of cs-roslyn's 13962 C# files use
@@ -209,6 +220,10 @@ var elmLangConfig = LangConfig{
 		{Name: "expr", Context: contextExpr, Prefix: "x = ", Suffix: "\n"},
 	},
 	CommentKinds: []string{"block_comment", "line_comment"},
+	// Elm's {- -} block comment carries its two delimiter tokens as children and
+	// leaves the comment text in a span gap, so one block comment matched any
+	// other. Its -- line comment is childless and always constrained its text.
+	OpaqueTextKinds: []string{"block_comment"},
 	// IsTestFile is NIL: elm-test discovers exposed values of type Test inside
 	// modules, so membership is decided by a type in the file rather than by the
 	// file's name — the same in-file shape that makes Rust nil. elm-compiler
@@ -225,7 +240,15 @@ var groovyLangConfig = LangConfig{
 		{Name: "stmt", Context: contextStmt, Prefix: "def __metaWrapper__() {\n", Suffix: "\n}\n"},
 	},
 	CommentKinds: []string{"comment", "groovy_doc"},
-	IsTestFile:   underTestSourceSet,
+	// A Groovy block comment carries its `/*` and `*/` as children and leaves the
+	// comment text in a span gap, so one block comment matched any other. Its
+	// groovy_doc sibling is NOT here despite also gapping: the gap there is the
+	// ` * ` line decoration, while the doc's text is covered by a first_line child
+	// and already constrained — measured by declaring it opaque and watching the
+	// regression pair pass with the mechanism disabled. Groovy's `string` gaps only
+	// on its quote delimiters and covers its value with a string_content child.
+	OpaqueTextKinds: []string{"comment"},
+	IsTestFile:      underTestSourceSet,
 }
 
 // javaLangConfig — Java. Class scope is required for methods; method scope
@@ -257,7 +280,12 @@ var kotlinLangConfig = LangConfig{
 		{Name: "stmt", Context: contextStmt, Prefix: "class __MetaWrapper__ {\n  fun m() {\n", Suffix: "\n  }\n}\n"},
 	},
 	CommentKinds: []string{"line_comment", "multiline_comment"},
-	IsTestFile:   underTestSourceSet,
+	// Kotlin's character literal carries only its two quote tokens and leaves the
+	// character itself in a span gap, so 'a' matched 'b'. Kotlin's string_literal
+	// is NOT here: it covers its value with string_content children and hosts
+	// interpolated_expression, so it still compares correctly and still binds.
+	OpaqueTextKinds: []string{"character_literal"},
+	IsTestFile:      underTestSourceSet,
 }
 
 // luaLangConfig — Lua. Top-level chunks parse standalone; statements wrap
@@ -286,6 +314,13 @@ var ocamlLangConfig = LangConfig{
 		{Name: "expr", Context: contextExpr, Prefix: "let _ = ", Suffix: "\n"},
 	},
 	CommentKinds: []string{"comment"},
+	// OCaml surfaces string content as its own node, so a plain literal compared
+	// correctly — but an escape inside one becomes a child of string_content and
+	// splits the surrounding text into span gaps, and the same holds for the
+	// {|...|} quoted form's content node. The enclosing `string` and
+	// `quoted_string` are not declared: they gap only on their delimiters and
+	// cover their values with these children.
+	OpaqueTextKinds: []string{"quoted_string_content", "string_content"},
 	// IsTestFile is NIL: dune declares tests with a (test) stanza in the build
 	// file, which names an executable rather than a file-name pattern, so an .ml
 	// file's own name says nothing about whether it is compiled as a test. In
@@ -334,7 +369,16 @@ var scalaLangConfig = LangConfig{
 		{Name: "stmt", Context: contextStmt, Prefix: "object __MetaWrapper__ {\n  def m() = {\n", Suffix: "\n  }\n}\n"},
 	},
 	CommentKinds: []string{"block_comment", "comment"},
-	IsTestFile:   underTestSourceSet,
+	// Scala's two comment kinds leave their text in a span gap, as Rust's and
+	// Groovy's do. interpolated_string is the sharper case: its LITERAL SEGMENTS
+	// are gaps — only the `${...}` interpolations are children — so s"took ${n}ms"
+	// matched s"lost ${n}ms". Comparing it whole is what makes those segments
+	// constrain; a `$` meant literally inside one is written `$$`, and a
+	// placeholder written INSIDE an interpolation is refused at compile time
+	// rather than silently never matching. Scala's plain `string` is childless and
+	// was always compared correctly.
+	OpaqueTextKinds: []string{"block_comment", "comment", "interpolated_string"},
+	IsTestFile:      underTestSourceSet,
 }
 
 // swiftLangConfig — Swift. Top-level statements parse standalone (Swift is

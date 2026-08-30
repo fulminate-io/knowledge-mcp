@@ -4,9 +4,9 @@ package segmentdist
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/bm25"
@@ -27,7 +27,6 @@ import (
 // constructed and rooted under a format-distinct L2 cache directory so they never
 // collide.
 type Manager struct {
-	caller   loginState
 	cacheDir string
 	maxBytes int64
 	// residencyBudgetBytes is the ceiling, in RESIDENT HEAP BYTES, that every
@@ -81,22 +80,9 @@ type Manager struct {
 	// replaces each layer whole. Guarded by mu.
 	rebuildWork map[graphKey]*stagedRebuild
 
-	// segTransport lazily builds the agent /v1/segments control transport for the
-	// cloud (logged-in) segment source. nil when no builder was supplied: on the
-	// logged-in branch the source factory then returns the fail-loud
-	// errorSegmentSource sentinel (a logged-in client with no/failed transport is
-	// misconfigured — it must surface, not silently degrade). Sampled once per lazy
-	// per-graph source construction. The production *auth.Transport it returns
-	// satisfies the SegmentControlTransport seam; in-package tests inject a fake
-	// through the same builder.
-	segTransport func() (SegmentControlTransport, error)
-
-	// testSource, when non-nil, is the segmentSource EVERY lazily-constructed
-	// distManager uses, bypassing the newSegmentSource capability gate entirely. It
-	// is TEST-ONLY (set via withSegmentSource) so the surviving in-package machinery
-	// tests inject a fake segment source without threading it through the production
-	// login/transport gate. nil in every production Manager.
-	testSource segmentSource
+	// seedHook, when non-nil, runs at two named points of the branch seed. It is
+	// TEST-ONLY (set via withSeedHook) and nil in every production Manager.
+	seedHook func(phase seedPhase, gt kgtypes.GraphType, name, format string)
 
 	// admitGraph records that a user searched a graph, admitting it into the
 	// client's working set. nil when no admitter was supplied, in which case a
@@ -117,21 +103,16 @@ type Manager struct {
 	// free. Sequences start at 1, so a zero is never a valid entry. Guarded by mu.
 	writeSeq uint64
 
-	// manifestStateMu guards the per-graph manifest-fingerprint record's
-	// read-modify-write (manifest_state.go). BOTH format arms of one graph write the
-	// same file, so an unguarded pair would lose whichever landed first. It is
-	// deliberately NOT mu: mu guards the per-graph engine maps and is held across
-	// lazy engine construction, while this is held only across a small file
-	// read+rename.
-	manifestStateMu sync.Mutex
-
 	// mergeStateMu guards the per-graph delta-merge horizon record (merge_state.go),
 	// and repairStateMu guards the per-graph backstop record plus its hot map
 	// (repair_state.go). Each record has its own writer and its own file, so each
-	// takes its own mutex for the same reason manifestStateMu is not mu: they are
-	// held only across a small file read+rename, never across engine construction.
-	mergeStateMu  sync.Mutex
-	repairStateMu sync.Mutex
+	// takes its own mutex rather than mu: mu guards the per-graph engine maps and is
+	// held across lazy engine construction, while these are held only across a small
+	// file read+rename. bm25DeltaStateMu guards the per-graph BM25 arm cursor record
+	// (bm25_delta_state.go) under the same rationale.
+	mergeStateMu     sync.Mutex
+	repairStateMu    sync.Mutex
+	bm25DeltaStateMu sync.Mutex
 	// repairStateHot is what keeps a disk read off the manage(status) assembly loop,
 	// which walks every graph serially. LoadRepairState fills it and SaveRepairState
 	// updates it; RepairStateCached is a pure map read that never falls back to disk.
@@ -141,10 +122,20 @@ type Manager struct {
 	// tombstoned holds the ids this client has learned are deleted but which may
 	// still appear in blobs shipped BEFORE the delete. Every Import seeds the
 	// imported segments' live bits from it, so re-importing such a blob cannot
-	// resurrect a removed node. Guarded by mu; supplied by the caller through
-	// SetGraphTombstones, never derived here — segmentdist does not know where the
-	// set is persisted.
+	// resurrect a removed node. Guarded by mu.
+	//
+	// IT IS SUPPLIED BY CALLERS AND ALSO HYDRATED FROM DISK, and the second half is not
+	// a second source of truth: the durable record is THIS package's
+	// (rebuild_state.go's per-graph {watermark, tombstoned} file), every route that
+	// learns a delete writes it before seeding, and graphTombstones reads it back once
+	// per graph so a fresh process's very first import is masked too.
 	tombstoned map[graphKey][]searchengine.ExternalID
+
+	// tombstonesHydrated latches per graph once the durable record has been consulted
+	// OR a caller has replaced the set outright. Without it an empty set would re-read
+	// the record on every import, and — worse — a deliberate CLEAR would be undone by
+	// the next read. Guarded by mu, beside the map it qualifies.
+	tombstonesHydrated map[graphKey]bool
 
 	// tombstoneSeq records, PER GRAPH AND PER ID, the write sequence in force when a
 	// delete for that id was last reported. It is what turns "this write arrived AFTER
@@ -212,10 +203,16 @@ func (m *Manager) NoteDeletedIDs(gt kgtypes.GraphType, name string, ids []search
 //
 // Passing an empty or nil set clears the graph's entry, which is what a caller does
 // once every id has been re-emitted out of the durable blobs.
+//
+// IT LATCHES hydrated. A caller replacing the set has already decided what the graph's
+// tombstones ARE — the two clearing routes both rewrite the persisted record before they
+// call here — so a later read must not go back to disk and re-learn ids this call
+// deliberately dropped.
 func (m *Manager) SetGraphTombstones(gt kgtypes.GraphType, name string, ids []searchengine.ExternalID) {
 	k := graphKey{graphType: gt, graphName: name}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.tombstonesHydrated[k] = true
 	if len(ids) == 0 {
 		// Nothing is left to seed dead, so nothing is left to time either.
 		delete(m.tombstoned, k)
@@ -240,37 +237,61 @@ func (m *Manager) nextWriteSeq() uint64 {
 // graphTombstones returns a snapshot of the graph's tombstone set for an Import to
 // seed from. It copies under the lock so a concurrent SetGraphTombstones cannot
 // mutate the slice an in-flight import is reading.
+//
+// IT HYDRATES FROM THE DURABLE RECORD ON THE FIRST READ, and without that a restart has
+// no seal at all: the in-memory set starts empty in every fresh process, while the very
+// first thing that process does with a graph is import its whole L2 corpus — blobs that
+// may predate the deletes this client already learned. The record is this package's own
+// (rebuild_state.go), written by every route that learns a delete, so reading it back
+// here is a read of the same fact rather than a second opinion about it.
+//
+// ONCE PER GRAPH, NOT ONCE PER IMPORT. hydrated latches on the first read AND on every
+// SetGraphTombstones, so the disk is touched once and an authoritative CLEAR is never
+// undone by a re-read of a record the clearing caller has already rewritten.
 func (m *Manager) graphTombstones(gt kgtypes.GraphType, name string) []searchengine.ExternalID {
 	k := graphKey{graphType: gt, graphName: name}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ids := m.tombstoned[k]
 	if len(ids) == 0 {
+		ids = m.hydrateTombstonesLocked(k, gt, name)
+	}
+	if len(ids) == 0 {
 		return nil
 	}
 	return append([]searchengine.ExternalID(nil), ids...)
 }
 
-// targetBindable is the seam newSegmentSource uses to re-bind an INJECTED test
-// source to the per-graph target, without the production factory referencing a
-// test-only concrete type. Only the in-package test fake implements it; production
-// sources (gcs/local/error) do not, so the type-assert is a no-op for them.
-type targetBindable interface {
-	bindTarget(*knowledgev1.GraphSelector)
+// hydrateTombstonesLocked reads the graph's persisted tombstone set into the in-memory
+// one, once. Callers must hold mu.
+//
+// AN UNREADABLE RECORD IS ANNOUNCED, NOT ABSORBED. This runs under a supplier signature
+// that cannot return an error — the engines' Import takes a set, not a result — so the
+// only honest disposition is a loud one naming the consequence: the import proceeds
+// unmasked, which resurrects whatever the record was holding dead. It latches anyway, so
+// a broken record produces one ERROR per graph rather than one per import.
+func (m *Manager) hydrateTombstonesLocked(
+	k graphKey, gt kgtypes.GraphType, name string,
+) []searchengine.ExternalID {
+	if m.tombstonesHydrated[k] {
+		return nil
+	}
+	m.tombstonesHydrated[k] = true
+	_, stored, err := m.LoadRebuildState(gt, name)
+	if err != nil {
+		slog.Error("segmentdist: the graph's tombstone record is unreadable — segments imported by this process are NOT masked, so a blob shipped before a delete can resurrect its documents",
+			"graph", gt, "name", name, "err", err)
+		return nil
+	}
+	if len(stored) == 0 {
+		return nil
+	}
+	m.tombstoned[k] = stored
+	return stored
 }
 
 // ManagerOption configures a Manager at construction. See the With* functions.
 type ManagerOption func(*Manager)
-
-// WithSegmentTransport supplies the lazy agent /v1/segments control-transport
-// builder that selects the cloud (GCS) segment source on the logged-in path. The
-// production caller wraps cli.BuildSyncTransport (which returns the *auth.Transport
-// satisfying SegmentControlTransport). Without this option a Manager has no transport
-// builder, so the logged-in path resolves to the fail-loud errorSegmentSource
-// sentinel (a logged-in client with no segment transport is misconfigured).
-func WithSegmentTransport(builder func() (SegmentControlTransport, error)) ManagerOption {
-	return func(m *Manager) { m.segTransport = builder }
-}
 
 // WithGraphAdmitter supplies the recorder that admits a searched graph into the
 // client's working set. A search IS the direct interaction the working-set rule
@@ -289,13 +310,37 @@ func WithResidencyBudget(bytes int64) ManagerOption {
 	return func(m *Manager) { m.residencyBudgetBytes = bytes }
 }
 
-// withSegmentSource is the TEST-ONLY option that pins the segmentSource every
-// lazily-constructed distManager uses, bypassing the newSegmentSource capability
-// gate. The surviving in-package machinery tests inject a fakeSegmentSource through
-// it so they exercise the manager over a controllable double without a live
-// login/transport. It is unexported and never used by production code.
-func withSegmentSource(src segmentSource) ManagerOption {
-	return func(m *Manager) { m.testSource = src }
+// seedPhase names which point of the branch seed a test hook was called from. The
+// two are different windows and a test that could not tell them apart would park or
+// act at whichever came first.
+type seedPhase string
+
+const (
+	// seedPhaseConstruct fires at the top of a branch constructor's seed, OFF the
+	// Manager lock — the point where a racing caller is supposed to be made to wait.
+	seedPhaseConstruct seedPhase = "construct"
+	// seedPhaseRecordCaptured fires inside the seed AFTER base's rebuild record has
+	// been read and BEFORE any partition moves — the window in which base advancing
+	// its record must not reach the branch.
+	seedPhaseRecordCaptured seedPhase = "record-captured"
+)
+
+// withSeedHook is the TEST-ONLY option that runs fn at the two named seed phases
+// above. It is unexported and never used by production code.
+//
+// WHY A HOOK AND NOT A BLOCKING DOUBLE. Both windows used to be reachable through a
+// segment source: the seed called the source's List between capturing base's record
+// and copying its partitions, so a double could park there or act there. The seed is
+// now a pure L2 copy and consults no source at all, so a source double is never
+// called and either test would hang or assert nothing.
+//
+// WHY THE CONSTRUCT PHASE IS WHERE IT IS. Every other seam in the constructor runs
+// UNDER the Manager lock, and a test that parked there would prove the MUTEX rather
+// than the construction gate — a racing caller would block on the lock and observe
+// the right answer even with the gate deleted, which is a test that cannot fail. The
+// seed is the only work the constructor does off the lock.
+func withSeedHook(fn func(phase seedPhase, gt kgtypes.GraphType, name, format string)) ManagerOption {
+	return func(m *Manager) { m.seedHook = fn }
 }
 
 // stagedRebuild is one graph's in-flight reset: the partitions staged for each
@@ -313,26 +358,25 @@ type graphKey struct {
 	graphName string
 }
 
-// NewManager constructs the production owner. caller reports the live cloud login
-// state (production *graphclient.Router.LoggedIn) so the source factory selects
-// the GCS source when logged in and the L2-local source otherwise. cacheDir roots
-// the per-graph L2 disk caches; maxBytes <= 0 means an unbounded cache.
+// NewManager constructs the production owner. cacheDir roots the per-graph L2 disk
+// caches; maxBytes <= 0 means an unbounded cache. There is no login parameter: the
+// source factory has one source to select, so the caller's cloud login state is not
+// an input to segment distribution at all.
 //
-// opts are optional construction knobs; WithSegmentTransport supplies the cloud
-// segment-transport builder that selects the GCS source on the logged-in path.
-func NewManager(caller loginState, cacheDir string, maxBytes int64, opts ...ManagerOption) *Manager {
+// opts are optional construction knobs; see the With* functions.
+func NewManager(cacheDir string, maxBytes int64, opts ...ManagerOption) *Manager {
 	m := &Manager{
-		caller:   caller,
 		cacheDir: cacheDir,
 		maxBytes: maxBytes,
 		// Sampled ONCE here, alongside the cacheDir it belongs to.
-		boundAccountID: accountSelectionID(context.Background()),
-		managers:       make(map[graphKey]*constructionGate[[]byte, struct{}]),
-		bm25Managers:   make(map[graphKey]*constructionGate[bm25.Query, *bm25.CorpusStats]),
-		dirty:          make(map[graphKey]*graphDirtyState),
-		tombstoned:     make(map[graphKey][]searchengine.ExternalID),
-		tombstoneSeq:   make(map[graphKey]map[searchengine.ExternalID]uint64),
-		rebuildWork:    make(map[graphKey]*stagedRebuild),
+		boundAccountID:     accountSelectionID(context.Background()),
+		managers:           make(map[graphKey]*constructionGate[[]byte, struct{}]),
+		bm25Managers:       make(map[graphKey]*constructionGate[bm25.Query, *bm25.CorpusStats]),
+		dirty:              make(map[graphKey]*graphDirtyState),
+		tombstoned:         make(map[graphKey][]searchengine.ExternalID),
+		tombstonesHydrated: make(map[graphKey]bool),
+		tombstoneSeq:       make(map[graphKey]map[searchengine.ExternalID]uint64),
+		rebuildWork:        make(map[graphKey]*stagedRebuild),
 	}
 	for _, opt := range opts {
 		opt(m)

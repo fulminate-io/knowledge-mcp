@@ -9,7 +9,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/bm25"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
@@ -76,50 +75,16 @@ func TestRetiredTreeReclaimIsPerFormatAndOnce(t *testing.T) {
 	}
 }
 
-// TestKeepFormatPartitionsSegmentFamilies proves the version-carrying format name
-// does the job it was chosen for: it splits the old and new layouts into two
-// disjoint families, so a client on one never sees the other's segments.
+// TestKeepFormatPartitionsSegmentFamilies WAS DELETED HERE. It asserted the
+// version-carrying format name splits old and new layouts into disjoint families —
+// the break in the two-client rebuild PING-PONG — against a per-meta FILTER on
+// distManager, deleted with the rail.
 //
-// That is what breaks the two-client ping-pong. Sharing one name, a client that
-// rejects the other's blobs rebuilds them in its own layout — and the other
-// client then rejects THOSE and rebuilds again, each one's output being the
-// other's next rejection, indefinitely. Disjoint names mean each rebuilds once.
-//
-// Both directions are asserted, and the second is the known-positive: it is not
-// enough that the v1-named meta is filtered out, the v2-named one must survive.
-// A keepFormat that rejected everything would pass the first half alone.
-func TestKeepFormatPartitionsSegmentFamilies(t *testing.T) {
-	t.Parallel()
-
-	dm, _ := newReclaimManager(t, t.TempDir())
-	dm.format = bm25.New().Name()
-	require.Equal(t, "bm25v2", dm.format, "the shipped format name must be version-carrying")
-
-	metas := []searchengine.SegmentMeta{
-		{ID: "old-family", Format: "bm25"},
-		{ID: "new-family", Format: dm.format},
-	}
-	var kept []searchengine.SegmentID
-	for _, meta := range metas {
-		if dm.keepFormat(meta.Format) {
-			kept = append(kept, meta.ID)
-		}
-	}
-	require.Equal(t, []searchengine.SegmentID{"new-family"}, kept,
-		"only this client's own format family may survive the gate")
-
-	// A manager with no format pinned is the unfiltered case and must keep both,
-	// so the partition above is the format name doing the work rather than a
-	// gate that happens to reject everything unfamiliar.
-	dm.format = ""
-	kept = nil
-	for _, meta := range metas {
-		if dm.keepFormat(meta.Format) {
-			kept = append(kept, meta.ID)
-		}
-	}
-	require.Len(t, kept, 2, "an unpinned manager filters nothing")
-}
+// SUCCESSOR: TestFormatFamiliesAreDisjointOnDisk (format_family_disjoint_test.go),
+// which asserts the same incident shape against the mechanism that now enforces it —
+// the per-(graph,format) cache root, which a client on one family never opens for
+// another. That test was extended to cover the BM25 family as well as HNSW when this
+// one was removed, so the format dimension this test contributed is not lost.
 
 // TestRetiredCacheTreeRemovedOnce pins all three halves of the reclamation
 // guard: it declines while the replacement tree is absent, reclaims once the

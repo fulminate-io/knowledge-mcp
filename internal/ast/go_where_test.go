@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // go_where_test.go — where-tree evaluator coverage. Three composers
-// (all/any/not), six leaves (kind/matches/equals/same_node/inside_pattern/
-// contains_pattern), depth cap, cross-language guard, and $outer.X
+// (all/any/not), eight leaves (kind/matches/equals/same_node/same_text/
+// inside_pattern/contains_pattern/flows_to), depth cap, cross-language
+// guard, and $outer.X
 // capture resolution — including the case where the outer capture does NOT
 // resolve, which must fail explicitly rather than silently matching.
 

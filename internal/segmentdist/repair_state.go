@@ -106,7 +106,7 @@ func (m *Manager) SaveRepairState(gt kgtypes.GraphType, name string, st RepairSt
 
 	m.repairStateMu.Lock()
 	defer m.repairStateMu.Unlock()
-	if err := atomicWriteManifestState(repairStatePathFor(m.cacheDir, gt, name), raw); err != nil {
+	if err := atomicWriteStateFile(repairStatePathFor(m.cacheDir, gt, name), raw); err != nil {
 		return err
 	}
 	m.rememberRepairStateLocked(gt, name, st)

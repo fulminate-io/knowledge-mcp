@@ -207,7 +207,7 @@ func TestCrawl_InternalLinks_RewrittenToPageIDs(t *testing.T) {
 	}
 	ctx := WithCrawlOptions(context.Background(), opts)
 
-	err := collector.Collect(ctx, "web", opts.Source, collector.CollectOptions{Force: true})
+	_, err := collector.Collect(ctx, "web", opts.Source, collector.CollectOptions{Force: true})
 	require.NoError(t, err)
 
 	batch := sink.last()

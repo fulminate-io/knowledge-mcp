@@ -52,7 +52,8 @@ func main() {
 // DOM walk, emission, and the resulting CollectResult batch handed to the sink.
 // The capturing sink records the batch so the test asserts node-type counts on
 // the value-type slice — the .bin persistence + vector-count gates are
-// storage-engine behaviors covered by pkg/store tests (out of scope here).
+// storage-engine behaviors covered by the server store package's own tests
+// (cmd/knowledge-server/internal/store), out of scope here.
 func TestCollect_SingleURL_EndToEnd(t *testing.T) {
 	sink := initWebTestSink(t)
 
@@ -73,7 +74,7 @@ func TestCollect_SingleURL_EndToEnd(t *testing.T) {
 	}
 	ctx := WithCrawlOptions(context.Background(), opts)
 
-	err := collector.Collect(ctx, "web", "test-source", collector.CollectOptions{Force: true})
+	_, err := collector.Collect(ctx, "web", "test-source", collector.CollectOptions{Force: true})
 	require.NoError(t, err)
 
 	batch := sink.last()

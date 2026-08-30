@@ -50,10 +50,14 @@ type browseContext struct {
 	Format   string
 	Fields   []string
 	MetaKeys []string // the meta filter keys, surfaced inline per node.
+	// IncludeTombstones is the caller's opt-in, carried here because the
+	// projection validator gates tombstoned_at on it. A browse that did not ask
+	// for tombstoned rows cannot project a tombstone stamp off the rows it got.
+	IncludeTombstones bool
 }
 
-// renderBrowseResponse mirrors renderGenericBrowse (tools_query_dispatch.go:343)
-// + renderGenericBrowseJSON (419): the numbered list with status + ID +
+// renderBrowseResponse mirrors the server renderGenericBrowse
+// + renderGenericBrowseJSON: the numbered list with status + ID +
 // truncated description + inline meta values + pagination footer, or the JSON
 // {graph, type, results, total} payload.
 func renderBrowseResponse(resp *knowledgev1.ExecuteResponse, c browseContext) (kgtools.ToolResult, error) {
@@ -64,7 +68,7 @@ func renderBrowseResponse(resp *knowledgev1.ExecuteResponse, c browseContext) (k
 	total := int(resp.GetTotal())
 
 	if c.Format == "json" {
-		return renderBrowseJSON(c, nodes, total), nil
+		return renderBrowseJSON(c, nodes, total, resp.GetTruncated()), nil
 	}
 	if len(nodes) == 0 {
 		if c.NodeType == "" {
@@ -109,10 +113,23 @@ func renderBrowseResponse(resp *knowledgev1.ExecuteResponse, c browseContext) (k
 	return kgtools.TextResult(sb.String()), nil
 }
 
-// renderBrowseJSON mirrors renderGenericBrowseJSON (tools_query_dispatch.go:419):
-// {graph, type, results:[...], total}. Each row is the full-node projection or
-// the requested-fields projection.
-func renderBrowseJSON(c browseContext, nodes []*knowledgev1.Node, total int) kgtools.ToolResult {
+// renderBrowseJSON mirrors the server renderGenericBrowseJSON:
+// {graph, type, results:[...], total, truncated}. Each row is the full-node
+// projection or the requested-fields projection.
+//
+// truncated is emitted UNCONDITIONALLY (true AND false), the same contract
+// ProjectNodeJSON states for a requested top-level key: the whole defect class
+// here is inference-from-absence, and an absent key is indistinguishable from an
+// old binary, so `truncated: false` is a POSITIVE statement of completeness. The
+// omit-when-false precedent (attachCandidateGroupsJSON) governs optional
+// enrichment and deliberately does not apply.
+func renderBrowseJSON(c browseContext, nodes []*knowledgev1.Node, total int, truncated bool) kgtools.ToolResult {
+	// Once per RESPONSE, ahead of the per-node loop — never per node.
+	if len(c.Fields) > 0 {
+		if err := ValidateNodeProjection(c.Fields, c.IncludeTombstones); err != nil {
+			return errorResult(err.Error())
+		}
+	}
 	rows := make([]map[string]any, 0, len(nodes))
 	for _, n := range nodes {
 		if len(c.Fields) == 0 {
@@ -122,10 +139,11 @@ func renderBrowseJSON(c browseContext, nodes []*knowledgev1.Node, total int) kgt
 		rows = append(rows, ProjectNodeJSON(n, c.Fields))
 	}
 	return jsonResult(map[string]any{
-		"graph":   c.Label,
-		"type":    c.NodeType,
-		"results": rows,
-		"total":   total,
+		"graph":     c.Label,
+		"type":      c.NodeType,
+		"results":   rows,
+		"total":     total,
+		"truncated": truncated,
 	})
 }
 
@@ -138,11 +156,36 @@ func renderBrowseJSON(c browseContext, nodes []*knowledgev1.Node, total int) kgt
 // fetched (no second wire call). An empty fields list yields the full-node
 // projection (fullNodeJSON: id/name/type/status?/metadata?); a non-empty list
 // projects through ProjectNodeJSON. tools→engine import is one-way (no cycle).
-func BrowseJSONResult(graphLabel, nodeType string, nodes []*knowledgev1.Node, total int, fields []string) kgtools.ToolResult {
-	return renderBrowseJSON(browseContext{Label: graphLabel, NodeType: nodeType, Fields: fields}, nodes, total)
+//
+// truncated is an EXPLICIT PARAMETER rather than a response, because the callers
+// have no single ExecuteResponse to speak for: the rules arm drains the whole
+// corpus in keyset pages and computes its own total, so no ceiling can have
+// engaged on it and it passes false — a statement about that read, not a
+// placeholder. An arm that DOES hold a response passes resp.GetTruncated().
+//
+// includeTombstones is an EXPLICIT PARAMETER for the same reason and carries the
+// same obligation: it gates the tombstoned_at projection, so each caller states
+// what its own arm does rather than inheriting a default. An arm that ROUTES the
+// opt-in passes the caller's value; an arm that REJECTS the flag passes false as
+// a statement about that arm, not as the value the compiler made cheapest.
+func BrowseJSONResult(graphLabel, nodeType string, nodes []*knowledgev1.Node, total int, fields []string, truncated, includeTombstones bool) kgtools.ToolResult {
+	return renderBrowseJSON(browseContext{
+		Label: graphLabel, NodeType: nodeType, Fields: fields, IncludeTombstones: includeTombstones,
+	}, nodes, total, truncated)
 }
 
-// fullNodeJSON mirrors the server fullNodeJSON (tools_query_dispatch_project.go):
+// copyProjectedMetadata renders a node's metadata map as the value of a bare
+// "metadata" projection. It COPIES rather than aliasing, so the caller never
+// receives a reference to the node's own map, and it always returns a non-nil
+// map, so an absent metadata map projects as {} rather than null — the "empty
+// map for absent metadata" contract both tool schemas state.
+func copyProjectedMetadata(md map[string]string) map[string]string {
+	out := make(map[string]string, len(md))
+	maps.Copy(out, md)
+	return out
+}
+
+// fullNodeJSON mirrors the server fullNodeJSON:
 // id + name + type, plus status + metadata when present.
 func fullNodeJSON(n *knowledgev1.Node) map[string]any {
 	row := map[string]any{
@@ -159,42 +202,6 @@ func fullNodeJSON(n *knowledgev1.Node) map[string]any {
 		row["metadata"] = md
 	}
 	return row
-}
-
-// ProjectNodeJSON mirrors the server projectNodeJSON projection grammar:
-// top-level id/name/type/status/description + per-metadata-key "metadata.<key>"
-// + bare "metadata" (full map). Unknown keys dropped. Exported so the
-// cmd/knowledge/internal/tools container-listing intercept reuses the SAME
-// grammar (tools→engine import is one-way; no cycle) rather than copy-pasting it.
-func ProjectNodeJSON(n *knowledgev1.Node, fields []string) map[string]any {
-	out := make(map[string]any, len(fields))
-	for _, f := range fields {
-		switch f {
-		case "id":
-			out["id"] = n.Id
-		case "name":
-			out["name"] = n.SymbolName
-		case "type":
-			out["type"] = n.Type
-		case "status":
-			out["status"] = n.Status
-		case "description":
-			out["description"] = n.Description
-		case "metadata":
-			if len(n.Metadata) > 0 {
-				md := make(map[string]string, len(n.Metadata))
-				maps.Copy(md, n.Metadata)
-				out["metadata"] = md
-			}
-		default:
-			if key, ok := strings.CutPrefix(f, "metadata."); ok {
-				if v := kgtypes.Value(n, key); v != "" {
-					out[f] = v
-				}
-			}
-		}
-	}
-	return out
 }
 
 // traverseContext carries the render inputs the dispatcher derives from the
@@ -256,6 +263,13 @@ func renderTraversalResponse(resp *knowledgev1.ExecuteResponse, c traverseContex
 			// edge_groups and nowhere else, so a JSON consumer never reads N
 			// alternatives as N independent facts.
 			"edges": edgeMetadataJSON(ungrouped),
+			// The 50,000-row edges ceiling is the largest truncation surface in the
+			// system, and until this key existed an ORDINARY traversal — one with no
+			// candidate groups, which is the overwhelming majority — carried no
+			// truncation signal in its payload at all. group_reconstruction_incomplete
+			// below is NOT a substitute: it answers whether the GROUP reconstruction
+			// was partial, and it is omitted entirely when no group exists.
+			"truncated": resp.GetTruncated(),
 		}
 		attachCandidateGroupsJSON(payload, g.groups, traversalNodeIndex(results), g.reached, g.incomplete)
 		return jsonResult(payload), nil
@@ -287,7 +301,7 @@ func renderTraversalResponse(resp *knowledgev1.ExecuteResponse, c traverseContex
 	return kgtools.TextResult(sb.String()), nil
 }
 
-// traversalNodeName mirrors nodeDisplayName (tools_query_linkage.go:347):
+// traversalNodeName mirrors the server nodeDisplayName:
 // SymbolName → FilePath → ID.
 func traversalNodeName(n *knowledgev1.Node) string {
 	if n.SymbolName != "" {
@@ -299,7 +313,7 @@ func traversalNodeName(n *knowledgev1.Node) string {
 	return n.Id
 }
 
-// proxyMetadataAnnotation mirrors proxyAnnotation (tools_traverse_proxy.go) —
+// proxyMetadataAnnotation mirrors the server proxyAnnotation —
 // the DB-FREE proxy annotation derived from node metadata. The engine resolves
 // cross-graph proxies server-side (crossGraphFallback), so a TraversalList node
 // is normally a real node; an unresolved proxy gets the metadata annotation,
@@ -331,32 +345,40 @@ func proxyMetadataAnnotation(n *knowledgev1.Node) string {
 	return "[proxy → " + strings.Join(parts, ":") + "]"
 }
 
-// renderNodesByIDsResponse mirrors renderGenericNodesByIDs (tools_query_ids.go:24):
-// the bulk-hydrate {label, nodes:[]} JSON (default) or the text fallback
+// renderNodesByIDsResponse mirrors the server renderGenericNodesByIDs:
+// the bulk-hydrate {label, nodes:[], truncated} JSON (default) or the text fallback
 // concatenating the node body. The engine's ids[] read returns the NodeList.
 // When fields is non-empty, the JSON arm projects each node through the
 // ProjectNodeJSON grammar — the bulk-ids shape is a known large-response shape,
 // so the tool-wide `fields` projection MUST reach it (the prior raw-node marshal
 // ignored fields entirely). An empty fields list preserves the full-node marshal.
-func renderNodesByIDsResponse(resp *knowledgev1.ExecuteResponse, label, format string, fields []string) (kgtools.ToolResult, error) {
+func renderNodesByIDsResponse(resp *knowledgev1.ExecuteResponse, label, format string, fields []string, includeTombstones bool) (kgtools.ToolResult, error) {
 	nodes, err := decodeNodes(resp)
 	if err != nil {
 		return kgtools.ToolResult{}, err
 	}
 	if format == "json" || format == "" {
 		if len(fields) > 0 {
+			// Once per RESPONSE, ahead of the per-node loop. A caller-input
+			// refusal is a rendered error result, not a transport error —
+			// matching the not-found shape at render_node.go.
+			if err := ValidateNodeProjection(fields, includeTombstones); err != nil {
+				return errorResult(err.Error()), nil
+			}
 			rows := make([]map[string]any, len(nodes))
 			for i, n := range nodes {
 				rows[i] = ProjectNodeJSON(n, fields)
 			}
 			return jsonResult(map[string]any{
-				"label": label,
-				"nodes": rows,
+				"label":     label,
+				"nodes":     rows,
+				"truncated": resp.GetTruncated(),
 			}), nil
 		}
 		return jsonResult(map[string]any{
-			"label": label,
-			"nodes": nodes,
+			"label":     label,
+			"nodes":     nodes,
+			"truncated": resp.GetTruncated(),
 		}), nil
 	}
 	var sb strings.Builder

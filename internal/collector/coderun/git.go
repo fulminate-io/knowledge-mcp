@@ -5,6 +5,7 @@ package coderun
 import (
 	"context"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -26,6 +27,34 @@ func DetectBranch(ctx context.Context, repoDir string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// BranchExists reports whether repoDir has a LOCAL branch named branch.
+//
+// THE THREE OUTCOMES ARE KEPT DISTINCT, and that is the whole point of the
+// helper. (true, nil) the ref is there; (false, nil) the repository was read and
+// does not have it; (false, err) the repository could NOT be read, so no
+// membership claim can be made about it at all. A caller that collapses the
+// third into the second reports "no such branch" about a directory it never
+// managed to look inside.
+//
+// THE COMPARISON IS EXACT BECAUSE THE PATTERN IS NOT. for-each-ref matches a
+// pattern at component boundaries, so refs/heads/feature matches the ref
+// feature/x — measured. Reporting that as "feature exists" would accept a branch
+// name nobody has. The pattern narrows the scan; the equality decides.
+//
+// A missing ref is NOT an error to git here: for-each-ref exits 0 and prints
+// nothing, which is what lets absence and unreadability stay separable.
+func BranchExists(ctx context.Context, repoDir, branch string) (bool, error) {
+	if branch == "" {
+		return false, nil
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "for-each-ref", "--format=%(refname:short)", "refs/heads/"+branch)
+	out, err := cmd.Output()
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(strings.Split(strings.TrimSpace(string(out)), "\n"), branch), nil
 }
 
 // HeadCommit returns the current HEAD commit SHA for the given repo directory.

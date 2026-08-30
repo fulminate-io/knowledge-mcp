@@ -8,9 +8,9 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
 
-// GraphTypeToolDef returns the unified graph-type registration tool. Modeled on
-// WorkerToolDef (worker_schema.go) — one tool with an `operation` enum rather
-// than four top-level tools. A user registers ONE combined record per graph type
+// GraphTypeToolDef returns the unified graph-type registration tool. It is
+// op-dispatched — one tool with an `operation` enum rather than
+// four top-level tools. A user registers ONE combined record per graph type
 // that defines both how to collect it (an external binary) and how the system
 // should treat its graph (summary/embed/sync behavior). The record is stored as
 // a per-account, graph-resident config node and is the single source of truth

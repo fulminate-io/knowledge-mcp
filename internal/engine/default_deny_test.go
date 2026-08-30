@@ -140,16 +140,13 @@ func TestDefaultDeny_SpecializedShapes(t *testing.T) {
 // route through engine.Dispatch). A package importing engine.Dispatch would mean
 // it was accidentally rerouted.
 //
-// NOTE: cmd/knowledge/internal/dream was REMOVED from this list:
-// the dream worker's eino tool dispatch now intentionally
-// rides the STANDARD client path (intercept chain → engine.Dispatch, composed by
-// bootstrap/dream.go's dispatchForRunner and injected as a dream.DispatchFunc) —
-// the worker shares the one client dispatch path, with no bespoke raw t.client.Call
-// fall-through. So dream is no longer a raw-client-only package; this guard no
-// longer applies to it.
+// EVERY MEMBER MUST BE A PACKAGE THAT EXISTS. The guard greps a directory, and
+// grep over a missing directory finds nothing — so a member naming a deleted
+// package is a subtest that passes without measuring anything. The worker
+// removal deleted the two packages this list used to carry alongside the four
+// below, and they were dropped from here with them.
 var specializedRawClientPackages = []string{
 	"thought",
-	"workercrud",
 	"linker",
 	"pipeline",
 	"topology",

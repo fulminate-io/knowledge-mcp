@@ -15,8 +15,9 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
-// searchLogs runs BM25 over an ephemeral log graph identified by Name
-// (the log pipeline's queryID). Results are filtered to NodeLogTemplate
+// searchLogs reads an ephemeral log graph identified by Name (the log
+// pipeline's queryID) and filters it with a case-insensitive substring
+// match. Results are filtered to NodeLogTemplate
 // because templates are the primary user-facing unit — chunks hold
 // compressed payloads and streams are label buckets, neither of which
 // is useful as a plain search hit.
@@ -28,9 +29,11 @@ import (
 //
 // No vector fallback: log graphs are excluded from the embedder pipeline
 // (see store.SkipsLLMProcessing), so HNSW is never populated for them.
-// BM25 remains available because the graph layer always builds a text
-// index — that is why templates stored with SymbolName=Pattern + severity
-// metadata are still text-searchable despite the LLM exclusion.
+// There is no server-side BM25 index for a log graph either. What makes a
+// template findable is the client-side case-insensitive substring filter
+// in filterLogHitsBySubstring, which tests SymbolName, metadata["summary"]
+// and metadata["pattern"] — so a template stored with SymbolName=Pattern
+// plus severity metadata is reachable by any fragment of those three.
 func (h *Handler) searchLogs(ctx context.Context, a searchArgs) kgtools.ToolResult {
 	if strings.TrimSpace(a.Name) == "" {
 		return kgtools.ErrorResult("name is required for graph=logs (pass the queryID returned by log collection)")
@@ -233,10 +236,11 @@ func checkLogGraphExists(ctx context.Context, gc GraphCaller, name string) error
 	return nil
 }
 
-// formatLogSearchResults renders BM25-ranked log templates as markdown.
-// The pattern is the template's SymbolName; severity, count, first_seen,
-// and last_seen come from metadata. Truncation keeps long patterns from
-// blowing out the chat width.
+// formatLogSearchResults renders log templates as markdown. The rows are NOT
+// ranked: they arrive in drain order, and every hit carries a zero score
+// because the substring filter produces no rank to print. The pattern is the
+// template's SymbolName; severity, count, first_seen, and last_seen come from
+// metadata. Truncation keeps long patterns from blowing out the chat width.
 func formatLogSearchResults(
 	name, query string, results []logSearchHit,
 ) kgtools.ToolResult {

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
@@ -221,13 +222,19 @@ func resourceStats(ctx context.Context, gc statsRPC, kind resourceGraphKind, a q
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "## %s Graph: %s\n\n", kind.listLabel, a.Account)
 	sb.WriteString(engine.RenderStatsBreakdown(stats))
+	var sampleFailures []string
 	if a.Samples {
-		samples := fetchTypeSamples(ctx, statsExecOf(gc), kind.graph, a.Account, stats)
+		var samples map[kgtypes.NodeType][]*knowledgev1.Node
+		samples, sampleFailures = fetchTypeSamples(ctx, statsExecOf(gc), kind.graph, a.Account, stats)
 		var sampleSB strings.Builder
 		engine.RenderSampleNames(&sampleSB, stats, samples)
 		sb.WriteString(sampleSB.String())
 	}
-	return textResult(sb.String())
+	// appendNotice concatenates into Content[0].Text, which would CORRUPT a JSON
+	// payload — safe here only because the format:"json" arm returned above, so
+	// this render is text. If this arm ever gains a JSON envelope, the disclosure
+	// moves to a separate block or a payload key.
+	return appendNotice(textResult(sb.String()), sampleFailureNotice(sampleFailures))
 }
 
 // resourceGetNode renders a single resource node: Execute ByID against the
@@ -268,7 +275,11 @@ func resourceBrowse(ctx context.Context, exec engine.ExecuteFn, kind resourceGra
 			Selection: sel,
 			Limit:     int32(limit),
 			Offset:    int32(offset),
-			SkipTotal: true, // the renderer reads only the decoded nodes, never Total
+			// SkipTotal is FALSE, matching the sibling practice browse:
+			// RenderResourceBrowse reads Total for its header count AND for the
+			// "_Use offset=N to see more._" footer, so skipping it would delete
+			// paging and put the PAGE length back in the header as a corpus figure.
+			// Limit+Offset still bound the rows; only the count is unbounded.
 		}},
 		Target: resourceTarget(kind.graph, a.Account),
 	})
@@ -279,14 +290,44 @@ func resourceBrowse(ctx context.Context, exec engine.ExecuteFn, kind resourceGra
 	if derr != nil {
 		return errorResult(kind.graph + " browse decode failed: " + derr.Error())
 	}
+	// format:"json" is HONORED here, not silently dropped. It used to be: this arm
+	// never read a.Format and RenderResourceBrowse returned markdown
+	// unconditionally, so query(graph:"cloud", format:"json") got prose with no
+	// error and no field saying the requested format was not served — a declared
+	// request parameter silently ignored on a read path.
+	//
+	// The envelope is engine.BrowseJSONResult, the SAME {graph, type, results,
+	// total, truncated} shape the server browse returns for every other node type
+	// and the shape the rules arm already honors format:"json" with — never a
+	// bespoke resource map.
+	//
+	// THE JSON RETURN PRECEDES THE MARKDOWN EMPTY-CASE below, exactly as the rules
+	// arm's comment warns: otherwise an empty account serializes as the "No
+	// resources" prose and breaks the caller's JSON.parse.
+	if a.Format == "json" {
+		return engine.WithTruncationNotice(
+			// The opt-in is FALSE as a statement about this arm: the cloud and
+			// CICD browse arms REJECT include_tombstones, so no tombstoned row can
+			// reach this envelope for tombstoned_at to project.
+			engine.BrowseJSONResult(kind.graph, string(kind.nodeType), nodes,
+				int(resp.GetTotal()), a.Fields, resp.GetTruncated(), false), resp)
+	}
+
+	// EVERY return path below wraps, not just the populated one. The disclosure is
+	// then unconditional on the arm's exits rather than conditional on which
+	// branch ran, so a later change to the empty-case predicate or to the
+	// truncation verdict cannot silently reintroduce a path that returns without
+	// disclosing. On today's server the empty case is a no-op — ceilingEngaged
+	// needs rowCount >= effective and zero rows never reach it.
 	if len(nodes) == 0 {
 		msg := fmt.Sprintf("No resources in %s graph %q.", kind.graph, a.Account)
 		if a.ResourceType != "" {
 			msg = fmt.Sprintf("No resources matching type prefix %q in %s graph %q.", a.ResourceType, kind.graph, a.Account)
 		}
-		return textResult(msg)
+		return engine.WithTruncationNotice(textResult(msg), resp)
 	}
-	return engine.RenderResourceBrowse(kind.render, a.Account, nodes, offset, a.ResourceType)
+	return engine.WithTruncationNotice(
+		engine.RenderResourceBrowse(kind.render, a.Account, nodes, offset, int(resp.GetTotal()), a.ResourceType), resp)
 }
 
 // resourceTarget builds the GraphSelector for a cloud/cicd graph (account-keyed).
@@ -294,48 +335,11 @@ func resourceTarget(graph, account string) *knowledgev1.GraphSelector {
 	return &knowledgev1.GraphSelector{Graph: graph, Account: account}
 }
 
-// resourceQueryText picks the ranked-search text from the query/text fields
-// (mirrors practiceQueryText — text wins, else the first of queries[]).
-func resourceQueryText(a queryArgs) string {
-	if a.Text != "" {
-		return a.Text
-	}
-	if len(a.Queries) > 0 {
-		return a.Queries[0]
-	}
-	return ""
-}
-
-// composeResourceSearchClient runs the cloud/cicd ranked-search arm against the
-// CLIENT per-account engine — the exact mirror of composePracticeSearchClient,
-// keyed on Account instead of Language and rendered via the SCORED
-// engine.RenderResourceSearch (NOT the node/browse renderers). Embed the query
-// client-side (so the HNSW arm is exercised), Manager.Search(GraphCloud/CICD,
-// account, …) → RRF, then ONE RETURN_MODE_NODES hydrate. A nil embedder degrades
-// to the BM25 arm; an empty/un-collected account (no segments) renders zero
-// results cleanly — graceful empty, NOT an error.
-func composeResourceSearchClient(ctx context.Context, deps ClientDeps, mgr SegmentSearcher, kind resourceGraphKind, account, query, format string) kgtools.ToolResult {
-	var queryVec []byte
-	if emb := deps.Embedder(); emb != nil && query != "" {
-		if vec, err := emb.EmbedBinary(ctx, query); err == nil && len(vec) > 0 {
-			queryVec = vec
-		}
-	}
-	hits, err := mgr.Search(ctx, kgtypes.GraphType(kind.graph), account, query, queryVec, knowledgeSearchDefaultLimit)
-	if err != nil {
-		return errorResult(kind.graph + " search: client engine: " + err.Error())
-	}
-	results, err := hydrateEngineHits(ctx, deps.GraphCaller(), hydrateSelector{Graph: kind.graph, Account: account}, hits)
-	if err != nil {
-		return errorResult(kind.graph + " search: hydrate: " + err.Error())
-	}
-	if format == "json" {
-		// resource_type (and the rest of the resource node metadata) rides through
-		// renderJSON's verbatim Metadata copy — no per-path projection needed.
-		return engine.RenderForCaller(query, results, "json", nil, "")
-	}
-	return engine.RenderResourceSearch(kind.render, account, query, results)
-}
+// The cloud/cicd RANKED-SEARCH arm (resourceQueryText,
+// composeResourceSearchClient) lives in the sibling
+// intercept_query_cloud_cicd_search.go, so this file stays under the 500-line
+// cap while the browse and stats arms grow their truncation and totals
+// disclosure.
 
 // statsRPC is the narrow view of *GraphClient the stats/list paths need —
 // Stats + Execute. Declared so the helpers can be tested with a fake.
@@ -353,9 +357,24 @@ func statsExecOf(gc statsRPC) engine.ExecuteFn {
 // fetchTypeSamples fetches up to 2 sample nodes per node type (bounded by the
 // node-type count, dozens — NOT N+1 over nodes) for the renderSampleNames
 // enrichment. One Match(type).Limit(2) Execute per node type.
-func fetchTypeSamples(ctx context.Context, exec engine.ExecuteFn, graph, account string, stats *knowledgev1.GraphStats) map[kgtypes.NodeType][]*knowledgev1.Node {
+//
+// The second return is the node types whose read FAILED, sorted. It exists
+// because the two bare continues this loop used to carry made an exec error, an
+// RPC failure and a decode failure all render as a missing sample section with
+// no error, no warning and no count — a reader saw a shorter list and could not
+// tell a type with no resources from a type whose read broke.
+//
+// A GENUINELY EMPTY TYPE IS NOT A FAILURE and is still skipped silently. That
+// split is the substance of the fix: the old `derr != nil || len(nodes) == 0`
+// conjunction collapsed a fault the reader must know about into an ordinary,
+// correct answer, and reporting both as failures would make every empty resource
+// type look broken — a new false statement rather than a fix.
+func fetchTypeSamples(
+	ctx context.Context, exec engine.ExecuteFn, graph, account string, stats *knowledgev1.GraphStats,
+) (map[kgtypes.NodeType][]*knowledgev1.Node, []string) {
 	byType := stats.GetNodesByType()
 	samples := make(map[kgtypes.NodeType][]*knowledgev1.Node, len(byType))
+	var failed []string
 	for nt := range byType {
 		resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
 			Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
@@ -366,15 +385,35 @@ func fetchTypeSamples(ctx context.Context, exec engine.ExecuteFn, graph, account
 			Target: resourceTarget(graph, account),
 		})
 		if err != nil {
+			failed = append(failed, nt)
 			continue
 		}
 		nodes, derr := engine.DecodeNodes(resp)
-		if derr != nil || len(nodes) == 0 {
+		if derr != nil {
+			failed = append(failed, nt)
 			continue
+		}
+		if len(nodes) == 0 {
+			continue // no rows of this type: an ordinary answer, not a fault.
 		}
 		samples[kgtypes.NodeType(nt)] = nodes
 	}
-	return samples
+	sort.Strings(failed)
+	return samples, failed
+}
+
+// sampleFailureNotice names the node types whose sample read failed, so a stats
+// render showing fewer sample sections than the graph has types says WHICH are
+// missing rather than leaving the reader to infer emptiness. An empty list
+// renders "", which appendNotice treats as a no-op.
+func sampleFailureNotice(types []string) string {
+	if len(types) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"_Sample names could not be read for %d node type(s): %s. Those sections are MISSING rather "+
+			"than empty — re-run to retry._",
+		len(types), strings.Join(types, ", "))
 }
 
 // listGraphNamesOfType enumerates the loaded graph names of the given type via

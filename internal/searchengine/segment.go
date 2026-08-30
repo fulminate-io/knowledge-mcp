@@ -1,9 +1,27 @@
 package searchengine
 
+import "io"
+
 // SegmentFormat is the index-agnostic codec the engine drives. Q is the query
 // type a format understands (BM25: bm25.Query; HNSW: []byte) and S is the
 // corpus-wide statistics a search needs (BM25: *bm25.CorpusStats for IDF; HNSW:
 // struct{}{}). The engine is generic over both and owns no format internals.
+//
+// BUILD AND MERGE MUST BE SAFE FOR CONCURRENT USE. The engine holds ONE format
+// value per index and calls it from several goroutines at once: ReplaceBucketGroup
+// harvests its partitions on a bounded worker pool, and every worker drives the
+// SAME format instance. An implementation carrying mutable per-call scratch state
+// on its receiver would race there, and it would race SILENTLY — the harvest's
+// output is content-hashed, so corruption surfaces as a mismatched segment id long
+// after the fact rather than as a panic at the write.
+//
+// THE SATISFYING SHAPE IS A STATELESS VALUE TYPE, which is what both production
+// formats are: `func (Format) Build(...)` / `func (Format) MergeTo(...)` on an empty
+// struct, with all per-call state local. A format needing scratch space allocates
+// it per call or guards it; it does not hang it off the receiver. A merge no
+// longer has to arrange per-call uniqueness for the file it writes: the engine
+// creates one destination per MergeTo call and passes it in, which is the same
+// requirement satisfied one layer up.
 type SegmentFormat[Q, S any] interface {
 	// Name identifies the format (used to tag SegmentBlob.Format for routing).
 	Name() string
@@ -12,7 +30,10 @@ type SegmentFormat[Q, S any] interface {
 	// Decode reconstructs a Segment from its encoded bytes. A decoded segment is
 	// indistinguishable from a freshly built one and is fully merge-eligible.
 	Decode(blob []byte) (Segment[Q, S], error)
-	// Merge consolidates several segments into one all-live segment, Lucene-style.
+	// MergeTo consolidates several segments into one all-live segment,
+	// Lucene-style, writing it into dst and reporting its byte length rather than
+	// materializing it.
+	//
 	// It reads the LIVE INDEXED data directly from each segs[i] (the format owns
 	// its concrete Segment type and type-asserts the inputs to read their
 	// internals — vectors/postings — so no original Documents are required and
@@ -20,7 +41,22 @@ type SegmentFormat[Q, S any] interface {
 	// accept has the same length and ordering as segs: accept[i] gates segs[i],
 	// keeping only members for which accept[i](id) is true. The result is a single
 	// consolidated segment in which every surviving member is live.
-	Merge(segs []Segment[Q, S], accept []func(ExternalID) bool) (Segment[Q, S], error)
+	//
+	// IT WRITES AND REPORTS A LENGTH; IT OWNS NOTHING ELSE. It does not Truncate,
+	// Close, Stat, unlink or map dst. The ENGINE creates the destination, sizes it
+	// from the returned n, maps it, decodes over the mapping and disposes of the
+	// file — on the success path and on every error path. A format that cleaned up
+	// after itself here would hide an engine that forgot to.
+	//
+	// n IS AUTHORITATIVE OVER THE DESTINATION'S SIZE. A format may leave dst longer
+	// than n: writing at an aligned offset can advance a writer's tail past the last
+	// byte that carries content. The engine's Truncate to n is what makes the file
+	// exactly the segment, so no caller may substitute a Stat for n.
+	//
+	// THE CONCURRENCY RULE ABOVE BINDS HERE VERBATIM, with one sharper obligation:
+	// each concurrent call is given its OWN dst, so an implementation must not
+	// retain dst on its receiver any more than it may retain other per-call state.
+	MergeTo(dst MergeSink, segs []Segment[Q, S], accept []func(ExternalID) bool) (n int64, err error)
 	// AggregateStats computes the corpus-wide stats over the current segment set.
 	// BM25 sums document frequencies for IDF; HNSW returns struct{}{}.
 	AggregateStats(segs []Segment[Q, S]) S
@@ -66,12 +102,29 @@ type SegmentID = string
 // stores it opaquely and stamps/orders Generation. DocCount is the segment's live
 // doc count (carried alongside the bytes so the server can persist it for the
 // segment-coverage levers — read back via the ListDelta metas without decoding).
+// THE STORED FILE IS Envelope FOLLOWED BY Bytes, AND THAT IS TRUE OF EVERY BLOB
+// HOWEVER IT WAS PRODUCED. Bytes is the FORMAT PAYLOAD only and never contains an
+// envelope; Envelope is the supersession prefix and is nil when there is no
+// record. A blob read from the L2 cache has both fields set as subslices of the
+// SAME mapping, so the split costs no copy.
+//
+// THE UNIFORMITY IS THE DESIGN. The rejected alternative — leaving the whole
+// stored file in Bytes for blobs read from disk while engine-produced blobs
+// carried a split — would give one field two meanings depending on provenance,
+// and every consumer would have to know where its blob came from before it could
+// read it. That the cache FILENAME names the payload and not the whole file is
+// the closely-related statement recorded on diskSegmentCache; this is its
+// field-level expression.
 type SegmentBlob struct {
 	ID         SegmentID
 	Format     string
 	Generation uint64
 	DocCount   int
-	Bytes      []byte
+	// Bytes is the format payload alone. See the type's own paragraph.
+	Bytes []byte
+	// Envelope is the supersession prefix that precedes Bytes in the stored file,
+	// nil when this blob records no supersession.
+	Envelope []byte
 	// Release frees the resources backing Bytes when they are a MAPPING rather
 	// than a heap copy. Nil means Bytes are heap-owned and nothing needs
 	// freeing. It is NOT called by whoever receives the blob: the engine hands
@@ -85,6 +138,41 @@ type SegmentBlob struct {
 	// unmapped memory. Keeping the reference IN the struct means every copy of
 	// the blob carries the guarantee with it.
 	keepAlive any
+}
+
+// PinsMapping reports whether this blob carries the reference that keeps a
+// mapping-backed payload alive.
+//
+// IT EXISTS BECAUSE THE PROPERTY IS OTHERWISE UNOBSERVABLE FROM OUTSIDE, and an
+// unobservable property is one no gate can hold. A holder that retains a blob's
+// Bytes but rebuilds the struct around them — which any other package must do,
+// since keepAlive is unexported and cannot be set from outside — silently drops
+// the pin. The bytes stay readable for as long as the entry happens to remain
+// reachable, so the defect is invisible until a collection lands between the
+// retention and the read.
+//
+// A caller that retains a blob past the lifetime of whatever handed it over is
+// the case this is for: it asserts the thing it retained still pins its payload.
+// It is not a health check on a blob in flight — a heap-backed blob correctly
+// reports false, because heap bytes need no pin.
+func (b SegmentBlob) PinsMapping() bool { return b.keepAlive != nil }
+
+// MergeSink is the destination a format writes a merged segment into. The engine
+// supplies it; an *os.File satisfies it, and so does a slice-backed adapter.
+//
+// IT CARRIES ReaderAt AS WELL AS WriterAt, and the second half is not decoration.
+// A format whose emitted sections advance out of file order cannot accumulate a
+// running checksum over what it writes, so it re-reads the finished range in
+// bounded chunks to compute one. hnsw's encoder is exactly that shape: four
+// cursors ascend independently while the footer CRC must cover every byte
+// including the backpatched header.
+//
+// A FORMAT WRITES AND REPORTS A LENGTH; IT OWNS NOTHING ELSE. It does not
+// Truncate, Close, Stat, unlink or map — the engine created the destination and
+// the engine disposes of it, on the success path and on every error path.
+type MergeSink interface {
+	io.WriterAt
+	io.ReaderAt
 }
 
 // SegmentMeta is the lightweight descriptor the distribution layer lists without

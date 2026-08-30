@@ -97,9 +97,10 @@ If you have the `claude` CLI on PATH, it picks `claude-cli` as the zero-config
 default: it needs no API key, authenticating through your existing `claude` login.
 
 You only need to touch the config to change a model, point a consumer at a
-different provider, or add a credential (a Voyage key for vector search, a Linear
-key for the ticket backend). See the [configuration guide](config.md) for the full
-`~/.knowledge/config` shape, including `[default]` and `[credentials]`.
+different provider, or add a credential (an embedding-provider key for vector
+search, a Linear key for the ticket backend). See the
+[configuration guide](config.md) for the full `~/.knowledge/config` shape,
+including `[default]`, `[embedder]`/`[reranker]` and `[credentials]`.
 
 ## See also
 

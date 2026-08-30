@@ -128,7 +128,7 @@ func TestCollectorV1_AttrsAndEmphasis_IntegrationFixture(t *testing.T) {
 	}
 	ctx := WithCrawlOptions(context.Background(), opts)
 
-	err := collector.Collect(ctx, "web", "v1-fixture", collector.CollectOptions{Force: true})
+	_, err := collector.Collect(ctx, "web", "v1-fixture", collector.CollectOptions{Force: true})
 	require.NoError(t, err)
 
 	batch := sink.last()

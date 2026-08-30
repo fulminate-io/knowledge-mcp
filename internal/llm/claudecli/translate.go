@@ -191,7 +191,7 @@ func extractPrompt(messages []*schema.Message) (systemFromMessages, userPrompt s
 // marshalJSONSchema accepts the shapes a caller might hand us
 // (json.RawMessage, []byte, string, struct, map) and returns canonical
 // JSON bytes suitable for --json-schema. Mirrors the substrate behavior
-// in domains/llm/openai/translate.go:marshalSchema.
+// in internal/llm/openai/translate.go:marshalSchema.
 func marshalJSONSchema(s any) ([]byte, error) {
 	if s == nil {
 		return []byte(`{}`), nil

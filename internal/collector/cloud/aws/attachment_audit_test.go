@@ -17,9 +17,10 @@ import (
 // accidentally drop the attachment edge and leave the SG reachability
 // analyzer with a silent blind spot for that resource type.
 //
-// The const is sourced from either pkg/kgtypes (the shared leaf package that
-// owns the EdgeType vocabulary) or pkg/store (re-export
-// alias); the matcher accepts either prefix.
+// The regex accepts either PACKAGE QUALIFIER — kgtypes. (the client leaf
+// package that owns the EdgeType vocabulary, which every collector file here
+// uses today) or store. (the historical re-export alias). Those are Go
+// qualifiers, not directory paths.
 //
 // The test is deliberately string-based (grep on disk) rather than
 // runtime-based because several of these collectors need AWS API

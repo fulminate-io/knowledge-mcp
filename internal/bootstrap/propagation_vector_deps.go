@@ -8,6 +8,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
+	"github.com/fulminate-io/knowledge-mcp/internal/tools"
 )
 
 // propagation_vector_deps.go holds the two adapters that bind the propagation
@@ -64,9 +65,9 @@ func (a residentVectorAdapter) VectorByID(ctx context.Context, externalID string
 }
 
 // coverageGateAdapter implements clientthought.SegmentCoverageGate over the
-// per-format segment degeneracy probe. It consults the HNSW arm ONLY: that is the sole
-// engine carrying vectors, so gating on any-arm degeneracy would let a degenerate
-// BM25 arm veto perfectly good vector resolution.
+// per-format segment observation probe. It consults the HNSW arm ONLY: that is the
+// sole engine carrying vectors, so gating on any-arm degeneracy would let a
+// degenerate BM25 arm veto perfectly good vector resolution.
 //
 // Every decline carries a reason rather than a bare false, so the fallback to the
 // server drain is never silent in the leaf-attachment log line.
@@ -80,11 +81,11 @@ func (a coverageGateAdapter) HNSWCoverageTrustworthy(ctx context.Context) (bool,
 	if mgr == nil {
 		return false, "segment manager not wired yet", nil
 	}
-	verdicts, err := mgr.ReconcileResidentDegenerateByFormat(ctx, kgtypes.GraphKnowledge, propagationGraphName)
+	obs, err := mgr.ResidentObservationsByFormat(ctx, kgtypes.GraphKnowledge, propagationGraphName)
 	if err != nil {
 		return false, "segment coverage probe failed", err
 	}
-	v, ok := armVerdictFor(verdicts, hnsw.New().Name())
+	v, ok := armObservationFor(obs, hnsw.New().Name())
 	if !ok {
 		return false, "hnsw arm unmeasured", nil
 	}
@@ -92,11 +93,13 @@ func (a coverageGateAdapter) HNSWCoverageTrustworthy(ctx context.Context) (bool,
 		return false, "hnsw arm unmeasured", v.Err
 	}
 	// AN EVICTED ARM IS NOT A MEASURED ARM, and this branch must stay AHEAD of the
-	// Degenerate test: an evicted arm reports Degenerate false, so without it the
-	// fall-through below would call the pool trustworthy and route the leaf
-	// attachment to VectorByID — materializing the whole HNSW pool on every hourly
-	// pass. VectorByID deliberately does not stamp the search touch, so the next
-	// budget pass evicts it again: reload, evict, reload, forever.
+	// degeneracy test: an evicted arm reports ResidentAfterLoad 0, which
+	// degenerateAgainstEmbedded reads as a lost pool — so without this branch the
+	// probe would either call the pool trustworthy on a measurement nobody took, or
+	// declare it degenerate and drive a rebuild that undoes the eviction. Either way
+	// VectorByID would materialize the whole HNSW pool on an hourly pass, and it
+	// deliberately does not stamp the search touch, so the next budget pass evicts it
+	// again: reload, evict, reload, forever.
 	//
 	// DECLINING SENDS THIS PASS DOWN THE SERVER-DRAIN PATH for an evicted knowledge
 	// graph, which costs more per pass than a resident by-id read would. That is the
@@ -105,7 +108,22 @@ func (a coverageGateAdapter) HNSWCoverageTrustworthy(ctx context.Context) (bool,
 	if v.Evicted {
 		return false, "hnsw arm evicted — not measured", nil
 	}
-	if v.Degenerate {
+	// THE DENOMINATOR IS THE GRAPH'S EMBEDDED-NODE COUNT. segmentdist lost the shipped
+	// count this comparison used to run against, so the verdict is computed here.
+	embedded, eerr := tools.GraphEmbeddedCount(ctx, a.c.GraphCaller(), kgtypes.GraphKnowledge, propagationGraphName)
+	if eerr != nil {
+		return false, "embedded-count read failed", eerr
+	}
+	// THIS SITE KEEPS THE RATIO BAND DELIBERATELY, AND WAS NOT MISSED BY THE BAND FLIP.
+	// It asks a DIFFERENT QUESTION from the heal arms: not "does this graph need a
+	// rebuild" but "is the HNSW arm trustworthy enough to resolve vectors by id". A
+	// TRUST question wants exactly what a band gives — a coarse "is this pool broadly
+	// populated" — because resolving by id against a half-populated pool silently
+	// returns misses, and it wants that answer at ANY moment rather than only at
+	// pipeline quiescence, which is the one condition under which the exact verdict is
+	// formed. Routing this to the exact predicate would make the trust answer
+	// unavailable away from quiescence, which is when this pass actually runs.
+	if degenerateAgainstEmbedded(v.ResidentAfterLoad, embedded) {
 		return false, "hnsw arm degenerate", nil
 	}
 	return true, "hnsw arm measured and non-degenerate", nil

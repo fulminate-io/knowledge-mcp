@@ -97,12 +97,12 @@ func composeAnalyzeNode(ctx context.Context, exec engine.ExecuteFn, a analyzeNod
 	}
 
 	// (2) Callers — traverse(CALLS, in, caller_depth).
-	callers, callerEdges, cerr := traverseCallNodes(ctx, exec, target, a.ID, kgtypes.EdgeCalls, false, callerDepth)
+	callers, callerEdges, callersClamped, cerr := traverseCallNodes(ctx, exec, target, a.ID, kgtypes.EdgeCalls, false, callerDepth)
 	if cerr != nil {
 		return errorResult("analyze callers: " + cerr.Error())
 	}
 	// (3) Callees — traverse(CALLS, out, callee_depth).
-	callees, calleeEdges, eerr := traverseCallNodes(ctx, exec, target, a.ID, kgtypes.EdgeCalls, true, calleeDepth)
+	callees, calleeEdges, calleesClamped, eerr := traverseCallNodes(ctx, exec, target, a.ID, kgtypes.EdgeCalls, true, calleeDepth)
 	if eerr != nil {
 		return errorResult("analyze callees: " + eerr.Error())
 	}
@@ -110,14 +110,18 @@ func composeAnalyzeNode(ctx context.Context, exec engine.ExecuteFn, a analyzeNod
 	// same terms as the production walks: rendering an empty test section after a
 	// failed walk would be indistinguishable from a symbol that genuinely has no
 	// test callers, which is the silent exclusion this opt-in exists to remove.
-	testCallers, testCallerEdges, tcerr := traverseCallNodes(ctx, exec, target, a.ID, kgtypes.EdgeTestCalls, false, callerDepth)
+	testCallers, testCallerEdges, testCallersClamped, tcerr := traverseCallNodes(ctx, exec, target, a.ID, kgtypes.EdgeTestCalls, false, callerDepth)
 	if tcerr != nil {
 		return errorResult("analyze test callers: " + tcerr.Error())
 	}
-	testCallees, testCalleeEdges, tecerr := traverseCallNodes(ctx, exec, target, a.ID, kgtypes.EdgeTestCalls, true, calleeDepth)
+	testCallees, testCalleeEdges, testCalleesClamped, tecerr := traverseCallNodes(ctx, exec, target, a.ID, kgtypes.EdgeTestCalls, true, calleeDepth)
 	if tecerr != nil {
 		return errorResult("analyze test callees: " + tecerr.Error())
 	}
+	// ANY of the four walks hitting the ceiling makes the whole view partial:
+	// the sections are rendered as one call graph, so a clamp on one side is not
+	// disclosed by the other three coming back whole.
+	walkClamped := callersClamped || calleesClamped || testCallersClamped || testCalleesClamped
 
 	// (5) Reconstruct groups per side and hydrate every candidate. Unlike the
 	// traverse arm, analyze ALWAYS enriches: its candidates are not guaranteed to
@@ -139,7 +143,10 @@ func composeAnalyzeNode(ctx context.Context, exec engine.ExecuteFn, a analyzeNod
 		incomplete = incomplete || side.incomplete
 	}
 
-	return textResult(engine.RenderAnalyzeNode(engine.AnalyzeView{
+	// This arm bypasses engine.Render, so it discloses a clamped walk for itself.
+	// Incomplete on AnalyzeView answers a NARROWER question — whether group
+	// reconstruction was partial — and is not a substitute.
+	return engine.WithTruncationNoticeFor(textResult(engine.RenderAnalyzeNode(engine.AnalyzeView{
 		RepoLabel:        repoLabelFor(a.Repo, a.Branch),
 		Subject:          subjNodes[0],
 		Callers:          callerSide.plain,
@@ -154,7 +161,7 @@ func composeAnalyzeNode(ctx context.Context, exec engine.ExecuteFn, a analyzeNod
 		Reached:          reached,
 		IncludeSource:    includeSource,
 		Incomplete:       incomplete,
-	}))
+	})), walkClamped, len(callers)+len(callees)+len(testCallers)+len(testCallees))
 }
 
 // analyzeSide is one direction's resolved view: the plain entries the section
@@ -216,10 +223,17 @@ func analyzeGroupSide(
 		// successful analyze into an error because an enrichment nicety failed.
 		slog.Warn("analyze: candidate enrichment failed; rendering the observed members only", "error", err)
 		incomplete = true
-	} else {
-		groups = enriched
-		maps.Copy(candidates, hydrated)
 	}
+	// THE PARTIALS ARE USED ON BOTH PATHS, and that is the contract rather than a
+	// nicety. EnrichCandidateGroups is documented best-effort and returns whatever
+	// it DID complete alongside its error — most visibly on the clamped-hydrate
+	// path, where it hands back the enriched groups and every candidate the server
+	// did return. Taking them only on the success path threw that work away on
+	// exactly the path that produces it, so a clamped hydrate lost the names of
+	// candidates that came back fine. On the read-failure paths enriched is the
+	// unenriched input and hydrated is nil, so both statements are no-ops there.
+	groups = enriched
+	maps.Copy(candidates, hydrated)
 
 	isCandidate := map[string]bool{}
 	for gi := range groups {
@@ -247,7 +261,13 @@ func analyzeGroupSide(
 // composer cannot tell a multi-candidate group from N independent callers, and
 // this arm previously requested no edges at all — which is why a group rendered
 // here as N separate callers and no render-only change could fix it.
-func traverseCallNodes(ctx context.Context, exec engine.ExecuteFn, target *knowledgev1.GraphSelector, id string, edgeType kgtypes.EdgeType, forward bool, depth int) ([]*knowledgev1.Node, []knowledgev1.Edge, error) {
+//
+// The third return is the response's truncated flag, threaded verbatim from
+// resp.GetTruncated() and never derived from len(). This walk carries NO Limit,
+// so the server row ceiling engages at 10,000 traversal rows, and the arm
+// bypasses engine.Render — so without this thread a clamped walk renders as a
+// complete-looking call graph with callers silently missing.
+func traverseCallNodes(ctx context.Context, exec engine.ExecuteFn, target *knowledgev1.GraphSelector, id string, edgeType kgtypes.EdgeType, forward bool, depth int) ([]*knowledgev1.Node, []knowledgev1.Edge, bool, error) {
 	fwd := forward
 	resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
 		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
@@ -260,17 +280,17 @@ func traverseCallNodes(ctx context.Context, exec engine.ExecuteFn, target *knowl
 		Target: target,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 	results, derr := engine.DecodeTraversal(resp)
 	if derr != nil {
-		return nil, nil, derr
+		return nil, nil, false, derr
 	}
 	nodes := make([]*knowledgev1.Node, 0, len(results))
 	for _, r := range results {
 		nodes = append(nodes, r.Node)
 	}
-	return nodes, engine.EdgesFromProto(resp.GetTraversalEdges()), nil
+	return nodes, engine.EdgesFromProto(resp.GetTraversalEdges()), resp.GetTruncated(), nil
 }
 
 // clampDepth applies the server's 1..3 clamp (analyze.go: <=0 → 1, >3 → 3).

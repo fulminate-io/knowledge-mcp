@@ -39,7 +39,15 @@ type parityProbeAnalyzer struct{}
 
 func (parityProbeAnalyzer) Name() string { return qpTopologyAnalyzer }
 
+// qpLastTopologyRequest records the Request the probe analyzer was last handed.
+// It is what lets a dispatch test observe a field the probe otherwise honors by
+// ignoring — path_prefix in particular, which reaches no plan and no render, so
+// there is nowhere else to read it from. Written and read only from tests in
+// this package, which run sequentially (no test here calls t.Parallel).
+var qpLastTopologyRequest foundation.Request
+
 func (parityProbeAnalyzer) Run(ctx context.Context, req foundation.Request) ([]foundation.Finding, error) {
+	qpLastTopologyRequest = req
 	if req.Caller != nil {
 		_, _ = req.Caller.Execute(ctx, &knowledgev1.ExecuteRequest{
 			Plan: &knowledgev1.ExecuteRequest_Query{
@@ -164,8 +172,13 @@ func queryParityModeFixtures() map[armID]queryParityFixture {
 				"file_path": qpSeedFileOther, "file_paths": []any{qpSeedFileOther},
 			},
 			// path_prefix is only read as the FALLBACK spelling of file_path, which
-			// the base already supplies, so a probe on it is shadowed.
-			opaque: map[string]bool{"path_prefix": true},
+			// the base already supplies, so a probe on it is shadowed. `limit` is a
+			// RENDER cap: it selects how many rows are emitted rather than landing a
+			// value in a plan or the render, so no captured read can carry the probe —
+			// the same shape as the rules arm's client-side page, listed opaque rather
+			// than claiming an observability the arm cannot have.
+			// TestFileSymbols_LimitCapsSymbolRows witnesses the consumption instead.
+			opaque: map[string]bool{"path_prefix": true, "limit": true},
 		},
 
 		armMetadataStats: {
@@ -182,9 +195,13 @@ func queryParityModeFixtures() map[armID]queryParityFixture {
 			discriminants: map[string]any{
 				"graph": "knowledge", "mode": "topology", "algorithm": qpTopologyAnalyzer,
 			},
-			// TopK and the Extra knob map ride the analyzer Request, which the probe
-			// analyzer honors by ignoring — neither reaches a plan or the findings render.
-			opaque:       map[string]bool{"top_k": true, "extra": true},
+			// TopK, the Extra knob map and PathPrefix ride the analyzer Request, which
+			// the probe analyzer honors by ignoring — none reaches a plan or the
+			// findings render. The opaque entry suppresses the OBSERVATION assertion
+			// only; the probe still has to reach a non-error render, which is why
+			// intercept_topology_test.go's init adds this analyzer to the
+			// path_prefix honoring set.
+			opaque:       map[string]bool{"top_k": true, "extra": true, "path_prefix": true},
 			precondition: "class (d): topology dispatches through the foundation registry, seeded here",
 		},
 
@@ -221,6 +238,18 @@ func queryParityModeFixtures() map[armID]queryParityFixture {
 			entry:         InterceptQueryPlanTree,
 			base:          map[string]any{"mode": "plan_tree", "id": qpSeedProject},
 			discriminants: map[string]any{"graph": "knowledge", "mode": "plan_tree", "id": qpSeedProject},
+			// `fields` is CONSUMED here — the arm validates the projection and
+			// projects every row — but the harness's fields probe is the
+			// per-metadata-key form (the only value the closed projection vocabulary
+			// leaves freely distinctive), and a per-metadata-key projection is DEFINED
+			// to be omitted from a node that does not carry the key. The seeded parity
+			// nodes carry no metadata, so the probe cannot appear in the render even
+			// under a fully correct implementation. Most fields-consuming arms list it
+			// opaque for their own version of this reason.
+			// TestPlanTree_FieldsProjectsAndRefusesUnknownKey witnesses the
+			// consumption, driving real projections and asserting BOTH the requested
+			// keys present and the unrequested ones absent.
+			opaque: map[string]bool{"fields": true},
 		},
 
 		armEvidence: {
@@ -282,9 +311,17 @@ func queryParityReflectFixtures() map[armID]queryParityFixture {
 		}
 	}
 
+	// tensions additionally consumes `limit`, which caps the RENDERED rows. The cold
+	// message renders no rows at all, so neither a read nor the render can witness
+	// the probe here — the same reason cluster and granularity are opaque on this
+	// family, and the same disposition armReflectInfluence gives its own limit.
+	// TestReflectTensions_LimitCapsRenderedRows is what witnesses the consumption.
+	tensions := cacheServed("tensions")
+	tensions.opaque["limit"] = true
+
 	return map[armID]queryParityFixture{
 		armReflectPersonality: cacheServed("personality"),
-		armReflectTensions:    cacheServed("tensions"),
+		armReflectTensions:    tensions,
 		armReflectBlindSpots:  cacheServed("blind_spots"),
 		armReflectSummary:     cacheServed("summary"),
 

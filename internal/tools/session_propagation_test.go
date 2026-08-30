@@ -11,11 +11,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/session"
@@ -53,17 +53,14 @@ func (c *ctxCapturingCaller) Execute(
 // (intercept_search_query_dispatch_test.go:175).
 type sessionPropagationDeps struct{ gc GraphCaller }
 
-func (d sessionPropagationDeps) LocalLiveness() LocalLiveness                 { return nil }
-func (d sessionPropagationDeps) Sink() collector.Sink                         { return nil }
-func (d sessionPropagationDeps) RootDir() string                              { return "" }
-func (d sessionPropagationDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
-func (d sessionPropagationDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
-func (d sessionPropagationDeps) WorkerReady() bool                            { return true }
-func (d sessionPropagationDeps) PropReady() bool                              { return true }
-func (d sessionPropagationDeps) PipelineReady() bool                          { return true }
-func (d sessionPropagationDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
-func (d sessionPropagationDeps) BanSet() *hivemonitor.BanSet                  { return nil }
-func (d sessionPropagationDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d sessionPropagationDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d sessionPropagationDeps) Sink() collector.Sink            { return nil }
+func (d sessionPropagationDeps) RootDir() string                 { return "" }
+func (d sessionPropagationDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+
+func (d sessionPropagationDeps) PropReady() bool     { return true }
+func (d sessionPropagationDeps) PipelineReady() bool { return true }
+
 func (d sessionPropagationDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
 func (d sessionPropagationDeps) Embedder() embed.BinaryEmbedder               { return nil }
 func (d sessionPropagationDeps) BackendResolver() BackendResolver             { return nil }

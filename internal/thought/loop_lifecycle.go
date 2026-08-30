@@ -83,10 +83,10 @@ func (p *PropagationLoop) runBootClusterDetection() {
 }
 
 // Stop signals the loop to exit and waits up to deadline for the
-// in-flight work to drain. Nil-safe (mirrors dream.Runner.Stop at
-// cmd/knowledge/internal/dream/runner.go:335-338) — a nil receiver
-// returns immediately. The stopOnce guard ensures repeated Stop()
-// calls don't double-close the channel.
+// in-flight work to drain. Nil-safe, following the convention every
+// shutdown-drained stage shares — a nil receiver returns immediately.
+// The stopOnce guard ensures repeated Stop() calls don't double-close
+// the channel.
 func (p *PropagationLoop) Stop(deadline time.Duration) {
 	if p == nil {
 		return

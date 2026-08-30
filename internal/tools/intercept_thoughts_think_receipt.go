@@ -15,10 +15,16 @@
 // of merely unmentioned. No parameter that never reached the tool can be
 // recovered here; only made visible.
 //
-// The advisory deliberately WARNS and does not refuse: content may legitimately
-// contain literal tool-call markup (a thought documenting the grammar is a
-// correct call), so a refusal would reject correct writes. The advisory flags
-// the shape; the receipt above it is the authority on what was written.
+// THE ADVISORY OWNS ONLY THE AMBIGUOUS HALF, and warns rather than refusing
+// because content may legitimately contain literal tool-call markup (a thought
+// documenting the grammar is a correct call), so refusing on a mere mention would
+// reject correct writes. The UNAMBIGUOUS half — a value carrying its own closing
+// tag with the remainder running to the end of the value, which a correct call
+// cannot produce — is REFUSED before any write by rejectSwallowedParamValues
+// (swallowed_param_gate.go), at the tool's accounting point upstream of this
+// render. So a caller reaching this advisory has already cleared that gate: the
+// advisory flags a shape, and the receipt above it is the authority on what was
+// written.
 
 package tools
 
@@ -108,27 +114,51 @@ const paramTailWindow = 200
 // tolerating both quoted and unquoted values and arbitrary intervening space.
 var paramTailNameRe = regexp.MustCompile(`<parameter\s+name\s*=\s*"?([A-Za-z_][A-Za-z0-9_]*)`)
 
-// paramShapedTailWarning returns a non-fatal advisory when content ends with
-// parameter-shaped markup, naming every parameter the markup mentions. Returns
-// "" for the overwhelmingly common clean case.
+// paramShapedTailWarning returns a non-fatal advisory when the named field's
+// text ends with parameter-shaped markup, naming every parameter the markup
+// mentions. Returns "" for the overwhelmingly common clean case.
+//
+// `field` is the caller's WIRE NAME for the text being inspected (content,
+// summary, description). It is interpolated into the message so the advisory
+// names the field the caller actually sent, AND it builds the closing tag the
+// detection predicate looks for — so passing anything other than the real wire
+// name silently disables detection of the bare dialect for that field.
+//
+// DETECTION IS AN OR OF TWO LEGS, and they see different dialects. The regex leg
+// catches the namespaced parameter-open-tag form; the closing-tag substring leg
+// catches the BARE form, where a closing field tag is followed by a bare
+// parameter tag with no `parameter name=` wrapper anywhere in it. Hardcoding the
+// closing tag to one field would leave the bare dialect undetected on every
+// other field.
+//
+// The closing-tag leg still fires here on a MID-PROSE mention, which is the part
+// rejectSwallowedParamValues deliberately does not refuse (its predicate is
+// end-anchored, so a value that quotes the shape and then continues into
+// sentences stays writable). A warning on that shape is a tell worth having; a
+// refusal on it would block the incident report about the defect.
+//
+// BEST-EFFORT, NOT A GUARANTEE: only the last paramTailWindow bytes of the text
+// are inspected, so a leak whose fragment runs longer than that window is not
+// detected. The advisory is a tell, and its silence is not evidence of a clean
+// call.
 //
 // The wording is precise about scope on purpose: it says the TEXT applied
 // nothing, never that the named parameters are missing from the write. A call
 // can correctly emit `session` as a real parameter AND quote the markup inside
-// its content — the receipt rendered directly above would then contradict a
+// its text — the receipt rendered directly above would then contradict a
 // blanket "session was not applied", which is why the advisory defers to it.
-func paramShapedTailWarning(content string) string {
-	tail := contentTail(content, paramTailWindow)
+func paramShapedTailWarning(field, text string) string {
+	tail := contentTail(text, paramTailWindow)
 	names := paramTailNames(tail)
-	if len(names) == 0 && !strings.Contains(tail, "</content>") {
+	if len(names) == 0 && !strings.Contains(tail, "</"+field+">") {
 		return ""
 	}
 	mention := ""
 	if len(names) > 0 {
 		mention = " mentioning: " + strings.Join(names, ", ")
 	}
-	return "content ends with parameter-like markup" + mention +
-		" — text inside content is never interpreted as tool parameters, so nothing in that text was applied." +
+	return field + " ends with parameter-like markup" + mention +
+		" — text inside " + field + " is never interpreted as tool parameters, so nothing in that text was applied." +
 		" If any of it was meant as a parameter, re-send it as a real tool parameter; the write receipt above" +
 		" states what actually landed."
 }

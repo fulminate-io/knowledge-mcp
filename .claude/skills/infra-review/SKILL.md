@@ -84,7 +84,7 @@ source and says so.
 
 <spawn id="infra-reviewer" background="true">
 
-  <reference>See orchestrate constraint id="background-spawning" — every spawn is background.</reference>
+  <reference>See orchestrate constraint id="dispatch" — every spawn is background.</reference>
 
   <invocation>
     Agent(

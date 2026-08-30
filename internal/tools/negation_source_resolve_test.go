@@ -50,13 +50,19 @@ func (f *citedSourceFake) Execute(_ context.Context, req *knowledgev1.ExecuteReq
 	return enginetest.ResponseWithNodes(f.proxyNodes...), nil
 }
 
+// sourceProxyRepo is the repo every fixture proxy in this package points at. It is
+// a constant rather than a parameter because the resolution under test groups the
+// code hydrate BY repo, so a second repo would exercise the grouping rather than
+// this package's subject; every fixture here has always used this one.
+const sourceProxyRepo = "knowledge"
+
 // mkSourceCodeProxy builds a knowledge-graph code proxy node the way
 // BuildCrossGraphProxy stamps one (foreign_graph + foreign_id + repo).
-func mkSourceCodeProxy(id, repo, foreignID string) *knowledgev1.Node {
+func mkSourceCodeProxy(id, foreignID string) *knowledgev1.Node {
 	p := &knowledgev1.Node{Id: id, Type: string(kgtypes.NodeProxy)}
 	kgtypes.SetValue(p, "foreign_graph", string(kgtypes.GraphCode))
 	kgtypes.SetValue(p, "foreign_id", foreignID)
-	kgtypes.SetValue(p, "repo", repo)
+	kgtypes.SetValue(p, "repo", sourceProxyRepo)
 	return p
 }
 
@@ -74,11 +80,11 @@ func TestResolveThoughtCurrentSource_CodeRefPath(t *testing.T) {
 		edges: []*knowledgev1.Edge{
 			{FromId: thoughtID, ToId: proxyID, Type: string(kgtypes.EdgeRelatesTo), Method: "code-ref"},
 		},
-		proxyNodes: []*knowledgev1.Node{mkSourceCodeProxy(proxyID, "knowledge", codeID)},
+		proxyNodes: []*knowledgev1.Node{mkSourceCodeProxy(proxyID, codeID)},
 		codeNodes:  []*knowledgev1.Node{{Id: codeID, Type: "function", Content: content}},
 	}
 
-	sources, err := resolveThoughtCurrentSource(context.Background(), fake, thoughtID)
+	sources, _, err := resolveThoughtCurrentSource(context.Background(), fake, thoughtID)
 	require.NoError(t, err)
 	require.Len(t, sources, 1, "the code-ref path yields one source from the resolved code node")
 	assert.Equal(t, content, sources[0].Text, "source text is the code node's current Content")
@@ -99,11 +105,74 @@ func TestResolveThoughtCurrentSource_OwnContentFallback(t *testing.T) {
 		thoughtNode: &knowledgev1.Node{Id: thoughtID, Type: string(kgtypes.NodeThought), Summary: summary, Content: content},
 	}
 
-	sources, err := resolveThoughtCurrentSource(context.Background(), fake, thoughtID)
+	sources, _, err := resolveThoughtCurrentSource(context.Background(), fake, thoughtID)
 	require.NoError(t, err)
 	require.Len(t, sources, 1, "the own-content fallback yields one source")
 	assert.Equal(t, summary+"\n"+content, sources[0].Text, "source text is the thought's own Summary+Content")
 	assert.Equal(t, "thought:"+thoughtID, sources[0].Origin, "Origin is thought:<id>")
+}
+
+// TestResolveThoughtCurrentSource_ContentLessCitationsExcluded: a thought whose only
+// resolvable citation is a content-less FILE node yields ONE source — the thought's
+// own live Summary+Content — not a code source with empty Text. The governing rule is
+// that bad input errors: an empty resolution must never be silently compared, so it is
+// excluded from the comparison set and the require-own-content path serves the thought.
+func TestResolveThoughtCurrentSource_ContentLessCitationsExcluded(t *testing.T) {
+	const (
+		thoughtID = "th-content-less"
+		summary   = "claim: the cache is write-through"
+		content   = "the reasoning body, which quotes no source line"
+	)
+
+	sources, contentLess, err := resolveThoughtCurrentSource(context.Background(), fileOnlyFake(thoughtID, summary, content), thoughtID)
+	require.NoError(t, err)
+	require.Len(t, sources, 1, "the content-less citation is excluded, leaving only the own-content fallback")
+	assert.Equal(t, "thought:"+thoughtID, sources[0].Origin,
+		"Origin is the thought's own — a content-less code node contributes no source")
+	assert.Equal(t, summary+"\n"+content, sources[0].Text,
+		"source text is the thought's own Summary+Content, never an empty string")
+
+	// The exclusion is REPORTED as well as applied (CEO amendment, 2026-08-28): the
+	// resolver hands the excluded id back so the rejection can name it. Asserted
+	// against the fixture's own code-node id rather than against a count, so a
+	// resolver that reported some other id would fail here.
+	assert.Equal(t, []string{fileOnlyCodeID}, contentLess,
+		"the excluded citation is named to the caller, not silently dropped")
+}
+
+// TestResolveThoughtCurrentSource_NoExclusionsToReport is the known-positive's
+// counterpart: a thought with a content-BEARING citation, and one with no citation
+// at all, both report an EMPTY exclusion list. Without this the assertion above
+// would pass equally against a resolver that reported every citation as excluded.
+func TestResolveThoughtCurrentSource_NoExclusionsToReport(t *testing.T) {
+	t.Run("content-bearing citation", func(t *testing.T) {
+		const (
+			thoughtID = "th-bearing"
+			proxyID   = "proxy:knowledge:bearing"
+			codeID    = "pkg/file.go:Sym"
+		)
+		fake := &citedSourceFake{
+			edges: []*knowledgev1.Edge{
+				{FromId: thoughtID, ToId: proxyID, Type: string(kgtypes.EdgeRelatesTo), Method: "code-ref"},
+			},
+			proxyNodes: []*knowledgev1.Node{mkSourceCodeProxy(proxyID, codeID)},
+			codeNodes:  []*knowledgev1.Node{{Id: codeID, Type: "function", Content: "func Sym() {}"}},
+		}
+		sources, contentLess, err := resolveThoughtCurrentSource(context.Background(), fake, thoughtID)
+		require.NoError(t, err)
+		require.Len(t, sources, 1, "the citation carries content, so it IS the comparison set")
+		assert.Empty(t, contentLess, "nothing was excluded, so nothing is reported")
+	})
+
+	t.Run("no citation at all", func(t *testing.T) {
+		const thoughtID = "th-none"
+		fake := &citedSourceFake{
+			thoughtNode: &knowledgev1.Node{Id: thoughtID, Type: string(kgtypes.NodeThought), Summary: "s", Content: "c"},
+		}
+		_, contentLess, err := resolveThoughtCurrentSource(context.Background(), fake, thoughtID)
+		require.NoError(t, err)
+		assert.Empty(t, contentLess, "a thought citing no code excludes no citation")
+	})
 }
 
 // TestResolveThoughtCurrentSource_MissingNode: a thought that resolves to neither a
@@ -111,18 +180,18 @@ func TestResolveThoughtCurrentSource_OwnContentFallback(t *testing.T) {
 // gate-fail — no first-party basis).
 func TestResolveThoughtCurrentSource_MissingNode(t *testing.T) {
 	fake := &citedSourceFake{} // no edges, no thought node
-	sources, err := resolveThoughtCurrentSource(context.Background(), fake, "gone")
+	sources, _, err := resolveThoughtCurrentSource(context.Background(), fake, "gone")
 	require.NoError(t, err)
 	assert.Empty(t, sources, "an unresolvable node yields no source (gate-fail)")
 }
 
 // TestResolveThoughtCurrentSource_NilGuards: nil gc / empty id short-circuit.
 func TestResolveThoughtCurrentSource_NilGuards(t *testing.T) {
-	sources, err := resolveThoughtCurrentSource(context.Background(), nil, "x")
+	sources, _, err := resolveThoughtCurrentSource(context.Background(), nil, "x")
 	require.NoError(t, err)
 	assert.Empty(t, sources)
 
-	sources, err = resolveThoughtCurrentSource(context.Background(), &citedSourceFake{}, "")
+	sources, _, err = resolveThoughtCurrentSource(context.Background(), &citedSourceFake{}, "")
 	require.NoError(t, err)
 	assert.Empty(t, sources)
 }

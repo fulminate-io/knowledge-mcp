@@ -44,13 +44,13 @@ type stubHealth struct {
 
 func (s *stubHealth) Check(
 	_ context.Context,
-	_ *connect.Request[knowledgev1.HealthCheckRequest],
-) (*connect.Response[knowledgev1.HealthCheckResponse], error) {
+	_ *connect.Request[knowledgev1.CheckRequest],
+) (*connect.Response[knowledgev1.CheckResponse], error) {
 	n := s.attempt.Add(1)
 	if err := s.respond(n); err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&knowledgev1.HealthCheckResponse{}), nil
+	return connect.NewResponse(&knowledgev1.CheckResponse{}), nil
 }
 
 func (s *stubHealth) Status(
@@ -72,7 +72,7 @@ func newRetryTestHarness(t *testing.T, respond func(attempt int32) error) *retry
 
 	h2s := &http2.Server{}
 	srv := httptest.NewServer(h2c.NewHandler(mux, h2s))
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 
 	httpClient := &http.Client{
 		Transport: &http2.Transport{
@@ -82,6 +82,7 @@ func newRetryTestHarness(t *testing.T, respond func(attempt int32) error) *retry
 			},
 		},
 	}
+	t.Cleanup(httpClient.CloseIdleConnections)
 	retry := connect.WithInterceptors(newReconnectInterceptor())
 	client := knowledgev1connect.NewHealthServiceClient(httpClient, srv.URL, retry)
 	return &retryTestHarness{server: srv, client: client, attempt: &counter}
@@ -92,7 +93,7 @@ func newRetryTestHarness(t *testing.T, respond func(attempt int32) error) *retry
 func TestReconnectInterceptor_SucceedsOnFirstAttempt(t *testing.T) {
 	h := newRetryTestHarness(t, func(_ int32) error { return nil })
 	_, err := h.client.Check(context.Background(),
-		connect.NewRequest(&knowledgev1.HealthCheckRequest{}))
+		connect.NewRequest(&knowledgev1.CheckRequest{}))
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), h.attempt.Load(), "exactly one call on happy path")
 }
@@ -109,7 +110,7 @@ func TestReconnectInterceptor_RetriesOnUnavailable(t *testing.T) {
 		return nil
 	})
 	_, err := h.client.Check(context.Background(),
-		connect.NewRequest(&knowledgev1.HealthCheckRequest{}))
+		connect.NewRequest(&knowledgev1.CheckRequest{}))
 	require.NoError(t, err)
 	assert.Equal(t, int32(3), h.attempt.Load(),
 		"retries until the handler returns success")
@@ -125,7 +126,7 @@ func TestReconnectInterceptor_GivesUpAfterMaxAttempts(t *testing.T) {
 			errors.New("perpetually down"))
 	})
 	_, err := h.client.Check(context.Background(),
-		connect.NewRequest(&knowledgev1.HealthCheckRequest{}))
+		connect.NewRequest(&knowledgev1.CheckRequest{}))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "retry exhausted")
 	assert.Equal(t, int32(len(RetryBackoff)+1), h.attempt.Load(),
@@ -141,7 +142,7 @@ func TestReconnectInterceptor_NonRetryableNotRetried(t *testing.T) {
 			errors.New("bad request"))
 	})
 	_, err := h.client.Check(context.Background(),
-		connect.NewRequest(&knowledgev1.HealthCheckRequest{}))
+		connect.NewRequest(&knowledgev1.CheckRequest{}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Equal(t, int32(1), h.attempt.Load(),
@@ -173,7 +174,7 @@ func TestReconnectInterceptor_RespectsContextCancel(t *testing.T) {
 		}
 		cancel()
 	}()
-	_, err := h.client.Check(ctx, connect.NewRequest(&knowledgev1.HealthCheckRequest{}))
+	_, err := h.client.Check(ctx, connect.NewRequest(&knowledgev1.CheckRequest{}))
 	require.Error(t, err)
 	// Ctx.Canceled surfaces either as context.Canceled directly
 	// (from the interceptor's select-ctx.Done branch) or as
@@ -214,6 +215,7 @@ func TestReconnectInterceptor_RetriesOnServerRestart(t *testing.T) {
 			},
 		},
 	}
+	t.Cleanup(httpClient.CloseIdleConnections)
 	retry := connect.WithInterceptors(newReconnectInterceptor())
 	client := knowledgev1connect.NewHealthServiceClient(httpClient, "http://"+addr, retry)
 
@@ -234,7 +236,7 @@ func TestReconnectInterceptor_RetriesOnServerRestart(t *testing.T) {
 	srvA := startServer(l1)
 	// Warm the conn pool with a successful call to srvA.
 	_, err = client.Check(context.Background(),
-		connect.NewRequest(&knowledgev1.HealthCheckRequest{}))
+		connect.NewRequest(&knowledgev1.CheckRequest{}))
 	require.NoError(t, err)
 	require.Equal(t, int32(1), counter.Load())
 
@@ -261,7 +263,7 @@ func TestReconnectInterceptor_RetriesOnServerRestart(t *testing.T) {
 	// the interceptor retries, the second attempt dials srvB and
 	// succeeds.
 	_, err = client.Check(context.Background(),
-		connect.NewRequest(&knowledgev1.HealthCheckRequest{}))
+		connect.NewRequest(&knowledgev1.CheckRequest{}))
 	require.NoError(t, err, "interceptor should redial after server restart")
 	assert.Equal(t, int32(2), counter.Load(),
 		"one call on srvA + one on srvB after retry")

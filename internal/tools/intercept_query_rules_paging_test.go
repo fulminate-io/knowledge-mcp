@@ -195,6 +195,25 @@ func TestInterceptQueryRules_PagesTheWholeCorpusAndSlicesAfterFilter(t *testing.
 		assert.True(t, strings.HasPrefix(toolResultText(res), "Rules (10 of 11):"),
 			"the markdown header names both numbers: %s", toolResultText(res))
 	})
+
+	t.Run("complete_set_header_omits_the_of_clause", func(t *testing.T) {
+		// The OTHER branch of renderRulesMarkdown, and the one no exact assertion
+		// covered: a page that IS the whole matching set is already a complete
+		// answer, so its header carries the single count and no " of ". Without
+		// this, a render that printed " of <matched>" unconditionally would keep
+		// every assertion in this file green — the three above all sit on the
+		// subset branch, and the one Contains("Rules (") check elsewhere in the
+		// package matches either shape.
+		fc := seedPagingRules(3)
+		res := driveRules(t, fc, `{"type":"rule"}`)
+		require.False(t, res.IsError, toolResultText(res))
+		assert.True(t, strings.HasPrefix(toolResultText(res), "Rules (3):"),
+			"a complete answer names one number: %s", toolResultText(res))
+		// firstLine (help_recipes_parse_test.go) scopes this to the header, so the
+		// assertion cannot be satisfied or defeated by body text further down.
+		assert.NotContains(t, firstLine(toolResultText(res)), " of ",
+			"the complete-set header must not carry the subset clause: %s", toolResultText(res))
+	})
 }
 
 // TestInterceptQueryRules_RoutesStatusMetaAndTombstones asserts the three

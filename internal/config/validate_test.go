@@ -197,17 +197,17 @@ func TestValidate_NoProvider(t *testing.T) {
 	}
 }
 
-func TestValidate_DreamSkippedWhenNotInList(t *testing.T) {
-	// Dream config is broken (no env var set), but dream is not in
+func TestValidate_SupervisorSkippedWhenNotInList(t *testing.T) {
+	// Supervisor config is broken (no env var set), but supervisor is not in
 	// the consumer list — Validate must not flag it.
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
 	t.Setenv("OPENAI_API_KEY", "")
 	cfg := &Config{
-		Default: Section{Provider: ProviderAnthropic, Model: "claude-haiku-5"},
-		Dream:   &Section{Provider: ProviderOpenAI, Model: "gpt-5-mini"},
+		Default:    Section{Provider: ProviderAnthropic, Model: "claude-haiku-5"},
+		Supervisor: &Section{Provider: ProviderOpenAI, Model: "gpt-5-mini"},
 	}
 	if err := cfg.Validate([]Consumer{ConsumerSummarizer}); err != nil {
-		t.Errorf("Validate (dream not in list): %v", err)
+		t.Errorf("Validate (supervisor not in list): %v", err)
 	}
 }
 
@@ -216,10 +216,10 @@ func TestValidate_AggregatesAllErrors(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "")
 	cfg := &Config{
-		Default: Section{Provider: ProviderAnthropic, Model: "claude-haiku-5"},
-		Dream:   &Section{Provider: ProviderOpenAI, Model: "gpt-5-mini"},
+		Default:    Section{Provider: ProviderAnthropic, Model: "claude-haiku-5"},
+		Supervisor: &Section{Provider: ProviderOpenAI, Model: "gpt-5-mini"},
 	}
-	err := cfg.Validate([]Consumer{ConsumerSummarizer, ConsumerDream})
+	err := cfg.Validate([]Consumer{ConsumerSummarizer, ConsumerSupervisor})
 	if err == nil {
 		t.Fatal("Validate: want error, got nil")
 	}

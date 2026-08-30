@@ -46,7 +46,8 @@ const seededPlanID = "plan-1"
 // seededPlanFake returns a fakeGraphCaller wired to answer the create_batch
 // Mutation with the created IDs and the post-create FetchNode walk (the plan
 // node must resolve so the text-format renderer reaches the
-// writeClientWarningsSection tail instead of the walk-failed one-liner).
+// writeClientWarningsSection call instead of the walk-failed one-liner; the
+// section itself renders ABOVE the rendered tree, not after it).
 func seededPlanFake() *fakeGraphCaller {
 	return &fakeGraphCaller{
 		mutateResult: kgtools.ToolResult{
@@ -100,7 +101,7 @@ func TestInterceptCreatePlan_TristateRejection(t *testing.T) {
 		},
 		{
 			name:    "all three set",
-			args:    `{"name":"p","goal":"g","summary":"s","pattern_ids":["x"],"no_patterns_reason":"x","proposed_patterns":[{"name":"X"}],` + minimalPlanPhases + `}`,
+			args:    `{"name":"p","goal":"g","summary":"s","pattern_ids":["x"],"no_patterns_reason":"x","proposed_patterns":[{"name":"X","summary":"a proposed pattern summary"}],` + minimalPlanPhases + `}`,
 			wantErr: "exactly one of",
 		},
 		{
@@ -110,12 +111,12 @@ func TestInterceptCreatePlan_TristateRejection(t *testing.T) {
 		},
 		{
 			name:    "pattern_ids + proposed_patterns",
-			args:    `{"name":"p","goal":"g","summary":"s","pattern_ids":["x"],"proposed_patterns":[{"name":"X"}],` + minimalPlanPhases + `}`,
+			args:    `{"name":"p","goal":"g","summary":"s","pattern_ids":["x"],"proposed_patterns":[{"name":"X","summary":"a proposed pattern summary"}],` + minimalPlanPhases + `}`,
 			wantErr: "exactly one of",
 		},
 		{
 			name:    "no_patterns_reason + proposed_patterns",
-			args:    `{"name":"p","goal":"g","summary":"s","no_patterns_reason":"x","proposed_patterns":[{"name":"X"}],` + minimalPlanPhases + `}`,
+			args:    `{"name":"p","goal":"g","summary":"s","no_patterns_reason":"x","proposed_patterns":[{"name":"X","summary":"a proposed pattern summary"}],` + minimalPlanPhases + `}`,
 			wantErr: "exactly one of",
 		},
 		{
@@ -130,7 +131,7 @@ func TestInterceptCreatePlan_TristateRejection(t *testing.T) {
 		},
 		{
 			name:    "proposed_pattern with empty Name",
-			args:    `{"name":"p","goal":"g","summary":"s","proposed_patterns":[{"name":"","sketch":"x"}],` + minimalPlanPhases + `}`,
+			args:    `{"name":"p","goal":"g","summary":"s","proposed_patterns":[{"name":"","summary":"a proposed pattern summary","sketch":"x"}],` + minimalPlanPhases + `}`,
 			wantErr: "proposed_patterns[0].name is empty",
 		},
 	}
@@ -160,7 +161,7 @@ func TestInterceptCreatePlan_NoPatternsReason_Accepted(t *testing.T) {
 // create_batch MutationPlan.
 func TestInterceptCreatePlan_ProposedPatterns_Accepted(t *testing.T) {
 	fc := seededPlanFake()
-	res := runCreatePlan(t, fc, `{"name":"p","goal":"introduce a new pattern","summary":"s","proposed_patterns":[{"name":"NewThing","sketch":"interface X { Y() }"}],`+minimalPlanPhases+`}`)
+	res := runCreatePlan(t, fc, `{"name":"p","goal":"introduce a new pattern","summary":"s","proposed_patterns":[{"name":"NewThing","summary":"a new thing worth cataloging","sketch":"interface X { Y() }"}],`+minimalPlanPhases+`}`)
 	require.False(t, res.IsError, "proposed_patterns should be accepted: %s", toolResultText(res))
 	m := firstCreateBatch(t, fc)
 

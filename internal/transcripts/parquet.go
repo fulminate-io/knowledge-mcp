@@ -12,15 +12,22 @@ import (
 )
 
 // parquetRow is the on-disk column shape one transcript record is written as. It
-// is the SOLE schema source for the transcript parquet: the agent has NO Go row
-// DTO (its cmd/agent/internal/transcripts package was deleted), and its DuckDB
-// query reads these physical columns BY NAME via read_parquet
-// (usageanalytics/query.go). The two repos cannot share a Go package (the only
-// sanctioned cross-module contract is generated protobuf — see AGENTS.md), so the
-// client pins this column set and it IS the cross-repo contract; any column change
-// here is a coordinated agent change proven by the agent's client-golden parity
-// test. This mirror stays field-for-field, in the SAME order, with the normalized
-// Row (row.go) — the enrichment tail included.
+// is the SOLE schema source for the transcript parquet, and this side pins the
+// column set: nothing on the receiving side parses the uploaded parquet's
+// CONTENTS — the confirm path shape-gates it on the PAR1 magic alone. What is
+// live across the boundary is a NAME correspondence: twelve breakdown-dimension
+// column names are asserted, in a comment on the other side, to match field names
+// here. Adding a column is therefore additive and breaks nothing; RENAMING one
+// breaks that correspondence silently, so a rename is a coordinated change.
+//
+// The other live coupling is the rollup wire, which this file does not carry:
+// it has its own frozen schema version, hand-mirrored on both sides, and a
+// mismatch there fails the chunk closed rather than silently.
+//
+// The two sides cannot share a Go package (the only sanctioned cross-module
+// contract is generated protobuf — see AGENTS.md). This mirror stays
+// field-for-field, in the SAME order, with the normalized Row (row.go) — the
+// enrichment tail included.
 //
 // It deliberately DIVERGES from Row in one place: record_ts is a `string`, NOT a
 // time.Time. Writing Row.RecordTS (time.Time) directly would emit a parquet
@@ -66,6 +73,10 @@ type parquetRow struct {
 	MCPServer             string `parquet:"mcp_server"`
 	MCPTool               string `parquet:"mcp_tool"`
 	Skill                 string `parquet:"skill"`
+	ToolResultBytes       int64  `parquet:"tool_result_bytes"`
+	ToolResultImages      int64  `parquet:"tool_result_images"`
+	ToolResultSpilled     bool   `parquet:"tool_result_spilled"`
+	RunInBackground       bool   `parquet:"run_in_background"`
 }
 
 // rowToParquet maps a normalized Row to its on-disk parquetRow. record_ts is set to
@@ -111,6 +122,10 @@ func rowToParquet(r Row) parquetRow {
 		MCPServer:             r.MCPServer,
 		MCPTool:               r.MCPTool,
 		Skill:                 r.Skill,
+		ToolResultBytes:       r.ToolResultBytes,
+		ToolResultImages:      r.ToolResultImages,
+		ToolResultSpilled:     r.ToolResultSpilled,
+		RunInBackground:       r.RunInBackground,
 	}
 }
 
@@ -168,6 +183,10 @@ func parquetToRow(p parquetRow) (Row, error) {
 		MCPServer:             p.MCPServer,
 		MCPTool:               p.MCPTool,
 		Skill:                 p.Skill,
+		ToolResultBytes:       p.ToolResultBytes,
+		ToolResultImages:      p.ToolResultImages,
+		ToolResultSpilled:     p.ToolResultSpilled,
+		RunInBackground:       p.RunInBackground,
 	}, nil
 }
 

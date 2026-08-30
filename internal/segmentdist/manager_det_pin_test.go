@@ -8,7 +8,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
@@ -29,15 +28,13 @@ import (
 // 409), so an error-only check reads a skip as a success and every downstream
 // assertion then holds vacuously against a manifest nothing swapped.
 
-// pinFixture is the shared setup: a Manager over a shared server fake, plus the
-// target its manifests are keyed under.
+// pinFixture is the shared setup: a Manager plus the graph its layers are keyed
+// under. It used to carry a segment-source view as well, for reading the fake's
+// per-leg call counters; there is no source and no leg to count.
 type pinFixture struct {
-	svc    *sharedServerFake
-	view   *fakeSegmentSource
-	mgr    *Manager
-	gt     kgtypes.GraphType
-	name   string
-	target *knowledgev1.GraphSelector
+	mgr  *Manager
+	gt   kgtypes.GraphType
+	name string
 }
 
 // driveEmbedPublish runs a full embed write-then-tick cycle and asserts its publish
@@ -49,20 +46,29 @@ func driveEmbedPublish(
 ) {
 	t.Helper()
 	embedDM := mgr.managerFor(gt, name)
-	before := embedDM.completedSwapCount()
+	before := sortedCacheIDs(embedDM.cache)
 	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, docs))
 	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, gt, name))
-	require.Greater(t, embedDM.completedSwapCount(), before,
-		"the embed publish must LAND — a skipped publish also returns a nil error")
+	// THE COUNTER THIS REPLACES was completedSwapCount, a publish-gate counter deleted
+	// with the gate. The question it answered survives unchanged — did the write LAND,
+	// given a skipped one also returns a nil error.
+	//
+	// THE ANSWER IS THE ID SET, NOT ITS SIZE. A drain confined to one partition
+	// REWRITES that partition: the new bytes hash to a new id and the old id is
+	// retired, so the count can be identical on both sides while every byte changed.
+	// Asserting growth reads that correct write as a no-op. Content hashing is what
+	// makes the set the honest observable — an unchanged set means unchanged bytes.
+	require.NotEqual(t, before, sortedCacheIDs(embedDM.cache),
+		"the embed write must LAND — a no-op tick also returns a nil error")
 }
 
-// newPinFixture builds the Manager + shared server these tests drive.
+// newPinFixture builds the Manager these tests drive.
 func newPinFixture(t *testing.T, name string) pinFixture {
 	t.Helper()
-	svc, view := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view)))
+
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	gt := kgtypes.GraphCode
-	return pinFixture{svc: svc, view: view, mgr: mgr, gt: gt, name: name, target: graphSelector(gt, name)}
+	return pinFixture{mgr: mgr, gt: gt, name: name}
 }
 
 // TestEmbedDrainAfterRebuildDropsRetiredLayer is THE CATCHER for a drain stranded by a
@@ -99,7 +105,7 @@ func TestEmbedDrainAfterRebuildDropsRetiredLayer(t *testing.T) {
 
 	// The prior layer, held by the SERVING engine exactly as a live daemon holds it.
 	seedShipped(t, ctx, f.mgr, f.gt, f.name, vecContentDocs(priorDocs))
-	prior := writerManifest(f.svc, f.target, "", hnswFormatName)
+	prior := l2IDsFor(f.mgr.cacheDir, f.name, hnswFormatName)
 	require.NotEmpty(t, prior, "the prior layer must be published before the rebuild runs")
 
 	// The rebuild: it publishes its own layer and reaps the prior one.
@@ -117,7 +123,7 @@ func TestEmbedDrainAfterRebuildDropsRetiredLayer(t *testing.T) {
 		require.Contains(t, retired, id, "the rebuild must retire every prior-layer segment")
 	}
 
-	newLayer := writerManifest(f.svc, f.target, "", hnswFormatName)
+	newLayer := l2IDsFor(f.mgr.cacheDir, f.name, hnswFormatName)
 	require.Len(t, newLayer, buckets, "the rebuild publishes one segment per partition it built")
 	for _, id := range newLayer {
 		require.NotContains(t, retired, id,
@@ -140,7 +146,7 @@ func TestEmbedDrainAfterRebuildDropsRetiredLayer(t *testing.T) {
 	driveEmbedPublish(t, ctx, f.mgr, f.gt, f.name, batch)
 
 	published := map[string]struct{}{}
-	for _, id := range writerManifest(f.svc, f.target, "", hnswFormatName) {
+	for _, id := range l2IDsFor(f.mgr.cacheDir, f.name, hnswFormatName) {
 		published[id] = struct{}{}
 	}
 
@@ -164,12 +170,14 @@ func TestEmbedDrainAfterRebuildDropsRetiredLayer(t *testing.T) {
 
 	// (c) and the corpus is whole: every rebuilt and drained document is live in
 	// exactly one published segment.
-	summed := 0
-	for _, m := range f.svc.manifestMetas(f.target, "") {
-		if m.GetFormat() == hnswFormatName {
-			summed += int(m.GetDocCount())
-		}
-	}
-	require.Equal(t, rebuildDocs+drainDocs, summed,
-		"the published manifest must hold the rebuilt corpus plus the drained batch, each exactly once")
+	// THE OPERAND MOVED AND THE CLAIM DID NOT. This summed DocCount across the
+	// published manifest's metas. That sum is not re-pointable to L2: a cache read
+	// carries no per-segment doc count at all (segment identity is a content hash and
+	// there is no shipped count to carry), so such a sum would be a structural zero
+	// dressed as a measurement. LiveResidentCount answers the same question directly and more
+	// strictly — it counts DISTINCT live-searchable member ids, so a document present
+	// in two segments is counted once, which is exactly the "each exactly once" the
+	// original asserted by summing disjoint segments.
+	require.Equal(t, rebuildDocs+drainDocs, f.mgr.LiveResidentDocCount(f.gt, f.name),
+		"the live corpus must hold the rebuilt documents plus the drained batch, each exactly once")
 }

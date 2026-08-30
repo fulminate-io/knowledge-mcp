@@ -28,6 +28,11 @@ const (
 	groovyKindClassDefinition
 	groovyKindFunctionDefinition
 	groovyKindFunctionDeclaration
+	groovyKindFunctionCall
+	groovyKindJuxtFunctionCall
+	groovyKindArgumentList
+	groovyKindAssignment
+	groovyKindReturn
 )
 
 // groovyKindNames maps every groovy node-kind spelling the groovy arms name
@@ -46,6 +51,11 @@ var groovyKindNames = map[string]uint8{
 	"class_definition":     groovyKindClassDefinition,
 	"function_definition":  groovyKindFunctionDefinition,
 	"function_declaration": groovyKindFunctionDeclaration,
+	"function_call":        groovyKindFunctionCall,
+	"juxt_function_call":   groovyKindJuxtFunctionCall,
+	"argument_list":        groovyKindArgumentList,
+	"assignment":           groovyKindAssignment,
+	"return":               groovyKindReturn,
 }
 
 // groovyKindTable memoizes the groovy class table for the process, on the

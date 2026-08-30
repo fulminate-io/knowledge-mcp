@@ -12,9 +12,9 @@ import (
 )
 
 // render_resource.go is the single PARAMETRIC renderer family covering both the
-// cloud and cicd graphs. The server formatCloud{Node,SearchResults,Browse}
-// (cmd/knowledge-server/tools/tools_query_cloud.go) and
-// formatCICD{Node,SearchResults,Browse} (tools_query_cicd.go) were byte-for-byte
+// cloud and cicd graphs. The server's since-removed
+// formatCloud{Node,SearchResults,Browse} and
+// formatCICD{Node,SearchResults,Browse} were byte-for-byte
 // identical modulo the graph label ("Cloud" vs "CI/CD") and the secondary
 // metadata key ("region" vs "provider"). By design this collapses
 // the two server families into one client family parameterized on those two
@@ -82,7 +82,9 @@ func RenderResourceNode(kind ResourceKind, account string, n *knowledgev1.Node) 
 
 // RenderResourceSearch renders cloud/cicd search results — port of
 // formatCloudSearchResults / formatCICDSearchResults.
-func RenderResourceSearch(kind ResourceKind, account, query string, results []SearchResult) kgtools.ToolResult {
+func RenderResourceSearch(
+	kind ResourceKind, account, query string, results []SearchResult, searchMode string,
+) kgtools.ToolResult {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "## %s [%s] — %d results for %q\n\n", kind.listHeader, account, len(results), query)
 	for i, r := range results {
@@ -98,14 +100,26 @@ func RenderResourceSearch(kind ResourceKind, account, query string, results []Se
 		}
 		fmt.Fprintf(&sb, "\n%.2f — %s\n\n", r.Score, n.Id)
 	}
+	writeSearchModeFooter(&sb, searchMode)
 	return kgtools.TextResult(sb.String())
 }
 
 // RenderResourceBrowse renders a browse listing of cloud/cicd resource nodes —
 // port of formatCloudBrowse / formatCICDBrowse.
-func RenderResourceBrowse(kind ResourceKind, account string, nodes []*knowledgev1.Node, offset int, resourceType string) kgtools.ToolResult {
+//
+// THE HEADER COUNT IS total, THE CORPUS FIGURE — never len(nodes), the PAGE
+// length. It used to be the page length, so a 20-row default page against a
+// 5,000-resource account rendered "— 20 resources": not an omission but an
+// affirmative false statement about the corpus. The caller must pass the
+// server's resp.GetTotal(); passing a page length back in restores the lie.
+//
+// The more-exist footer mirrors renderBrowseResponse's own (render_misc.go), and
+// it is why the sibling practice browse pays for the paging count rather than
+// setting SkipTotal: without a total there is no way to say a page is not the
+// whole set.
+func RenderResourceBrowse(kind ResourceKind, account string, nodes []*knowledgev1.Node, offset, total int, resourceType string) kgtools.ToolResult {
 	var sb strings.Builder
-	header := fmt.Sprintf("## %s [%s] — %d resources", kind.listHeader, account, len(nodes))
+	header := fmt.Sprintf("## %s [%s] — %d resources", kind.listHeader, account, total)
 	if resourceType != "" {
 		header += fmt.Sprintf(" (type: %s*)", resourceType)
 	}
@@ -124,6 +138,9 @@ func RenderResourceBrowse(kind ResourceKind, account string, nodes []*knowledgev
 			fmt.Fprintf(&sb, " (%s)", secondary)
 		}
 		fmt.Fprintf(&sb, "\n   ID: %s\n\n", n.Id)
+	}
+	if offset+len(nodes) < total {
+		fmt.Fprintf(&sb, "_Use offset=%d to see more._\n", offset+len(nodes))
 	}
 	return kgtools.TextResult(sb.String())
 }

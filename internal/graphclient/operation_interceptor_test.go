@@ -55,8 +55,8 @@ func newStampHarness(
 	mux.Handle(healthPath, healthHdlr)
 
 	srv := httptest.NewServer(h2c.NewHandler(mux, &http2.Server{}))
-	t.Cleanup(srv.Close)
-	return NewGraphClientForURL(srv.URL), &healthCalls
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
+	return closeIdleOnCleanup(t, NewGraphClientForURL(srv.URL)), &healthCalls
 }
 
 // TestClientOperationStamped drives the REAL client stack and asserts the
@@ -85,11 +85,11 @@ func TestClientOperationStamped(t *testing.T) {
 			return enginetest.ResponseWithNodes(), nil
 		})
 
-		// No operation in ctx, deliberately: HealthCheckRequest has no
+		// No operation in ctx, deliberately: CheckRequest has no
 		// client_context field, so the stamper must treat it as uncovered rather
 		// than as an unstamped covered call. A credential-less, label-less
 		// liveness probe has to keep working.
-		_, err := gc.health.Check(context.Background(), connect.NewRequest(&knowledgev1.HealthCheckRequest{}))
+		_, err := gc.health.Check(context.Background(), connect.NewRequest(&knowledgev1.CheckRequest{}))
 		require.NoError(t, err, "an unlabeled health probe must still succeed")
 		assert.Equal(t, int32(1), healthCalls.Load(), "the health handler should have been reached")
 	})

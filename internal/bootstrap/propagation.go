@@ -4,10 +4,10 @@
 //
 // The reflective scheduler runs in the serve daemon's client — the hourly
 // cluster detection + valence/magnitude propagation loop. wirePropagationRuntime
-// mirrors wireWorkerRuntime: a single helper that constructs the
-// long-lived runtime object, attaches it to *client, and starts it.
-// buildClient's cleanup closure (daemon.go) wires the deferred Stop with the
-// same nil-safety convention dream.Runner.Stop uses.
+// follows the shared background-runtime wiring shape: a single helper that
+// constructs the long-lived runtime object, attaches it to *client, and starts
+// it. buildClient's cleanup closure (daemon.go) wires the deferred Stop with the
+// nil-safety convention every drained stage uses.
 //
 // PropagationLoop holds the Execute-only thought.Caller (passed c.router) —
 // no client-side store-shaped wrapper. Every read and write the loop performs
@@ -37,7 +37,7 @@ import (
 // loop begins ticking immediately.
 //
 // Construction cannot fail today, but the caller logs any future error
-// modes the same way wireWorkerRuntime does — see buildClient in daemon.go.
+// modes the same way every other wiring stage does — see buildClient in daemon.go.
 func wirePropagationRuntime(c *client, f Config) {
 	// Pass the routedWireClient adapter (NOT c.router directly): it satisfies the
 	// Execute-only thought.Caller (so every existing loop read/write keeps routing

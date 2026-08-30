@@ -3,9 +3,14 @@
 package tools
 
 // query_arm_registry_graphs.go holds the per-graph-family half of the query arm
-// table: the cloud/cicd arms, the practice/linkage/web-pdf arms, the two
-// knowledge text-search arms, and the four single-arm per-graph entry points
-// (knowledge stats, registered-custom search, logs, rules).
+// table: the cloud/cicd arms, the practice/linkage arms, the two knowledge
+// text-search arms, and the four single-arm per-graph entry points (knowledge
+// stats, registered-custom search, logs, rules).
+//
+// THE RAW-GRAPH AND BUILT-IN STATS ARMS MOVED to the fourth sibling,
+// query_arm_registry_stats.go, when the checks/transformers stats arm pushed this
+// file past the cap. Same table, same rules, one more file — the split is a
+// file-length concern only, exactly as the three-way split already was.
 //
 // Split out of query_arm_registry.go (which owns the param groups, the armIDs
 // and the single init that assembles the registry) purely to keep both files
@@ -129,6 +134,21 @@ var queryGraphArmSpecs = map[armID]armSpec{
 			qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys("name", "repo", "account", "branch"),
 		),
+		// The browse-shaped params get the SPECIFIC tail rather than the generic
+		// one, on the justifyRulesKnowledgeOnly precedent: a caller sending them
+		// wants a browse, and `language` IS the separate call the generic tail
+		// vaguely points at. See practiceListGraphsUnrouted.
+		//
+		// id and ids are DELIBERATELY ABSENT from this map even though the cell
+		// rejects them: the entry point refuses a language-less by-id read before
+		// this gate runs, with practiceByIDNeedsLanguage, which names the by-id call
+		// rather than a browse. A reason here would be unreachable configuration.
+		rejectionReasons: map[string]string{
+			"type": practiceListGraphsUnrouted, "types": practiceListGraphsUnrouted,
+			"status": practiceListGraphsUnrouted, "meta": practiceListGraphsUnrouted,
+			"limit": practiceListGraphsUnrouted, "offset": practiceListGraphsUnrouted,
+			"text": practiceListGraphsUnrouted, "queries": practiceListGraphsUnrouted,
+		},
 		deliberatelyIgnored: queryRenderIgnored(),
 	},
 
@@ -145,36 +165,63 @@ var queryGraphArmSpecs = map[armID]armSpec{
 		deliberatelyIgnored: queryFieldsIgnored(),
 	},
 
+	// The text-less practice BROWSE: one Selection carrying type/types/status/meta,
+	// paged by limit/offset, rendered through engine.RenderBrowse (which reads BOTH
+	// render params — format selects the json envelope and fields projects it). text
+	// and queries are CONSUMED as the DISPATCH DISCRIMINANT: both must be empty for
+	// this arm to be selected, which is authoring rule (3), exactly as
+	// armCloudCICDBrowse treats them.
+	armPracticeBrowse: {
+		operation: "query",
+		handler:   "InterceptQueryPracticeLinkage practiceBrowse",
+		consumed: qparams(qgPaging, qgRender,
+			qkeys("graph", "language", "mode", "type", "types", "status", "meta",
+				"include_tombstones", "text", "queries")),
+		rejected: qparams(
+			qgCode, qgThought, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
+			qkeys(
+				"name", "repo", "account", "branch",
+				"id", "ids", "since", "include_edges", "include_cross_links",
+				"query_vector",
+			),
+		),
+	},
+
 	// language:"all" fans out across every loaded practice graph
 	// (composePracticeSearchFanOut, intercept_query_practice_linkage.go:148-149).
-	// This is the NINTH arm, one above the locked floor of eight: the
-	// scatter-gather read set is genuinely distinct from the single-language
-	// search the floor folded it into.
+	// This arm sits above the locked floor of eight rather than being folded
+	// into it: the scatter-gather read set is genuinely distinct from the
+	// single-language search. Stated as a property rather than an ordinal on
+	// purpose — an ordinal goes stale every time a sibling arm is added, and
+	// this one already had.
 	armPracticeSearchFanOut: {
 		operation: "query",
 		handler:   "InterceptQueryPracticeLinkage composePracticeSearchFanOut",
-		consumed:  qparams(qkeys("graph", "language", "mode", "text", "queries", "format")),
+		consumed: qparams(qkeys(
+			"graph", "language", "mode", "text", "queries", "format", "fields", "limit")),
 		rejected: qparams(
-			qgIdentity, qgPaging, qgCode, qgThought, qgSimulate,
+			qgIdentity, qgCode, qgThought, qgSimulate,
 			qgTopology, qgPivot, qgStats, qgCloud, qgRules,
-			qkeys("name", "repo", "account", "branch", "query_vector"),
+			qkeys("name", "repo", "account", "branch", "query_vector", "offset"),
 		),
-		deliberatelyIgnored: queryFieldsIgnored(),
 	},
 
 	// The per-language practice search. Same read set as the fan-out minus the
-	// enumeration; `limit` is REJECTED on both for the same reason it is on the
-	// cloud search arm — the client engine call is hardcoded to the default.
+	// enumeration. `limit` is CONSUMED on both: it resolves the per-graph Search k
+	// (and, on the fan-out, the merge cap too). `offset` stays REJECTED and is
+	// listed as a LOOSE key rather than riding qgPaging, because a segment-engine
+	// ranked search has nowhere to put one — dropping the group here would leave
+	// offset in no cell and fail the partition assertion.
 	armPracticeSearch: {
 		operation: "query",
 		handler:   "InterceptQueryPracticeLinkage composePracticeSearchClient",
-		consumed:  qparams(qkeys("graph", "language", "mode", "text", "queries", "format")),
+		consumed: qparams(qkeys(
+			"graph", "language", "mode", "text", "queries", "format", "fields", "limit")),
 		rejected: qparams(
-			qgIdentity, qgPaging, qgCode, qgThought, qgSimulate,
+			qgIdentity, qgCode, qgThought, qgSimulate,
 			qgTopology, qgPivot, qgStats, qgCloud, qgRules,
-			qkeys("name", "repo", "account", "branch", "query_vector"),
+			qkeys("name", "repo", "account", "branch", "query_vector", "offset"),
 		),
-		deliberatelyIgnored: queryFieldsIgnored(),
 	},
 
 	// routeLinkageClient's list-graphs gate reads id, text, mode and queries in
@@ -247,21 +294,41 @@ var queryGraphArmSpecs = map[armID]armSpec{
 		deliberatelyIgnored: queryRenderIgnored(),
 	},
 
-	// web/pdf ranked text is retired the same way (routeWebPDFClient), and here
-	// `name` IS consumed: resolveBySourceName reads sel.Name for both families,
-	// so the source slug is the selector this shape carries and rejecting it
-	// would turn the retirement notice into a param error.
-	armWebPDFSearchRetired: {
+	// The transformers/checks ranked-search refusal. It answers from a fixed
+	// message and reads nothing, so format/fields are deliberately ignored exactly
+	// as on the retired linkage arm above.
+	//
+	// ITS CONSUMED SET IS THE REGISTERED-GRAPH TWIN'S, NOT THE LINKAGE ONE, because
+	// InterceptQueryUnrankedBuiltin's gate is the twin's gate. Two consequences that
+	// a copy of the linkage row would have got wrong:
+	//
+	//   - id and ids are REJECTED, not consumed. The linkage arm dispatches on id
+	//     BEFORE its retired-search branch, so a by-id linkage read is genuinely
+	//     served there. This arm serves no by-id read at all — a checks/transformers
+	//     by-id read belongs to the engine dispatch arm, and claiming it here would
+	//     break the browse the refusal itself hands the caller.
+	//   - queries is REJECTED. The linkage list-graphs gate reads len(a.Queries);
+	//     this arm reads only a.Text, so a queries-only payload declines rather than
+	//     being answered, and declaring it consumed would assert a routing that does
+	//     not exist.
+	//
+	// `name` IS consumed, which is the one place this row diverges from the twin's
+	// reasoning rather than its shape. transformers is keyed by name
+	// (graphsel.InstanceField → FieldName; the recipe store is the "recipes"
+	// bucket), so a transformers search legitimately carries one and rejecting it
+	// would answer a routine payload with a param error instead of the refusal.
+	// checks is keyed by nothing (FieldNone) and simply never sends the key.
+	armUnrankedBuiltinSearchRefused: {
 		operation: "query",
-		handler:   "InterceptQueryPracticeLinkage routeWebPDFClient",
-		consumed:  qparams(qkeys("graph", "name", "mode", "id", "text", "queries")),
+		handler:   "InterceptQueryUnrankedBuiltin transformers/checks search-unavailable",
+		consumed:  qparams(qkeys("graph", "name", "mode", "text")),
 		rejected: qparams(
 			qgPaging, qgCode, qgThought, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys(
 				"repo", "account", "language", "branch",
-				"ids", "type", "types", "status", "meta", "since",
+				"id", "ids", "type", "types", "status", "meta", "since",
 				"include_tombstones", "include_edges", "include_cross_links",
-				"query_vector",
+				"queries", "query_vector",
 			),
 		),
 		deliberatelyIgnored: queryRenderIgnored(),
@@ -272,16 +339,20 @@ var queryGraphArmSpecs = map[armID]armSpec{
 	// the post-sort limit, and both render params. `name` is the selector-level
 	// drop the Phase-1 reproduction traced — domainTarget copies it onto a
 	// knowledge Target whose resolver states outright that it never reads it.
+	//
+	// THIS IS `since`'s ONE READER on the whole query surface: it lowers to an
+	// updated_at GTE field predicate on the fetch selection, so the window narrows
+	// the drain server-side rather than filtering the render.
 	armKnowledgeRecentBrowse: {
 		operation: "query",
 		handler:   "InterceptQueryKnowledgeSearch composeRecentBrowse",
 		consumed: qparams(qgRender,
-			qkeys("graph", "mode", "text", "type", "types", "include_tombstones", "limit")),
+			qkeys("graph", "mode", "text", "type", "types", "include_tombstones", "limit", "since")),
 		rejected: qparams(
 			qgCode, qgThought, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys(
 				"name", "repo", "account", "language", "branch",
-				"id", "ids", "status", "meta", "since",
+				"id", "ids", "status", "meta",
 				"include_edges", "include_cross_links",
 				"queries", "query_vector", "offset",
 			),

@@ -16,10 +16,11 @@ const (
 
 // Row is the single normalized column contract both parsers emit — one row per
 // extracted transcript record. The json/parquet tags are the wire columns the
-// client parquet writer produces and the agent's DuckDB reader consumes by name;
-// they MUST match verbatim (a cross-ticket review caught name drift). Token
-// columns carry RAW counts and the model id only; cost is computed agent-side,
-// never here.
+// client parquet writer produces; this side pins the column set, and the tags
+// MUST match parquetRow's verbatim (a cross-repo review caught name drift). What
+// the other side of that name correspondence is, and what it does NOT read, is
+// documented at parquetRow (parquet.go). Token columns carry RAW counts and the
+// model id only; cost is computed on the receiving side, never here.
 //
 // There is deliberately NO `role` column (record_type subsumes it) and NO
 // `reasoning_output_tokens` column (Codex reasoning is folded into output_tokens
@@ -28,9 +29,9 @@ const (
 // The block after parent_uuid is the flow-analytics ENRICHMENT set: derived
 // per-operation timing (duration_ms), subagent identity/type, tool-input
 // fingerprint, cache-pricing splits, server-tool and error/interrupt/meta
-// signals, and MCP/skill attribution. Its column ORDER is a client-internal
-// contract (the agent reads by name), but it MUST stay in lockstep with the
-// on-disk parquetRow mirror.
+// signals, MCP/skill attribution, and the tool-result size measurements. Its
+// column ORDER is a client-internal contract, but it MUST stay in lockstep with
+// the on-disk parquetRow mirror.
 type Row struct {
 	Source              Source    `json:"source" parquet:"source"`
 	SessionID           string    `json:"session_id" parquet:"session_id"`
@@ -70,6 +71,10 @@ type Row struct {
 	MCPServer             string `json:"mcp_server" parquet:"mcp_server"`                             // attributionMcpServer
 	MCPTool               string `json:"mcp_tool" parquet:"mcp_tool"`                                 // attributionMcpTool
 	Skill                 string `json:"skill" parquet:"skill"`                                       // attributionSkill
+	ToolResultBytes       int64  `json:"tool_result_bytes" parquet:"tool_result_bytes"`               // text bytes of the tool_result this tool row's call returned
+	ToolResultImages      int64  `json:"tool_result_images" parquet:"tool_result_images"`             // count of image blocks in that result
+	ToolResultSpilled     bool   `json:"tool_result_spilled" parquet:"tool_result_spilled"`           // the result was spilled to a file and the byte count is RECOVERED from the notice, not directly observed
+	RunInBackground       bool   `json:"run_in_background" parquet:"run_in_background"`               // the tool_use input carried run_in_background:true
 
 	// SourceOffset is the byte offset of this record's START in its source file.
 	// It is a TRANSIENT, client-only field — it MUST NEVER serialize to JSON or

@@ -79,12 +79,6 @@ func (e *cancelProbeEngine) Index(
 	return connect.NewResponse(&knowledgev1.IndexResponse{}), nil
 }
 
-func (e *cancelProbeEngine) Hive(
-	context.Context, *connect.Request[knowledgev1.HiveRequest],
-) (*connect.Response[knowledgev1.HiveResponse], error) {
-	return connect.NewResponse(&knowledgev1.HiveResponse{}), nil
-}
-
 func (e *cancelProbeEngine) PipelineScan(
 	context.Context, *connect.Request[knowledgev1.PipelineScanRequest],
 ) (*connect.Response[knowledgev1.PipelineScanResponse], error) {
@@ -124,7 +118,7 @@ func startCancelProbeEngine(t *testing.T) (string, *cancelProbeEngine) {
 	path, hdlr := knowledgev1connect.NewEngineServiceHandler(eng)
 	mux.Handle(path, hdlr)
 	srv := httptest.NewServer(h2c.NewHandler(mux, &http2.Server{}))
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 	return srv.URL, eng
 }
 
@@ -146,8 +140,9 @@ func startCancelProbeEngine(t *testing.T) (string, *cancelProbeEngine) {
 func TestToolCallCancellationStopsWork(t *testing.T) {
 	srvURL, eng := startCancelProbeEngine(t)
 	local := graphclient.NewGraphClientForURL(srvURL)
+	t.Cleanup(local.CloseIdleConnections)
 	// Empty auth store → logged out → the Router selects the local engine.
-	c := buildE2EClient(local, "http://cloud.invalid", newFakeAuthStore(), 0)
+	c := closeRouterOnCleanup(t, buildE2EClient(local, "http://cloud.invalid", newFakeAuthStore(), 0))
 
 	ctx, cancel := context.WithCancel(opCtx())
 	defer cancel()

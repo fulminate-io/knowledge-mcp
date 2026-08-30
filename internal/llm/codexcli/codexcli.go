@@ -34,7 +34,7 @@
 //     than silent dropping.
 //
 // The provider self-registers under [llm.ProviderCodexCLI] from init() so a
-// side-effect import (`_ "github.com/.../domains/llm/codexcli"`) is enough
+// side-effect import (`_ ".../cmd/knowledge/internal/llm/codexcli"`) is enough
 // to make `llm.NewClient(ctx, &llm.Config{Provider: llm.ProviderCodexCLI})`
 // succeed.
 package codexcli

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
@@ -94,4 +95,35 @@ func SourceFromEvidence(evidence string) string {
 // argument to StableID.
 func TargetKey(t TargetSpec) string {
 	return fmt.Sprintf("%s/%s", t.GraphType, t.Name)
+}
+
+// containsEvidence is the JSON payload a contains edge carries. Only the
+// position is read here; the schema is parsed field-by-field so additive fields
+// do not break older readers, exactly as the translated-from payload is.
+type containsEvidence struct {
+	// Position is the child's index under its parent, stamped as a string by
+	// both raw collectors.
+	Position string `json:"position"`
+}
+
+// positionFromEvidence extracts a child's position from a contains edge's
+// Evidence blob, reporting whether one was found.
+//
+// It NEVER returns an error. An absent, malformed or non-integer position is a
+// property of the source graph, not a mistake by the recipe author, so it is a
+// soft miss reported as ok=false — the same treatment an orphan edge already
+// gets when a neighbor field is collected.
+func positionFromEvidence(evidence string) (int, bool) {
+	if evidence == "" {
+		return 0, false
+	}
+	var e containsEvidence
+	if err := json.Unmarshal([]byte(evidence), &e); err != nil {
+		return 0, false
+	}
+	pos, err := strconv.Atoi(e.Position)
+	if err != nil {
+		return 0, false
+	}
+	return pos, true
 }

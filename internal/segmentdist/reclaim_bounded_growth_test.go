@@ -63,8 +63,8 @@ func TestReclaimBoundedGrowth(t *testing.T) {
 
 	ctx := context.Background()
 	base := t.TempDir()
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, base, 0, withSegmentSource(gc)))
+
+	mgr := closeOnCleanup(t, NewManager(base, 0))
 
 	const seal = searchengine.DefaultMinSegmentDocs
 	gt, name := kgtypes.GraphCode, "bounded"
@@ -75,28 +75,42 @@ func TestReclaimBoundedGrowth(t *testing.T) {
 	removedSoFar := map[searchengine.SegmentID]struct{}{}
 
 	const cycles = 4
+	expectedReclaimed := 0
 	for c := range cycles {
-		// Seal a fresh 1024-doc segment (one new sealed segment per cycle). NO tick
-		// here on purpose: what this test measures is the MERGE's reclaim of its
-		// superseded constituents, and the L2 population it asserts on comes from the
-		// merge + warmExported rather than from any ship. Draining the backlog would
-		// re-emit the corpus into partitions and replace the one-segment-per-cycle
-		// topology the bound below is written against, measuring something else.
+		// Seal a fresh 1024-doc batch. NO tick here on purpose: what this test measures
+		// is the MERGE's reclaim of its superseded constituents, and the L2 population
+		// it asserts on comes from the merge + warmExported rather than from any ship.
+		// Draining the backlog would re-emit the corpus into partitions and replace the
+		// per-cycle topology the bound below is written against, measuring something
+		// else.
 		before := residentIDs(dm)
+		distinctBefore := dm.engine.DistinctResidentDocCount()
 		batch := vecContentDocsSeed(seal, (c+1)*1_000_000)
 		require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, batch))
-		warmExported(dm) // models ship-warming: the fresh constituent is L2-backed.
+
+		// HOW MANY SEGMENTS THIS CYCLE OWES, derived by hashing the batch's own ids
+		// rather than read back off the engine: a write seals one segment per partition
+		// its ids occupy, at the count the seal derives from the corpus it will form.
+		// The first cycles derive one partition and seal once; later ones spread.
+		sealCount := searchengine.BucketCountFor(distinctBefore + len(batch))
+		spread := map[int]struct{}{}
+		for _, d := range batch {
+			spread[searchengine.BucketOf(d.ID, sealCount)] = struct{}{}
+		}
+		expectedReclaimed += len(spread)
+		warmExported(dm) // models ship-warming: the fresh constituents are L2-backed.
 
 		// This cycle's constituents are whatever the write newly sealed. Taking the
-		// DIFF rather than Export()[0] keeps the step correct if a write ever seals
-		// more than one segment.
+		// DIFF rather than Export()[0] is what makes the step correct now that a write
+		// seals one segment per partition rather than one per batch.
 		var constituents []searchengine.SegmentID
 		for id := range residentIDs(dm) {
 			if _, existed := before[id]; !existed {
 				constituents = append(constituents, id)
 			}
 		}
-		require.NotEmpty(t, constituents, "cycle %d: the write must seal at least one segment", c)
+		require.Len(t, constituents, len(spread),
+			"cycle %d: the write must seal one segment per partition its ids occupy", c)
 
 		// POSITIVE CONTROL. Without it, "gone from L2 after the merge" is equally
 		// satisfied by an id that was never in L2 to begin with.
@@ -135,7 +149,12 @@ func TestReclaimBoundedGrowth(t *testing.T) {
 		require.NotEmpty(t, live, "cycle %d: corpus is searchable", c)
 	}
 
-	require.Len(t, removedSoFar, cycles, "every cycle reclaimed exactly its own superseded constituent")
+	// The expectation is accumulated from the batches' own id hashes, never from the
+	// segment ids the engine handed back, so this stays a claim about what the cycles
+	// OWED. Its other half is that no two cycles reclaimed the same segment id: the set
+	// is keyed by id, so a collision would read as a short count here.
+	require.Len(t, removedSoFar, expectedReclaimed,
+		"every cycle reclaimed exactly its own superseded constituents")
 
 	// Bounded growth: the L2 file count is bounded by roughly the number of live
 	// segments (cycles), NOT by every historical constituent. Each cycle's merge

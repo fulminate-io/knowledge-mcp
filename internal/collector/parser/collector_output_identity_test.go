@@ -37,7 +37,7 @@ const collectorOutputCorpusRoot = "../treesitter/testdata/test_kind"
 // changed forever) and metadata. A change to any of those four leaves every
 // per-file hash identical, so a diff-mode collect reads the affected files as
 // unchanged and never re-uploads them. Nothing else in the system notices.
-const pinnedCollectorOutputDigest = "61bfc3d3a34b2c0577a2cdf8c12030c9c6993c4b91bae45e4d83f688e03e1614"
+const pinnedCollectorOutputDigest = "62cbd027bd3805a24a10e9b1800efca9a22bdb61f483bbb98446732907415790"
 
 // setDiff returns the sorted members of a that are absent from b.
 func setDiff(a, b map[string]struct{}) []string {

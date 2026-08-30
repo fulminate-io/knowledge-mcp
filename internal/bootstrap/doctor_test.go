@@ -124,32 +124,9 @@ model = "claude-haiku-5"
 	}
 }
 
-// --- (c) checkConfig dream coverage ---
+// --- (c) checkConfig consumer coverage ---
 
-func TestCheckConfig_DreamInvalidErrs(t *testing.T) {
-	resetConfigSingleton(t)
-	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
-	// summarizer is valid (anthropic); dream points at a CLI provider with
-	// no cli_bin → must error and mention the dream consumer.
-	path := writeConfig(t, `
-[default]
-provider = "anthropic"
-model = "claude-haiku-5"
-
-[dream]
-provider = "claude-cli"
-model = "claude-haiku-5"
-`)
-	res := checkConfig(path)
-	if res.status != statusErr {
-		t.Fatalf("status = %v, want statusErr (dream cli_bin missing)", res.status)
-	}
-	if !strings.Contains(res.detail, "dream") {
-		t.Errorf("detail %q should mention the dream consumer", res.detail)
-	}
-}
-
-func TestCheckConfig_BothValidNamesBoth(t *testing.T) {
+func TestCheckConfig_ValidConfigNamesEveryConsumer(t *testing.T) {
 	resetConfigSingleton(t)
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
 	t.Setenv("OPENAI_API_KEY", "sk-openai")
@@ -157,17 +134,13 @@ func TestCheckConfig_BothValidNamesBoth(t *testing.T) {
 [default]
 provider = "anthropic"
 model = "claude-haiku-5"
-
-[dream]
-provider = "openai"
-model = "gpt-5-mini"
 `)
 	res := checkConfig(path)
 	if res.status != statusOK {
 		t.Fatalf("status = %v, want statusOK; detail=%q", res.status, res.detail)
 	}
-	if !strings.Contains(res.msg, "summarizer=") || !strings.Contains(res.msg, "dream=") {
-		t.Errorf("msg %q should name both summarizer and dream", res.msg)
+	if !strings.Contains(res.msg, "summarizer=") {
+		t.Errorf("msg %q should name the summarizer consumer", res.msg)
 	}
 }
 
@@ -176,7 +149,6 @@ model = "gpt-5-mini"
 func TestCheckConsumerCLIs_ProviderLabeledRows(t *testing.T) {
 	dir := t.TempDir()
 	codexBin := stubExecutable(t, dir, "codex")
-	claudeBin := stubExecutable(t, dir, "claude")
 	resetConfigSingleton(t)
 	path := writeConfig(t, `
 [default]
@@ -187,19 +159,14 @@ model = "claude-haiku-5"
 provider = "codex-cli"
 model = "gpt-5-codex"
 cli_bin = "`+codexBin+`"
-
-[dream]
-provider = "claude-cli"
-model = "claude-haiku-5"
-cli_bin = "`+claudeBin+`"
 `)
 	rows := checkConsumerCLIs(path)
-	// Three consumers: summarizer (codex-cli), dream (claude-cli), and supervisor
-	// (inherits [default]=anthropic, an API provider → an info row, no CLI binary).
-	if len(rows) != 3 {
-		t.Fatalf("got %d rows, want 3", len(rows))
+	// Two consumers: summarizer (codex-cli) and supervisor (inherits
+	// [default]=anthropic, an API provider → an info row, no CLI binary).
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2", len(rows))
 	}
-	var sawCodex, sawClaude, sawSupervisor bool
+	var sawCodex, sawSupervisor bool
 	for _, r := range rows {
 		if r.name == "claude-cli" {
 			t.Errorf("row name %q is the hardcoded literal — must be provider-labeled", r.name)
@@ -209,11 +176,6 @@ cli_bin = "`+claudeBin+`"
 			sawCodex = true
 			if r.status != statusOK {
 				t.Errorf("codex-cli row status = %v, want statusOK", r.status)
-			}
-		case strings.Contains(r.name, "claude-cli"):
-			sawClaude = true
-			if r.status != statusOK {
-				t.Errorf("claude-cli row status = %v, want statusOK", r.status)
 			}
 		case strings.Contains(r.name, "supervisor"):
 			sawSupervisor = true
@@ -225,9 +187,6 @@ cli_bin = "`+claudeBin+`"
 	}
 	if !sawCodex {
 		t.Error("expected a row labeled with codex-cli")
-	}
-	if !sawClaude {
-		t.Error("expected a row labeled with claude-cli")
 	}
 	if !sawSupervisor {
 		t.Error("expected a supervisor row (inheriting the [default] anthropic provider)")

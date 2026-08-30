@@ -214,10 +214,14 @@ func writeUploadDiag(t *testing.T, label string, pre map[string]fileHashInputs, 
 			rec.Inputs = append(rec.Inputs, in)
 		}
 	}
-	require.NoError(t, os.MkdirAll(diagDir, 0o755))
+	require.NoError(t, os.MkdirAll(diagDir, 0o750))
 	blob, err := json.MarshalIndent(rec, "", "  ")
 	require.NoError(t, err)
-	out := filepath.Join(diagDir, diagSlug(label)+".json")
+	// filepath.Base over the slug: diagSlug already reduces a run label to
+	// [A-Za-z0-9-], so no separator can survive it, but the write below takes a
+	// path built from caller-supplied text and the sanitisation is stated at the
+	// write rather than inferred from a helper three functions away.
+	out := filepath.Join(diagDir, filepath.Base(diagSlug(label)+".json"))
 	require.NoError(t, os.WriteFile(out, append(blob, '\n'), 0o600))
 	t.Logf("upload diag: %d file-owned files named, inputs captured for %d, written to %s",
 		len(paths), len(rec.Inputs), out)

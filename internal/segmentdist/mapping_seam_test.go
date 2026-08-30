@@ -4,7 +4,6 @@ package segmentdist
 
 import (
 	"bytes"
-	"context"
 	"runtime"
 	"sort"
 	"sync/atomic"
@@ -167,11 +166,11 @@ func TestReloadFailsLoudWhenMappingFails(t *testing.T) {
 
 	// KNOWN-POSITIVE: with mapping healthy the very same reload succeeds, so the
 	// failure below is the injected condition and not a broken fixture.
-	require.NoError(t, dm.reload(context.Background(), []searchengine.SegmentID{id}, false))
+	require.NoError(t, dm.reload([]searchengine.SegmentID{id}, false))
 	require.NotEmpty(t, searchIDs(dm.engine.Search(mockQuery{term: "alpha"}, 10)))
 
 	ic.failMapping = true
-	err := dm.reload(context.Background(), []searchengine.SegmentID{id}, false)
+	err := dm.reload([]searchengine.SegmentID{id}, false)
 	require.Error(t, err, "reload must FAIL when a cached segment cannot be mapped")
 	require.ErrorIs(t, err, errInjectedMappingFailure,
 		"reload must surface the mapping failure rather than substitute a heap read")

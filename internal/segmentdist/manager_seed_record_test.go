@@ -4,6 +4,7 @@ package segmentdist
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -27,9 +28,9 @@ func TestSeedBranchBucket_CopiesRebuildRecord(t *testing.T) {
 
 	t.Run("watermark_and_tombstones_copied", func(t *testing.T) {
 		cacheDir := t.TempDir()
-		plantBlob(t, cacheDir, repo, format, "seg-a", []byte("alpha"))
-		published := &publishedOnlySource{metas: []searchengine.SegmentMeta{{ID: "seg-a", Format: format}}}
-		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, cacheDir, 0, withSegmentSource(published)))
+		seedBaseCorpus(t, ctx, cacheDir, repo, format, 1024)
+		mgr := closeOnCleanup(t, NewManager(cacheDir, 0))
+		warmBaseLiveLayer(t, ctx, mgr, repo, format)
 
 		// Base has a real record: a non-zero watermark AND tombstoned ids.
 		const baseWatermark = int64(1_700_000_000_000_000_000)
@@ -54,20 +55,30 @@ func TestSeedBranchBucket_CopiesRebuildRecord(t *testing.T) {
 
 	t.Run("record_captured_before_partitions", func(t *testing.T) {
 		cacheDir := t.TempDir()
-		plantBlob(t, cacheDir, repo, format, "seg-a", []byte("alpha"))
+		seedBaseCorpus(t, ctx, cacheDir, repo, format, 1024)
 
 		const captured = int64(1_700_000_000_000_000_000)
 		const laterPublish = int64(1_900_000_000_000_000_000)
 
-		// The source's List runs DURING the seed, between the record capture and the
-		// partition copy — so advancing base's record from inside it reproduces
-		// exactly the window the capture-first ordering exists to close.
+		// THE WINDOW IS REPRODUCED FROM INSIDE THE SEED ITSELF, at the phase named for
+		// it: the record has been captured and not one partition has moved. Advancing
+		// base's record from there is exactly what a capture-after-copy implementation
+		// would lose data to.
+		//
+		// IT USED TO RIDE A SOURCE DOUBLE'S List, which the seed no longer calls at all,
+		// so the window had no observable point left until the phase hook gave it one.
 		var mgr *Manager
-		published := &publishedOnlySource{metas: []searchengine.SegmentMeta{{ID: "seg-a", Format: format}}}
-		published.onList = func() {
-			require.NoError(t, mgr.SaveRebuildState(kgtypes.GraphCode, repo, laterPublish, nil))
+		var once sync.Once
+		hook := func(phase seedPhase, _ kgtypes.GraphType, _, _ string) {
+			if phase != seedPhaseRecordCaptured {
+				return
+			}
+			once.Do(func() {
+				require.NoError(t, mgr.SaveRebuildState(kgtypes.GraphCode, repo, laterPublish, nil))
+			})
 		}
-		mgr = closeOnCleanup(t, NewManager(loginStateStub{}, cacheDir, 0, withSegmentSource(published)))
+		mgr = closeOnCleanup(t, NewManager(cacheDir, 0, withSeedHook(hook)))
+		warmBaseLiveLayer(t, ctx, mgr, repo, format)
 		require.NoError(t, mgr.SaveRebuildState(kgtypes.GraphCode, repo, captured, nil))
 
 		_, err := mgr.SeedBranchBucketFromBase(ctx, kgtypes.GraphCode, repo, branch, format,

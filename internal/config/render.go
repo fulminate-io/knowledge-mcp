@@ -28,7 +28,7 @@ var (
 )
 
 // Model is a provider-specific model identifier. It mirrors
-// domains/llm.Model in shape but stays local so domains/config remains a
+// internal/llm.Model in shape but stays local so internal/config remains a
 // leaf package with no upstream deps.
 type Model string
 

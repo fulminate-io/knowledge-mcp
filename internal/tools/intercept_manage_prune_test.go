@@ -227,22 +227,48 @@ func TestInterceptManage_Prune_NilDeleterIsSafe(t *testing.T) {
 	assert.Contains(t, toolResultText(res), "Pruned 1 tombstoned node(s)")
 }
 
-// TestInterceptManage_Prune_SegmentDeleteFailureIsBestEffort asserts a failing
-// bucket delete is logged and swallowed: the prune already completed on the
-// server, so a local re-emit failure must never be reported as a failed prune.
-func TestInterceptManage_Prune_SegmentDeleteFailureIsBestEffort(t *testing.T) {
-	ix := &fakeIndexer{affectedCount: 2, prunedIDs: []string{"y1", "y2"}}
-	del := &fakeSegmentDeleter{err: errors.New("bucket delete boom")}
-	var handled bool
-	var res kgtools.ToolResult
-	logged := captureSlog(func() {
-		handled, res = manageCallWithDeleter(t, ix, del, `{"operation":"prune","graph":"knowledge"}`)
+// TestInterceptManage_Prune_SegmentDeleteFailureIsReported asserts a failing
+// bucket delete is NON-FATAL BUT REPORTED: the prune already completed on the
+// server, so a local re-emit failure must never be reported as a failed prune —
+// and must never be reported as an unqualified successful one either.
+//
+// RE-POINTED, not merely renamed. It used to assert the swallow: exit non-error
+// plus the bare "Pruned 2" ack, which is exactly what the code produced when the
+// error had no path out of reEmitDeletedFromSegments. The non-error half is
+// unchanged and still correct; the ack assertion now demands the qualifier that
+// names what did not land. The clean leg below is the known-negative — without it,
+// appending the warning to every prune would pass.
+func TestInterceptManage_Prune_SegmentDeleteFailureIsReported(t *testing.T) {
+	t.Run("failed re-emit", func(t *testing.T) {
+		ix := &fakeIndexer{affectedCount: 2, prunedIDs: []string{"y1", "y2"}}
+		del := &fakeSegmentDeleter{err: errors.New("bucket delete boom")}
+		var handled bool
+		var res kgtools.ToolResult
+		logged := captureSlog(func() {
+			handled, res = manageCallWithDeleter(t, ix, del, `{"operation":"prune","graph":"knowledge"}`)
+		})
+		require.True(t, handled)
+		require.False(t, res.IsError, "a re-emit failure must not turn a completed prune into an error")
+		body := toolResultText(res)
+		assert.Contains(t, body, "Pruned 2 tombstoned node(s)", "the sweep that DID complete is still reported")
+		assert.Contains(t, body, "shipped segment corpus was NOT updated",
+			"a hard prune leaves nothing to re-learn from, so an unqualified ack tells the caller "+
+				"the documents are gone locally when only a rebuild will remove them")
+		assert.Contains(t, body, "bucket delete boom")
+		assert.Len(t, del.recorded(), 1, "the seam was driven; the error came from it")
+		assert.Contains(t, logged, "segment delete re-emit failed")
 	})
-	require.True(t, handled)
-	require.False(t, res.IsError, "a re-emit failure must not turn a completed prune into an error")
-	assert.Contains(t, toolResultText(res), "Pruned 2 tombstoned node(s)")
-	assert.Len(t, del.recorded(), 1, "the seam was driven; the error came from it")
-	assert.Contains(t, logged, "segment delete re-emit failed")
+
+	t.Run("known-negative: a clean re-emit carries no qualifier", func(t *testing.T) {
+		ix := &fakeIndexer{affectedCount: 2, prunedIDs: []string{"y1", "y2"}}
+		del := &fakeSegmentDeleter{}
+		handled, res := manageCallWithDeleter(t, ix, del, `{"operation":"prune","graph":"knowledge"}`)
+		require.True(t, handled)
+		require.False(t, res.IsError)
+		body := toolResultText(res)
+		assert.Contains(t, body, "Pruned 2 tombstoned node(s)")
+		assert.NotContains(t, body, "shipped segment corpus was NOT updated")
+	})
 }
 
 // warningIndexer stamps a server WARNING onto an otherwise-successful Index

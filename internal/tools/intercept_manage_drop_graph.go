@@ -35,6 +35,7 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/workingset"
 )
 
 // dropGraphFamilies names the graph families the server dropGraphTarget arm
@@ -140,15 +141,23 @@ func dropGraphAck(deps ClientDeps, a manageArgs) string {
 // to "default" — the SAME rule manageGraphSelector applies (intercept_manage_index.go)
 // and handleClientRebuildSegments defaults to.
 //
-// No per-family switch is needed and none should be added: every other family
-// (code→repo, cloud/cicd→account, practice→language, custom→name) already carries
-// its instance in a.Name, and the cache path keys on that same string.
+// EVERY SINGLE-INSTANCE FAMILY RESOLVES ITS EMPTY NAME, not just knowledge. This
+// used to say no per-family switch was needed because every other family carries
+// its instance in a.Name — true while knowledge was the only graph addressed
+// without one. The checks graph is addressed by NO name at all, so it fell
+// through with an empty key while its segments were cached under the canonical
+// instance, and dropping its cache silently dropped nothing.
+//
+// The remaining families are unaffected: canonicalization is the identity
+// wherever a real instance field exists (code→repo, cloud/cicd→account,
+// practice→language, custom→name), and the cache path keys on that same string.
 func dropGraphCacheTarget(a manageArgs) (kgtypes.GraphType, string) {
+	gt := kgtypes.GraphType(a.Graph)
 	name := a.Name
-	if a.Graph == string(kgtypes.GraphKnowledge) && (name == "" || name == string(kgtypes.GraphKnowledge)) {
-		name = "default"
+	if a.Graph == string(kgtypes.GraphKnowledge) && name == string(kgtypes.GraphKnowledge) {
+		name = workingset.DefaultInstanceName
 	}
-	return kgtypes.GraphType(a.Graph), name
+	return gt, workingset.CanonicalInstanceName(gt, name)
 }
 
 // dropGraphLabel renders the (graph, name) target for the ack / preview line.

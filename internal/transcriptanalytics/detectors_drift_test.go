@@ -60,7 +60,7 @@ func TestDetectors_IsMetaMissingKept(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = svc.Close() })
 
-	rep, err := svc.RunDetectors(context.Background())
+	rep, err := svc.RunDetectors(context.Background(), Filters{})
 	require.NoError(t, err)
 	require.NotNil(t, rep)
 

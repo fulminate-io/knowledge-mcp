@@ -18,7 +18,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -34,20 +34,17 @@ type repoTestDeps struct {
 	gc      GraphCaller
 }
 
-func (d *repoTestDeps) LocalLiveness() LocalLiveness         { return nil }
-func (d *repoTestDeps) Sink() collector.Sink                 { return nil }
-func (d *repoTestDeps) RootDir() string                      { return d.rootDir }
-func (d *repoTestDeps) UsageAnalyzer() UsageAnalyzerAPI      { return nil }
-func (d *repoTestDeps) WorkerRuntime() WorkerRuntimeAPI      { return nil }
-func (d *repoTestDeps) WorkerReady() bool                    { return true }
-func (d *repoTestDeps) PropReady() bool                      { return true }
-func (d *repoTestDeps) PipelineReady() bool                  { return true }
-func (d *repoTestDeps) ClaimRegistry() *hivemonitor.Registry { return nil }
-func (d *repoTestDeps) BanSet() *hivemonitor.BanSet          { return nil }
-func (d *repoTestDeps) WorkerCRUD() WorkerCRUDAPI            { return nil }
-func (d *repoTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI      { return nil }
-func (d *repoTestDeps) Embedder() embed.BinaryEmbedder       { return nil }
-func (d *repoTestDeps) BackendResolver() BackendResolver     { return nil }
+func (d *repoTestDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d *repoTestDeps) Sink() collector.Sink            { return nil }
+func (d *repoTestDeps) RootDir() string                 { return d.rootDir }
+func (d *repoTestDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+
+func (d *repoTestDeps) PropReady() bool     { return true }
+func (d *repoTestDeps) PipelineReady() bool { return true }
+
+func (d *repoTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI  { return nil }
+func (d *repoTestDeps) Embedder() embed.BinaryEmbedder   { return nil }
+func (d *repoTestDeps) BackendResolver() BackendResolver { return nil }
 func (d *repoTestDeps) GraphCaller() GraphCaller {
 	if d.gcCount != nil {
 		atomic.AddInt32(d.gcCount, 1)
@@ -256,7 +253,13 @@ func TestInjectRepoIfCodeGraph_ExplicitBranch_NotOverwritten(t *testing.T) {
 	// A caller-supplied branch is preserved verbatim even when the repo is in the
 	// manifest — auto-detect only fills a MISSING branch.
 	m := withTestManifest(t)
-	dir := gitRepoFixture(t)
+	// THE FIXTURE CREATES THE BRANCH IT SUPPLIES. A caller-supplied branch is now
+	// validated against the repo's local refs and its collected branch graphs, so
+	// a name that exists in neither is refused before this test could observe
+	// anything about overwriting. Creating the ref keeps the property this test is
+	// named for — an explicit branch survives auto-detect — as the thing under
+	// test, rather than silently retargeting it at the refusal path.
+	dir := gitBranchFixture(t, "feature-x")
 	repoName := filepath.Base(dir)
 	require.NoError(t, m.Record(repoName, dir))
 	deps := &repoTestDeps{rootDir: t.TempDir()}
@@ -403,4 +406,45 @@ func TestInjectRepoIfCodeGraph_NonCodeGraphTool_PassesThrough(t *testing.T) {
 		paramsFor("manage", `{"operation":"status"}`))
 	assert.False(t, handled)
 	assert.JSONEq(t, `{"operation":"status"}`, string(out.Arguments))
+}
+
+// TestInjectRepoIfCodeGraph_TopologyNotBranchStamped is the regression guard for
+// a defect that every unit test in this package missed and a LIVE run caught.
+//
+// THE DEFECT: armTopology REFUSES `branch`, because foundation.Request carries
+// no Branch field and a silently dropped scope control is worse than a loud
+// refusal. But this injector auto-fills branch into EVERY graph="code" query,
+// and it runs BEFORE the arm check — so on any machine whose repo manifest
+// resolves, a caller who never mentioned branch got their whole call refused.
+// Every code-graph topology call failed. The unit tests could not see it because
+// they hand-build the arguments and never traverse the injection chain.
+//
+// The fix is placed HERE rather than at the refusal: a topology call has no
+// branch-scoped read to stamp, so injecting one was meaningless even before the
+// refusal existed. A caller who supplies branch EXPLICITLY is still refused —
+// that half is asserted by TestInterceptTopology_BranchRefusedLoudly.
+func TestInjectRepoIfCodeGraph_TopologyNotBranchStamped(t *testing.T) {
+	m := withTestManifest(t)
+	dir := gitRepoFixture(t)
+	repoName := filepath.Base(dir)
+	require.NoError(t, m.Record(repoName, dir))
+	deps := &repoTestDeps{rootDir: t.TempDir()}
+
+	// KNOWN-POSITIVE CONTROL, same manifest and same repo: a non-topology
+	// code-graph query IS branch-stamped. Without it, an injector that stamped
+	// nothing at all — a broken manifest, a git fixture that failed — would pass
+	// the assertion below while proving nothing.
+	out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
+		paramsFor("query", `{"graph":"code","repo":"`+repoName+`","mode":"modules"}`))
+	assert.False(t, handled)
+	assert.Equal(t, "main", callArgs(t, out.Arguments)["branch"],
+		"control: a non-topology code-graph query must still be branch-stamped")
+
+	out, handled, _ = InjectRepoIfCodeGraph(context.Background(), deps,
+		paramsFor("query", `{"graph":"code","repo":"`+repoName+`","mode":"topology","algorithm":"fan_in"}`))
+	assert.False(t, handled)
+	_, hasBranch := callArgs(t, out.Arguments)["branch"]
+	assert.False(t, hasBranch,
+		"a topology query must NOT be branch-stamped: armTopology refuses branch, so an injected "+
+			"value fails a call the caller never scoped")
 }

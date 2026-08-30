@@ -134,6 +134,7 @@ func parityFixtures() map[armID]parityFixture {
 			base: map[string]any{
 				"operation": "create", "type": "criterion",
 				"step_id": paritySeedStep, "description": "probe-description",
+				"summary": "probe-summary for the criterion",
 			},
 			discriminants: map[string]any{"operation": "create", "type": "criterion"},
 		},
@@ -158,12 +159,46 @@ func parityFixtures() map[armID]parityFixture {
 			},
 			discriminants: map[string]any{"operation": "create", "type": "rule", "graph": "knowledge"},
 		},
+		// The context-linked create arm is selected by the PRESENCE of a context
+		// param, so ticket_id is in the base rather than in the discriminants —
+		// without it the payload lands on the fallthrough arm instead.
+		//
+		// SPENDING ticket_id HERE IS DELIBERATE: a discriminant row is
+		// selection-only whatever its declared class, so exactly one of the trio
+		// loses its literal parity assertion. ticket_id is the one to spend
+		// because its routing is literally asserted elsewhere — every leg of the
+		// type-blind test checks a ticket--contains-->newNode edge — which leaves
+		// both links and session with real literal assertions here.
+		armCreateContextLinked: {
+			base: map[string]any{
+				"operation": "create", "type": "document",
+				"name": "probe-name", "summary": "probe-summary for the context-linked create",
+				"ticket_id": paritySeedTicket,
+			},
+			discriminants: map[string]any{
+				"operation": "create", "type": "document", "graph": "knowledge",
+				"ticket_id": paritySeedTicket,
+			},
+		},
+		// THE FALLTHROUGH PROBE CARRIES AN EMPTY TRIO, and that is what keeps it on
+		// this arm: any non-empty context param deselects the fallthrough in favor
+		// of armCreateContextLinked. suppliedMutateParams treats an empty value as
+		// absent, so the three empty entries survive the arm's own rejected rows
+		// without supplying anything.
+		//
+		// "memory" is a generic create type with no client handler, so it reaches
+		// the engine CREATE arm — which is exactly what this row measures. Every
+		// generic type other than the three claimed ones is an equally valid probe.
 		armCreateFallthrough: {
 			declines: true,
 			base: map[string]any{
-				"operation": "create", "type": "document", "name": "probe-name",
+				"operation": "create", "type": "memory", "name": "probe-name",
+				"ticket_id": "", "session": "", "links": []any{},
 			},
-			discriminants: map[string]any{"operation": "create", "type": "document", "graph": "knowledge"},
+			discriminants: map[string]any{
+				"operation": "create", "type": "memory", "graph": "knowledge",
+				"ticket_id": "", "session": "", "links": []any{},
+			},
 		},
 		armCreateBatch: {
 			declines: true,
@@ -268,6 +303,7 @@ func parityFixtures() map[armID]parityFixture {
 		armAnswer: {
 			base: map[string]any{
 				"operation": "answer", "id": paritySeedResearch, "conclusion": "probe-conclusion",
+				"summary": "the probe question is concluded",
 			},
 			discriminants: map[string]any{
 				"operation": "answer", "graph": "knowledge", "id": paritySeedResearch,
@@ -342,12 +378,20 @@ func parityFixtures() map[armID]parityFixture {
 				},
 			},
 		},
+		// The repo entry is REQUIRED, not decoration: a code-graph mutate with no
+		// repo is now refused by requireGraphInstanceSelector before it can
+		// decline to the engine, so a repo-less payload would be claimed by that
+		// refusal and measure nothing here. The old payload exercised a shape
+		// that could never have succeeded against any real server.
 		armNonKnowledgeFallthrough: {
 			declines: true,
 			base: map[string]any{
-				"operation": "update", "graph": "code", "id": paritySeedLocalA, "name": "probe-name",
+				"operation": "update", "graph": "code", "repo": "probe-repo",
+				"id": paritySeedLocalA, "name": "probe-name",
 			},
-			discriminants: map[string]any{"operation": "update", "graph": "code", "id": paritySeedLocalA},
+			discriminants: map[string]any{
+				"operation": "update", "graph": "code", "repo": "probe-repo", "id": paritySeedLocalA,
+			},
 		},
 	}
 	for arm, spec := range mutateArmRegistry {

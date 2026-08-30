@@ -47,8 +47,8 @@ func TestUncoveredMembersLoadsAndReportsPerFormat(t *testing.T) {
 	newMgr := func(t *testing.T, hnswIDs, bm25IDs []string) *Manager {
 		t.Helper()
 		ctx := context.Background()
-		_, gc := newSegmentHarness(t)
-		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+
+		mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 		hdocs := make([]searchengine.Document, 0, len(hnswIDs))
 		for _, id := range hnswIDs {
 			hdocs = append(hdocs, mkDoc(id))
@@ -111,14 +111,14 @@ func TestUncoveredMembersLoadsAndReportsPerFormat(t *testing.T) {
 		// corpus-scale re-ship. The fixture writes through one manager, then asks a
 		// SECOND manager over the same store — whose engines have never been warmed.
 		ctx := context.Background()
-		_, gc := newSegmentHarness(t)
+
 		dir := t.TempDir()
-		writer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc)))
+		writer := closeOnCleanup(t, NewManager(dir, 0))
 		docs := []searchengine.Document{mkDoc("persisted-a"), mkDoc("persisted-b")}
 		require.NoError(t, writer.ReplaceBucket(ctx, gt, name, nil, docs))
 		require.NoError(t, writer.ReplaceBucketFields(ctx, gt, name, nil, docs))
 
-		cold := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc)))
+		cold := closeOnCleanup(t, NewManager(dir, 0))
 		require.Zero(t, cold.LiveResidentDocCount(gt, name),
 			"fixture precondition: the second manager's engine must start cold, or this arm proves nothing")
 

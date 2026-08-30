@@ -22,7 +22,7 @@ import (
 // "batch %d: %w" — the worker still sees Transient).
 //
 // This is the single canonical LLM-error type for the client: it backs the
-// domains/llm clients, the summarizer/embedder pipeline, and the Voyage
+// internal/llm clients, the summarizer/embedder pipeline, and the Voyage
 // embedder error classification. (P2-T6 consolidated the former duplicate
 // store-side error type onto this type and deleted the store-side copy.)
 type LLMError struct {

@@ -28,10 +28,10 @@ subcommand it does **not** serve MCP — it prints a hint pointing you at
 connects to (see the next section). The client speaks to the graph server on
 `--port` (default `15022`), starting one if needed, and runs the background work
 that keeps the graph fresh: the client-side LLM pipeline that summarizes and
-embeds nodes, the propagation runtime that maintains the thought graph, and the
-worker runtime for background jobs. The flags below tune those background systems
-— batch sizes, worker counts, and the `--no-*-runtime` switches that turn an
-individual subsystem off for offline or low-noise development.
+embeds nodes, and the propagation runtime that maintains the thought graph. The
+flags below tune those background systems — batch sizes, pipeline worker counts,
+and the `--no-*-runtime` switches that turn an individual subsystem off for
+offline or low-noise development.
 
 <!-- BEGIN GENERATED: flags-client -->
 | Flag | Default | Description |
@@ -41,17 +41,14 @@ individual subsystem off for offline or low-noise development.
 | `--embed-channel-size` | `10000` | Client-side LLM pipeline: EmbedWork channel buffer size (full = collector blocks) |
 | `--embed-rpm` | `0` | Client-side LLM pipeline: max embed (Voyage) API requests per MINUTE across all embed workers; 0 = unlimited (default, preserves current 20-worker behavior). Proactive throttle for low-tier Voyage accounts — paces the opening burst so it respects the account RPM before the first 429. Companion to the reactive Retry-After backoff. |
 | `--embed-workers` | `20` | Client-side LLM pipeline: count of embed worker goroutines |
-| `--graph-storage` | `~/.knowledge/` | Directory for graph storage: the server writes its .bin here, and the client roots its segment cache + worker runtime under it (default ~/.knowledge/) |
-| `--headless` | `false` | Run as an embedded/supervisor-managed daemon: serve the loopback /mcp endpoint and resolve query embeddings, but skip every background content + coordination loop. Implies --no-worker-runtime, --no-propagation-runtime, --skip-llm-precheck and --no-llm-pipeline, and additionally disables the hive monitor, hive reaper, and transcript upload loops. Still loads ~/.knowledge/config (so [credentials] resolve config-first) and still seeds .claude agents/skills. Does not change auth. |
+| `--graph-storage` | `~/.knowledge/` | Directory for graph storage: the server writes its .bin here, and the client roots its segment cache under it (default ~/.knowledge/) |
+| `--headless` | `false` | Run as an embedded/supervisor-managed daemon: serve the loopback /mcp endpoint and resolve query embeddings, but skip every background content + coordination loop. Implies --no-propagation-runtime, --skip-llm-precheck and --no-llm-pipeline, and additionally disables the transcript upload loops. Still loads ~/.knowledge/config (so [credentials] resolve config-first) and still seeds .claude agents/skills. Does not change auth. |
 | `--log-file` |  | Log file path (logs to both stderr and file when set) |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
 | `--no-auth` | `false` | Force the client local-only: suppress BOTH cloud-selection triggers at the Router.pick chokepoint (machineAuth forced false WITHOUT consulting --auth-token/KNOWLEDGE_AUTH_TOKEN, and the keychain replaced with a no-op store so a live `knowledge login` refresh token reports IsLoggedIn==false). Fail-closed: no routed op can reach a fulminate.io host regardless of credentials present. Capability reduction only — the cloud endpoint is never overridden. Use for offline/OSS mode and as the safety floor for the bug-hunt harness. |
-| `--no-hive-monitor` | `false` | Skip the background hive monitor loop. Individually addressable form of one of the three gates --headless implies — for daemons that need the LLM pipeline (which --headless disables) but must not run coordination loops (e.g. the bench harness's corpus-pull daemon). |
-| `--no-hive-reaper` | `false` | Skip the background hive reaper loop. See --no-hive-monitor for when to use the individual gates instead of --headless. |
 | `--no-llm-pipeline` | `false` | Skip client-side LLM pipeline (summarize + embed) wiring. The MCP daemon and other tools continue to work; only background summarization/embedding stops. |
 | `--no-propagation-runtime` | `false` | Skip client-side PropagationLoop wiring. The MCP daemon continues to serve and reflective tools still run on demand, but the hourly background cluster detection + valence propagation stops. Use for offline development or to silence background log noise. |
-| `--no-transcript-upload` | `false` | Skip the background transcript-upload loops, including their HOME-side transcript cache writes. See --no-hive-monitor for when to use the individual gates instead of --headless. |
-| `--no-worker-runtime` | `false` | Skip dream Runner wiring. Run knowledge purely to serve/exercise the graph (e.g. the bench harness) without starting its own background worker runtime. |
+| `--no-transcript-upload` | `false` | Skip the background transcript-upload loops, including their HOME-side transcript cache writes. Individually addressable form of one of the gates --headless implies — for daemons that need the LLM pipeline (which --headless disables) but must not run coordination loops (e.g. the bench harness's corpus-pull daemon). |
 | `--pipeline-tick` | `250ms` | Client-side LLM pipeline: per-graph collector poll interval |
 | `--port` | `15022` | TCP port the graph server listens on |
 | `--pprof` | `false` | Start the pprof profiling HTTP endpoint on 127.0.0.1:15021 (/debug/pprof/) at boot, AND pass --pprof to the knowledge-server this daemon spawns so its own /debug/pprof/ mounts too. Both endpoints bind loopback only. Also reachable on demand for this process via manage(pprof_start). Use to profile client-side work such as collect. |
@@ -84,18 +81,15 @@ outlives any single session.
 | `--embed-channel-size` | `10000` | Client-side LLM pipeline: EmbedWork channel buffer size (full = collector blocks) |
 | `--embed-rpm` | `0` | Client-side LLM pipeline: max embed (Voyage) API requests per MINUTE across all embed workers; 0 = unlimited (default, preserves current 20-worker behavior). Proactive throttle for low-tier Voyage accounts — paces the opening burst so it respects the account RPM before the first 429. Companion to the reactive Retry-After backoff. |
 | `--embed-workers` | `20` | Client-side LLM pipeline: count of embed worker goroutines |
-| `--graph-storage` | `~/.knowledge/` | Directory for graph storage: the server writes its .bin here, and the client roots its segment cache + worker runtime under it (default ~/.knowledge/) |
-| `--headless` | `false` | Run as an embedded/supervisor-managed daemon: serve the loopback /mcp endpoint and resolve query embeddings, but skip every background content + coordination loop. Implies --no-worker-runtime, --no-propagation-runtime, --skip-llm-precheck and --no-llm-pipeline, and additionally disables the hive monitor, hive reaper, and transcript upload loops. Still loads ~/.knowledge/config (so [credentials] resolve config-first) and still seeds .claude agents/skills. Does not change auth. |
+| `--graph-storage` | `~/.knowledge/` | Directory for graph storage: the server writes its .bin here, and the client roots its segment cache under it (default ~/.knowledge/) |
+| `--headless` | `false` | Run as an embedded/supervisor-managed daemon: serve the loopback /mcp endpoint and resolve query embeddings, but skip every background content + coordination loop. Implies --no-propagation-runtime, --skip-llm-precheck and --no-llm-pipeline, and additionally disables the transcript upload loops. Still loads ~/.knowledge/config (so [credentials] resolve config-first) and still seeds .claude agents/skills. Does not change auth. |
 | `--http-port` | `15023` | Loopback TCP port for the streamable-HTTP MCP endpoint (/mcp). Distinct from --port (the graph server). |
 | `--log-file` |  | Log file path (logs to both stderr and file when set) |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
 | `--no-auth` | `false` | Force the client local-only: suppress BOTH cloud-selection triggers at the Router.pick chokepoint (machineAuth forced false WITHOUT consulting --auth-token/KNOWLEDGE_AUTH_TOKEN, and the keychain replaced with a no-op store so a live `knowledge login` refresh token reports IsLoggedIn==false). Fail-closed: no routed op can reach a fulminate.io host regardless of credentials present. Capability reduction only — the cloud endpoint is never overridden. Use for offline/OSS mode and as the safety floor for the bug-hunt harness. |
-| `--no-hive-monitor` | `false` | Skip the background hive monitor loop. Individually addressable form of one of the three gates --headless implies — for daemons that need the LLM pipeline (which --headless disables) but must not run coordination loops (e.g. the bench harness's corpus-pull daemon). |
-| `--no-hive-reaper` | `false` | Skip the background hive reaper loop. See --no-hive-monitor for when to use the individual gates instead of --headless. |
 | `--no-llm-pipeline` | `false` | Skip client-side LLM pipeline (summarize + embed) wiring. The MCP daemon and other tools continue to work; only background summarization/embedding stops. |
 | `--no-propagation-runtime` | `false` | Skip client-side PropagationLoop wiring. The MCP daemon continues to serve and reflective tools still run on demand, but the hourly background cluster detection + valence propagation stops. Use for offline development or to silence background log noise. |
-| `--no-transcript-upload` | `false` | Skip the background transcript-upload loops, including their HOME-side transcript cache writes. See --no-hive-monitor for when to use the individual gates instead of --headless. |
-| `--no-worker-runtime` | `false` | Skip dream Runner wiring. Run knowledge purely to serve/exercise the graph (e.g. the bench harness) without starting its own background worker runtime. |
+| `--no-transcript-upload` | `false` | Skip the background transcript-upload loops, including their HOME-side transcript cache writes. Individually addressable form of one of the gates --headless implies — for daemons that need the LLM pipeline (which --headless disables) but must not run coordination loops (e.g. the bench harness's corpus-pull daemon). |
 | `--pipeline-tick` | `250ms` | Client-side LLM pipeline: per-graph collector poll interval |
 | `--port` | `15022` | TCP port the graph server listens on |
 | `--pprof` | `false` | Start the pprof profiling HTTP endpoint on 127.0.0.1:15021 (/debug/pprof/) at boot, AND pass --pprof to the knowledge-server this daemon spawns so its own /debug/pprof/ mounts too. Both endpoints bind loopback only. Also reachable on demand for this process via manage(pprof_start). Use to profile client-side work such as collect. |
@@ -255,38 +249,6 @@ testing).
 | `--skills-dest` |  | Skills destination root (default ~/.agents/skills) |
 | `--verbose` | `false` | Print each file path written (default: summary only) |
 <!-- END GENERATED: flags-install-codex-assets -->
-
-## `knowledge worker trigger`
-
-`knowledge worker trigger` fires a registered background worker from the command
-line, the CLI counterpart to `worker({ "operation": "trigger" })`. Pass `--payload`
-to forward a JSON payload to the worker's first turn, and `--no-wait` to return
-immediately rather than blocking on completion (otherwise it waits up to
-`--timeout`, default `30s`).
-
-<!-- BEGIN GENERATED: flags-worker-trigger -->
-| Flag | Default | Description |
-| --- | --- | --- |
-| `--graph-storage` | `~/.knowledge/` | directory for graph storage |
-| `--no-wait` | `false` | return immediately after firing |
-| `--payload` |  | JSON payload passed to the worker |
-| `--port` | `15022` | TCP port the graph server listens on |
-| `--timeout` | `30s` | max time to block on completion |
-<!-- END GENERATED: flags-worker-trigger -->
-
-## `knowledge worker status`
-
-`knowledge worker status` prints recent worker invocations and how they finished,
-the CLI counterpart to `worker({ "operation": "status" })`. Use `--limit` to set
-how many recent records to show (default `20`).
-
-<!-- BEGIN GENERATED: flags-worker-status -->
-| Flag | Default | Description |
-| --- | --- | --- |
-| `--graph-storage` | `~/.knowledge/` | directory for graph storage |
-| `--limit` | `20` | number of recent records to print |
-| `--port` | `15022` | TCP port the graph server listens on |
-<!-- END GENERATED: flags-worker-status -->
 
 ## `knowledge-server`
 

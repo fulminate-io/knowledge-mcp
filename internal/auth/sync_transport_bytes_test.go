@@ -101,13 +101,22 @@ func TestTransport_PushGraph_SurfacesNon2xx(t *testing.T) {
 	}
 }
 
-// TestTransport_SegmentControlJSON_RoutesToSegmentsPrefix proves SegmentControlJSON
-// POSTs to /v1/segments/<path> (NOT /v1/sync/...), sets the Bearer header, and
-// returns the 2xx JSON body verbatim.
-func TestTransport_SegmentControlJSON_RoutesToSegmentsPrefix(t *testing.T) {
+// TestTransport_SyncControlJSON_RoutesToSyncPrefix proves SyncControlJSON POSTs
+// to /v1/sync/<path>, sets the Bearer header, sends the request body unchanged,
+// and returns the 2xx JSON body verbatim.
+//
+// WHY THIS EXISTS AT ALL: it is the successor to the segment-control routing test,
+// which was deleted along with the segment control route itself. That test asserted
+// a route which no longer exists — but it was ALSO the only happy-path coverage of
+// controlJSON, the
+// shared body that survives under its one remaining caller and whose prefix and
+// error label were inlined by the same change. Deleting it outright would have
+// left the surviving function with no test that goes red when it stops POSTing,
+// stops sending the body, or stops returning the response verbatim.
+func TestTransport_SyncControlJSON_RoutesToSyncPrefix(t *testing.T) {
 	var gotMethod, gotPath, gotAuth string
 	var gotBody []byte
-	respBody := []byte(`{"chunks":[{"upload_url":"https://gcs/x","object_path":"segments/a/b/c/h.seg"}]}`)
+	respBody := []byte(`{"upload_url":"https://gcs/x","object_path":"graphs/a/b/c.bin"}`)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
@@ -122,16 +131,16 @@ func TestTransport_SegmentControlJSON_RoutesToSegmentsPrefix(t *testing.T) {
 	src := StaticTokenSource{AccessToken: "tok", Permissions: PermissionSet{PermMCPKnowledgeWrite: {}}}
 	tr := newByteTransport(t, srv, src)
 
-	reqBody := []byte(`{"graph_type":"knowledge","name":"default","format":"hnsw","chunks":[{"content_hash":"h"}]}`)
-	out, err := tr.SegmentControlJSON(context.Background(), "presign", reqBody)
+	reqBody := []byte(`{"graph_type":"knowledge","name":"default"}`)
+	out, err := tr.SyncControlJSON(context.Background(), "presign", reqBody)
 	if err != nil {
-		t.Fatalf("SegmentControlJSON: %v", err)
+		t.Fatalf("SyncControlJSON: %v", err)
 	}
 	if gotMethod != http.MethodPost {
 		t.Errorf("method: got %q want POST", gotMethod)
 	}
-	if gotPath != "/v1/segments/presign" {
-		t.Errorf("path: got %q want /v1/segments/presign", gotPath)
+	if gotPath != "/v1/sync/presign" {
+		t.Errorf("path: got %q want /v1/sync/presign", gotPath)
 	}
 	if gotAuth != "Bearer tok" {
 		t.Errorf("auth header: got %q want %q", gotAuth, "Bearer tok")
@@ -141,50 +150,6 @@ func TestTransport_SegmentControlJSON_RoutesToSegmentsPrefix(t *testing.T) {
 	}
 	if !bytes.Equal(out, respBody) {
 		t.Errorf("response body not returned verbatim: got %q want %q", out, respBody)
-	}
-}
-
-// TestTransport_SegmentControlJSON_401Refreshes proves the /v1/segments/ channel
-// shares the same 401 → force-refresh → retry core as PushGraph: the first call
-// 401s, one ForceRefresh happens, and the retry (with the rotated token) reaches
-// the segments route and returns the body.
-func TestTransport_SegmentControlJSON_401Refreshes(t *testing.T) {
-	var first atomic.Bool
-	first.Store(true)
-	var seenAuth []string
-	var seenPath string
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seenAuth = append(seenAuth, r.Header.Get("Authorization"))
-		seenPath = r.URL.Path
-		if first.CompareAndSwap(true, false) {
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"error":"expired"}`))
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"found":false}`))
-	}))
-	t.Cleanup(srv.Close)
-
-	src := &refreshingStub{current: "tok-stale"}
-	tr := newByteTransport(t, srv, src)
-
-	out, err := tr.SegmentControlJSON(context.Background(), "manifest/read", []byte(`{}`))
-	if err != nil {
-		t.Fatalf("SegmentControlJSON: %v", err)
-	}
-	if src.refreshCnt != 1 {
-		t.Errorf("expected 1 refresh call, got %d", src.refreshCnt)
-	}
-	if len(seenAuth) < 2 || seenAuth[1] != "Bearer tok-refreshed" {
-		t.Errorf("expected retry with refreshed token, seenAuth=%v", seenAuth)
-	}
-	if seenPath != "/v1/segments/manifest/read" {
-		t.Errorf("path: got %q want /v1/segments/manifest/read", seenPath)
-	}
-	if string(out) != `{"found":false}` {
-		t.Errorf("body: got %q", out)
 	}
 }
 

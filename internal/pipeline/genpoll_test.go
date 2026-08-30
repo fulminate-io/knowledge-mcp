@@ -52,7 +52,7 @@ const genPollGT = kgtypes.GraphCode
 func registerStubCollector(p *Pipeline, name string) *collector {
 	c := newCollector(genPollGT, name, p.cfg, p.summaryCh, p.embedCh, p.metrics, p.client,
 		p.cfg.TickOrDefault(), p.cfg.TickOrDefault(), nil, nil,
-		p.summaryEnabled(), p.embedEnabled(), p.genSnapshotFor, nil)
+		p.summaryEnabled(), p.embedEnabled(), p.genSnapshotFor, nil, nil)
 	key := graphKey{GraphType: genPollGT, GraphName: name}
 	p.collectorMu.Lock()
 	p.collectorCancels[key] = func() {}
@@ -92,10 +92,10 @@ func TestGenPoll_NoChangeTick_OnePollZeroDetail(t *testing.T) {
 	assert.Equal(t, 1, fake.calls["pipeline_gen_poll"], "exactly one bulk gen-poll per tick")
 
 	// Both axes' discover must cheap-tick on the unchanged gen — ZERO detail fetches.
-	items, err := c.discover(ctx, "summary", &c.lastSummaryGen)
+	items, _, err := c.discover(ctx, "summary", &c.lastSummaryGen)
 	require.NoError(t, err)
 	assert.Empty(t, items)
-	items, err = c.discover(ctx, "embed", &c.lastEmbedGen)
+	items, _, err = c.discover(ctx, "embed", &c.lastEmbedGen)
 	require.NoError(t, err)
 	assert.Empty(t, items)
 
@@ -143,7 +143,7 @@ func TestGenPoll_MChanged_OnePollMDetail(t *testing.T) {
 		{cB, "summary", &cB.lastSummaryGen},
 		{cB, "embed", &cB.lastEmbedGen},
 	} {
-		_, err := dc.c.discover(ctx, dc.axis, dc.last)
+		_, _, err := dc.c.discover(ctx, dc.axis, dc.last)
 		require.NoError(t, err)
 	}
 
@@ -242,7 +242,13 @@ func TestGenPoll_WatermarkAdvanceOnlyAfterDrain(t *testing.T) {
 	// gen and the PipelineScan gen come from the same GetPipelineGen source and
 	// agree; the fixture models that (seedSummaryScan hardcodes gen 1, which would
 	// not match the poll, so set the field directly).
-	fake.summaryScanResp = &knowledgev1.PipelineScanResponse{DirtyGen: 3}
+	// GapSetComplete IS PART OF WHAT "DRAINED" MEANS and cannot be omitted here. The
+	// watermark advances only on a COMPLETE empty page; a response leaving this
+	// false models an empty page the server reported INCOMPLETE — an arm that
+	// failed, or a window of refused rows — which is precisely the page that must
+	// NOT advance the watermark. Without it this fixture asserts advancement on the
+	// one shape the advance is guarded against.
+	fake.summaryScanResp = &knowledgev1.PipelineScanResponse{DirtyGen: 3, GapSetComplete: true}
 	p := genPollTestPipeline(t, fake)
 	ctx := context.Background()
 
@@ -254,7 +260,7 @@ func TestGenPoll_WatermarkAdvanceOnlyAfterDrain(t *testing.T) {
 	require.False(t, throttled)
 	// discover sees snap(3) != watermark(0) → issues the detail fetch; the empty
 	// result advances the watermark to 3.
-	items, err := c.discover(ctx, "summary", &c.lastSummaryGen)
+	items, _, err := c.discover(ctx, "summary", &c.lastSummaryGen)
 	require.NoError(t, err)
 	assert.Empty(t, items)
 	assert.Equal(t, uint64(3), c.lastSummaryGen.Load(), "watermark advances to the drained gen after an empty fetch")
@@ -265,7 +271,7 @@ func TestGenPoll_WatermarkAdvanceOnlyAfterDrain(t *testing.T) {
 	fake.seedGenPoll(entry("repoA", "summary", 3), entry("repoA", "embed", 0))
 	_, throttled = p.genPollOnce(ctx)
 	require.False(t, throttled)
-	items, err = c.discover(ctx, "summary", &c.lastSummaryGen)
+	items, _, err = c.discover(ctx, "summary", &c.lastSummaryGen)
 	require.NoError(t, err)
 	assert.Empty(t, items)
 	assert.Equal(t, scansAfterTick1, fake.scansByAxis["summary"],

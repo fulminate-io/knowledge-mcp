@@ -12,26 +12,16 @@ import (
 	"encoding/json"
 	"io"
 	"os"
-	"strings"
 	"time"
 )
 
 // homeDir resolves the user's home directory. It is a package-local, overridable
 // test seam so Enumerate can run against a temp HOME without mutating process
-// env. Deliberately NOT shared with hivemonitor's homeDir — a per-package test
-// seam is a trivial os.UserHomeDir alias, not a shared contract that could drift.
+// env. A per-package test seam is a trivial os.UserHomeDir alias, not a shared
+// contract that could drift.
 //
 //nolint:gochecknoglobals // overridable home seam for testability; mirrors the exec-seam idiom.
 var homeDir = os.UserHomeDir
-
-// EncodeClaudeCwd applies the documented claude project-dir encoding: every '/'
-// in the absolute cwd becomes '-' (e.g. /Users/jonathan/code → -Users-jonathan-code).
-// The enumerator does NOT use this (the encoding is non-invertible, so cwd is
-// read from the records themselves); it is lifted here only because hivemonitor's
-// forward-direction resolveClaudeTranscript still needs it.
-func EncodeClaudeCwd(cwd string) string {
-	return strings.ReplaceAll(cwd, "/", "-")
-}
 
 // CodexSessionMeta is the codex rollout's first-line self-declaration:
 // {"type":"session_meta","payload":{"id":...,"cwd":...}}. Only the fields the
@@ -45,10 +35,9 @@ type CodexSessionMeta struct {
 }
 
 // newJSONLScanner returns a bufio.Scanner with the 8MiB line-buffer cap used
-// across the transcript readers, DRYing the tolerant-scan idiom that was
-// repeated verbatim in hivemonitor (locate.go, claude_reader.go, codex_reader.go).
-// The default 64KiB cap would truncate a full assistant turn; 8MiB is the upper
-// bound any single JSONL line is expected to reach.
+// across the transcript readers, DRYing the tolerant-scan idiom. The default
+// 64KiB cap would truncate a full assistant turn; 8MiB is the upper bound any
+// single JSONL line is expected to reach.
 func newJSONLScanner(r io.Reader) *bufio.Scanner {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)

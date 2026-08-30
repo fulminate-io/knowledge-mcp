@@ -83,7 +83,7 @@ start with $.
 ## JSON where-tree — composers + leaves
 
 Constraints attach via the optional 'where' argument: a recursive JSON
-boolean tree. Three composers and six leaves cover the surface.
+boolean tree. Three composers and eight leaves cover the surface.
 
 Composers (a node may set exactly one; multiple set at once are AND'd):
 
@@ -129,6 +129,19 @@ Leaves:
   contains_pattern — capture has a descendant matching a sub-pattern.
                      { "of": "X", "pattern": "$F.Close()" }
 
+  flows_to         — does the value bound to 'from' REACH the position bound
+                     to 'to', by dataflow, inside one declaration? The walk
+                     is intra-declaration: 'within' names the declaration it
+                     is scoped to and is REQUIRED — there is no default,
+                     because deriving the scope would mean guessing which
+                     ancestor kind is a declaration in each language. Name it
+                     with "$match" when the pattern matches the declaration
+                     itself, or with an inside_pattern 'as' binding otherwise.
+                     Available only on flow-armed languages; a leaf on any
+                     other errors and lists the ones that work, rather than
+                     quietly matching nothing.
+                     { "from": "P", "to": "ARG", "within": "FN" }
+
 Both inside_pattern and contains_pattern accept an optional 'as' field
 that names the matched ancestor/descendant for downstream sibling leaves
 in the SAME composer scope. Use it for "find ancestor/descendant, then
@@ -147,6 +160,41 @@ binding may not be set if the inner failed.
 A reference that can't be resolved in the scope chain is an error, not a
 silent miss — the walker surfaces "capture not found" so authoring bugs
 stay visible.
+
+## Union compile, the compiled disclosure, and the 'context' pin
+
+A pattern is a source FRAGMENT, and the same fragment is often grammatical in
+more than one place. Compilation therefore enumerates EVERY parse context that
+can host it and matches the union of the distinct trees — java '$T $N = $V;' is
+both a class field and a local variable, and both are returned. That is what
+stops a fragment silently compiling to a construct you did not mean: c#
+'Debug.Assert($X);' reads as a class-body field declaration as readily as a
+statement, and answering with only the first reading returns zero against
+thousands of real call sites.
+
+Every result discloses what it compiled to, so a surprising zero is diagnosable
+from the output rather than by experiment: match and count echo a 'compiled'
+array (one entry per variant, each with root_kind, the wrappers tried and the
+contexts that produced it), and every individual match carries compiled_kind
+plus compiled_contexts. The contexts are a SET, not a single value — a fragment
+legal in several usually compiles identically under each, and naming only the
+first would report the registry's ordering as a property of your pattern.
+
+Pass 'context' to narrow the union to ONE reading — 'decl', 'stmt', 'expr' or
+'member'. A pin naming a context the language does not register, or one no
+wrapper hosts this pattern under, fails loud and names the contexts that would
+have worked.
+
+THE PIN SCOPES THE OUTER PATTERN ONLY. A where-leaf sub-pattern
+(inside_pattern / contains_pattern) always compiles to its full union whatever
+the outer pattern pinned, because a leaf asks whether the match CONTAINS a given
+shape and the contained thing sits wherever the target puts it. Inheriting the
+pin would break the most natural mixed query there is: "class members containing
+a return statement" is context:"member" with a 'return $X;' leaf, and java
+compiles 'return $X;' under the member context to a field declaration whose type
+is the literal word "return" — matching nothing, so the query would answer a
+silent zero. The cost of that choice, stated plainly: there is no way to pin a
+leaf's context.
 
 ## Sub-pattern recursion
 
@@ -168,6 +216,10 @@ its captures into a 'replacement' template written in the SAME $X grammar:
              not an escape followed by a name — the escape only fires when
              the two dollars are NOT followed by a third '$'.
   $_ / $$$_ — wildcards are NOT referenceable in a replacement (usage error).
+
+An EMPTY replacement ("") DELETES the matched ranges — the template interpolates
+to nothing, which is how a call or decl is stripped. replacement is required on
+replace and may be empty; an OMITTED replacement errors.
 
 Safety model (the replacement is never a blind text edit):
 
@@ -284,10 +336,27 @@ annotations.
   pattern          — single DSL pattern (match/count/replace) — exclusive with 'patterns'
   patterns         — array of DSL patterns for sibling-form alternation (match/count/replace)
   where            — JSON where-tree (optional, match/count/replace)
-  replacement      — replacement template in the $X grammar (replace only, required)
+  context          — pin the parse context to one of decl | stmt | expr | member
+                     (match/count/replace). See "## Union compile" below
+  replacement      — replacement template in the $X grammar (replace only,
+                     required — and MAY be empty, which deletes the matched
+                     ranges; an OMITTED replacement errors)
   dry_run          — replace only; default TRUE (preview diffs, no write); false applies
   snippet          — source text (explain only, required)
-  repo             — code graph name (defaults to active when one is loaded)
+  repo             — the DIRECTORY to walk. ast is FILESYSTEM-based (it parses
+                     files on disk), not a graph query. Omit it to walk the
+                     current tree (the session cwd, or the daemon's --root);
+                     pass an ABSOLUTE PATH to target any local checkout; or pass
+                     a bare repo NAME, which resolves through the machine-local
+                     ~/.knowledge manifest to where that repo was last collected,
+                     falling back to the current tree when the name IS the
+                     current repo. A name in neither fails loud. With repo
+                     omitted AND --root at its default AND no session cwd known,
+                     the call FAILS LOUD rather than walking the daemon's process
+                     cwd. Every match/count result echoes walked_root, and a
+                     zero-files_scanned result carries a wrong-root hint. Match
+                     hydration uses the walked directory's basename as the graph
+                     name.
   package_prefixes — restrict the walk to repo-relative path prefixes, matched
                      at PATH-SEGMENT boundaries ("a/b" admits a/b and anything
                      under a/b/, never the sibling a/bc); a prefix may name a
@@ -337,9 +406,9 @@ edge_types: ["calls"]) is still the right tool — that's edge data, not shape.
 
 ## Output
 
-  match → { matches: [...], stats: {...}, hint: "..." (only when matches is
-            empty) }
-  count → { total, by_file, stats fields rendered inline }
+  match → { matches: [...], compiled: [...], walked_root, stats: {...},
+            hint: "..." (only when matches is empty) }
+  count → { total, by_file, compiled, walked_root, stats fields rendered inline }
   replace → { applied, dry_run, files_matched, files_changed,
               matches_replaced, matches_changed, refused_files,
               rejected_files, preexisting_parse_failures,

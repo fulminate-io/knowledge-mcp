@@ -50,6 +50,8 @@ func RunSubcommand() (handled bool, exitCode int) {
 		err = cli.AccountsCmd(rest)
 	case "account":
 		err = withSelectionRestart(func() error { return runAccountVerb(rest) })
+	case "check":
+		err = runCheckVerb(rest)
 	case "start":
 		err = runStart(rest)
 	case "stop":
@@ -134,6 +136,12 @@ func runAccountVerb(args []string) error {
 // annotation still prints, because the one-line reason is what tells a human
 // which of not-logged-in or expired they hit.
 //
+// `check run` maps its two verdict sentinels to their own codes for the same
+// reason and one more: 3 means the corpus checks FLAGGED something and 4 means
+// the run could not answer at all. Folding either into 1 would make a caught
+// defect indistinguishable from a command that failed to execute, which is
+// precisely the confusion a criterion gate must not create.
+//
 // Every other error is a generic failure: exit 1 with the annotation.
 func subcommandExit(err error) (code int, printMessage bool) {
 	if err == nil {
@@ -146,23 +154,16 @@ func subcommandExit(err error) (code int, printMessage bool) {
 	if errors.Is(err, cli.ErrNoValidSession) {
 		return cli.ExitNoValidSession, true
 	}
-	return 1, true
-}
-
-// hasNoWorkerRuntimeFlag reports whether --no-worker-runtime appears
-// anywhere in args. Used by RunWorkerSubcommand for an early-bail path:
-// when the flag is present anywhere in os.Args, the subcommand returns
-// (false, 0) so main() falls through to Run, where ParseFlags picks the
-// flag up and skips wireWorkerRuntime. This lets a process whose argv
-// happens to carry the worker subcommand keywords still be run purely to
-// serve the graph (e.g. the bench harness) without starting a Runner.
-func hasNoWorkerRuntimeFlag(args []string) bool {
-	for _, a := range args {
-		if a == "--no-worker-runtime" || a == "-no-worker-runtime" {
-			return true
-		}
+	// The two corpus-check verdicts. They are DISTINCT codes rather than one
+	// non-zero because a gate that cannot tell a real finding from a probe that
+	// could not run would let an author read a refused corpus as a caught defect.
+	if errors.Is(err, errCheckFlagged) {
+		return ExitCheckFlagged, true
 	}
-	return false
+	if errors.Is(err, errCheckInconclusive) {
+		return ExitCheckInconclusive, true
+	}
+	return 1, true
 }
 
 // expandTilde expands a leading '~/' to the user's home directory.

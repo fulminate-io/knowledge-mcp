@@ -10,54 +10,46 @@ import (
 	"strings"
 	"sync"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/bm25"
 )
 
-// ensureShippedSeeded lazily seeds shippedIDs from the server's current segment
-// set (Source.List(0)) so a fresh process does not re-ship the entire corpus on
-// the first ship(). The server is the source of truth; the client re-derives.
-// Backed by the idempotent server Put, this seed is an optimization (avoid the
-// upload), not a correctness requirement.
+// baseLiveSetForFormat returns base's LIVE segment ids for one format: the ids its
+// engine CURRENTLY exports.
 //
-// RE-ARM ON FAILURE: the seed latches (m.seeded=true) ONLY when List(0) SUCCEEDS.
-// A transient List failure returns the error WITHOUT latching, so the next ship
-// re-attempts the seed. This replaces the prior sync.Once+seedErr, which consumed
-// the Once on the first attempt even when it failed and then returned the cached
-// error forever — a single transient List failure permanently disabled shipping
-// for the process lifetime. The whole seed runs under shipMu so concurrent ships
-// serialize on it (the second waiter sees seeded==true and returns immediately);
-// holding the lock across the List RPC is acceptable because seeding is a rare
-// once-per-process success and ship() acquires shipMu only after this returns.
+// IT DELIBERATELY DOES NOT FORCE A LOAD, and that is the whole correctness argument.
+// Every available "load the base" primitive — load, loadResidentFromL2,
+// forceCompleteLiveSet — imports cache.Keys(), which is the L2 DIRECTORY LISTING. A
+// directory can legitimately hold superseded blobs no live layer references (the
+// merge-reclaim window, and every retired layer between a swap and the next
+// InvalidateLocal), so forcing a load would import those retired blobs into the base
+// engine and hand them straight back as "live". That is the exact resurrection this
+// function's caller documents as the hazard to avoid.
 //
-// CRITICAL: the server keys blobs by graphKey ONLY (no format dimension), so
-// List(0) returns BOTH this graph's HNSW and BM25 blobs. shippedIDs must hold
-// ONLY THIS engine's format ids — exactly the same keepFormat filter load()
-// applies. Seeding a foreign-format id here would make reconcilePrune treat it as
-// "shipped but no longer Exported" (this engine never Exports the other format)
-// and PRUNE the other format's live segments server-side: e.g. the BM25 ship
-// would prune the just-shipped HNSW segments, leaving VectorByID with nothing to
-// resolve. The format filter is the fix for that cross-format prune.
-func (m *distManager[Q, S]) ensureShippedSeeded(ctx context.Context) error {
-	m.shipMu.Lock()
-	defer m.shipMu.Unlock()
-	if m.seeded {
-		return nil
+// The engine's in-memory layer is the ONLY thing that knows which of the blobs on
+// disk are live, because ReplaceLayer retires a layer in memory while its files
+// linger until a reclaim. So:
+//
+//   - a WARM base engine exports its current layer — the live, non-superseded set,
+//     which is what a seed wants;
+//   - a COLD base engine exports nothing, the seed copies nothing, and the branch
+//     rebuilds from its own embedded nodes. That is slower and CORRECT; the
+//     alternative is a branch serving documents its base already retired.
+func (m *Manager) baseLiveSetForFormat(
+	gt kgtypes.GraphType, baseName, format string,
+) []searchengine.SegmentID {
+	var exported []searchengine.SegmentBlob
+	if format == bm25.New().Name() {
+		exported = m.bm25ManagerFor(gt, baseName).engine.Export()
+	} else {
+		exported = m.managerFor(gt, baseName).engine.Export()
 	}
-	metas, err := m.source.List(ctx, 0)
-	if err != nil {
-		// Transient failure — do NOT latch. The next ship re-arms the seed.
-		return err
+	ids := make([]searchengine.SegmentID, 0, len(exported))
+	for _, b := range exported {
+		ids = append(ids, b.ID)
 	}
-	for _, meta := range metas {
-		if !m.keepFormat(meta.Format) {
-			continue
-		}
-		m.shippedIDs[meta.ID] = struct{}{}
-	}
-	m.seeded = true
-	return nil
+	return ids
 }
 
 // SeedBranchBucketFromBase copies the base graph's published segment partitions
@@ -70,10 +62,19 @@ func (m *distManager[Q, S]) ensureShippedSeeded(ctx context.Context) error {
 // Seeding from base makes the rebuild axis stream only what actually differs, and
 // the touched-partitions-only replace path absorbs that difference.
 //
-// THE SOURCE SET IS WHAT THE BASE PUBLISHES, resolved through the base graph's own
-// source rather than by listing its cache directory. An L2 directory can
-// legitimately hold superseded blobs no manifest references, and copying one
-// RESURRECTS documents the base already retired.
+// THE SOURCE SET IS BASE'S LIVE SET — the ids its ENGINE exports — never a listing
+// of its cache directory. An L2 directory can legitimately hold superseded blobs no
+// live layer references, and copying one RESURRECTS documents the base already
+// retired.
+//
+// THAT DISTINCTION USED TO BE FREE AND NOW HAS TO BE MADE ON PURPOSE. The set came
+// from base's segment source, which was a remote manifest read — inherently the
+// published, non-superseded set. The only source left is the L2 cache itself, whose
+// List IS the directory listing this paragraph warns against, so the operand is
+// taken from the engine instead: baseLiveSetForFormat reads base's CURRENT Export
+// without forcing a load, which is the live set after the engine has applied
+// whatever supersession its layers encode. Its doc explains why every
+// force-a-load primitive is disqualified here.
 //
 // IT COPIES THROUGH THE CACHE'S OWN PUT PATH, never by copying files. The cache
 // owns its byte-budget accounting and its LRU, and a filesystem copy would leave
@@ -139,6 +140,13 @@ func (m *Manager) SeedBranchBucketFromBase(
 	if err != nil {
 		return nil, fmt.Errorf("segmentdist: seed %s/%s: read base rebuild record: %w", gt, branchName, err)
 	}
+	// TEST-ONLY hook, placed HERE because the ordering above is what it exists to
+	// check: the record has been captured and not one partition has moved, so a test
+	// advancing base's record from this phase reproduces exactly the window a
+	// capture-after-copy implementation would lose data in. nil in production.
+	if m.seedHook != nil {
+		m.seedHook(seedPhaseRecordCaptured, gt, branchName, format)
+	}
 
 	// THE BASE SIDE IS READ-ONLY, AND MUST STAY THAT WAY. This is a second cache
 	// instance over a directory the base graph's own engine owns, so its index is
@@ -154,24 +162,25 @@ func (m *Manager) SeedBranchBucketFromBase(
 		return nil, err
 	}
 	baseCache := newDiskSegmentCache(graphCacheDirFor(m.cacheDir, gt, baseName, format), m.maxBytes, advice)
-	baseSource := m.newSegmentSource(baseCache, gt, baseName, graphSelector(gt, baseName), format)
-	metas, err := baseSource.List(ctx, 0)
-	if err != nil {
-		return nil, fmt.Errorf("segmentdist: seed %s/%s from %s: list base partitions: %w",
-			gt, branchName, baseName, err)
-	}
-	// The same format filter the ship seed applies, and for the same reason: the
-	// server keys blobs by graph alone, so a List returns both formats' ids and
-	// copying a foreign-format id into this bucket would make it claim partitions
-	// this engine never exports.
-	published := make([]searchengine.SegmentMeta, 0, len(metas))
-	ids := make([]searchengine.SegmentID, 0, len(metas))
-	for _, meta := range metas {
-		if meta.Format != "" && meta.Format != format {
+
+	// BASE'S LIVE SET, FROM BASE'S ENGINE. baseLiveSetForFormat reads base's CURRENT
+	// Export ids — the live, non-superseded set — WITHOUT forcing a load. Listing
+	// baseCache instead, or forcing a load through any of the primitives that import
+	// cache.Keys(), would hand back the raw directory with superseded blobs included,
+	// which is the resurrection hazard this function's doc names.
+	// It reads an in-memory Export and cannot fail, so it returns the ids alone.
+	liveIDs := m.baseLiveSetForFormat(gt, baseName, format)
+	// INTERSECTED WITH WHAT THE BASE CACHE ACTUALLY HOLDS. A live id whose bytes are
+	// not on this machine cannot be copied, and reporting it as copyable would
+	// overstate the seed; the copied-fewer Warn below is what surfaces the gap.
+	published := make([]searchengine.SegmentMeta, 0, len(liveIDs))
+	ids := make([]searchengine.SegmentID, 0, len(liveIDs))
+	for _, id := range liveIDs {
+		if _, present := baseCache.sizeOf(id); !present {
 			continue
 		}
-		published = append(published, meta)
-		ids = append(ids, meta.ID)
+		published = append(published, searchengine.SegmentMeta{ID: id, Format: format})
+		ids = append(ids, id)
 	}
 	if len(ids) == 0 {
 		return nil, nil
@@ -179,7 +188,11 @@ func (m *Manager) SeedBranchBucketFromBase(
 	if err := checkSeedFitsBudget(baseCache, ids, m.maxBytes, gt, branchName); err != nil {
 		return nil, err
 	}
-	copied := copyPartitions(baseCache, branchCache, ids)
+	copied, err := copyPartitions(baseCache, branchCache, ids)
+	if err != nil {
+		return nil, fmt.Errorf("segmentdist: seed %s/%s from %s: copy base partitions: %w",
+			gt, branchName, baseName, err)
+	}
 	if copied < len(ids) {
 		// The base publishes partitions this machine's cache does not hold. The
 		// branch is not wrong — the rebuild axis fetches the remainder — but the
@@ -212,105 +225,6 @@ func (m *Manager) SeedBranchBucketFromBase(
 		}
 	}
 	return resident, nil
-}
-
-// seedShipAndPublish makes a seeded branch bucket real on the CLOUD rail: the
-// copied partitions are shipped under the BRANCH's own object key and only then
-// published.
-//
-// WHY THE UPLOAD IS UNAVOIDABLE. Blob object paths carry the graph NAME, so
-// byte-identical content under a branch name is a DIFFERENT object: base's blobs
-// are simply not reachable under the branch key, and the publish's server-side
-// verify rejects every seeded digest until the bytes exist there. One full-corpus
-// upload per branch creation is the accepted price of never streaming that corpus
-// back DOWN and never rebuilding its indexes.
-//
-// IT IS INERT ON THE OSS RAIL BY CONSTRUCTION, not by a flavor branch: the local
-// source's Ship stamps ids with zero network and its PublishManifest is a no-op,
-// so this runs and costs nothing there.
-//
-// PUBLISH IS CONDITIONAL ON A COMPLETE SHIP, and this is the ordering that
-// matters most in the whole step. A per-blob upload failure is fail-safe but not
-// silent — the id is OMITTED from the returned metas rather than vanishing
-// quietly — so publishing whatever came back would declare a bucket complete
-// while it is missing documents, which is exactly what the downstream
-// shipped-complete gate would then believe. An incomplete ship therefore fails
-// loudly and publishes NOTHING. A crash between the two is the safe intermediate:
-// blobs exist, nothing claims completeness, and the branch keeps reading through
-// the two-pool union until a later pass publishes.
-//
-// It never runs on a read path and never holds the manager mutex.
-//
-// IT READS THE BYTES BACK THROUGH THE CALLER'S CACHE — the same instance the
-// copy wrote into, and the same one the branch's engine reads. Constructing a
-// private instance here would work only by accident: it would have to re-scan
-// the directory to see the copy, which is exactly the second-instance coupling
-// the seed no longer has.
-func (m *Manager) seedShipAndPublish(
-	ctx context.Context, gt kgtypes.GraphType, branchName, format string,
-	seeded []searchengine.SegmentMeta, branchCache *diskSegmentCache,
-) error {
-	if len(seeded) == 0 {
-		return nil
-	}
-	branchSource := m.newSegmentSource(branchCache, gt, branchName, graphSelector(gt, branchName), format)
-
-	blobs := make([]*knowledgev1.SegmentBlobProto, 0, len(seeded))
-	var bytesShipped int64
-	for _, meta := range seeded {
-		body, ok := branchCache.Get(meta.ID)
-		if !ok {
-			continue
-		}
-		bytesShipped += int64(len(body))
-		blobs = append(blobs, &knowledgev1.SegmentBlobProto{
-			Id:       meta.ID,
-			Format:   format,
-			Bytes:    body,
-			DocCount: int32(meta.DocCount), //nolint:gosec // a per-segment doc count cannot exceed int32
-		})
-	}
-	shipped, err := branchSource.Ship(ctx, blobs)
-	if err != nil {
-		return fmt.Errorf("segmentdist: seed ship %s/%s: %w", gt, branchName, err)
-	}
-	confirmed := make(map[searchengine.SegmentID]struct{}, len(shipped))
-	for _, meta := range shipped {
-		confirmed[meta.GetId()] = struct{}{}
-	}
-	if !seedShipComplete(seeded, confirmed) {
-		return fmt.Errorf(
-			"segmentdist: seed ship %s/%s confirmed %d of %d partitions — refusing to publish a bucket that "+
-				"would read complete while missing %d",
-			gt, branchName, len(confirmed), len(seeded), len(seeded)-len(confirmed))
-	}
-	digests := make([]segmentDigest, 0, len(seeded))
-	for _, meta := range seeded {
-		digests = append(digests, segmentDigest{ID: meta.ID, DocCount: meta.DocCount})
-	}
-	if _, err := branchSource.PublishManifest(format, digests); err != nil {
-		return fmt.Errorf("segmentdist: seed publish %s/%s (%d digests): %w", gt, branchName, len(digests), err)
-	}
-	// The accepted cost of the ruling, made an OBSERVED number rather than an
-	// assumed one. This line is the only evidence anyone will have that the trade
-	// is behaving as it was costed.
-	slog.Info("segmentdist: shipped and published a seeded branch bucket",
-		"graph_type", gt, "branch", branchName, "format", format,
-		"partitions", len(digests), "bytes_shipped", bytesShipped)
-	return nil
-}
-
-// seedShipComplete reports whether EVERY seeded partition was confirmed by the
-// ship. It is a separate predicate rather than an inline length compare because
-// a length compare is the wrong test: the ship can confirm an id that was not
-// seeded, and two sets of equal size are not the same set.
-func seedShipComplete(seeded []searchengine.SegmentMeta, confirmed map[searchengine.SegmentID]struct{}) bool {
-	for _, meta := range seeded {
-		if _, ok := confirmed[meta.ID]; !ok {
-			return false
-		}
-	}
-	return true
 }
 
 // isBranchGraphName reports whether a graph name is branch-qualified. The '@'
@@ -356,10 +270,22 @@ func checkSeedFitsBudget(
 //
 // A MISS IS SKIPPED, NOT AN ERROR, and the cache's read seam is why it cannot be
 // anything else: Get reports hit-or-miss and has no failure of its own to report.
-// The base's published set can legitimately name a partition this machine's cache
-// does not hold, and the rebuild axis fetches whatever the branch ends up missing.
-// The COUNT is what makes a short seed visible; the caller reports it.
-func copyPartitions(src *diskSegmentCache, dst *diskSegmentCache, ids []searchengine.SegmentID) int {
+// Base's live set can legitimately name a partition this machine's cache does not
+// hold, and the rebuild axis fetches whatever the branch ends up missing. The COUNT
+// is what makes a short seed visible; the caller reports it.
+//
+// A FAILED WRITE IS A DIFFERENT THING ENTIRELY AND ABORTS THE SEED. A miss means
+// base never had the bytes here; a Put error means the bytes could not be written to
+// the branch's bucket, and continuing past it produces exactly the outcome the
+// budget check above refuses to produce — a bucket that reads as seeded while
+// missing documents. The caller latches only on a nil error, so returning one here
+// is what makes an interrupted seed re-run from scratch.
+//
+// THE FIRST ERROR ACROSS THE WORKERS IS THE ONE RETURNED, recorded under the same
+// mutex as the counter. The remaining workers drain their queue rather than being
+// cancelled: the copy is additive and idempotent (content-addressed keys), so
+// finishing costs a little I/O and avoids a second failure mode in the unwind path.
+func copyPartitions(src *diskSegmentCache, dst *diskSegmentCache, ids []searchengine.SegmentID) (int, error) {
 	workers := max(min(runtime.NumCPU(), len(ids)), 1)
 	work := make(chan searchengine.SegmentID, len(ids))
 	for _, id := range ids {
@@ -369,10 +295,11 @@ func copyPartitions(src *diskSegmentCache, dst *diskSegmentCache, ids []searchen
 
 	// A mutex around the shared counter rather than a results channel: the writes
 	// are rare (one per partition) and a mutex is cheaper than a channel send for
-	// that shape.
+	// that shape. The first error rides the same mutex.
 	var (
-		mu     sync.Mutex
-		copied int
+		mu      sync.Mutex
+		copied  int
+		firstEr error
 	)
 	var wg sync.WaitGroup
 	for range workers {
@@ -382,13 +309,22 @@ func copyPartitions(src *diskSegmentCache, dst *diskSegmentCache, ids []searchen
 				if !ok {
 					continue
 				}
-				dst.Put(id, b)
+				err := dst.Put(id, b)
 				mu.Lock()
-				copied++
+				if err != nil {
+					if firstEr == nil {
+						firstEr = err
+					}
+				} else {
+					copied++
+				}
 				mu.Unlock()
 			}
 		})
 	}
 	wg.Wait()
-	return copied
+	if firstEr != nil {
+		return copied, firstEr
+	}
+	return copied, nil
 }

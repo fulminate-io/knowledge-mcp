@@ -90,6 +90,41 @@ record, not memory:
 assemble({ "id": "<project_or_ticket_id>" })
 ```
 
+## Step 1b: Measure where the session actually spent its time
+
+Recollection is a poor witness to cost. Measure the session and every subagent it
+spawned, so the retro's account of the work rests on the transcripts rather than on
+what the session felt like:
+
+```json
+analyze_usage({ "operation": "run-detectors", "scope": "session-tree", "session": "<the session being retrospected>", "format": "json" })
+```
+
+`session-tree` is the scope that means "this session plus its subagents" — the other
+scopes answer a different question (the whole corpus, one lane alone, or a time
+window).
+
+What to read in the response:
+
+- **`corpus`** — the basis every other number was computed over: how many lanes,
+  records, sessions and agents survived the filter, and the first and last record
+  timestamp. Read it first; a number is only as meaningful as the population behind it.
+- **`subagent_wall_time`** — `active_ms` beside `span_ms` for each lane. Span is
+  elapsed time including idle; active excludes the pauses. A lane whose span dwarfs
+  its active time was waiting, not working, and the difference is usually the more
+  interesting finding.
+- **`duplicate_commands`** — commands rerun with identical input, each carrying a
+  `waste_verdict`. Treat `plausible` rows as real rework; `implausible` ones are
+  spans too long to be execution and are usually a human approval wait, and
+  `undetermined` means the tool had too few samples to judge, not that the row is fine.
+- **`result_residency_by_tool`** — which tools' results stayed resident in context
+  longest and therefore cost the most across the session's model calls.
+
+If a lane was cached before a given measurement existed, its counters read zero
+rather than absent. Re-run the transcript upload with `--seed` to backfill, then
+measure again; `corpus.lanes_with_result_bytes` tells you how much of the population
+carries the residency measurement.
+
 ## Step 2: Capture the verification evidence
 
 State plainly what was actually observed that proves the work is real — the smoke
@@ -172,7 +207,8 @@ negative when it contradicts one the session held.
 ```json
 thoughts({ "operation": "charge", "thought": "<session hypothesis id>",
            "polarity": "positive", "weight": 7,
-           "reasoning": "<the observed real-world evidence from Step 2>" })
+           "reasoning": "<the observed real-world evidence from Step 2>",
+           "summary": "<one-line account of the evidence — charge requires a summary>" })
 ```
 
 Record any durable conclusion the session reached that is not yet a node:

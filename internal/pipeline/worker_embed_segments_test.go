@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/bm25"
@@ -42,6 +43,16 @@ type fakeShipManager struct {
 	flushErr   error
 	flushCalls int
 	flushKeys  []graphKey
+
+	// The BM25 arm's surface: the delete seam and the durable cursor round trip.
+	deleteErr     error
+	deleteCalls   int
+	deletedIDs    []searchengine.ExternalID
+	deleteKeys    []graphKey
+	cursors       map[graphKey][]*knowledgev1.LayerCursor
+	cursorSaves   int
+	cursorLoadErr error
+	cursorSaveErr error
 }
 
 func (f *fakeShipManager) AddAndMarkDirty(_ context.Context, gt kgtypes.GraphType, name string, docs []searchengine.Document) error {
@@ -98,6 +109,39 @@ func (f *fakeShipManager) Flush(_ context.Context, gt kgtypes.GraphType, name st
 	f.flushCalls++
 	f.flushKeys = append(f.flushKeys, graphKey{GraphType: gt, GraphName: name})
 	return f.flushErr
+}
+
+// The BM25 arm's three additions to ShipManager. They capture rather than assert:
+// the arm's own tests drive them, and the embed-writeback tests in this file must
+// keep compiling without caring that a third axis exists.
+//
+// THE CURSOR PAIR IS AN IN-MEMORY ROUND TRIP, not a no-op returning nil. A fake
+// whose SaveBM25Cursors discarded its argument would let a cursor-advance assertion
+// pass against an arm that never advanced anything.
+func (f *fakeShipManager) DeleteFromBuckets(_ context.Context, gt kgtypes.GraphType, name string, ids []searchengine.ExternalID) error {
+	f.deleteCalls++
+	f.deletedIDs = append(f.deletedIDs, ids...)
+	f.deleteKeys = append(f.deleteKeys, graphKey{GraphType: gt, GraphName: name})
+	return f.deleteErr
+}
+
+func (f *fakeShipManager) LoadBM25Cursors(gt kgtypes.GraphType, name string) ([]*knowledgev1.LayerCursor, error) {
+	if f.cursorLoadErr != nil {
+		return nil, f.cursorLoadErr
+	}
+	return f.cursors[graphKey{GraphType: gt, GraphName: name}], nil
+}
+
+func (f *fakeShipManager) SaveBM25Cursors(gt kgtypes.GraphType, name string, cursors []*knowledgev1.LayerCursor) error {
+	if f.cursorSaveErr != nil {
+		return f.cursorSaveErr
+	}
+	if f.cursors == nil {
+		f.cursors = map[graphKey][]*knowledgev1.LayerCursor{}
+	}
+	f.cursors[graphKey{GraphType: gt, GraphName: name}] = cursors
+	f.cursorSaves++
+	return nil
 }
 
 // vec32 returns a non-empty 32-byte vector seeded by b.
@@ -188,81 +232,50 @@ func TestEmbedWriteback_DrainFailureIsBestEffort(t *testing.T) {
 	require.Equal(t, 1, fsm.calls, "AddAndMarkDirty was attempted")
 }
 
-// TestEmbedWriteback_BuildsAndShipsBM25 is the client criterion: at
-// the embed writeback seam the pipeline calls AddAndMarkDirtyFields with
-// field-bearing Documents built from each item's server-composed Bm25Fields,
-// alongside the HNSW write. The decoded BM25 segment indexes exactly the ids that
-// carried fields.
-func TestEmbedWriteback_BuildsAndShipsBM25(t *testing.T) {
+// TestEmbedWriteback_ShipsNoBM25 is what replaced the two tests this ticket
+// removed — TestEmbedWriteback_BuildsAndShipsBM25 and
+// TestEmbedWriteback_BM25DrainFailureIsBestEffort — and it asserts the OPPOSITE of
+// what they did, on purpose.
+//
+// THEY WERE DELETED RATHER THAN WEAKENED because the behaviour they pinned no
+// longer exists: the embed writeback seam does not ship BM25 documents at all. A
+// test kept alive against a deleted path asserts nothing while reading as coverage.
+//
+// THIS IS THE INVERSE ASSERTION, and it is the one that matters now: the vector
+// ship still fires, and the BM25 ship NEVER does. Without it, "the embed axis
+// stopped shipping BM25" would be pinned by nothing, and a future re-introduction
+// would be invisible. The HNSW leg is the known positive — it proves the seam ran
+// at all, so the zero below is a real absence rather than a batch that never
+// reached the ship.
+func TestEmbedWriteback_ShipsNoBM25(t *testing.T) {
 	ctx := context.Background()
 	be := newFakeWireClient()
 
 	fe := &fakeEmbedder{vectors: map[string][]byte{
 		"n1": vec32(1),
 		"n2": vec32(2),
-		"n3": vec32(3),
 	}}
 	p := New(Config{}, be, nil, fe.call)
 
 	fsm := &fakeShipManager{}
 	p.AttachSegmentManager(fsm)
 
-	batch := []EmbedWork{
-		{GraphType: kgtypes.GraphCode, GraphName: "repo", NodeID: "n1", EmbedText: "a", Backend: be,
-			Bm25Fields: map[string]string{"symbol_name": "alpha", "summary": "first node"}},
-		{GraphType: kgtypes.GraphCode, GraphName: "repo", NodeID: "n2", EmbedText: "b", Backend: be,
-			Bm25Fields: map[string]string{"symbol_name": "beta"}},
-		// n3 carries NO Bm25Fields (e.g. a node with no indexable text) — it must be
-		// excluded from the BM25 ship but still embedded/HNSW-shipped.
-		{GraphType: kgtypes.GraphCode, GraphName: "repo", NodeID: "n3", EmbedText: "c", Backend: be},
-	}
-	runEmbedWorkerBatch(ctx, p, batch)
-
-	// HNSW ships all three (vectors); BM25 ships only the two that carry fields.
-	require.Equal(t, 1, fsm.calls, "HNSW AddAndMarkDirty fires once")
-	require.Equal(t, 1, fsm.fieldsCalls, "BM25 AddAndMarkDirtyFields fires once")
-
-	gotBM25 := make([]string, 0, len(fsm.fieldDocs))
-	for _, d := range fsm.fieldDocs {
-		gotBM25 = append(gotBM25, d.ID)
-		require.NotEmpty(t, d.Fields, "BM25 Document must carry Fields, not a Vector")
-	}
-	require.ElementsMatch(t, []string{"n1", "n2"}, gotBM25, "only field-bearing ids are BM25-indexed")
-
-	got := append([]string(nil), fsm.bm25DecodedID...)
-	sort.Strings(got)
-	require.Equal(t, []string{"n1", "n2"}, got, "decoded BM25 segment indexes exactly the field-bearing ids")
-
-	require.Equal(t, int64(3), p.Metrics().EmbedSucceeded, "all three embeds counted OK")
-}
-
-// TestEmbedWriteback_BM25DrainFailureIsBestEffort asserts an AddAndMarkDirtyFields
-// error does NOT propagate: embed writeback completes, embedOK increments, embeds
-// are not marked failed (best-effort/additive contract — server BM25 authoritative).
-//
-// As above, the knob now models a SEAL failure rather than a ship failure: this
-// seam marks dirty and never publishes, so no ship error can arrive here.
-func TestEmbedWriteback_BM25DrainFailureIsBestEffort(t *testing.T) {
-	ctx := context.Background()
-	be := newFakeWireClient()
-
-	fe := &fakeEmbedder{vectors: map[string][]byte{"n1": vec32(1)}}
-	p := New(Config{}, be, nil, fe.call)
-
-	fsm := &fakeShipManager{fieldsErr: errors.New("bm25 seal boom")}
-	p.AttachSegmentManager(fsm)
-
 	runEmbedWorkerBatch(ctx, p, []EmbedWork{
-		{GraphType: kgtypes.GraphCode, GraphName: "repo", NodeID: "n1", EmbedText: "a", Backend: be,
-			Bm25Fields: map[string]string{"summary": "only summary"}},
+		{GraphType: kgtypes.GraphCode, GraphName: "repo", NodeID: "n1", EmbedText: "a", Backend: be},
+		{GraphType: kgtypes.GraphCode, GraphName: "repo", NodeID: "n2", EmbedText: "b", Backend: be},
 	})
 
-	// The vector writeback plus the BM25 ship-failure marker stamp.
-	require.Equal(t, 2, be.mutateCallCount(),
-		"server writeback still fires despite BM25 ship failure, and the dropped ship stamps its ids")
-	require.Equal(t, int64(1), p.Metrics().EmbedSucceeded, "embedOK increments despite BM25 ship failure")
-	require.Equal(t, int64(0), p.Metrics().EmbedFailed, "a BM25 ship failure does NOT mark embeds failed")
-	require.Equal(t, 1, fsm.fieldsCalls, "AddAndMarkDirtyFields was attempted")
+	require.Equal(t, 1, fsm.calls,
+		"KNOWN POSITIVE: the HNSW ship still fires, so the seam genuinely ran and the zero below "+
+			"is an absence rather than a batch that never reached it")
+	require.Len(t, fsm.gotIDs, 2, "and it carried both vectors")
+
+	require.Zero(t, fsm.fieldsCalls,
+		"the embed axis must NOT ship BM25 — a node's keyword document is produced by the BM25 "+
+			"arm off the CorpusDelta feed, which is the decoupling this ticket exists for")
+	require.Empty(t, fsm.fieldDocs, "and no field-bearing Documents are built here")
+
+	require.Equal(t, int64(2), p.Metrics().EmbedSucceeded, "both embeds counted OK")
 }
 
 // TestEmbedWriteback_NilManagerNoOp asserts the seam is a no-op when no segment

@@ -9,31 +9,36 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
-	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
 
-// TestReclaimRoleRegressionGuards asserts the merge-reclaim hook does not perturb the
-// two pre-existing prune roles, and that the reclamation sources — ROLE-A (the reset
-// rebuild's server-side prune, whose local eviction the swap's reclaim hook performs and
-// InvalidateLocal backstops), ROLE-B (embed tick reconcile-prune against
-// locallyShipped), and the live-cache merge-reclaim hook — operate on DISJOINT id sets.
-func TestReclaimRoleRegressionGuards(t *testing.T) {
+// TestRebuildSwapReclaimsThenInvalidateLocalBackstops pins the ORDERING of the two
+// surviving local reclamation steps on a deterministic rebuild: the layer swap's own
+// merge hook evicts each retired blob from L2, and InvalidateLocal is a BACKSTOP over
+// a set already reclaimed rather than the mechanism that reclaims it.
+//
+// IT USED TO BE A ROLE-SEPARATION TEST, and two of the three roles are gone. ROLE-A
+// was the reset rebuild's SERVER-SIDE prune and ROLE-B was the embed tick's
+// reconcile-prune against the locally-shipped set; both died with the rail, and a "these three
+// sources touch disjoint id sets" property is not expressible over the one source
+// that remains. The roleB subtest went with its role and owes no successor — the
+// mechanism is absent, not weakened. What survives is the ordering above, which is
+// genuinely local and was previously buried inside the roleA arm.
+func TestRebuildSwapReclaimsThenInvalidateLocalBackstops(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	gt := kgtypes.GraphCode
 
 	t.Run("roleA_det_rebuild_still_prunes_and_no_live_hook", func(t *testing.T) {
-		svc, gc := newSegmentHarness(t)
-		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+		mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 		// Ship an old degenerate corpus via the embed path, then deterministically
 		// rebuild it with a different corpus → ROLE-A prunes the old ids.
 		oldDocs := hnswVecDocs(searchCorpusN)
 		require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, "roleA", oldDocs))
 		require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, gt, "roleA"))
-		oldIDs := shippedHNSWIDs(svc)
+		oldIDs := l2HNSWIDs(mgr.cacheDir, "roleA")
 		require.NotEmpty(t, oldIDs)
 
 		// The old layer's blobs are on local disk BEFORE the rebuild. This is the
@@ -80,49 +85,7 @@ func TestReclaimRoleRegressionGuards(t *testing.T) {
 		// backstops, and ROLE B (below) stays disjoint from both.
 	})
 
-	t.Run("roleB_embed_prunes_only_this_process_and_disjoint", func(t *testing.T) {
-		// Embed engine with the instrumented seam so we can capture the merge-reclaim
-		// removed-set and cross-check disjointness against the ROLE-B ship prune.
-		dm, ic := buildHNSWReclaimManager(t, gt, "roleB", t.TempDir(), 1<<30)
-		defer dm.engine.Close()
-
-		// Seal several single-doc segments and ship each (this-process locallyShipped).
-		docs := vecContentDocs(6)
-		for _, d := range docs {
-			require.NoError(t, dm.engine.Add([]searchengine.Document{d}))
-			_, err := dm.ship(ctx, dm.locallyShipped)
-			require.NoError(t, err)
-		}
-		dm.shipMu.Lock()
-		require.NotEmpty(t, dm.locallyShipped, "this process shipped its own segments")
-		shippedBeforeMerge := copyIDSet(dm.locallyShipped)
-		dm.shipMu.Unlock()
-
-		// Trigger a merge that supersedes some of those this-process-shipped segments.
-		dm.engine.Delete(docs[0].ID)
-		dm.engine.Delete(docs[1].ID)
-		waitForMerge(t, dm.engine.MergeCount, "roleB dead-ratio merge must fire")
-		waitMergeQuiesce(dm.engine.MergeCount)
-		warmExported(dm)
-
-		mergeReclaimed := ic.removedSet()
-		require.NotEmpty(t, mergeReclaimed, "the merge-reclaim hook removed superseded constituents from L2")
-
-		// A following ROLE-B ship reconciles against locallyShipped → prunes only the
-		// this-process merged-away ids on the SERVER. The set it prunes is a subset of
-		// what this process shipped — never anything it did not ship.
-		pruned, err := dm.ship(ctx, dm.locallyShipped)
-		require.NoError(t, err)
-		for _, id := range pruned {
-			require.Contains(t, shippedBeforeMerge, id,
-				"ROLE-B ship prunes ONLY this-process-shipped ids (id %s)", id)
-		}
-
-		// Disjointness: the merge-reclaim removed-set (L2 disk) and the ROLE-B server
-		// prune-set are about DIFFERENT resources (local L2 vs server blobs); the live
-		// set retains neither orphaned nor double-counted ids.
-		assertLiveSetBackedByL2(t, dm, mergeReclaimed, nil, nil)
-	})
+	// The roleB arm was deleted here — see the doc above.
 }
 
 // segFilesAtDir returns the .seg content-hash ids under an explicit dir.
@@ -130,13 +93,4 @@ func segFilesAtDir(t *testing.T, dir string) map[string]struct{} {
 	t.Helper()
 	c := newDiskSegmentCache(dir, 0, adviceRandom)
 	return diskCacheIDs(c)
-}
-
-// copyIDSet snapshots a SegmentID set (the live maps mutate under shipMu).
-func copyIDSet(m map[searchengine.SegmentID]struct{}) map[searchengine.SegmentID]struct{} {
-	out := make(map[searchengine.SegmentID]struct{}, len(m))
-	for k := range m {
-		out[k] = struct{}{}
-	}
-	return out
 }

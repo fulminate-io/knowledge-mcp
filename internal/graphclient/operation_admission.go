@@ -15,10 +15,11 @@
 // enforced by the recorder in Router.Execute. An operation naming only a graph
 // TYPE, which is exactly the catalog-enumeration shape, resolves no instance key
 // and admits nothing by construction, for every family whose instance key is
-// repo / account / language. The knowledge family is the named exception: it is
-// single-instance, so a type-only knowledge target IS the default instance and
-// does admit. For knowledge the partition below therefore stays load-bearing
-// rather than being backstopped by structure.
+// repo / account / language. The SINGLE-INSTANCE families are the named
+// exceptions — knowledge and checks — because each has exactly one instance, so a
+// type-only target for either IS that instance and does admit. For those two the
+// partition below therefore stays load-bearing rather than being backstopped by
+// structure.
 
 package graphclient
 
@@ -50,6 +51,12 @@ var admittingOperations = map[Operation]struct{}{
 	OpCreateProject:  {},
 	OpCreateResearch: {},
 	OpCreateTestPlan: {},
+	// manage_checks reads and writes the checks graph, and its run operation
+	// additionally reads the code graph the caller NAMED. Every one of those is a
+	// concrete instance the user addressed in the call, so it belongs here rather
+	// than with the management terms: the clause that excludes manage(status) is
+	// about a fan-out across every graph of a family, which this issues none of.
+	OpManageChecks: {},
 
 	// Collect.
 	OpCollect:              {},
@@ -57,10 +64,6 @@ var admittingOperations = map[Operation]struct{}{
 	OpCollectFinalize:      {},
 	OpCollectFetchSubgraph: {},
 	OpCustomComputer:       {},
-
-	// Worker. worker(trigger) names the code graph its scan payload narrows to,
-	// so the user's call interacts with that graph directly.
-	OpWorker: {},
 }
 
 // AdmitsWorkingSet reports whether an RPC stamped with op may admit its target
@@ -95,9 +98,9 @@ var admittingOperations = map[Operation]struct{}{
 //     not stop them; being stamped with these terms instead of inheriting the
 //     caller's is what keeps one user call from admitting the whole account.
 //
-//   - NO GRAPH INSTANCE ADDRESSED — hive coordination, static help text and the
-//     local transcript cache address no graph, and the unknown/unstamped
-//     fallbacks address nothing at all. Their classification is behaviourally
+//   - NO GRAPH INSTANCE ADDRESSED — static help text and the local transcript
+//     cache address no graph, and the unknown/unstamped
+//     fallbacks address nothing at all. Their classification is behaviorally
 //     inert because the instance-key gate would refuse them anyway; they are
 //     classified explicitly so the partition closes over the whole vocabulary
 //     and a newly declared term cannot default silently into either half.

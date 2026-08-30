@@ -96,6 +96,7 @@ func TestBatchModeRequestDTOs_MarshalShape(t *testing.T) {
 // payload rides under "rollup", and (3) NO identity field (account_id/user_id/
 // session_id/source) leaks into any row object.
 func TestRollupPayload_MarshalShape(t *testing.T) {
+	activeMs, dayActiveMs := int64(90_000), int64(45_000)
 	payload := rollupPayload{
 		SchemaVersion: rollupSchemaVersion,
 		Session: sessionScalars{
@@ -111,6 +112,7 @@ func TestRollupPayload_MarshalShape(t *testing.T) {
 			CacheReadTokens: 1, CacheCreationTokens: 2, CacheCreation1hTokens: 1, CacheCreation5mTokens: 1,
 			DurationMs: 500, TrustworthyDurationMs: 400, APIErrorCount: 1, InterruptedCount: 1, ErrorCount: 1,
 			WebSearchCount: 1, WebFetchCount: 1, MinRecordTS: "2026-06-01T00:00:00Z", MaxRecordTS: "2026-06-01T00:30:00Z",
+			ActiveMs: &activeMs, DayActiveMs: &dayActiveMs,
 		}},
 		LatencyHist: []latencyHistRow{{
 			Day: "2026-06-01", ToolName: "Bash", Model: "sonnet", Project: "/work",
@@ -138,7 +140,7 @@ func TestRollupPayload_MarshalShape(t *testing.T) {
 
 	// Top-level payload keys + schema version.
 	for _, tag := range []string{
-		`"schema_version":1`, `"session":{`, `"facts":[`, `"latency_hist":[`, `"slow_calls":[`, `"duplicate_commands":[`,
+		`"schema_version":2`, `"session":{`, `"facts":[`, `"latency_hist":[`, `"slow_calls":[`, `"duplicate_commands":[`,
 	} {
 		assert.Contains(t, s, tag, "frozen top-level tag present verbatim")
 	}
@@ -148,6 +150,7 @@ func TestRollupPayload_MarshalShape(t *testing.T) {
 		`"agent_chain_depth":`, `"first_record_ts":`, `"last_record_ts":`, // sessionScalars
 		`"trustworthy_duration_ms":`, `"cache_creation_1h_tokens":`, `"cache_creation_5m_tokens":`, // factRow
 		`"min_record_ts":`, `"max_record_ts":`, `"subagent_type":`, `"service_tier":`, `"stop_reason":`,
+		`"active_ms":`, `"day_active_ms":`, // factRow, v2
 		`"bucket":`, `"call_count":`, // latencyHistRow
 		`"tool_input_preview":`, `"record_ts":`, // slowCallRow
 		`"tool_input_hash":`, `"run_count":`, `"wasted_duration_ms":`, `"sample_preview":`, // duplicateRow

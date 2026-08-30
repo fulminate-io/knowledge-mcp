@@ -59,6 +59,12 @@ const (
 	cKindFieldDeclaration
 	cKindFieldDeclarationList
 	cKindArrayDeclarator
+	cKindAssignmentExpression
+	cKindCallExpression
+	cKindArgumentList
+	cKindFieldExpression
+	cKindReturnStatement
+	cKindParenthesizedExpression
 )
 
 // cKindNames maps every C node-kind spelling the two C arms name onto its class
@@ -88,6 +94,12 @@ var cKindNames = map[string]uint8{
 	"field_declaration":        cKindFieldDeclaration,
 	"field_declaration_list":   cKindFieldDeclarationList,
 	"array_declarator":         cKindArrayDeclarator,
+	"assignment_expression":    cKindAssignmentExpression,
+	"call_expression":          cKindCallExpression,
+	"argument_list":            cKindArgumentList,
+	"field_expression":         cKindFieldExpression,
+	"return_statement":         cKindReturnStatement,
+	"parenthesized_expression": cKindParenthesizedExpression,
 }
 
 // cKindTable memoizes the C class table for the process.

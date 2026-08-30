@@ -13,7 +13,7 @@ import (
 // composed corsMiddleware(mux) handler through httptest.
 func newCORSTestServer() *HTTPServer {
 	mc := NewMCPClient(MCPClientConfig{Version: "test"})
-	h := NewHTTPServer(mc, 15023, []string{"https://fulminate.io"}, nil)
+	h := NewHTTPServer(mc, 15023, []string{"https://fulminate.io"})
 	h.idleTTL = 0
 	return h
 }

@@ -1,63 +1,42 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// The client-side MCP intercept chain, and the dispatch seam that hands the
-// same chain to the worker runtime.
+// The client-side MCP intercept chain.
 //
-// TWO ENTRY POINTS, ONE CHAIN. runInterceptChain is what the serve daemon wires
-// as InterceptManageOp, so every upstream MCP tool call traverses it; and
-// dispatchForRunner wraps that same chain into a dream.DispatchFunc so worker
-// tool calls take the identical chain-then-engine.Dispatch path rather than any
-// worker-specific plumbing. A tool claimed client-side is served here; anything
-// unclaimed falls through to the server.
+// runInterceptChain is what the serve daemon wires as InterceptManageOp, so
+// every upstream MCP tool call traverses it. A tool claimed client-side is
+// served here; anything unclaimed falls through to the server.
 //
 // The chain's ORDER is load-bearing and each ordering constraint is commented at
 // its own call site — a rewriter that must precede its consumers, a criterion
 // gate that must precede the generic mutate fall-through, a terminal claim that
 // must run last.
-//
-// The dream.Runner those worker calls belong to is CONSTRUCTED in the
-// dream_runtime.go sibling; this file only builds the DispatchFunc it dispatches
-// through.
 
 package bootstrap
 
 import (
 	"context"
-	"encoding/json"
 	"slices"
 	"time"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
-
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/dream"
 	"github.com/fulminate-io/knowledge-mcp/internal/tools"
 )
 
-// runInterceptChain dispatches an incoming MCP tool call through the same
-// client-side interceptor chain the serve daemon wires for upstream traffic.
-// Used in two places:
-//
-//  1. The serve daemon (daemon.go) hands it to NewMCPClient as
-//     InterceptManageOp — every upstream MCP tool call from the host
-//     traverses the chain.
-//  2. buildRuntime composes it via dispatchForRunner into a dream.DispatchFunc
-//     so the worker's eino tool dispatch runs the SAME chain-then-engine.Dispatch
-//     standard path upstream MCP traffic uses — no worker-specific plumbing, no
-//     bespoke server-stub round-trip for client-resident tools (ast, collect,
-//     future manage ops).
+// runInterceptChain dispatches an incoming MCP tool call through the
+// client-side interceptor chain the serve daemon wires for upstream traffic:
+// daemon.go hands it to NewMCPClient as InterceptManageOp, so every upstream
+// MCP tool call from the host traverses the chain.
 //
 // Returning (false, _) means no interceptor handled the call; the caller
-// then falls back to forwarding to the server (NewMCPClient does this for
-// MCP traffic; mcpTool.InvokableRun does it for worker traffic).
+// then falls back to forwarding to the server (NewMCPClient does this).
 //
 // ctx is the CALLER's request context: the query-origin operation stamped at the
 // dispatch entry point, plus the HTTP daemon's per-session values (session id,
 // workspace cwd). It is threaded into EVERY intercept — each issues its RPCs on
 // it, so canceling the tool call stops the work it started.
 //
-// Being the single funnel for both entry points, this is also where the client
+// Being the single funnel for the dispatch entry point, this is also where the client
 // samples account activity: after the chain runs it checks the response
 // watermark and, on movement, wakes the LLM pipeline (see client_freshness.go).
 // That is what makes pipeline freshness activity-driven instead of periodic.
@@ -171,12 +150,6 @@ func (c *client) runInterceptChainInner(ctx context.Context, params kgtools.Call
 	if handled, res := tools.InterceptAssemble(ctx, c, params); handled {
 		return params, true, res
 	}
-	if handled, res := tools.InterceptHive(ctx, c, params); handled {
-		return params, true, res
-	}
-	if handled, res := tools.InterceptWorker(ctx, c, params); handled {
-		return params, true, res
-	}
 	if handled, res := tools.InterceptGraphType(ctx, c, params); handled {
 		return params, true, res
 	}
@@ -195,8 +168,11 @@ func (c *client) runInterceptChainInner(ctx context.Context, params kgtools.Call
 		return params, true, res
 	}
 	// Phase 2: mutate(create, type:criterion) moved client-
-	// side. Must fire BEFORE InterceptMutate (gates on op in
-	// {update, delete} — never claims create) so the criterion
+	// side. Must fire BEFORE InterceptMutate, whose create arm claims
+	// finding/research/rule by type and ALSO any other type-bearing create
+	// carrying ticket_id/session/links (the context-linked arm is keyed on
+	// trio presence, never on node type — so a criterion create carrying a
+	// ticket_id is exactly what it would claim), so the criterion
 	// orchestration runs before any generic-mutate fall-through.
 	if handled, res := tools.InterceptAddCriterion(ctx, c, params); handled {
 		return params, true, res
@@ -290,6 +266,28 @@ func runQueryDomainIntercepts(ctx context.Context, c *client, params kgtools.Cal
 	if handled, res := tools.InterceptQueryRegisteredGraphSearch(ctx, c, params); handled {
 		return true, res
 	}
+	// transformers/checks ranked text search: REFUSED by name. These two builtins
+	// carry no ranked index, and the arm directly above declines them for being
+	// builtin — the same ejection that left them unclaimed on the search rail. Left
+	// unclaimed here they reached tools.InterceptQuery, whose generic dispatch tail
+	// rendered server rows under a "_search mode: BM25-only_" footer for graphs that
+	// carry no BM25 segments, and two of the four published text modes fell past
+	// even that to the generic engine deny. Self-gates on the two graphs plus a
+	// text-search shape, so every index-free op on them (browse, by-id, stats,
+	// modules) still falls through to the path that serves it — which matters,
+	// because the refusal hands the caller exactly those browses.
+	if handled, res := tools.InterceptQueryUnrankedBuiltin(ctx, c, params); handled {
+		return true, res
+	}
+	// mode:stats for the two builtins that had no stats arm (checks, transformers),
+	// plus the vocabulary refusal for a graph value naming no graph at all. Both
+	// cases met the generic engine deny before this member, since "stats" is not an
+	// engine-reducible mode. Self-gates on mode==stats AND its own graph set, so a
+	// real graph another arm owns is DECLINED rather than shadowed — which is why
+	// its position relative to the per-graph stats arms does not change behavior.
+	if handled, res := tools.InterceptQueryBuiltinStats(ctx, c, params); handled {
+		return true, res
+	}
 	if handled, res := tools.InterceptQueryCloudCICD(ctx, c, params); handled {
 		return true, res
 	}
@@ -328,7 +326,9 @@ func runQueryDomainIntercepts(ctx context.Context, c *client, params kgtools.Cal
 
 // runProjectDomainIntercepts dispatches an MCP call across the
 // project-domain intercepts (create_plan / create_research /
-// create_test_plan / record_decision / help). Each intercept
+// create_test_plan / record_decision / help) plus the client-owned
+// tools that joined them here for the same lint reason
+// (analyze_usage / manage_checks). Each intercept
 // returns (false, _) when params.Name doesn't match its tool — the
 // chain falls through with no extra work. Extracted from
 // runInterceptChainInner to satisfy the funlen lint cap; the dispatch
@@ -352,6 +352,12 @@ func runProjectDomainIntercepts(ctx context.Context, c *client, params kgtools.C
 	}
 	// analyze_usage: client-owned agent-flow analyzer over the local transcript cache.
 	if handled, res := tools.InterceptAnalyzeUsage(ctx, c, params); handled {
+		return true, res
+	}
+	// manage_checks: client-owned authoring/inventory/run surface for the corpus
+	// checks. Client-side for the same reason ast is — running a check walks the
+	// caller's working tree, which only this side can see.
+	if handled, res := tools.InterceptManageChecks(ctx, c, params); handled {
 		return true, res
 	}
 	return false, kgtools.ToolResult{}
@@ -387,27 +393,3 @@ func formatClientDuration(d time.Duration) string {
 		return d.Round(10 * time.Millisecond).String()
 	}
 }
-
-// dispatchForRunner builds the dream.DispatchFunc the worker's eino tools route
-// every call through — the EXACT standard sequence MCPClient.handleMCPToolCall
-// performs (cmd/knowledge/internal/graphclient/mcp_client.go): run the client intercept chain; if a tool
-// is intercepted client-side return its result; otherwise engineDispatch the
-// REWRITTEN args (so InjectRepoIfCodeGraph's repo:+branch: fill propagates) through
-// the single engine.Dispatch → Execute passthrough. The worker shares the ONE
-// client tool path, so engineDispatch is the only passthrough.
-func (c *client) dispatchForRunner() dream.DispatchFunc {
-	return func(ctx context.Context, name string, args json.RawMessage) (kgtools.ToolResult, error) {
-		// The worker is the SECOND tool-dispatch entry point (the MCP client is
-		// the first), so it stamps the query-origin operation the same way. Both
-		// paths must stamp or the worker's share of the load lands unattributed.
-		ctx = graphclient.WithOperation(ctx, graphclient.OperationForTool(name))
-		rewritten, handled, res := c.runInterceptChain(ctx, kgtools.CallToolParams{Name: name, Arguments: args})
-		if handled {
-			return res, nil
-		}
-		return c.engineDispatch(ctx, name, rewritten.Arguments)
-	}
-}
-
-// The dream.Runner this DispatchFunc feeds is constructed in the
-// dream_runtime.go sibling (runtimeLister / buildRuntime / wireWorkerRuntime).

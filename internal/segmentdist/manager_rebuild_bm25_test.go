@@ -50,10 +50,8 @@ func TestBM25ResetRetiresPriorLayer(t *testing.T) {
 	require.NotEqual(t, searchengine.BucketCountFor(corpusA), bucketsB,
 		"the fixture must cross a bucket-count boundary")
 
-	svc, view := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	gt, name := kgtypes.GraphCode, "bm25-reset"
-	target := graphSelector(gt, name)
 
 	// Run A — the prior layer.
 	stageBM25Reset(t, ctx, mgr, gt, name, vecContentDocs(corpusA))
@@ -61,7 +59,7 @@ func TestBM25ResetRetiresPriorLayer(t *testing.T) {
 	require.NoError(t, err)
 	swappedA := resA.Swapped
 	require.True(t, swappedA, "run A's publish must LAND — a skipped publish also returns a nil error")
-	layerA := writerManifest(svc, target, "", bm25FormatName)
+	layerA := l2IDsFor(mgr.cacheDir, name, bm25FormatName)
 	require.NotEmpty(t, layerA, "run A must publish a bm25 layer to be superseded")
 
 	// Run B — the run under test. Nothing opens it: staging IS the reset, so this run's
@@ -72,7 +70,7 @@ func TestBM25ResetRetiresPriorLayer(t *testing.T) {
 	swappedB := resB.Swapped
 	require.True(t, swappedB, "run B's publish must LAND")
 
-	layerB := writerManifest(svc, target, "", bm25FormatName)
+	layerB := l2IDsFor(mgr.cacheDir, name, bm25FormatName)
 	require.Len(t, layerB, bucketsB,
 		"the bm25 manifest must hold exactly run B's %d partitions — a longer set is run A's layer still referenced", bucketsB)
 
@@ -85,7 +83,7 @@ func TestBM25ResetRetiresPriorLayer(t *testing.T) {
 	}
 
 	// And the server actually reaped them.
-	stored := storedBlobIDs(svc, target)
+	stored := l2IDsFor(mgr.cacheDir, name, bm25FormatName)
 	for _, id := range layerA {
 		require.NotContains(t, stored, id, "run A's bm25 segment %s survived the refcount-GC", id)
 	}
@@ -106,10 +104,8 @@ func TestReplaceLayerShipsBeforeSwapping(t *testing.T) {
 	ctx := context.Background()
 	const corpus = 1025
 
-	svc, view := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	gt, name := kgtypes.GraphCode, "bm25-ship-order"
-	target := graphSelector(gt, name)
 
 	docs := vecContentDocs(corpus)
 	stageBM25Reset(t, ctx, mgr, gt, name, docs)
@@ -126,7 +122,7 @@ func TestReplaceLayerShipsBeforeSwapping(t *testing.T) {
 	// was uploaded; the engine's Export is what it will serve. The first must contain
 	// the second — which can only hold if the ship preceded the swap, since the swap is
 	// what made these blobs resident.
-	stored := storedBlobIDs(svc, target)
+	stored := l2IDsFor(mgr.cacheDir, name, bm25FormatName)
 	resident := bm.engine.Export()
 	require.NotEmpty(t, resident, "the engine must be serving the new layer")
 	require.Greater(t, len(resident), residentBefore,

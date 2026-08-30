@@ -11,8 +11,10 @@ import (
 // retention_floor.go — the position this CLIENT reports to the server, taken
 // across every consumer of the erase feed it runs.
 //
-// WHY THE CLIENT TAKES THE MINIMUM. The server records the retention watermark
-// from the `after` an arriving scan carries, and it advances monotonically. This
+// WHY THE CLIENT TAKES THE MINIMUM. The floor this client reports is what the
+// server's segment_rebuild completeness refusal is measured against: the server
+// compares it with store.ErasureReapFloor and refuses the scan outright when the
+// window it would serve may be missing erasures the reap has already destroyed. This
 // process runs TWO consumers of the same erase feed with INDEPENDENT durable
 // positions — the rebuild drain and the delta merge — and both scan the same axis
 // for the same graph. If each reported its own position, the AHEAD one would
@@ -36,9 +38,9 @@ import (
 //
 // A PEER WITH NO POSITION IMPOSES NO FLOOR — the minimum is taken over the
 // consumers that HAVE one. The obvious alternative, a minimum including zero, is
-// retention-correct and scope-catastrophic: the same field is the scan's lower
-// bound, so a peer at zero would drag every delta read down to a whole-corpus
-// read.
+// retention-correct and scope-catastrophic: on the arms that send no scan bound of
+// their own the same field is still the scan's lower bound, so a peer at zero would
+// drag their read down to a whole-corpus read.
 //
 // AND EXCLUDING IT IS SAFE, for a different reason on each side:
 //   - A DELTA consumer with no position PULLS NOTHING. Its horizon resolution

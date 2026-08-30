@@ -157,6 +157,15 @@ const (
 	cppKindFunctionDefinition
 	cppKindPureVirtualClause
 	cppKindPrimitiveType
+	cppKindParameterList
+	cppKindCallExpression
+	cppKindArgumentList
+	cppKindFieldExpression
+	cppKindFieldIdentifier
+	cppKindAssignmentExpression
+	cppKindReturnStatement
+	cppKindFunctionDeclarator
+	cppKindLambdaExpression
 )
 
 // cppKindNames maps every cpp node-kind spelling this arm names onto its class
@@ -182,6 +191,15 @@ var cppKindNames = map[string]uint8{
 	"function_definition":    cppKindFunctionDefinition,
 	"pure_virtual_clause":    cppKindPureVirtualClause,
 	"primitive_type":         cppKindPrimitiveType,
+	"parameter_list":         cppKindParameterList,
+	"call_expression":        cppKindCallExpression,
+	"argument_list":          cppKindArgumentList,
+	"field_expression":       cppKindFieldExpression,
+	"field_identifier":       cppKindFieldIdentifier,
+	"assignment_expression":  cppKindAssignmentExpression,
+	"return_statement":       cppKindReturnStatement,
+	"function_declarator":    cppKindFunctionDeclarator,
+	"lambda_expression":      cppKindLambdaExpression,
 }
 
 // cppKindTable memoizes the cpp class table for the process.

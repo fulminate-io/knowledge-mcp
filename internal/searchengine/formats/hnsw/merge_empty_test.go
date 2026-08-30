@@ -136,7 +136,7 @@ func TestAllDeadThenRecover(t *testing.T) {
 // all-dead repro — both empty-segment producers (Merge and Build) feed it.
 func TestEmptyGraphRoundTrip(t *testing.T) {
 	// Merge over zero inputs yields an empty segment (one of the two producers).
-	seg, err := Format{}.Merge(nil, nil)
+	seg, err := mergeSegments(t, nil, nil)
 	if err != nil {
 		t.Fatalf("Merge(nil,nil): %v", err)
 	}

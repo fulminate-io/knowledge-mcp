@@ -41,21 +41,21 @@ func hnswVecDocs(n int) []searchengine.Document {
 func TestManagerAddAndMarkDirtySealsOneBlob(t *testing.T) {
 	t.Parallel()
 
-	_, gc := newSegmentHarness(t)
-	cc := gc
 	ctx := context.Background()
 
 	// MinSegmentDocs default is 1024; seal exactly one segment with 1024 docs.
 	const n = 1024
 	docs := hnswVecDocs(n)
 
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	require.NoError(t, mgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, "repoHNSW", docs))
-	require.Equal(t, int64(0), cc.shipCalls.Load(), "the write path force-seals but never ships")
+	require.Empty(t, mgr.managerFor(kgtypes.GraphCode, "repoHNSW").cache.Keys(),
+		"the write path force-seals but never PERSISTS — durability is the reconcile tick's job")
 
 	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "repoHNSW"))
-	require.Equal(t, int64(1), cc.shipCalls.Load(), "the reconcile tick fires exactly one Ship RPC")
+	require.NotEmpty(t, mgr.managerFor(kgtypes.GraphCode, "repoHNSW").cache.Keys(),
+		"the reconcile tick is what writes the sealed partitions to L2")
 
 	// After the tick the resident set is PARTITION-shaped, and how many partitions
 	// that is falls out of the corpus size rather than out of anything this test
@@ -74,19 +74,13 @@ func TestManagerAddAndMarkDirtySealsOneBlob(t *testing.T) {
 	}
 	require.Equal(t, n, covered, "the resident partitions index exactly the embedded ids")
 
-	// Export-diff no-op: a second ship() with NO intervening Add re-exports the
-	// SAME sealed segment (same content hash), so the diff against shippedIDs is
-	// empty → ZERO new Ship RPC, ZERO new blobs. This is the manager.go ship-diff
-	// guarantee. (The HNSW builder is deterministic, so re-ADDING the same docs
-	// would also seal a BYTE-IDENTICAL segment with the SAME content hash — doc-level
-	// idempotency now holds for HNSW too. This test asserts the narrower segment-level
-	// diff no-op the ship path relies on: re-ship without Add ships nothing.)
-	beforeShips := cc.shipCalls.Load()
-	beforeBlobs := cc.shipBlobs.Load()
-	_, shipErr := dm.ship(ctx, dm.locallyShipped)
-	require.NoError(t, shipErr)
-	require.Equal(t, beforeShips, cc.shipCalls.Load(), "re-ship without Add issues ZERO new Ship RPCs")
-	require.Equal(t, beforeBlobs, cc.shipBlobs.Load(), "re-ship without Add sends ZERO new blobs")
+	// THE EXPORT-DIFF NO-OP ASSERTION WAS REMOVED HERE, not lost. It re-ran ship()
+	// with no intervening Add and asserted zero new Ship RPCs and zero new blobs —
+	// a property of the ship diff against the shipped-id set, and the ship leg, that
+	// set and the RPC are all gone. Its surviving half is that re-writing identical
+	// content-hash blobs adds nothing, which TestSegmentDistributionE2E asserts
+	// directly against the cache. What this test still owns is the SEAL: one
+	// AddAndMarkDirty pass seals exactly the partitions the embedded ids require.
 }
 
 // TestManagerFlushSealsSubThresholdTail is the steady-state searchability +
@@ -104,19 +98,17 @@ func TestManagerAddAndMarkDirtySealsOneBlob(t *testing.T) {
 func TestManagerFlushSealsSubThresholdTail(t *testing.T) {
 	t.Parallel()
 
-	_, gc := newSegmentHarness(t)
-	cc := gc
 	ctx := context.Background()
 
 	// 500 < MinSegmentDocs(1024): the incremental backlog never seals a segment.
 	const n = 500
 	docs := hnswVecDocs(n)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	dm := mgr.managerFor(kgtypes.GraphCode, "smallRepo")
 	require.NoError(t, dm.engine.Add(docs))
 	require.Empty(t, dm.engine.Export(), "a sub-1024 incremental backlog seals ZERO segments — unsearchable")
-	require.Equal(t, int64(0), cc.shipCalls.Load(), "an unsealed sub-threshold backlog ships NOTHING")
+	require.Empty(t, dm.cache.Keys(), "an unsealed sub-threshold backlog PERSISTS NOTHING")
 
 	// Quiescence Flush: force-seal the tail. It becomes exactly ONE searchable
 	// segment indexing all the ids, shipped in exactly one Ship RPC carrying one blob.
@@ -129,14 +121,14 @@ func TestManagerFlushSealsSubThresholdTail(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, seg.IDs(), n, "the one sealed segment indexes every embedded id — searchable")
 
-	require.Equal(t, int64(1), cc.shipCalls.Load(), "Flush ships the sealed tail in exactly one Ship RPC")
-	require.Equal(t, int64(1), cc.shipBlobs.Load(), "the Ship carries exactly one segment blob — no blowup")
+	require.Len(t, dm.cache.Keys(), 1,
+		"Flush persists the sealed tail as exactly ONE blob — no blowup")
 
 	// Bounded: a redundant re-Flush on an already-drained buffer is a cheap no-op —
 	// the segment count stays at ONE and no new Ship RPC fires.
 	require.NoError(t, mgr.Flush(ctx, kgtypes.GraphCode, "smallRepo"))
 	require.Len(t, dm.engine.Export(), 1, "re-Flush does not multiply segments")
-	require.Equal(t, int64(1), cc.shipCalls.Load(), "re-Flush issues ZERO new Ship RPCs (no blowup)")
+	require.Len(t, dm.cache.Keys(), 1, "re-Flush persists nothing new (no blowup)")
 }
 
 // TestManagerRoutesPerGraph asserts two distinct graphs get distinct engines and
@@ -144,14 +136,12 @@ func TestManagerFlushSealsSubThresholdTail(t *testing.T) {
 func TestManagerRoutesPerGraph(t *testing.T) {
 	t.Parallel()
 
-	_, gc := newSegmentHarness(t)
-	cc := gc
 	ctx := context.Background()
 
 	docsA := hnswVecDocs(1024)
 	docsB := hnswVecDocs(1024)
 
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	seedShipped(t, ctx, mgr, kgtypes.GraphCode, "repoA", docsA)
 	seedShipped(t, ctx, mgr, kgtypes.GraphKnowledge, "kg", docsB)
 
@@ -189,21 +179,26 @@ func bm25FieldDocs(n int) []searchengine.Document {
 func TestManagerAddAndMarkDirtyFieldsSealsBM25Blob(t *testing.T) {
 	t.Parallel()
 
-	_, gc := newSegmentHarness(t)
-	cc := gc
 	ctx := context.Background()
 
 	// MinSegmentDocs default is 1024; seal exactly one segment with 1024 docs.
 	const n = 1024
 	docs := bm25FieldDocs(n)
 
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
+	// BOTH READS NAME THE GRAPH THAT WAS WRITTEN. They used to name code/"repoBM25"
+	// while the writes went to knowledge/"kgBM25", so the before-assertion was empty
+	// for a graph nothing had touched — trivially true — and the after-assertion could
+	// only ever fail. A per-graph cache read has to name the same graph as the write
+	// or it is measuring a different directory.
 	require.NoError(t, mgr.AddAndMarkDirtyFields(ctx, kgtypes.GraphKnowledge, "kgBM25", docs))
-	require.Equal(t, int64(0), cc.shipCalls.Load(), "the field write path force-seals but never ships")
+	require.Empty(t, mgr.bm25ManagerFor(kgtypes.GraphKnowledge, "kgBM25").cache.Keys(),
+		"the field write path force-seals but never PERSISTS")
 
 	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphKnowledge, "kgBM25"))
-	require.Equal(t, int64(1), cc.shipCalls.Load(), "the reconcile tick fires exactly one Ship RPC")
+	require.NotEmpty(t, mgr.bm25ManagerFor(kgtypes.GraphKnowledge, "kgBM25").cache.Keys(),
+		"the reconcile tick is what writes the sealed BM25 blob to L2")
 
 	// Segment shape is not the subject — assert COVERAGE over the re-emitted
 	// partitions: every shipped blob is bm25-tagged and together they index exactly
@@ -220,15 +215,12 @@ func TestManagerAddAndMarkDirtyFieldsSealsBM25Blob(t *testing.T) {
 	}
 	require.Equal(t, n, covered, "the resident partitions index exactly the embedded ids")
 
-	// Empty-diff re-ship: a second ship() with NO intervening Add re-exports the SAME
-	// sealed segment (BM25 Build is deterministic, so the content hash is identical),
-	// so the diff against shippedIDs is empty → ZERO new Ship RPC, ZERO new blobs.
-	beforeShips := cc.shipCalls.Load()
-	beforeBlobs := cc.shipBlobs.Load()
-	_, shipErr := dm.ship(ctx, dm.locallyShipped)
-	require.NoError(t, shipErr)
-	require.Equal(t, beforeShips, cc.shipCalls.Load(), "re-ship without Add issues ZERO new Ship RPCs")
-	require.Equal(t, beforeBlobs, cc.shipBlobs.Load(), "re-ship without Add sends ZERO new blobs")
+	// THE EMPTY-DIFF RE-SHIP ASSERTION WAS REMOVED HERE, for the same reason as its
+	// HNSW twin above: it measured the ship diff against the shipped-id set, and that whole
+	// mechanism is deleted. The determinism it rested on — BM25 Build producing a
+	// byte-identical segment, hence an identical content hash — is still true and is
+	// what makes the cache-level idempotency in TestSegmentDistributionE2E hold. What
+	// this test still owns is that one field-Add seals a BM25 blob.
 }
 
 // TestManagerHoldsBothFormatMaps asserts ONE Manager owns BOTH formats per graph:
@@ -238,8 +230,7 @@ func TestManagerAddAndMarkDirtyFieldsSealsBM25Blob(t *testing.T) {
 func TestManagerHoldsBothFormatMaps(t *testing.T) {
 	t.Parallel()
 
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	hnswDM := mgr.managerFor(kgtypes.GraphKnowledge, "kg")
 	bm25DM := mgr.bm25ManagerFor(kgtypes.GraphKnowledge, "kg")
@@ -268,79 +259,25 @@ func TestGraphCacheDirsAreFormatDistinct(t *testing.T) {
 	require.Contains(t, bm25Dir, bm25.New().Name())
 }
 
-// TestHasShippedSegments is the auto-heal presence-probe criterion: the cheap
-// presence probe drives a List(sinceGen=0) through the injected fakeSegmentSource
-// and returns (false,nil) when the registry holds no segments, (true,nil) when it
-// holds one+. It must NEVER Fetch a blob — the probe is presence-only (metas), so
-// the fake's Fetch counter stays at zero.
-func TestHasShippedSegments(t *testing.T) {
-	t.Parallel()
-
-	_, gc := newSegmentHarness(t)
-	cc := gc
-	ctx := context.Background()
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc)))
-
-	// Empty graph: zero metas → (false, nil), and no Fetch.
-	has, err := mgr.HasShippedSegments(ctx, kgtypes.GraphCode, "emptyRepo")
-	require.NoError(t, err)
-	require.False(t, has, "a graph with zero shipped segments probes as absent")
-	require.Equal(t, int64(0), cc.fetchCalls.Load(), "the presence probe must NOT Fetch any blob")
-
-	// Ship one blob for a distinct graph directly to the shared server, then probe:
-	// one+ metas → (true, nil), still no Fetch.
-	gc.server.ship(&knowledgev1.GraphSelector{Graph: "code", Repo: "populatedRepo"}, "",
-		[]*knowledgev1.SegmentBlobProto{
-			blobToProto(searchengine.SegmentBlob{ID: "s1", Format: hnsw.New().Name(), Bytes: []byte("seg")}),
-		})
-
-	has, err = mgr.HasShippedSegments(ctx, kgtypes.GraphCode, "populatedRepo")
-	require.NoError(t, err)
-	require.True(t, has, "a graph with one+ shipped segments probes as present")
-	require.Equal(t, int64(0), cc.fetchCalls.Load(), "the presence probe must NOT Fetch any blob")
-}
-
-// TestShippedSegmentDocCount is the coverage-probe data-source criterion: the
-// probe sums HNSW-format meta.DocCount (covered), EXCLUDES BM25 metas (they index
-// the same nodes — double-counting), flags anyUnknown only when an HNSW meta has
-// DocCount==0, and never Fetches a blob.
-func TestShippedSegmentDocCount(t *testing.T) {
-	t.Parallel()
-
-	_, gc := newSegmentHarness(t)
-	cc := gc
-	ctx := context.Background()
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc)))
-
-	// Graph A: two HNSW segments (doc_count 1000 + 24) + one BM25 segment (doc_count
-	// 2048 — must be EXCLUDED). All non-zero HNSW → covered=1024, anyUnknown=false.
-	gc.server.ship(&knowledgev1.GraphSelector{Graph: "code", Repo: "covRepo"}, "",
-		[]*knowledgev1.SegmentBlobProto{
-			blobToProto(searchengine.SegmentBlob{ID: "h1", Format: hnsw.New().Name(), DocCount: 1000, Bytes: []byte("a")}),
-			blobToProto(searchengine.SegmentBlob{ID: "h2", Format: hnsw.New().Name(), DocCount: 24, Bytes: []byte("b")}),
-			blobToProto(searchengine.SegmentBlob{ID: "b1", Format: "bm25", DocCount: 2048, Bytes: []byte("c")}),
-		})
-
-	covered, anyUnknown, err := mgr.ShippedSegmentDocCount(ctx, kgtypes.GraphCode, "covRepo")
-	require.NoError(t, err)
-	require.Equal(t, 1024, covered, "covered sums HNSW doc_counts only (BM25 excluded — no double-count)")
-	require.False(t, anyUnknown, "all HNSW metas have non-zero doc_count → anyUnknown is false")
-	require.Equal(t, int64(0), cc.fetchCalls.Load(), "the coverage probe must NOT Fetch any blob")
-
-	// Graph B: one HNSW segment with DocCount==0 (an old pre-doc_count blob) →
-	// anyUnknown=true, covered counts only the non-zero HNSW metas.
-	gc.server.ship(&knowledgev1.GraphSelector{Graph: "code", Repo: "unknownRepo"}, "",
-		[]*knowledgev1.SegmentBlobProto{
-			blobToProto(searchengine.SegmentBlob{ID: "h3", Format: hnsw.New().Name(), DocCount: 512, Bytes: []byte("d")}),
-			blobToProto(searchengine.SegmentBlob{ID: "h4", Format: hnsw.New().Name(), DocCount: 0, Bytes: []byte("e")}),
-		})
-	require.NoError(t, err)
-
-	covered, anyUnknown, err = mgr.ShippedSegmentDocCount(ctx, kgtypes.GraphCode, "unknownRepo")
-	require.NoError(t, err)
-	require.Equal(t, 512, covered, "covered sums only the non-zero HNSW metas")
-	require.True(t, anyUnknown, "an HNSW meta with doc_count==0 sets anyUnknown (conservative-unknown signal)")
-}
+// TWO REGISTRY-PROBE TESTS WERE DELETED HERE, each with its successor named.
+//
+// TestHasShippedSegments drove a List(sinceGen=0) through the source and asserted a
+// graph probes present/absent by whether the REGISTRY held metas. There is no
+// registry to probe. The surviving presence signal is local and structural —
+// resident == 0 against a populated corpus — and it is owned by the bootstrap heal
+// tests (segment_local_presence_test.go and segment_oss_heal_test.go), which step 5.4
+// keeps for exactly this reason.
+//
+// TestShippedSegmentDocCount asserted the coverage probe summed HNSW meta.DocCount,
+// EXCLUDED BM25 metas to avoid double-counting the same nodes, and flagged
+// an unknown-count flag on a zero doc_count. All three rest on deleted machinery: the
+// metas came from a server List, the flag is deleted, and ShippedSegmentDocCount now
+// routes to a resident read whose signature no longer carries it. The FORMAT-SEPARATION
+// half of it survives and is stronger than the filter it replaces: HNSW and BM25 now
+// occupy separate cache roots, so BM25 blobs cannot be seen from the HNSW probe at
+// all rather than being filtered out of a shared list. That is asserted by
+// TestFormatFamiliesAreDisjointOnDisk. The probe itself is covered by the
+// manage_status coverage tests, which drive the resident path.
 
 // TestManagerResidentDocCount is the live-resident accessor criterion: after a
 // graph seals a segment locally, Manager.ResidentDocCount returns the SAME figure
@@ -349,9 +286,8 @@ func TestShippedSegmentDocCount(t *testing.T) {
 func TestManagerResidentDocCount(t *testing.T) {
 	t.Parallel()
 
-	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	// Seal exactly one segment (1024 docs == MinSegmentDocs) locally — the write
 	// seals it into the engine (resident) and the tick ships it.

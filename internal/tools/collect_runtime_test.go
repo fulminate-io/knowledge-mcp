@@ -4,6 +4,7 @@ package tools
 
 import (
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,10 +21,10 @@ func TestCollectRuntime_StartCoalesces(t *testing.T) {
 
 	var ran atomic.Int32
 	release := make(chan struct{})
-	h1, started1, _ := rt.Start("k", "code /repo", "", func() error {
+	h1, started1, _ := rt.Start("k", "code /repo", "", func() (string, error) {
 		ran.Add(1)
 		<-release
-		return nil
+		return "", nil
 	})
 	require.True(t, started1)
 	require.NotNil(t, h1)
@@ -31,9 +32,9 @@ func TestCollectRuntime_StartCoalesces(t *testing.T) {
 	// A small real-time gap so the coalesce path reports a strictly positive elapsed.
 	time.Sleep(2 * time.Millisecond)
 
-	h2, started2, elapsed := rt.Start("k", "code /repo", "", func() error {
+	h2, started2, elapsed := rt.Start("k", "code /repo", "", func() (string, error) {
 		ran.Add(1)
-		return nil
+		return "", nil
 	})
 	assert.False(t, started2, "second Start for an in-flight key must coalesce")
 	assert.Nil(t, h2, "a coalesced Start returns no handle")
@@ -50,9 +51,9 @@ func TestCollectRuntime_SnapshotStates(t *testing.T) {
 	rt := NewCollectRuntime()
 
 	release := make(chan struct{})
-	h1, started, _ := rt.Start("k1", "code /a", "", func() error {
+	h1, started, _ := rt.Start("k1", "code /a", "", func() (string, error) {
 		<-release
-		return nil
+		return "", nil
 	})
 	require.True(t, started)
 
@@ -68,7 +69,7 @@ func TestCollectRuntime_SnapshotStates(t *testing.T) {
 	assert.Equal(t, "completed", snap[0].State)
 
 	sentinel := errors.New("boom")
-	h2, started2, _ := rt.Start("k2", "code /b", "", func() error { return sentinel })
+	h2, started2, _ := rt.Start("k2", "code /b", "", func() (string, error) { return "", sentinel })
 	require.True(t, started2)
 	<-h2.Done()
 
@@ -91,12 +92,12 @@ func TestCollectRuntime_StopDrains(t *testing.T) {
 	rt := NewCollectRuntime()
 
 	started := make(chan struct{})
-	h, ok, _ := rt.Start("k", "code /a", "", func() error {
+	h, ok, _ := rt.Start("k", "code /a", "", func() (string, error) {
 		close(started)
 		// The closure captures the runtime's baseCtx directly — Stop's baseCancel
 		// unblocks this.
 		<-rt.BaseContext().Done()
-		return rt.BaseContext().Err()
+		return "", rt.BaseContext().Err()
 	})
 	require.True(t, ok)
 	<-started
@@ -119,7 +120,7 @@ func TestCollectRuntime_StopDrains(t *testing.T) {
 func TestCollectRuntime_ErrAfterDone(t *testing.T) {
 	rt := NewCollectRuntime()
 	sentinel := errors.New("sentinel-err")
-	h, ok, _ := rt.Start("k", "code /a", "", func() error { return sentinel })
+	h, ok, _ := rt.Start("k", "code /a", "", func() (string, error) { return "", sentinel })
 	require.True(t, ok)
 	<-h.Done()
 	assert.ErrorIs(t, h.Err(), sentinel)
@@ -132,7 +133,7 @@ func TestCollectRuntime_DetachedFailureLoudLog(t *testing.T) {
 	t.Run("normal error", func(t *testing.T) {
 		rt := NewCollectRuntime()
 		out := captureSlog(func() {
-			h, ok, _ := rt.Start("k", "code /a", "", func() error { return errors.New("boom") })
+			h, ok, _ := rt.Start("k", "code /a", "", func() (string, error) { return "", errors.New("boom") })
 			require.True(t, ok)
 			<-h.Done()
 		})
@@ -142,10 +143,113 @@ func TestCollectRuntime_DetachedFailureLoudLog(t *testing.T) {
 	t.Run("recovered panic", func(t *testing.T) {
 		rt := NewCollectRuntime()
 		out := captureSlog(func() {
-			h, ok, _ := rt.Start("k", "code /a", "", func() error { panic("kaboom") })
+			h, ok, _ := rt.Start("k", "code /a", "", func() (string, error) { panic("kaboom") })
 			require.True(t, ok)
 			<-h.Done()
 		})
 		assert.Contains(t, out, "collect: detached run failed")
+	})
+}
+
+// TestCollectRunStatus_CompositionSurfacesInStatusRender covers the DETACHED
+// carrier: past the 60s cap the tool has already returned, so manage(status) is
+// the only place a completed run's composition can be read.
+//
+// Three legs, because each states a different half of the contract:
+//   - a COMPLETED run carries its composition into both the text block and the
+//     json "composition" key;
+//   - a FAILED run does NOT — its composition is already embedded in the error
+//     the failure carries, and a second copy would double-print it on the exact
+//     failure the guard exists to report;
+//   - a run reporting NO composition leaves both outputs byte-identical to what
+//     they rendered before this field existed.
+func TestCollectRunStatus_CompositionSurfacesInStatusRender(t *testing.T) {
+	start := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	fin := start.Add(3 * time.Second)
+
+	// The registry write is exercised through the real Start path first, so this
+	// test covers the route a composition actually travels rather than only the
+	// renderers at the far end of it.
+	t.Run("start records the composition on the completed outcome", func(t *testing.T) {
+		rt := NewCollectRuntime()
+		h, started, _ := rt.Start("k", "web example", "", func() (string, error) {
+			return "nodes 4 (paragraph 3, page 1), edges 2", nil
+		})
+		require.True(t, started)
+		<-h.Done()
+		require.NoError(t, h.Err())
+		assert.Equal(t, "nodes 4 (paragraph 3, page 1), edges 2", h.Composition())
+
+		snap := rt.Snapshot()
+		require.Len(t, snap, 1)
+		assert.Equal(t, "completed", snap[0].State)
+		assert.Equal(t, "nodes 4 (paragraph 3, page 1), edges 2", snap[0].Composition)
+	})
+
+	t.Run("completed renders it in text and json", func(t *testing.T) {
+		runs := []CollectRunStatus{{
+			Target: "web\x00example", Label: "web example", State: "completed",
+			StartedAt: start, FinishedAt: fin,
+			Composition: "nodes 4 (paragraph 3, page 1), edges 2",
+		}}
+		assert.Equal(t,
+			"\n\nCollect runs:\n  web example: completed (3s, nodes 4 (paragraph 3, page 1), edges 2)",
+			renderCollectRunsText(runs))
+
+		m := map[string]any{}
+		addCollectRunsJSON(m, runs)
+		entries, ok := m["collect_runs"].([]map[string]any)
+		require.True(t, ok)
+		require.Len(t, entries, 1)
+		assert.Equal(t, "nodes 4 (paragraph 3, page 1), edges 2", entries[0]["composition"])
+	})
+
+	t.Run("failed carries it on the error only", func(t *testing.T) {
+		// The FAIL contract's error already embeds the composition; this is the
+		// shape builtinCollectWork produces when the guard fires.
+		const failErr = "collect web cwe: harvest captured nothing usable — nodes 64 (list_item 24), edges 60"
+		runs := []CollectRunStatus{{
+			Target: "web\x00cwe", Label: "web cwe", State: "failed",
+			StartedAt: start, FinishedAt: fin,
+			Err:         failErr,
+			Composition: "nodes 64 (list_item 24), edges 60",
+		}}
+		text := renderCollectRunsText(runs)
+		assert.Equal(t,
+			"\n\nCollect runs:\n  web cwe: failed (3s, error: "+failErr+")",
+			text)
+		// Exactly one occurrence of the rendered census on the failed line — the
+		// one already inside the error — not two.
+		assert.Equal(t, 1, strings.Count(text, "nodes 64 (list_item 24), edges 60"))
+
+		m := map[string]any{}
+		addCollectRunsJSON(m, runs)
+		entries := m["collect_runs"].([]map[string]any)
+		require.Len(t, entries, 1)
+		_, present := entries[0]["composition"]
+		assert.False(t, present, "a failed entry must not carry a second copy of the composition")
+		assert.Equal(t, failErr, entries[0]["error"])
+	})
+
+	t.Run("empty composition is byte-identical to today", func(t *testing.T) {
+		runs := []CollectRunStatus{{
+			Target: "code\x00/repo", Label: "code /repo", State: "completed",
+			StartedAt: start, FinishedAt: fin,
+		}}
+		assert.Equal(t,
+			"\n\nCollect runs:\n  code /repo: completed (3s)",
+			renderCollectRunsText(runs))
+
+		m := map[string]any{}
+		addCollectRunsJSON(m, runs)
+		entries := m["collect_runs"].([]map[string]any)
+		require.Len(t, entries, 1)
+		_, present := entries[0]["composition"]
+		assert.False(t, present)
+		assert.Equal(t,
+			map[string]any{
+				"target": "code\x00/repo", "label": "code /repo",
+				"state": "completed", "duration_seconds": 3.0,
+			}, entries[0])
 	})
 }

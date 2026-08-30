@@ -188,6 +188,17 @@ const (
 	swiftKindUserType
 	swiftKindOptionalType
 	swiftKindInheritanceSpecifier
+	swiftKindCallExpression
+	swiftKindNavigationExpression
+	swiftKindCallSuffix
+	swiftKindValueArguments
+	swiftKindValueArgument
+	swiftKindAssignment
+	swiftKindDirectlyAssignableExpression
+	swiftKindNavigationSuffix
+	swiftKindControlTransferStatement
+	swiftKindSelfExpression
+	swiftKindLambdaLiteral
 )
 
 // swiftKindNames maps every swift node-kind spelling this arm names onto its
@@ -195,20 +206,31 @@ const (
 // without an entry here classifies as swiftKindOther and binds nothing rather
 // than mis-binding.
 var swiftKindNames = map[string]uint8{
-	"class_declaration":             swiftKindClassDeclaration,
-	"protocol_declaration":          swiftKindProtocolDeclaration,
-	"function_declaration":          swiftKindFunctionDeclaration,
-	"protocol_function_declaration": swiftKindProtocolFunctionDeclaration,
-	"parameter":                     swiftKindParameter,
-	"lambda_parameter":              swiftKindLambdaParameter,
-	"property_declaration":          swiftKindPropertyDeclaration,
-	"pattern":                       swiftKindPattern,
-	"type_annotation":               swiftKindTypeAnnotation,
-	"simple_identifier":             swiftKindSimpleIdentifier,
-	"type_identifier":               swiftKindTypeIdentifier,
-	"user_type":                     swiftKindUserType,
-	"optional_type":                 swiftKindOptionalType,
-	"inheritance_specifier":         swiftKindInheritanceSpecifier,
+	"class_declaration":              swiftKindClassDeclaration,
+	"protocol_declaration":           swiftKindProtocolDeclaration,
+	"function_declaration":           swiftKindFunctionDeclaration,
+	"protocol_function_declaration":  swiftKindProtocolFunctionDeclaration,
+	"parameter":                      swiftKindParameter,
+	"lambda_parameter":               swiftKindLambdaParameter,
+	"property_declaration":           swiftKindPropertyDeclaration,
+	"pattern":                        swiftKindPattern,
+	"type_annotation":                swiftKindTypeAnnotation,
+	"simple_identifier":              swiftKindSimpleIdentifier,
+	"type_identifier":                swiftKindTypeIdentifier,
+	"user_type":                      swiftKindUserType,
+	"optional_type":                  swiftKindOptionalType,
+	"inheritance_specifier":          swiftKindInheritanceSpecifier,
+	"call_expression":                swiftKindCallExpression,
+	"navigation_expression":          swiftKindNavigationExpression,
+	"call_suffix":                    swiftKindCallSuffix,
+	"value_arguments":                swiftKindValueArguments,
+	"value_argument":                 swiftKindValueArgument,
+	"assignment":                     swiftKindAssignment,
+	"directly_assignable_expression": swiftKindDirectlyAssignableExpression,
+	"navigation_suffix":              swiftKindNavigationSuffix,
+	"control_transfer_statement":     swiftKindControlTransferStatement,
+	"self_expression":                swiftKindSelfExpression,
+	"lambda_literal":                 swiftKindLambdaLiteral,
 }
 
 // swiftKindTable memoizes the swift class table for the process.

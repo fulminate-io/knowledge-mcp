@@ -28,7 +28,7 @@ import (
 // The client push intercept produces those bytes via the EngineService.
 // ExportGraph read ([store.SerializeGraph]) and uploads them here.
 //
-// Import contract: this package MUST NOT import domains/store (cycle).
+// Import contract: this package MUST NOT import a store package.
 // The graphType parameter on PushGraph is a plain string; validation
 // happens client-side in the push intercept.
 type Transport struct {
@@ -72,14 +72,12 @@ func (t *Transport) selection() *AccountSelection {
 // inside this window on a reasonable connection.
 const defaultSyncClientTimeout = 5 * time.Minute
 
-// Route prefixes for the two control channels the Transport speaks. The
-// server/agent register the graph-sync endpoints under /v1/sync/ and the agent
-// segment endpoints under /v1/segments/; both share the same Bearer +
-// 401-refresh core (sendWithAuthBytes/issueBytes), which the prefix parametrizes.
-const (
-	syncPathPrefix     = "/v1/sync/"
-	segmentsPathPrefix = "/v1/segments/"
-)
+// syncPathPrefix is the route prefix of the one control channel the Transport
+// speaks: the server/agent register the graph-sync endpoints under /v1/sync/.
+// sendWithAuthBytes/issueBytes still take it as a parameter because they are the
+// single Bearer + 401-refresh core and the prefix belongs to the route, not to
+// them.
+const syncPathPrefix = "/v1/sync/"
 
 // octetStreamAccept is the Accept header the graph-bytes and control-JSON
 // routes have always advertised. Named so the accept parameter added for the
@@ -89,8 +87,7 @@ const octetStreamAccept = "application/octet-stream"
 // NewSyncTransport constructs a [Transport] targeting the given API
 // endpoint. endpoint must be the scheme+host+port without a trailing slash
 // and without a /v1 suffix — the Transport appends the route prefix
-// (/v1/sync/... for graph sync, /v1/segments/... for the segment control
-// channel) to each route. source supplies the bearer credential (OAuth JWT
+// (/v1/sync/...) to each route. source supplies the bearer credential (OAuth JWT
 // with `sync` scope or the legacy knowledge_token).
 func NewSyncTransport(endpoint string, source TokenSource, opts ...TransportOption) *Transport {
 	t := &Transport{
@@ -156,47 +153,36 @@ func (t *Transport) PushGraph(
 // a non-2xx surfaces as a *SyncHTTPError so callers get the same auth-failure
 // classification PushGraph provides.
 func (t *Transport) SyncControlJSON(ctx context.Context, path string, reqBody []byte) ([]byte, error) {
-	return t.controlJSON(ctx, syncPathPrefix, "sync", path, reqBody)
+	return t.controlJSON(ctx, path, reqBody)
 }
 
-// SegmentControlJSON issues a Bearer-authenticated POST to a /v1/segments/<path>
-// agent control-plane endpoint (presign / presign-batch / fetch / fetch-batch /
-// manifest/publish / manifest/read) with the given JSON request body and returns
-// the raw JSON response body on a 2xx. It is the segment-distribution counterpart
-// of [Transport.SyncControlJSON]: same Bearer + 401-refresh core, only the route
-// prefix differs (/v1/segments/ vs /v1/sync/). The GCS segment source (Ship /
-// List / Fetch / PublishManifest) speaks the agent through this method while the
-// bulk (encrypted) segment blobs go straight to/from GCS off-band.
-func (t *Transport) SegmentControlJSON(ctx context.Context, path string, reqBody []byte) ([]byte, error) {
-	return t.controlJSON(ctx, segmentsPathPrefix, "segment", path, reqBody)
-}
-
-// controlJSON is the shared body behind SyncControlJSON and SegmentControlJSON:
-// POST reqBody under the given route prefix, surface a non-2xx as a
-// *SyncHTTPError, and return the raw 2xx JSON body verbatim. label names the
-// channel in wrapped errors ("sync" / "segment").
-func (t *Transport) controlJSON(ctx context.Context, prefix, label, path string, reqBody []byte) ([]byte, error) {
-	resp, err := t.sendWithAuthBytes(ctx, http.MethodPost, prefix, path, octetStreamAccept, reqBody, false)
+// controlJSON is the body behind SyncControlJSON, its ONE caller: POST reqBody
+// under the sync route prefix, surface a non-2xx as a *SyncHTTPError, and return
+// the raw 2xx JSON body verbatim. The prefix and the "sync" error label are
+// inlined rather than taken as parameters — with one channel left there is
+// nothing for a caller to vary, and a parameter preserved for a caller that no
+// longer varies it is dead surface.
+func (t *Transport) controlJSON(ctx context.Context, path string, reqBody []byte) ([]byte, error) {
+	resp, err := t.sendWithAuthBytes(ctx, http.MethodPost, syncPathPrefix, path, octetStreamAccept, reqBody, false)
 	if err != nil {
-		return nil, fmt.Errorf("auth: %s control %s: %w", label, path, err)
+		return nil, fmt.Errorf("auth: sync control %s: %w", path, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, t.readHTTPError(ctx, resp, prefix+path)
+		return nil, t.readHTTPError(ctx, resp, syncPathPrefix+path)
 	}
 	out, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("auth: read %s control %s response: %w", label, path, err)
+		return nil, fmt.Errorf("auth: read sync control %s response: %w", path, err)
 	}
 	return out, nil
 }
 
 // sendWithAuthBytes issues a single request (method + prefix + path + body) with
 // the current Bearer credential. On HTTP 401 from a refreshing token
-// source it force-refreshes and retries once. Used by PushGraph and both control
-// channels (SyncControlJSON / SegmentControlJSON); kept as a standalone helper so
-// the token-refresh logic stays isolated from the route (the prefix parameter
-// selects /v1/sync/ vs /v1/segments/).
+// source it force-refreshes and retries once. Used by PushGraph and by the sync
+// control channel (SyncControlJSON); kept as a standalone helper so the
+// token-refresh logic stays isolated from the route the prefix parameter names.
 //
 // Returns the raw *http.Response; the caller owns the body lifecycle.
 // The POST-with-body payload bytes are sent as application/octet-stream;
@@ -253,10 +239,9 @@ func (t *Transport) sendWithAuthBytes(
 // response lifecycle (so sendWithAuthBytes can inspect .StatusCode and
 // decide whether to retry before draining the body).
 //
-// This is the single stamping point for the /v1/sync/* and /v1/segments/*
-// surfaces: PushGraph, SyncControlJSON and SegmentControlJSON all reach it,
-// so the Knowledge-Account-Id header cannot be attached to one of those
-// surfaces and missed on another.
+// This is the single stamping point for the /v1/sync/* surface: PushGraph and
+// SyncControlJSON both reach it, so the Knowledge-Account-Id header cannot be
+// attached to one route and missed on another.
 func (t *Transport) issueBytes(
 	ctx context.Context,
 	method string,
@@ -347,9 +332,9 @@ func (t *Transport) readHTTPError(ctx context.Context, resp *http.Response, path
 	}
 }
 
-// SyncHTTPError is returned when a /v1/sync/* or /v1/segments/* endpoint returns
-// a non-2xx status code. Path is the full route (prefix included, e.g.
-// "/v1/segments/presign"). The Body field holds up to [MaxErrorBodyBytes] of the
+// SyncHTTPError is returned when a /v1/sync/* endpoint returns a non-2xx status
+// code. Path is the full route (prefix included, e.g. "/v1/sync/presign"). The
+// Body field holds up to [MaxErrorBodyBytes] of the
 // raw server response, truncated to avoid runaway log growth. Callers can
 // errors.As() on this type to inspect status codes — common checks are
 // StatusCode == 401 (auth rejected even after refresh) and 403 (scope

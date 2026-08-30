@@ -19,6 +19,7 @@ package tools
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -152,18 +153,33 @@ func handleRecallContext(ctx context.Context, deps ClientDeps, a recallClientArg
 
 // composeContextSeed runs the cross-type semantic seed search and reports
 // whether the seed is DEGRADED. The seed is degraded when retrieval could not
-// run: nil SegmentManager, empty query, or a non-nil error from Search / hydrate.
-// A genuine zero-result run is NOT degraded. The degraded marker is the
-// load-bearing signal distinguishing "retrieval could not run" from "nothing
-// relates" — the false-negative this op exists to eliminate.
+// run: nil SegmentManager, empty query, a FAILED query embed, or a non-nil error
+// from Search / hydrate. A genuine zero-result run is NOT degraded. The degraded
+// marker is the load-bearing signal distinguishing "retrieval could not run" from
+// "nothing relates" — the false-negative this op exists to eliminate.
+//
+// A FAILED EMBED IS A DEGRADED SEED, not a healthy one. This is a SEMANTIC seed:
+// with no query vector it falls back to the BM25 arm alone, which is exactly the
+// "retrieval could not run properly" case the marker exists for. The error used to
+// be discarded here, so a seed that never ran its semantic arm reported itself
+// healthy and its emptiness read as "nothing relates".
 func composeContextSeed(ctx context.Context, deps ClientDeps, gc GraphCaller, query string) (seeds []engine.SearchResult, degraded bool) {
 	mgr := deps.SegmentManager()
 	if mgr == nil || query == "" {
 		return nil, true
 	}
-	var queryVec []byte
+	var (
+		queryVec  []byte
+		embFailed bool
+	)
 	if emb := deps.Embedder(); emb != nil {
-		if vec, err := emb.EmbedBinary(ctx, query); err == nil && len(vec) > 0 {
+		vec, err := emb.EmbedBinary(ctx, query)
+		switch {
+		case err != nil:
+			slog.Warn("context seed: query embed failed — semantic arm down, BM25-only seed",
+				"error", err, "query_len", len(query))
+			embFailed = true
+		case len(vec) > 0:
 			queryVec = vec
 		}
 	}
@@ -175,7 +191,8 @@ func composeContextSeed(ctx context.Context, deps ClientDeps, gc GraphCaller, qu
 	if herr != nil {
 		return nil, true
 	}
-	return rows, false
+	// The rows are real, but a failed embed means only the BM25 arm produced them.
+	return rows, embFailed
 }
 
 // composeContextExpand walks one hop out from the seed SET over the expand edge

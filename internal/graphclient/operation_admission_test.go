@@ -17,12 +17,10 @@ var (
 		OpSearch, OpQuery, OpTraverse, OpTraverseGraphWide,
 		OpFileSymbols, OpFileSymbolsSuffixFallback, OpAst, OpAstHydrate, OpAssemble,
 
-		OpMutate, OpDelete, OpThoughts, OpRecordDecision,
+		OpMutate, OpDelete, OpThoughts, OpRecordDecision, OpManageChecks,
 		OpCreatePlan, OpCreateTicket, OpCreateProject, OpCreateResearch, OpCreateTestPlan,
 
 		OpCollect, OpCollectChunk, OpCollectFinalize, OpCollectFetchSubgraph, OpCustomComputer,
-
-		OpWorker,
 	}
 
 	// (A) Management operations — denied by the rule's own clause.
@@ -34,7 +32,7 @@ var (
 		OpSegmentReconcile, OpSegmentRepair, OpRebuildSegments, OpSegmentDeltaMerge,
 		OpSegmentHeal, OpSegmentHorizonSeed,
 		OpPipelineGapScan, OpPipelineGraphDiscovery, OpPipelineGenPoll,
-		OpCorpusDeltaDrain, OpPropagationReflect, OpHiveMonitor,
+		OpCorpusDeltaDrain, OpPropagationReflect,
 
 		// The fan-out terms. Not background loops but in the same category for the
 		// same reason: they issue instance-addressed RPCs against graphs the user
@@ -44,7 +42,7 @@ var (
 	}
 
 	// (C) No graph instance addressed.
-	wantNoInstance = []Operation{OpHive, OpHelp, OpAnalyzeUsage, OpToolUnknown, OpUnstamped}
+	wantNoInstance = []Operation{OpHelp, OpAnalyzeUsage, OpToolUnknown, OpUnstamped}
 )
 
 // TestWorkingSetAdmissionPartition_CoversEveryOperation is the declared-versus-

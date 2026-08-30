@@ -4,8 +4,6 @@ package segmentdist
 
 import (
 	"context"
-	"fmt"
-	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"testing"
@@ -50,9 +48,8 @@ func poolReport(rep PruneCacheReport, format string) *PruneCacheGraphReport {
 func TestPruneCacheForceLoad(t *testing.T) {
 	t.Parallel()
 
-	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	// 512 keeps the graph inside a SINGLE partition through the tick (the tick counts
 	// the incoming window alongside the resident set), so the unload/force-load
@@ -92,9 +89,8 @@ func TestPruneCacheForceLoad(t *testing.T) {
 func TestPruneCacheCoversTheRebuiltLayer(t *testing.T) {
 	t.Parallel()
 
-	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	// Stage one partition, then the single finalize that builds, ships and swaps it in.
 	// BOTH formats are staged: Swapped is the AND of the two legs, so staging only the
@@ -143,39 +139,25 @@ func TestPruneCacheOnDisk(t *testing.T) {
 	require.EqualValues(t, 20, byID["bbbb"])
 }
 
-// TestPruneCacheSubset proves liveSetSubsetOfList0 returns false when the computed
-// live set contains an id absent from the server's List(0) — the subset-abort guard.
-func TestPruneCacheSubset(t *testing.T) {
-	t.Parallel()
-
-	_, gc := newSegmentHarness(t)
-	ctx := context.Background()
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
-	seedShipped(t, ctx, mgr, kgtypes.GraphCode, "subsetRepo", hnswVecDocs(1024))
-	dm := mgr.managerFor(kgtypes.GraphCode, "subsetRepo")
-
-	// The genuinely-shipped live set IS a subset of List(0).
-	live, err := mgr.completeHNSWLiveSet(ctx, kgtypes.GraphCode, "subsetRepo")
-	require.NoError(t, err)
-	ok, err := dm.liveSetSubsetOfList0(ctx, live)
-	require.NoError(t, err)
-	require.True(t, ok, "the genuinely-shipped live set is a subset of List(0)")
-
-	// Inject a phantom id never shipped to the server → live ⊄ List(0).
-	live["phantom-never-shipped"] = struct{}{}
-	ok, err = dm.liveSetSubsetOfList0(ctx, live)
-	require.NoError(t, err)
-	require.False(t, ok, "a live set with an unshipped id is NOT a subset of List(0)")
-}
+// TestPruneCacheSubset WAS DELETED HERE. It proved the subset predicate returned
+// false when the computed live set held an id absent from the SERVER's listing — a
+// cross-check of the local live set against a second, independent authority.
+//
+// NO SUCCESSOR IS OWED, and re-pointing it would have been actively wrong. The live
+// set is now DERIVED from L2 by forceCompleteLiveSet, so "is the live set a subset of
+// L2" compares the cache against itself. That is the mirrors-are-not-cross-checks
+// shape this ticket forbids as compensation: a second reading of one authority is not
+// a second authority. The guard the subset check backed — never unlink an id that is
+// still live — is now carried by forceCompleteLiveSet itself and by the five
+// signatures in restart_falseprune_test.go.
 
 // TestPruneCacheDriverDryRun proves execute=false reports the planted orphan + its
 // bytes and DELETES NOTHING (the .seg still exists after).
 func TestPruneCacheDriverDryRun(t *testing.T) {
 	t.Parallel()
 
-	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	seedShipped(t, ctx, mgr, kgtypes.GraphCode, "dryRepo", hnswVecDocs(1024))
 
 	hnswDir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "dryRepo", hnsw.New().Name())
@@ -201,10 +183,8 @@ func TestPruneCacheDriverDryRun(t *testing.T) {
 func TestPruneCacheDriverExecute(t *testing.T) {
 	t.Parallel()
 
-	svc, gc := newSegmentHarness(t)
-	_ = svc
 	ctx := context.Background()
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	// Ship a real HNSW + BM25 corpus (warms each format's L2 cache with real .seg files).
 	seedShipped(t, ctx, mgr, kgtypes.GraphCode, "execRepo", hnswVecDocs(1024))
@@ -256,9 +236,8 @@ func TestPruneCacheDriverExecute(t *testing.T) {
 func TestPruneCacheUnloadedButLiveSurvives(t *testing.T) {
 	t.Parallel()
 
-	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	// 512 keeps the graph inside a SINGLE partition through the tick, so exactly one
 	// .seg lands on disk to unload and then rescue.
 	require.NoError(t, mgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, "unloadRepo", hnswVecDocs(512)))
@@ -284,60 +263,29 @@ func TestPruneCacheUnloadedButLiveSurvives(t *testing.T) {
 	require.NoError(t, statErr, "the unloaded-but-live .seg must survive")
 }
 
-// TestPruneCacheList0Abort proves the subset-abort SKIPS a pool whose computed live
-// set is not a subset of List(0): nothing is removed for that pool even with a planted
-// orphan present.
+// TestPruneCacheList0Abort WAS DELETED HERE. It proved that a live set holding an id
+// the SERVER's List(0) did not return aborted the pool: nothing removed, the planted
+// orphan left on disk, and the refusal reported rather than silent.
 //
-// DEFENSIVE GUARD (post-determinism note): the live⊄List(0) condition this test
-// exercises no longer arises from build non-determinism. The HNSW builder is
-// deterministic, so a writer's freshly-built segment hashes to the same id the server
-// would compute — a resident id is normally always present on the server. The
-// subset-abort still matters as a SAFETY guard for the genuine cases where a resident
-// id is legitimately absent from List(0): a segment imported from another source/writer
-// that this server never received, or a server that lost a blob. We construct that
-// condition ON PURPOSE below by importing a segment built from a GENUINELY DIFFERENT
-// corpus (distinct vectors + ids) that was never shipped here — an honest injection of
-// a foreign id, not a reliance on two builds of the same data diverging.
-func TestPruneCacheList0Abort(t *testing.T) {
-	t.Parallel()
-
-	_, gc := newSegmentHarness(t)
-	ctx := context.Background()
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
-	seedShipped(t, ctx, mgr, kgtypes.GraphCode, "abortRepo", hnswVecDocs(1024))
-
-	hnswDir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "abortRepo", hnsw.New().Name())
-	orphanPath, _ := plantOrphan(t, hnswDir, "orphan-abort", 222)
-
-	// Inject a genuinely foreign id absent from List(0): a sealed blob built from a
-	// DISTINCT corpus (foreignVecDocs — different vectors + ids), never shipped to this
-	// server. Import is additive (idempotent by id), so the foreign id stays resident →
-	// live ⊄ List(0) → subset-abort fires.
-	foreign := newForeignSealedBlob(t)
-	dm := mgr.managerFor(kgtypes.GraphCode, "abortRepo")
-	require.NoError(t, dm.engine.Import([]searchengine.SegmentBlob{foreign}, nil))
-
-	rep, err := mgr.PruneCache(ctx, []PruneCacheTarget{{GraphType: kgtypes.GraphCode, Name: "abortRepo"}}, true)
-	require.NoError(t, err)
-	require.Equal(t, 0, rep.Removed, "an aborted pool removes NOTHING")
-
-	hPool := poolReport(rep, hnsw.New().Name())
-	require.NotNil(t, hPool)
-	require.True(t, hPool.Aborted, "the HNSW pool is Aborted by the List(0) subset guard")
-	require.NotEmpty(t, hPool.AbortReason)
-
-	_, statErr := os.Stat(orphanPath)
-	require.NoError(t, statErr, "an aborted pool must NOT unlink even a genuine orphan")
-}
+// NO SUCCESSOR IS OWED, for the same reason recorded above the deleted
+// TestPruneCacheSubset. The subset check compared the local live set against a SECOND,
+// independent authority; that authority is gone, and comparing the cache against
+// itself is the mirrors-are-not-cross-checks shape this ticket forbids as
+// compensation. Its fixtures went with it — a sealed blob built from a deliberately
+// foreign corpus existed only to make a resident id that the server had never seen,
+// and there is no server for an id to be foreign to.
+//
+// THE REFUSAL MACHINERY ITSELF SURVIVES and is still asserted: PruneCache still
+// reports an Aborted pool with a reason, for the EMPTY-live-set condition, and
+// prune_cache_empty_refusal_test.go drives both directions of it.
 
 // TestPruneCacheNoOpEmptyGraph proves a never-shipped graph (no live set, no on-disk
 // segments) is a clean no-op.
 func TestPruneCacheNoOpEmptyGraph(t *testing.T) {
 	t.Parallel()
 
-	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	rep, err := mgr.PruneCache(ctx, []PruneCacheTarget{{GraphType: kgtypes.GraphCode, Name: "emptyRepo"}}, true)
 	require.NoError(t, err)
@@ -345,7 +293,7 @@ func TestPruneCacheNoOpEmptyGraph(t *testing.T) {
 	require.EqualValues(t, 0, rep.RemovedBytes)
 	for _, g := range rep.Graphs {
 		require.Empty(t, g.Orphans, "no orphans for an empty graph")
-		require.False(t, g.Aborted, "an empty (subset-trivially-true) pool is not aborted")
+		require.False(t, g.Aborted, "a graph with nothing on disk is not a refusal — there is nothing to refuse")
 	}
 }
 
@@ -355,9 +303,8 @@ func TestPruneCacheNoOpEmptyGraph(t *testing.T) {
 func TestPruneCacheLiveSearchAfterPrune(t *testing.T) {
 	t.Parallel()
 
-	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	docs := hnswVecDocs(1024)
 	seedShipped(t, ctx, mgr, kgtypes.GraphCode, "searchRepo", docs)
@@ -393,36 +340,4 @@ func liveSegPaths(t *testing.T, dir string) []string {
 		paths = append(paths, filepath.Join(dir, s.id+".seg"))
 	}
 	return paths
-}
-
-// newForeignSealedBlob builds a sealed HNSW segment in a throwaway engine and returns
-// its blob — an id that exists nowhere on the test server, used to force a live set
-// that is not a subset of List(0). The corpus is a DISTINCT vector set (different
-// seed than hnswVecDocs) so the deterministic builder produces a different content
-// hash than any resident segment — otherwise the blob would hash identically to the
-// embed engine's own segment and Import would dedup it away, leaving no phantom.
-func newForeignSealedBlob(t *testing.T) searchengine.SegmentBlob {
-	t.Helper()
-	eng := closeOnCleanup(t, searchengine.New[[]byte, struct{}](hnsw.New(), searchengine.Options{}))
-	require.NoError(t, eng.Add(foreignVecDocs(1024)))
-	require.NoError(t, eng.Flush())
-	exported := eng.Export()
-	require.Len(t, exported, 1)
-	return exported[0]
-}
-
-// foreignVecDocs builds 1024 docs whose vectors AND ids are disjoint from
-// hnswVecDocs — a genuinely foreign corpus so its sealed segment's content hash is
-// absent from the server's List(0).
-func foreignVecDocs(n int) []searchengine.Document {
-	rng := rand.New(rand.NewPCG(0xF0E1, 0xD2C3))
-	docs := make([]searchengine.Document, n)
-	for i := range docs {
-		v := make([]byte, 32)
-		for j := range v {
-			v[j] = byte(rng.UintN(256))
-		}
-		docs[i] = searchengine.Document{ID: fmt.Sprintf("foreign%d", i), Vector: v}
-	}
-	return docs
 }

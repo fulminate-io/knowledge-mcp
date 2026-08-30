@@ -44,15 +44,33 @@ func modeHonorHits() []searchengine.Hit {
 }
 
 // newModeHonorDeps wires the knowledge-arm fixture: recording GraphClient for
-// the ids[] hydrate read, fake segment engine, and a stub embedder whose call
-// counter the caller reads to prove an embed did or did not happen. Pass
-// withEmbedder=false for the no-semantic-index case.
+// the ids[] hydrate read, fake segment engine, and — when withEmbedder — a graph
+// catalog recording an embed identity, which is what the arm now resolves its
+// query embedder from.
+//
+// THE EMBEDDER COMES FROM THE CATALOG, NOT FROM deps.emb, and that is the change
+// this fixture had to absorb. The knowledge arm used to embed with the
+// process-wide configured embedder; it now resolves the embedder from the TARGET
+// GRAPH's recorded identity, so a fixture supplying only deps.emb models a
+// configuration the production path no longer consults. The stub embedder is
+// kept on deps for the arms that still use it, and the returned counter is kept
+// for the mode:text case, whose claim is that NOTHING embeds.
+//
+// WHAT THE COUNTER CAN AND CANNOT SHOW, stated so no later reader over-reads it:
+// a non-zero count proves the stub ran, and the stub no longer serves this arm,
+// so the assertions that an embed DID happen live on the vector reaching the
+// engine instead. A zero count still proves suppression, because a suppressed
+// arm resolves no embedder at all.
 func newModeHonorDeps(
 	t *testing.T, nodes []*knowledgev1.Node, hits []searchengine.Hit, withEmbedder bool,
 ) (*interceptDeps, *fakeSegmentSearcher, *atomic.Int64) {
 	t.Helper()
 	var execHits, embedCalls atomic.Int64
-	gc := newInterceptHarness(t, &execHits, cannedNodesResp(nodes...))
+	resp := cannedNodesResp(nodes...)
+	if withEmbedder {
+		resp = cannedEmbeddedNodesResp(nodes...)
+	}
+	gc := newInterceptHarness(t, &execHits, resp)
 	mgr := &fakeSegmentSearcher{hits: hits}
 	deps := &interceptDeps{gc: gc, segMgr: mgr}
 	if withEmbedder {
@@ -208,7 +226,7 @@ func TestInterceptSearch_ModeTemporalAppliesTheRecencyRerank(t *testing.T) {
 // the only test here that would notice.
 func TestInterceptSearch_ModeHybridStillFusesBothArms(t *testing.T) {
 	t.Setenv("VOYAGE_API_KEY", "")
-	deps, mgr, embedCalls := newModeHonorDeps(t, modeHonorNodes(), modeHonorHits(), true)
+	deps, mgr, _ := newModeHonorDeps(t, modeHonorNodes(), modeHonorHits(), true)
 
 	handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
 		"graph": "knowledge", "mode": "hybrid", "query": "x",
@@ -216,8 +234,10 @@ func TestInterceptSearch_ModeHybridStillFusesBothArms(t *testing.T) {
 	require.True(t, handled)
 	require.False(t, out.IsError, "render is not an error: %v", engine.FirstTextContent(out))
 
-	assert.GreaterOrEqual(t, embedCalls.Load(), int64(1), "hybrid still embeds")
-	assert.NotEmpty(t, mgr.lastVec, "hybrid still drives the vector arm")
+	assert.Len(t, mgr.lastVec, cannedCatalogVecBytes,
+		"hybrid still embeds AND still drives the vector arm, with the vector built from the GRAPH's "+
+			"recorded identity rather than from the configured embedder — the width is what tells the "+
+			"two sources apart")
 	assert.Equal(t, "x", mgr.lastText, "hybrid still drives the BM25 arm")
 	assert.Contains(t, engine.FirstTextContent(out), "_search mode: vector+text_")
 }

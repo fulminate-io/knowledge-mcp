@@ -15,10 +15,9 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
-	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 )
 
-// assembleTestPlan renders a NodeTestPlan: header + RenderTree walk
+// assembleTestPlan renders a NodeTestPlan: header + subtree walk
 // then either:
 //
 //   - newRun=true: atomically create N pending test_run nodes via
@@ -40,35 +39,29 @@ func assembleTestPlan(
 ) kgtools.ToolResult {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "# Test Plan: %s\n\n", node.SymbolName)
-	RenderTree(ctx, gc, &sb, node, 0, 3)
+	childIndex, byID, dependsOn, truncated := AssembleSubtree(ctx, gc, node.Id, 3)
+	RenderTreeFromIndex(&sb, node, 0, 3, childIndex, dependsOn)
 
-	// Collect step IDs.
-	stepEdges, _ := IterEdges(ctx, gc, node.Id, kgwire.OutgoingEdges, kgtypes.EdgeKGContains)
+	// Collect steps. They are the plan's contains children, already hydrated by
+	// the traversal above.
 	var steps []*knowledgev1.Node
-	for _, e := range stepEdges {
-		sn, err := FetchNode(ctx, gc, e.ToId)
-		if err != nil || sn == nil {
-			continue
-		}
+	for _, sn := range childIndex[node.Id] {
 		if kgtypes.NodeType(sn.Type) == kgtypes.NodeTestStep {
 			steps = append(steps, sn)
 		}
 	}
 
 	if newRun {
-		return assembleTestPlanNewRun(ctx, gc, &sb, steps)
+		return AppendTruncationNotice(assembleTestPlanNewRun(ctx, gc, &sb, steps), truncated, len(byID))
 	}
 
-	// Show runs per step (filtered by run_session if provided).
+	// Show runs per step (filtered by run_session if provided). A test_run is a
+	// contains child of its step, one level deeper — inside the depth-3
+	// traversal, so the index already holds them.
 	fmt.Fprintf(&sb, "\n## Test Runs\n\n")
 	for _, step := range steps {
-		childEdges, _ := IterEdges(ctx, gc, step.Id, kgwire.OutgoingEdges, kgtypes.EdgeKGContains)
 		var runs []*knowledgev1.Node
-		for _, e := range childEdges {
-			cn, err := FetchNode(ctx, gc, e.ToId)
-			if err != nil || cn == nil {
-				continue
-			}
+		for _, cn := range childIndex[step.Id] {
 			if kgtypes.NodeType(cn.Type) != kgtypes.NodeTestRun {
 				continue
 			}
@@ -86,19 +79,20 @@ func assembleTestPlan(
 			fmt.Fprintf(&sb, "  - [%s] %s (session: %s) — ID: %s\n", r.Status, r.SymbolName, session, r.Id)
 		}
 	}
-	return kgtools.TextResult(sb.String())
+	return AppendTruncationNotice(kgtools.TextResult(sb.String()), truncated, len(byID))
 }
 
 // assembleTestPlanNewRun fires exactly one create_batch Execute
 // (operation:"create_batch", nodes:[...], edges:[...]) to create N
-// pending test_run nodes + contained-by edges in a single atomic
+// pending test_run nodes + contains edges in a single atomic
 // txn. Extracted to keep assembleTestPlan under the funlen cap.
 //
 // Wire shape (matches Phase 0's nodeCreateItem / edgeCreateItem):
 //
 //	{
 //	  operation: "create_batch",
-//	  nodes: [{type:"test_run", name:<step.SymbolName>, status:"pending",
+//	  nodes: [{type:"test_run", name:<step.SymbolName>,
+//	           summary:"Test run: "+<step.SymbolName>, status:"pending",
 //	           metadata:{"run_session":<sessionID>}}, …],
 //	  edges: [{from_id:<step.Id>, to_idx:<i>, type:"contains"}, …]
 //	}
@@ -117,8 +111,14 @@ func assembleTestPlanNewRun(
 	}
 
 	type batchNode struct {
-		Type     string            `json:"type"`
-		Name     string            `json:"name"`
+		Type string `json:"type"`
+		Name string `json:"name"`
+		// test_run is !Summarizable, so the server's create gate requires a
+		// non-empty summary and refuses the whole batch on the first body without
+		// one. store.AutoSummary runs at write sites AFTER create validation, so
+		// the server-side composer never sees this body — the caller supplies the
+		// field.
+		Summary  string            `json:"summary"`
 		Status   string            `json:"status"`
 		Metadata map[string]string `json:"metadata"`
 	}
@@ -134,6 +134,7 @@ func assembleTestPlanNewRun(
 		nodes[i] = batchNode{
 			Type:     string(kgtypes.NodeTestRun),
 			Name:     step.SymbolName,
+			Summary:  "Test run: " + step.SymbolName,
 			Status:   string(kgtypes.StatusPending),
 			Metadata: map[string]string{"run_session": sessionID},
 		}

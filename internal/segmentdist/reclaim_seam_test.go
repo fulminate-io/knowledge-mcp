@@ -58,10 +58,46 @@ type instrumentedCache struct {
 	// state in which a silent fall back to the heap read would hide the breakage
 	// on exactly the platform CI never runs.
 	failMapping bool
+
+	// failPut makes Put report a WRITE FAILURE — distinct from blockPut, which
+	// models a crash and reports nothing. failPutFrom selects which call starts
+	// failing (1-based, zero means from the first), so a test can let an initial
+	// write land and fail a LATER one: a copy or a multi-blob write that aborts
+	// only when the very first blob fails would pass a from-the-start fixture
+	// while still leaving a partial result on any other ordering.
+	failPut     bool
+	failPutFrom int
+	putCalls    int
+
+	// failPutUntil makes the FIRST failPutUntil Put calls report a WRITE FAILURE and
+	// every call after them succeed — the TRANSIENT disk error a bounded retry is
+	// meant to absorb. It is the COMPLEMENT of failPutFrom, not a duplicate of it:
+	// failPutFrom fails from a call onward and never recovers, so a fixture built on
+	// it can only ever exercise an EXHAUSTED retry and cannot tell a retry that
+	// succeeded on a later attempt from one that was never attempted at all.
+	failPutUntil int
+
+	// failPutSkipFirst exempts the first failPutSkipFirst Put calls from failPut and
+	// failPutUntil entirely; the injection then counts from the call after them.
+	//
+	// IT EXISTS BECAUSE A DELETE'S PUTS HAVE TWO PRODUCERS, and which one a
+	// call-ordinal names decides what a test is measuring. The group swap's merge hook
+	// (reclaimMerged) Puts the consolidated blob FIRST, and persistResident's write
+	// follows it, so a from-the-start injection hits the RECLAIM and a test aiming at
+	// the write's retry silently exercises an aborted reclaim instead. Skipping the
+	// leading reclaim Put is what lets a fixture target the second producer alone. A
+	// test using it must assert the skip landed where it meant — a completed reclaim
+	// is observable as a non-empty removedSet.
+	failPutSkipFirst int
 }
 
 // errInjectedMappingFailure is the failure failMapping injects.
 var errInjectedMappingFailure = errors.New("injected mapping failure")
+
+// errInjectedPutFailure is the failure failPut injects. Tests assert on it by
+// identity (errors.Is) rather than on a message, so a caller that wraps it still
+// satisfies the assertion while a caller that invents its own error does not.
+var errInjectedPutFailure = errors.New("injected put failure")
 
 func newInstrumentedCache(inner *diskSegmentCache) *instrumentedCache {
 	return &instrumentedCache{inner: inner}
@@ -88,15 +124,45 @@ func (c *instrumentedCache) GetMapped(id searchengine.SegmentID) ([]byte, func()
 	return c.inner.GetMapped(id)
 }
 
-func (c *instrumentedCache) Put(id searchengine.SegmentID, b []byte) {
+// Put mirrors the write through the instrumentation and PROPAGATES the inner
+// cache's error, because this cache is the only segment store and a discarded Put
+// error is a segment the engine believes it wrote.
+//
+// blockPut AND failPut MODEL DIFFERENT FAILURES, and collapsing them would lose the
+// distinction the reclaim tests turn on. blockPut is a CRASH: the write never
+// happens and nothing reports it, so Put returns nil and the caller proceeds
+// believing the blob landed — that is the pre-existing crash-window model and its
+// nil return is deliberate. failPut is a WRITE THAT FAILED AND SAID SO: it returns
+// an error, which is the condition the fail-loud change exists to propagate. A test
+// that used blockPut to exercise the error path would prove nothing, because a
+// crash model never produces an error to propagate.
+func (c *instrumentedCache) Put(id searchengine.SegmentID, parts ...[]byte) error {
 	c.mu.Lock()
 	c.ops = append(c.ops, cacheOp{kind: "put", id: id})
 	block := c.blockPut
+	fail := c.failPut
+	failFrom := c.failPutFrom
+	failUntil := c.failPutUntil
+	skipFirst := c.failPutSkipFirst
+	c.putCalls++
+	// The INJECTION ordinal, which is the raw call ordinal only when nothing is
+	// skipped. A non-positive value means this call is one of the exempt leading
+	// writes and no injection rule applies to it.
+	n := c.putCalls - skipFirst
 	c.mu.Unlock()
-	if block {
-		return // crash before the merged blob is persisted
+	if n > 0 && fail && n >= failFrom {
+		return errInjectedPutFailure
 	}
-	c.inner.Put(id, b)
+	if n > 0 && n <= failUntil {
+		return errInjectedPutFailure
+	}
+	if block {
+		return nil // crash before the merged blob is persisted: no error is raised
+	}
+	// THE PARTS ARE FORWARDED UNCHANGED. A double that concatenated them, or that
+	// forwarded only one, would write a different file than production writes and
+	// would hide exactly the arity defect the variadic shape makes possible.
+	return c.inner.Put(id, parts...)
 }
 
 func (c *instrumentedCache) Remove(id searchengine.SegmentID) {
@@ -142,6 +208,37 @@ func (c *instrumentedCache) Keys() []searchengine.SegmentID {
 // swamp the ordering assertions the op log exists for.
 func (c *instrumentedCache) sizeOf(id searchengine.SegmentID) (int64, bool) {
 	return c.inner.sizeOf(id)
+}
+
+// putCallCount reports how many Put calls the cache has served, FAILED ONES
+// INCLUDED. Counting ATTEMPTS rather than successes is the point: a retry is a
+// second attempt at a write that did not land, and a success-only counter cannot
+// see one at all.
+func (c *instrumentedCache) putCallCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.putCalls
+}
+
+// maxPutsPerID reports the largest number of Put calls any SINGLE segment id
+// received. It is the retry question asked exactly: writing one blob more than once
+// is a retry, writing several blobs once each is not.
+//
+// PER-ID RATHER THAN TOTAL, because a partition re-emit's total is not attributable.
+// The group rebuild's merge hook reclaims through the same cache (reclaimMerged), so
+// a delete's Put calls come from two producers and a whole-cache total cannot say
+// which one repeated.
+func (c *instrumentedCache) maxPutsPerID() int {
+	per := make(map[searchengine.SegmentID]int)
+	most := 0
+	for _, op := range c.opLog() {
+		if op.kind != "put" {
+			continue
+		}
+		per[op.id]++
+		most = max(most, per[op.id])
+	}
+	return most
 }
 
 // opLog returns a copy of the recorded operations in call order.

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -151,6 +152,10 @@ func TestInterceptMutate_StatusRollup_ExpandTrue_StillCascades(t *testing.T) {
 // question. isTerminalForClientRollup treats "open" as non-terminal, so an
 // unfiltered cascade writes completed onto the question exactly as it does onto
 // the criterion.
+//
+// The contains edges are seeded because the hold rule attributes a criterion to
+// the node that OWNS it: without them the partition sees a flat descendant list
+// and no step could ever be held.
 func rollupPlanCloseFake() *fakeRollupGraphCaller {
 	return &fakeRollupGraphCaller{
 		rootNode: knowledgev1.Node{Id: "plan-1", Type: string(kgtypes.NodePlan)},
@@ -160,6 +165,13 @@ func rollupPlanCloseFake() *fakeRollupGraphCaller {
 			{Id: "crit-1", Type: string(kgtypes.NodeCriterion), Status: "pending"},
 			{Id: "crit-done", Type: string(kgtypes.NodeCriterion), Status: "completed"},
 			{Id: "q-1", Type: string(kgtypes.NodeQuestion), Status: "open"},
+		},
+		structureEdges: []knowledgev1.Edge{
+			{FromId: "plan-1", ToId: "phase-1", Type: string(kgtypes.EdgeKGContains)},
+			{FromId: "phase-1", ToId: "step-1", Type: string(kgtypes.EdgeKGContains)},
+			{FromId: "step-1", ToId: "crit-1", Type: string(kgtypes.EdgeKGContains)},
+			{FromId: "step-1", ToId: "crit-done", Type: string(kgtypes.EdgeKGContains)},
+			{FromId: "plan-1", ToId: "q-1", Type: string(kgtypes.EdgeKGContains)},
 		},
 	}
 }
@@ -181,6 +193,14 @@ func TestInterceptMutate_StatusRollup_StepClose_LeavesCriteriaUntouched(t *testi
 			{Id: "crit-blank", Type: string(kgtypes.NodeCriterion), Status: ""},
 			{Id: "crit-done", Type: string(kgtypes.NodeCriterion), Status: "completed"},
 		},
+		// With the contains edges seeded this test becomes a second, independent
+		// catcher for the root exemption: step-1 is the named root and owns three
+		// criteria, so a hold that reached the root would empty the Selection.
+		structureEdges: []knowledgev1.Edge{
+			{FromId: "step-1", ToId: "crit-pending", Type: string(kgtypes.EdgeKGContains)},
+			{FromId: "step-1", ToId: "crit-blank", Type: string(kgtypes.EdgeKGContains)},
+			{FromId: "step-1", ToId: "crit-done", Type: string(kgtypes.EdgeKGContains)},
+		},
 	}
 	handled, res := InterceptMutate(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
 		Name:      "mutate",
@@ -199,6 +219,11 @@ func TestInterceptMutate_StatusRollup_StepClose_LeavesCriteriaUntouched(t *testi
 // ancestor level the incident report did not: the same defect fires from a plan
 // close, because the exclusion belongs at the descendant-collection point rather
 // than at any one container type.
+//
+// step-1 is ABSENT from the expectation because it owns crit-1, which is pending:
+// the hold rule keeps a container out of the cascade while any criterion it owns
+// is unevaluated. Its parent phase-1 still completes — holding ancestors is not
+// what this rule does.
 func TestInterceptMutate_StatusRollup_PlanClose_LeavesCriteriaUntouched(t *testing.T) {
 	fc := rollupPlanCloseFake()
 	handled, res := InterceptMutate(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
@@ -209,8 +234,8 @@ func TestInterceptMutate_StatusRollup_PlanClose_LeavesCriteriaUntouched(t *testi
 	require.False(t, res.IsError, "rollup should succeed: %s", toolResultText(res))
 	require.NotNil(t, fc.lastUpdate, "an UPDATE Mutation must have fired")
 	ids := fc.lastUpdate.GetSelection().GetIds()
-	assert.ElementsMatch(t, []string{"plan-1", "phase-1", "step-1"}, ids,
-		"the cascade carries the root and its sub-task descendants only")
+	assert.ElementsMatch(t, []string{"plan-1", "phase-1"}, ids,
+		"the cascade carries the root and the sub-task descendants that own no unevaluated criterion")
 	assert.NotContains(t, ids, "crit-1", "a criterion's status is never written by a cascade")
 	assert.NotContains(t, ids, "q-1", "an open question records a decision not yet made")
 }
@@ -219,6 +244,10 @@ func TestInterceptMutate_StatusRollup_PlanClose_LeavesCriteriaUntouched(t *testi
 // success line names every id whose status the write moved. A bare count tells
 // the caller something else changed without telling them what, which is how an
 // unnoticed cascade survives.
+//
+// step-1 is asserted AFTER the held-nodes sentence rather than anywhere in the
+// body: it is held in this fixture, so a plain Contains would still pass while
+// reporting the opposite of what happened.
 func TestInterceptMutate_StatusRollup_ResponseEnumeratesCascadedIDs(t *testing.T) {
 	fc := rollupPlanCloseFake()
 	_, res := InterceptMutate(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
@@ -229,7 +258,9 @@ func TestInterceptMutate_StatusRollup_ResponseEnumeratesCascadedIDs(t *testing.T
 	body := toolResultText(res)
 	assert.Contains(t, body, "plan-1", "the named node must appear in the success line")
 	assert.Contains(t, body, "phase-1", "every cascaded id must be named")
-	assert.Contains(t, body, "step-1", "every cascaded id must be named")
+	heldAt := strings.Index(body, heldNodesLiteral)
+	require.GreaterOrEqual(t, heldAt, 0, "the success line must introduce the held bucket: %s", body)
+	assert.Contains(t, body[heldAt:], "step-1", "the held step must be named in the held bucket, not the cascade list")
 }
 
 // TestInterceptMutate_StatusRollup_ResponseNamesHeldCriteria asserts the success
@@ -393,9 +424,17 @@ func TestInterceptMutate_RollupCombinedShape_PartialFailureNamesWhatPersisted(t 
 
 // fakeRollupGraphCaller answers the carrier sequence the rollup drives: a ByID
 // lookup (root), a RETURN_MODE_TRAVERSAL (descendants), and an UPDATE Mutation.
+//
+// structureEdges and truncated are the two carriers the edge-aware traversal
+// returns alongside the nodes. A fixture that leaves structureEdges nil behaves
+// exactly as one seeded before they existed — the partition then sees no
+// parent/child structure at all, which is why every fixture whose tree carries a
+// criterion seeds them.
 type fakeRollupGraphCaller struct {
-	rootNode    knowledgev1.Node
-	descendants []knowledgev1.Node
+	rootNode       knowledgev1.Node
+	descendants    []knowledgev1.Node
+	structureEdges []knowledgev1.Edge
+	truncated      bool
 
 	traversalExecutes int
 	updateExecutes    int
@@ -422,7 +461,11 @@ func (f *fakeRollupGraphCaller) Execute(_ context.Context, req *knowledgev1.Exec
 		for i := range f.descendants {
 			results[i] = engine.TraversalResult{Distance: 1, Node: &f.descendants[i]}
 		}
-		return &knowledgev1.ExecuteResponse{TraversalResults: traversalResultsToProtoForTest(results)}, nil
+		return &knowledgev1.ExecuteResponse{
+			TraversalResults: traversalResultsToProtoForTest(results),
+			TraversalEdges:   edgePtrsForTest(f.structureEdges),
+			Truncated:        f.truncated,
+		}, nil
 	}
 	// ByID root lookup (lookupNodeBackend → render.FetchNode): answer the seeded
 	// root node via the nodes_json carrier.

@@ -6,8 +6,9 @@
 // *.connect.go) and so it cannot accidentally reach into the generated
 // package internals. These tests are PURE proto-message round-trips: they
 // import only the generated bindings + google.golang.org/protobuf/proto +
-// testify, and deliberately do NOT import pkg/store — the value-embed Node
-// message (decision f21640fb) must stand on its own on the wire.
+// testify, and deliberately do NOT import the server store package
+// (cmd/knowledge-server/internal/store) — the value-embed Node
+// message must stand on its own on the wire.
 package knowledgev1_test
 
 import (
@@ -87,7 +88,8 @@ func TestNode_RoundTrip_AllFields(t *testing.T) {
 // TestEdge_FieldComplete sets all 8 fields of knowledgev1.Edge to non-zero
 // values, round-trips through the wire, and asserts proto.Equal + per-field
 // equality. This mechanically proves the Edge message carries every persistent
-// store.Edge field (pkg/store/graph_types.go:471-487):
+// store.Edge field (cmd/knowledge-server/internal/store/graph_types.go:327,
+// where store.Edge is now a type alias of this very message):
 //
 //	1 FromID        2 ToID          3 Type          4 Weight
 //	5 Confidence    6 Method        7 Evidence      8 LastValidated

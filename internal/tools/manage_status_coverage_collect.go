@@ -37,6 +37,27 @@ type coverageTarget struct {
 	// The segment and working-set probes are declined for these rows: both key
 	// spaces are keyed by the BASE graph and cannot represent a branch graph.
 	overlay bool
+	// managed is whether a direct MCP interaction has admitted this graph into this
+	// client's working set. It is the ADMISSION GATE for the per-graph reads that
+	// MATERIALIZE something — both segment probes, which import the graph's L2 pool
+	// and construct its engine in this process — per the recorded decision that
+	// manage operations never admit and that nothing may interact with a graph absent
+	// a direct admission. It is NOT a gate on the Stats RPC: counting is answered
+	// from durable state on both backends and makes no graph resident, so every row
+	// gets one. See manage_status_coverage_unmanaged.go for the full split and for
+	// why the materializing half cannot be gated on the server.
+	//
+	// A BRANCH ROW READS ITS BASE'S MEMBERSHIP, which is the honest question for a
+	// LOAD gate even though it is the wrong one for a BAND (the field above says
+	// why the band declines it). The working set normalizes a name by cutting it at
+	// the first "@", and a branch graph only ever exists because a collect ran
+	// against that base repo — so "does this client maintain the base" is exactly
+	// "is this client entitled to read the branch".
+	managed bool
+	// imageBytes is the graph image's on-disk size from the catalog enumeration,
+	// carried so a DECLINED row has one true durable fact to render. It costs
+	// nothing: the enumeration already returns it on every GraphInfo.
+	imageBytes int64
 }
 
 // coverageStatsConcurrency bounds the parallel Stats(IncludeCoverage:true)
@@ -44,6 +65,19 @@ type coverageTarget struct {
 // many-graph install from dogpiling the server while still collapsing the
 // wall-clock from O(graphs)×RTT to roughly O(graphs/8)×RTT.
 const coverageStatsConcurrency = 8
+
+// coverageProbeConcurrency bounds the parallel per-row segment-coverage probes
+// (segCoveredFor). On the logged-in cloud path each probe is a REMOTE MANIFEST
+// READ against a backend shared by every user, so the wave is bounded rather than
+// unbounded — the bound is the backend protection. Its value is the owner's rule:
+// "we can do 6 at a time".
+//
+// IT IS A SECOND NUMBER RATHER THAN A REUSE of coverageStatsConcurrency, which the
+// overlay enumeration does reuse. The two waves protect different things: the Stats
+// bound limits per-graph COUNT work on the server, while this one limits concurrent
+// reads of a shared object store. Tying them together would mean a future tuning of
+// either silently retunes the other.
+const coverageProbeConcurrency = 6
 
 // collectCoverageRows issues the per-graph Stats(IncludeCoverage:true) walk once
 // and returns the shared []CoverageRow that both the markdown table and the JSON
@@ -68,11 +102,25 @@ const coverageStatsConcurrency = 8
 // sequential walk cost ~8s across ~22 graphs — most of manage(status)'s
 // remaining latency after the liveness probes went no-retry. Row order stays
 // (knowledge first, then enumeration order) because results land by index, not
-// completion order. A failed Stats drops its row, same as the sequential walk.
-// segCoveredFor stays on the assembly loop deliberately: on the logged-in cloud
-// path each call is a remote manifest read, and running them sequentially keeps
-// a many-graph status call from bursting concurrent reads at a backend shared
-// by every user.
+// completion order. A failed Stats drops a MANAGED row, same as the sequential
+// walk; an unmanaged row survives its failure and renders the not-read shape,
+// because dropping it would delete a graph from the inventory this table exists
+// to show.
+//
+// The segCoveredFor probes run CONCURRENTLY TOO, in their own wave bounded at
+// coverageProbeConcurrency — "we can do 6 at a time", per owner decision. On the
+// logged-in cloud path each probe is a remote manifest read, and THE BOUND is what
+// keeps a many-graph status call from bursting concurrent reads at a backend shared
+// by every user; that protection no longer comes from running them one at a time.
+// They land by index exactly as the Stats results do, so the wave changes the wall
+// clock and nothing about the table. The wave SKIPS the rows the assembly loop
+// would not have probed — a dropped row (nil stats) and a branch row — so no probe
+// is issued for a key the serial walk never asked about.
+//
+// ONLY THE REMOTE PROBE MOVED. repairVerifiedFor, consumerAgesFor, inWorkingSetFor
+// and segmentStalledSinceFor are pure local map reads and stay on the serial
+// assembly loop below: they cost nothing measurable, and keeping the assembly walk
+// serial is what their seams' own contracts are written against.
 func collectCoverageRows(ctx context.Context, deps ClientDeps) []CoverageRow {
 	gc := deps.GraphCaller()
 	if gc == nil {
@@ -89,6 +137,16 @@ func collectCoverageRows(ctx context.Context, deps ClientDeps) []CoverageRow {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, coverageStatsConcurrency)
 	for i, t := range targets {
+		// THE STATS RPC IS ISSUED FOR EVERY ROW, MANAGED OR NOT, and that is the
+		// ruling rather than a relaxation of it (CEO 2026-08-28, verbatim: "why cant
+		// we just do a count and not consider it managed"). What the operative rule
+		// forbids is MATERIALIZING a graph nobody asked about, and counting is not
+		// that read: a server answers it from counts it already maintains for the
+		// graph rather than by opening the graph, and one that genuinely cannot
+		// answer without opening it FAILS THE CALL instead of loading — the row below
+		// then falls back to the not-read shape. Either way nothing becomes resident.
+		// The reads that DO materialize — both segment probes — stay gated on
+		// membership in collectSegProbes.
 		wg.Go(func() {
 			sem <- struct{}{}
 			defer func() { <-sem }()
@@ -104,11 +162,30 @@ func collectCoverageRows(ctx context.Context, deps ClientDeps) []CoverageRow {
 	}
 	wg.Wait()
 
+	probes := collectSegProbes(ctx, deps, targets, stats)
+
 	// ONE clock reading for the whole table, so two rows assembled a millisecond apart
 	// cannot disagree about whether the same interval has elapsed.
 	now := time.Now().UnixNano()
 	rows := make([]CoverageRow, 0, len(targets))
 	for i, t := range targets {
+		if !t.managed {
+			// AN UNMANAGED ROW ALWAYS RENDERS, on either arm. Dropping it would silently
+			// delete the graph from the inventory manage(status) exists to show — which
+			// is why its Stats failure is not treated like a managed row's below.
+			//
+			// The counts arm is the ordinary one: the backend answered them without
+			// materializing the graph. The fallback arm is a backend that could not,
+			// which today is a local server whose image predates the durable count
+			// record; that row is assembled from the target alone and says its counts
+			// were not read. Neither arm probes the segment pool.
+			if stats[i] == nil {
+				rows = append(rows, newUnmanagedCoverageRow(t))
+				continue
+			}
+			rows = append(rows, newUnmanagedCountedCoverageRow(t, stats[i]))
+			continue
+		}
 		if stats[i] == nil {
 			continue
 		}
@@ -139,14 +216,67 @@ func collectCoverageRows(ctx context.Context, deps ClientDeps) []CoverageRow {
 			rows = append(rows, newCoverageRow(t.label, stats[i], 0, 0, false, false, false, false, 0, 0, 0))
 			continue
 		}
-		segCovered, liveResident, hasSeg := segCoveredFor(ctx, deps, t.gt, t.name)
 		verified := repairVerifiedFor(deps, t.gt, t.name, now)
 		rebuildAge, mergeAge := consumerAgesFor(deps, t.gt, t.name, now)
-		rows = append(rows, newCoverageRow(t.label, stats[i], segCovered, liveResident,
-			hasSeg, verified, inWorkingSetFor(deps, t.gt, t.name), poolEvictedFor(deps, t.gt, t.name),
+		rows = append(rows, newCoverageRow(t.label, stats[i], probes[i].covered, probes[i].liveResident,
+			probes[i].hasSeg, verified, inWorkingSetFor(deps, t.gt, t.name), poolEvictedFor(deps, t.gt, t.name),
 			segmentStalledSinceFor(deps, t.gt, t.name), rebuildAge, mergeAge))
 	}
 	return rows
+}
+
+// segProbe is one row's segment-coverage answer, carried from the concurrent probe
+// wave back to the assembly loop. A row the wave SKIPPED keeps the zero value,
+// which is the same (0, 0, false) triple segCoveredFor returns for a graph with no
+// rebuildable segments — so a skipped row and a declining one render identically,
+// as they did when the probe ran inline.
+type segProbe struct {
+	covered      int
+	liveResident int
+	hasSeg       bool
+}
+
+// collectSegProbes runs the per-row segment-coverage probes CONCURRENTLY, bounded
+// at coverageProbeConcurrency, and returns them BY TARGET INDEX. Indexing is what
+// keeps the table deterministic: the assembly loop reads probes[i] beside stats[i],
+// so a probe that finishes last still lands on its own row.
+//
+// IT DECLINES THE ROWS WHOSE POOL MUST NOT BE TOUCHED, and that is a correctness
+// requirement rather than an optimization. An UNMANAGED row declines the probe
+// because both of segCoveredFor's reads interact — one imports the graph's whole L2
+// segment pool, the other constructs its engine — and nothing may interact with a
+// graph no direct MCP call has admitted. THIS IS THE ONE GATE MEMBERSHIP STILL
+// GUARDS: that row's COUNTS are read, off a Stats RPC that materializes nothing, so
+// its stats slot is now populated and the nil-stats clause below no longer stands in
+// for this one. A row whose Stats RPC failed has nothing to probe against, and a
+// BRANCH row declines the probe because the segment key space is base-keyed and
+// cannot represent a branch graph. Probing either would ask the seam about a
+// different graph than the row reports — and the real reader lazily CONSTRUCTS a
+// manager and its cache directory for whatever key it is handed, so a status READ
+// would create state for an instance that does not exist.
+//
+// It mirrors the Stats fan-out's semaphore idiom above rather than introducing a
+// second one: goroutine per target, permit taken inside, result written to its own
+// slot. A failed probe leaves the zero triple, exactly as the inline call did.
+func collectSegProbes(
+	ctx context.Context, deps ClientDeps, targets []coverageTarget, stats []*knowledgev1.GraphStats,
+) []segProbe {
+	probes := make([]segProbe, len(targets))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, coverageProbeConcurrency)
+	for i, t := range targets {
+		if !t.managed || stats[i] == nil || t.overlay {
+			continue
+		}
+		wg.Go(func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			covered, liveResident, hasSeg := segCoveredFor(ctx, deps, t.gt, t.name)
+			probes[i] = segProbe{covered: covered, liveResident: liveResident, hasSeg: hasSeg}
+		})
+	}
+	wg.Wait()
+	return probes
 }
 
 // repairVerifiedFor answers whether the backstop has verified this graph's band,
@@ -230,7 +360,7 @@ func inWorkingSetFor(deps ClientDeps, gt kgtypes.GraphType, name string) bool {
 // inventory surface at all.
 func coverageTargets(ctx context.Context, deps ClientDeps) []coverageTarget {
 	types := kgtypes.SyncEligibleGraphTypes()
-	perType := make([][]string, len(types))
+	perType := make([][]catalogEntry, len(types))
 	var wg sync.WaitGroup
 	for i, gt := range types {
 		if gt == kgtypes.GraphKnowledge {
@@ -239,18 +369,18 @@ func coverageTargets(ctx context.Context, deps ClientDeps) []coverageTarget {
 			continue
 		}
 		wg.Go(func() {
-			names, err := listGraphNamesOfType(ctx, deps, string(gt))
+			entries, err := listCatalogOfType(ctx, deps, string(gt))
 			if err != nil {
 				return
 			}
-			perType[i] = names
+			perType[i] = entries
 		})
 	}
 	wg.Wait()
 
 	var codeBases []string
 	if ci := codeTypeIndex(types); ci >= 0 {
-		codeBases = perType[ci]
+		codeBases = catalogNames(perType[ci])
 	}
 	overlayKeys := coverageOverlayKeys(ctx, deps, codeBases)
 
@@ -267,10 +397,17 @@ func coverageTargets(ctx context.Context, deps ClientDeps) []coverageTarget {
 		// construct a manager for an instance that does not exist.
 		name:   "default",
 		target: &knowledgev1.GraphSelector{Graph: ""},
+		// Membership is asked about "default" — the same name the segment probe uses
+		// — because the working set normalizes knowledge's "" and "default" to one
+		// Ref, so the two spellings cannot become two different answers.
+		managed: inWorkingSetFor(deps, kgtypes.GraphKnowledge, "default"),
 	}}
 	for i, gt := range types {
-		for _, name := range perType[i] {
-			targets = append(targets, newCoverageTarget(gt, name, false))
+		for _, e := range perType[i] {
+			t := newCoverageTarget(gt, e.name, false)
+			t.managed = inWorkingSetFor(deps, gt, e.name)
+			t.imageBytes = e.imageBytes
+			targets = append(targets, t)
 		}
 	}
 	for i, base := range codeBases {
@@ -285,7 +422,12 @@ func coverageTargets(ctx context.Context, deps ClientDeps) []coverageTarget {
 			if left, _, ok := atSplit(bare); ok && left != base {
 				continue
 			}
-			targets = append(targets, newCoverageTarget(kgtypes.GraphCode, base+"@"+bare, true))
+			bt := newCoverageTarget(kgtypes.GraphCode, base+"@"+bare, true)
+			// A branch row's ADMISSION follows its base's — the working set cuts a name
+			// at the first "@", so this asks about the base, which is the graph a
+			// collect would have admitted when it produced the branch.
+			bt.managed = inWorkingSetFor(deps, kgtypes.GraphCode, base)
+			targets = append(targets, bt)
 		}
 	}
 	return targets

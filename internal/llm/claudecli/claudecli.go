@@ -31,7 +31,7 @@
 // terminates the loop, treating the CLI's answer as the final output.
 //
 // The provider self-registers under [llm.ProviderClaudeCLI] from init() so a
-// side-effect import (`_ "github.com/.../domains/llm/claudecli"`) is enough
+// side-effect import (`_ ".../cmd/knowledge/internal/llm/claudecli"`) is enough
 // to make `llm.NewClient(ctx, &llm.Config{Provider: llm.ProviderClaudeCLI})`
 // succeed.
 package claudecli

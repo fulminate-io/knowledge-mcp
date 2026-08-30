@@ -9,7 +9,7 @@ import (
 // node_value.go owns the metadata-accessor free funcs over the wire proto
 // *knowledgev1.Node, the client-side counterpart to the *store.Node wrapper
 // methods Value / Values / SetValue / DeleteValue / Meta / SetMeta
-// (pkg/store/node_value.go + graph_types.go).
+// (cmd/knowledge-server/internal/store/node_value.go + graph_types.go).
 //
 // These are PLAIN n.Metadata map operations — no PromotionRegistry /
 // OverrideConfig / edgeValueCache dispatch. That dispatch is server-internal
@@ -25,9 +25,10 @@ import (
 
 // Value returns the metadata value for key on n, or "" when the key is absent
 // or n / n.Metadata is nil. Mirrors the scalar arm of store.Node.Value
-// (pkg/store/node_value.go:45-73): a read from a nil Go map returns the zero
-// value, so the nil guards collapse to a plain map lookup. Empty string is
-// returned both for "key absent" and "key present with empty value".
+// (cmd/knowledge-server/internal/store/node_value.go:45-73): a read from a nil
+// Go map returns the zero value, so the nil guards collapse to a plain map
+// lookup. Empty string is returned both for "key absent" and "key present with
+// empty value".
 func Value(n *knowledgev1.Node, key string) string {
 	if n == nil {
 		return ""
@@ -37,7 +38,8 @@ func Value(n *knowledgev1.Node, key string) string {
 
 // Values returns the metadata value for key on n as a slice: a single-element
 // slice when present, or nil when the key is absent / n is nil. Mirrors the
-// scalar arm of store.Node.Values (pkg/store/node_value.go:85-110) — returning
+// scalar arm of store.Node.Values
+// (cmd/knowledge-server/internal/store/node_value.go:85-110) — returning
 // nil rather than a one-element empty-string slice on absence so callers that
 // `for _, v := range Values(n, key)` get zero iterations.
 func Values(n *knowledgev1.Node, key string) []string {
@@ -56,7 +58,8 @@ func Values(n *knowledgev1.Node, key string) []string {
 }
 
 // SetValue writes value under key on n, lazily initializing n.Metadata.
-// Mirrors the scalar arm of store.Node.SetValue (pkg/store/node_value.go:130-151).
+// Mirrors the scalar arm of store.Node.SetValue
+// (cmd/knowledge-server/internal/store/node_value.go:130-151).
 // No-op when n is nil.
 func SetValue(n *knowledgev1.Node, key, value string) {
 	if n == nil {
@@ -69,7 +72,8 @@ func SetValue(n *knowledgev1.Node, key, value string) {
 }
 
 // DeleteValue removes key from n's metadata. Mirrors the scalar arm of
-// store.Node.DeleteValue (pkg/store/node_value.go:159-173). No-op when n or
+// store.Node.DeleteValue
+// (cmd/knowledge-server/internal/store/node_value.go:159-173). No-op when n or
 // n.Metadata is nil, or when the key is absent (same shape as delete(map, key)).
 func DeleteValue(n *knowledgev1.Node, key string) {
 	if n == nil || n.Metadata == nil {
@@ -79,14 +83,15 @@ func DeleteValue(n *knowledgev1.Node, key string) {
 }
 
 // Meta is an alias for Value, mirroring the deprecated store.Node.Meta shim
-// (pkg/store/graph_types.go:140-142) so callers porting off the wrapper keep
+// (cmd/knowledge-server/internal/store/graph_types.go:305-307) so callers
+// porting off the wrapper keep
 // the same call shape.
 func Meta(n *knowledgev1.Node, key string) string {
 	return Value(n, key)
 }
 
 // SetMeta is an alias for SetValue, mirroring the deprecated store.Node.SetMeta
-// shim (pkg/store/graph_types.go:152-154).
+// shim (cmd/knowledge-server/internal/store/graph_types.go:317-319).
 func SetMeta(n *knowledgev1.Node, key, value string) {
 	SetValue(n, key, value)
 }

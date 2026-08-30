@@ -12,7 +12,9 @@ func (e *SegmentedIndex[Q, S]) Export() []SegmentBlob {
 	set := e.set.Load()
 	blobs := make([]SegmentBlob, 0, len(set.entries))
 	for _, entry := range set.entries {
-		bytes, err := entry.payload.Encode()
+		// blobParts, never payload.Encode: an exported blob is what the owner makes
+		// durable, so it must carry the entry's supersession record.
+		envelope, payload, err := entry.blobParts()
 		if err != nil {
 			continue
 		}
@@ -21,7 +23,8 @@ func (e *SegmentedIndex[Q, S]) Export() []SegmentBlob {
 			Format:     e.format.Name(),
 			Generation: entry.meta.Generation,
 			DocCount:   entry.meta.DocCount,
-			Bytes:      bytes,
+			Bytes:      payload,
+			Envelope:   envelope,
 			// The exported blob OUTLIVES this call, and on a mapped segment
 			// Encode returns the mapping itself rather than a copy. Pinning the
 			// entry keeps the mapping's cleanup from running while a caller
@@ -69,6 +72,18 @@ func (e *SegmentedIndex[Q, S]) ResidentSegmentIDs() []SegmentID {
 // calls format.Merge, which reads live INDEXED data directly from a decoded
 // Segment — no source Documents required. This is the whole point of the amended
 // Merge contract.
+//
+// IT HONORS EACH BLOB'S SUPERSESSION RECORD (supersession.go): a consolidated blob
+// names the constituents it replaced, and any of those present in the SAME batch are
+// declined rather than published beside it. That is what makes a cold load of a stored
+// corpus correct without external state — an L2 index holds both across an un-reclaimed
+// merge window, and publishing both duplicates every document across two segments while
+// resurrecting anything the merge dropped.
+//
+// THE SCOPE IS THIS BATCH, and that is the whole reachable surface rather than a
+// convenient subset: every load path in the distribution layer imports the pool's whole
+// stored index in ONE call, and a constituent that is already RESIDENT was superseded by
+// the merge's own CAS at the moment it ran.
 func (e *SegmentedIndex[Q, S]) Import(blobs []SegmentBlob, tombstones []ExternalID) error {
 	if len(blobs) == 0 {
 		return nil
@@ -84,12 +99,26 @@ func (e *SegmentedIndex[Q, S]) Import(blobs []SegmentBlob, tombstones []External
 		go func(i int, blob SegmentBlob) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			// THE RECORD COMES FROM Envelope AND THE PAYLOAD FROM Bytes, with no
+			// parse of the stored bytes here: the blob arrives already split, from
+			// an engine producer or from the load path, and Bytes is the payload by
+			// the invariant on SegmentBlob.
+			rec, err := decodeSupersessionEnvelope(blob.Envelope)
+			if err != nil {
+				errs[i] = fmt.Errorf("decode segment %s: %w", blob.ID, err)
+				return
+			}
 			seg, err := e.format.Decode(blob.Bytes)
 			if err != nil {
 				errs[i] = fmt.Errorf("decode segment %s: %w", blob.ID, err)
 				return
 			}
 			entries[i] = e.entryFromDecoded(seg, blob, tombstones)
+			// THE RECORD IS CARRIED ONTO THE ENTRY, so a segment that is imported and
+			// later re-exported still says what it replaced. An entry that forgot it
+			// would write the record away on the next persist, and the corpus would
+			// quietly return to saying nothing about supersession.
+			entries[i].record = rec
 		}(i, blob)
 	}
 	wg.Wait()
@@ -100,8 +129,67 @@ func (e *SegmentedIndex[Q, S]) Import(blobs []SegmentBlob, tombstones []External
 		}
 	}
 
-	e.publishImport(entries)
+	e.publishImport(declineSuperseded(entries))
 	return nil
+}
+
+// declineSuperseded drops the entries this batch's own records name as superseded.
+//
+// IT COLLECTS THE WHOLE BATCH FIRST, because the order blobs arrive in says nothing
+// about which superseded which — a constituent routinely sits ahead of the blob that
+// replaced it, which is exactly how a cache index enumerates them.
+//
+// A RECORD IS HONORED ONLY WHEN ITS WHOLE COHORT IS PRESENT, and that gate is what
+// keeps this from being a data-loss instrument. A consolidation publishes its outputs as
+// a SET, and it is the set that carries the superseded members forward: a group swap
+// harvests several partitions at once and a layer swap replaces the whole corpus. If
+// only part of that set reached disk — a crash between two writes, an aborted L2 write —
+// then declining the constituents would retire documents whose only other copy is a
+// sibling output that is not here. Requiring the cohort makes "the replacement landed
+// whole" a precondition rather than an assumption.
+func declineSuperseded[Q, S any](entries []*segmentEntry[Q, S]) []*segmentEntry[Q, S] {
+	present := make(map[SegmentID]struct{}, len(entries))
+	for _, entry := range entries {
+		present[entry.meta.ID] = struct{}{}
+	}
+	var superseded map[SegmentID]struct{}
+	for _, entry := range entries {
+		if entry.record.empty() || !subsetPresent(entry.record.Cohort, present) {
+			continue
+		}
+		if superseded == nil {
+			superseded = make(map[SegmentID]struct{}, len(entry.record.Superseded))
+		}
+		for _, id := range entry.record.Superseded {
+			superseded[id] = struct{}{}
+		}
+	}
+	if superseded == nil {
+		return entries // the ordinary case: nothing in this batch supersedes anything
+	}
+	kept := make([]*segmentEntry[Q, S], 0, len(entries))
+	for _, entry := range entries {
+		if _, dead := superseded[entry.meta.ID]; dead {
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	return kept
+}
+
+// subsetPresent reports whether every id is in present. An EMPTY cohort reports false:
+// a record that names no publisher cannot prove its replacement landed, so it is not
+// acted on.
+func subsetPresent(ids []SegmentID, present map[SegmentID]struct{}) bool {
+	if len(ids) == 0 {
+		return false
+	}
+	for _, id := range ids {
+		if _, ok := present[id]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // entryFromDecoded wraps a decoded segment into an entry: members from IDs(),
@@ -129,9 +217,14 @@ func (e *SegmentedIndex[Q, S]) entryFromDecoded(seg Segment[Q, S], blob SegmentB
 			DeadCount:  distinctDeadCount(members, live),
 		},
 	}
-	// When the blob arrived as a mapping rather than a heap copy, the mapping's
-	// lifetime is now this entry's reachability.
+	// When the blob arrived as a mapping this entry OWNS, the mapping's lifetime is
+	// now this entry's reachability.
 	attachBlobCleanup(entry, blob.Release)
+	// And when it arrived as a view into memory SOMEONE ELSE owns — which is what an
+	// exported blob is, since Encode on a mapped segment returns the mapping itself
+	// — the owner is pinned here. Dropping it is how an imported segment comes to
+	// read unmapped memory after its exporter is collected.
+	entry.pin = blob.keepAlive
 	return entry
 }
 
@@ -173,8 +266,8 @@ func (e *SegmentedIndex[Q, S]) publishImport(entries []*segmentEntry[Q, S]) {
 }
 
 // Unload drops the named segments from the searchable set via one CAS swap. The
-// reload path that puts them back — driven by a SegmentSource, L2 cache first —
-// lives in the client's segmentdist/manager_load.go (reload).
+// reload path that puts them back reads the client's L2 disk cache directly and
+// lives in segmentdist/manager_load.go (reload).
 func (e *SegmentedIndex[Q, S]) Unload(ids []SegmentID) {
 	if len(ids) == 0 {
 		return

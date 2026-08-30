@@ -39,8 +39,9 @@ type PlanArgs struct {
 // ProposedPatternArgs is a not-yet-cataloged pattern surfaced by a planner.
 // CreatePlan eagerly creates a pattern node with status="emerging" for each.
 type ProposedPatternArgs struct {
-	Name   string
-	Sketch string // interface sketch / pseudocode describing the proposed pattern shape
+	Name    string
+	Summary string // author-supplied search-optimized one-line summary; required, nothing composes one
+	Sketch  string // interface sketch / pseudocode describing the proposed pattern shape
 }
 
 type PhaseArgs struct {
@@ -60,6 +61,7 @@ type StepArgs struct {
 
 type CriterionArgs struct {
 	Description string
+	Summary     string
 	Command     string
 	Type        string // "automated" or "manual"
 }

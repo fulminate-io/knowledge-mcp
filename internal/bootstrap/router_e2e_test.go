@@ -83,10 +83,15 @@ func (s staticTokenSource) Token(_ context.Context) (string, auth.PermissionSet,
 // fixture that never sets it serves — so the field is invisible to the routing
 // subtests. genPoll counts the bulk gen-poll RPCs, which is how a test observes
 // that something woke the pipeline.
+// nodes, when set, rides every ExecuteResponse alongside the canned search hit,
+// which is what lets a by-id read RESOLVE against this fixture instead of
+// answering "not found". Nil is the default and the state every other fixture
+// leaves it in, so the field is invisible to them.
 type countingEngine struct {
 	execute      atomic.Int32
 	genPoll      atomic.Int32
 	freshnessGen atomic.Uint64
+	nodes        atomic.Pointer[[]*knowledgev1.Node]
 }
 
 func (e *countingEngine) Execute(
@@ -94,12 +99,16 @@ func (e *countingEngine) Execute(
 	_ *connect.Request[knowledgev1.ExecuteRequest],
 ) (*connect.Response[knowledgev1.ExecuteResponse], error) {
 	e.execute.Add(1)
-	return connect.NewResponse(&knowledgev1.ExecuteResponse{
+	resp := &knowledgev1.ExecuteResponse{
 		SearchResults: []*knowledgev1.HydratedResult{
 			{Score: 0.9, Node: &knowledgev1.Node{Id: "n1", Type: "finding", SymbolName: "Hit"}},
 		},
 		FreshnessGen: e.freshnessGen.Load(),
-	}), nil
+	}
+	if p := e.nodes.Load(); p != nil {
+		resp.Nodes = *p
+	}
+	return connect.NewResponse(resp), nil
 }
 
 func (e *countingEngine) Stats(
@@ -118,12 +127,6 @@ func (e *countingEngine) Index(
 	context.Context, *connect.Request[knowledgev1.IndexRequest],
 ) (*connect.Response[knowledgev1.IndexResponse], error) {
 	return connect.NewResponse(&knowledgev1.IndexResponse{}), nil
-}
-
-func (e *countingEngine) Hive(
-	context.Context, *connect.Request[knowledgev1.HiveRequest],
-) (*connect.Response[knowledgev1.HiveResponse], error) {
-	return connect.NewResponse(&knowledgev1.HiveResponse{}), nil
 }
 
 func (e *countingEngine) PipelineScan(
@@ -171,7 +174,7 @@ func startCountingEngine(t *testing.T) (string, *countingEngine) {
 	path, hdlr := knowledgev1connect.NewEngineServiceHandler(eng)
 	mux.Handle(path, hdlr)
 	srv := httptest.NewServer(h2c.NewHandler(mux, &http2.Server{}))
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 	return srv.URL, eng
 }
 
@@ -190,6 +193,16 @@ func buildE2EClient(local *graphclient.GraphClient, cloudURL string, store auth.
 		router:    router,
 		authState: authState,
 	}
+}
+
+// closeRouterOnCleanup drops the pooled connections of a router built by the two
+// helpers above, INCLUDING the cloud client the Router mints lazily and which no
+// caller can otherwise reach. Without it each router pins an HTTP/2 serve goroutine
+// on the fake cloud engine for the rest of the test binary.
+func closeRouterOnCleanup(t *testing.T, c *client) *client {
+	t.Helper()
+	t.Cleanup(c.router.CloseIdleConnections)
+	return c
 }
 
 // buildE2EClientMachineAuth mirrors buildE2EClient but wires the Router via
@@ -232,7 +245,7 @@ func TestRouterE2E_FourStates_PlusSwapAndSyncAndUnreachable(t *testing.T) {
 
 	t.Run("NoLocal_NoAuth_RendersInstallOrLogin", func(t *testing.T) {
 		store := newFakeAuthStore() // empty → not logged in
-		c := buildE2EClient(nil, "http://cloud.invalid", store, time.Hour)
+		c := closeRouterOnCleanup(t, buildE2EClient(nil, "http://cloud.invalid", store, time.Hour))
 
 		out, err := c.engineDispatch(ctx, "search", searchArgs)
 		require.NoError(t, err, "the no-backend case is rendered as an error result, not a returned error")
@@ -249,8 +262,9 @@ func TestRouterE2E_FourStates_PlusSwapAndSyncAndUnreachable(t *testing.T) {
 		localURL, localEng := startCountingEngine(t)
 		cloudURL, cloudEng := startCountingEngine(t)
 		localGC := graphclient.NewGraphClientForURL(localURL)
+		t.Cleanup(localGC.CloseIdleConnections)
 		store := newFakeAuthStore() // empty
-		c := buildE2EClient(localGC, cloudURL, store, time.Hour)
+		c := closeRouterOnCleanup(t, buildE2EClient(localGC, cloudURL, store, time.Hour))
 
 		_, err := c.engineDispatch(ctx, "search", searchArgs)
 		require.NoError(t, err)
@@ -262,9 +276,10 @@ func TestRouterE2E_FourStates_PlusSwapAndSyncAndUnreachable(t *testing.T) {
 		localURL, localEng := startCountingEngine(t)
 		cloudURL, cloudEng := startCountingEngine(t)
 		localGC := graphclient.NewGraphClientForURL(localURL)
+		t.Cleanup(localGC.CloseIdleConnections)
 		store := newFakeAuthStore()
 		require.NoError(t, store.Set(ctx, auth.KeyRefreshToken, "frt-stub"))
-		c := buildE2EClient(localGC, cloudURL, store, time.Hour)
+		c := closeRouterOnCleanup(t, buildE2EClient(localGC, cloudURL, store, time.Hour))
 
 		_, err := c.engineDispatch(ctx, "search", searchArgs)
 		require.NoError(t, err)
@@ -276,7 +291,7 @@ func TestRouterE2E_FourStates_PlusSwapAndSyncAndUnreachable(t *testing.T) {
 		cloudURL, cloudEng := startCountingEngine(t)
 		store := newFakeAuthStore()
 		require.NoError(t, store.Set(ctx, auth.KeyRefreshToken, "frt-stub"))
-		c := buildE2EClient(nil, cloudURL, store, time.Hour)
+		c := closeRouterOnCleanup(t, buildE2EClient(nil, cloudURL, store, time.Hour))
 
 		_, err := c.engineDispatch(ctx, "search", searchArgs)
 		require.NoError(t, err)
@@ -287,8 +302,9 @@ func TestRouterE2E_FourStates_PlusSwapAndSyncAndUnreachable(t *testing.T) {
 		localURL, localEng := startCountingEngine(t)
 		cloudURL, cloudEng := startCountingEngine(t)
 		localGC := graphclient.NewGraphClientForURL(localURL)
+		t.Cleanup(localGC.CloseIdleConnections)
 		store := newFakeAuthStore() // start logged out
-		c := buildE2EClient(localGC, cloudURL, store, time.Millisecond)
+		c := closeRouterOnCleanup(t, buildE2EClient(localGC, cloudURL, store, time.Millisecond))
 
 		// First dispatch: routes local (logged out).
 		_, err := c.engineDispatch(ctx, "search", searchArgs)
@@ -321,9 +337,10 @@ func TestRouterE2E_FourStates_PlusSwapAndSyncAndUnreachable(t *testing.T) {
 		localURL, localEng := startCountingEngine(t)
 		cloudURL, cloudEng := startCountingEngine(t)
 		localGC := graphclient.NewGraphClientForURL(localURL)
+		t.Cleanup(localGC.CloseIdleConnections)
 		store := newFakeAuthStore()
 		require.NoError(t, store.Set(ctx, auth.KeyRefreshToken, "frt-stub"))
-		c := buildE2EClient(localGC, cloudURL, store, time.Hour)
+		c := closeRouterOnCleanup(t, buildE2EClient(localGC, cloudURL, store, time.Hour))
 
 		// Sanity: the routed GraphCaller would route cloud here.
 		// LocalGraphCaller MUST NOT.
@@ -341,8 +358,9 @@ func TestRouterE2E_FourStates_PlusSwapAndSyncAndUnreachable(t *testing.T) {
 		// renders the actionable "local server unreachable" message via
 		// renderEngineError's Branch 2 (transport-unreachable).
 		localGC := graphclient.NewGraphClientForURL("http://127.0.0.1:1")
+		t.Cleanup(localGC.CloseIdleConnections)
 		store := newFakeAuthStore() // empty → not logged in
-		c := buildE2EClient(localGC, "http://cloud.invalid", store, time.Hour)
+		c := closeRouterOnCleanup(t, buildE2EClient(localGC, "http://cloud.invalid", store, time.Hour))
 
 		out, err := c.engineDispatch(ctx, "search", searchArgs)
 		require.NoError(t, err, "the unreachable case is rendered, not returned")
@@ -373,7 +391,9 @@ func TestConstructClient_Coexistence(t *testing.T) {
 	withConstructClientSeams := func(t *testing.T, cfg Config, store auth.Store) *client {
 		t.Helper()
 		cfg.LocalDialer = func(int) *graphclient.GraphClient {
-			return graphclient.NewGraphClientForURL("http://local.invalid")
+			gc := graphclient.NewGraphClientForURL("http://local.invalid")
+			t.Cleanup(gc.CloseIdleConnections)
+			return gc
 		}
 		origStore := newAuthStoreFn
 		newAuthStoreFn = func() (auth.Store, error) { return store, nil }
@@ -401,7 +421,8 @@ func TestConstructClient_Coexistence(t *testing.T) {
 		localURL, localEng := startCountingEngine(t)
 		cloudURL, cloudEng := startCountingEngine(t)
 		localGC := graphclient.NewGraphClientForURL(localURL)
-		c := buildE2EClientMachineAuth(localGC, cloudURL, newFakeAuthStore()) // empty keychain
+		t.Cleanup(localGC.CloseIdleConnections)
+		c := closeRouterOnCleanup(t, buildE2EClientMachineAuth(localGC, cloudURL, newFakeAuthStore())) // empty keychain
 
 		searchArgs := json.RawMessage(`{"query":"x","graph":"knowledge"}`)
 		_, err := c.engineDispatch(ctx, "search", searchArgs)

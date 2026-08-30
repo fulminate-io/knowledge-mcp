@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sort"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
@@ -96,6 +97,78 @@ func ResolveCitedCodeNodes(ctx context.Context, gc Caller, thoughtIDs []string, 
 		}
 	}
 	return out
+}
+
+// MethodlessCodeCitations returns the CODE node IDs one thought points at through
+// relates-to edges that carry NO code-ref Method — sorted and deduplicated, empty
+// when there are none. It is the READ THAT NAMES WHAT ResolveCitedCodeNodes ABOVE
+// THREW AWAY: codeRefProxiesByThought drops every method-less relates-to edge
+// before resolution, so a symbol cited through mutate's links param (which mints a
+// plain relates-to with no Method) never enters the citation set at all. The
+// verified-negation gate consumes this to tell a rejected negator WHICH citations
+// were excluded and why, instead of leaving them to infer it from a message that
+// names none.
+//
+// A CITATION IS IDENTIFIED BY ITS TARGET, NOT BY THE EDGE ALONE, and that is the
+// whole discrimination. The links param mints a method-less relates-to edge to
+// WHATEVER it is handed, so a thought routinely carries them to sibling thoughts,
+// findings and decisions; none of those is an attempt to cite code. So the target
+// set is hydrated and passed through codeRefsFromProxies
+// — the same filter the born-link path uses — which keeps only nodes that are CODE
+// proxies (NodeProxy + foreign_graph=code + repo + foreign_id). What survives is an
+// edge pointing at code whose only defect is the missing method.
+//
+// IT IS DELIBERATELY SEPARATE FROM ResolveCitedCodeNodes RATHER THAN FOLDED INTO
+// IT. Widening that boundary's proxy hydrate to carry method-less targets would be
+// one extra id per plain relates-to edge on a read the corpus-wide propagation loop
+// issues for EVERY thought (buildCitedCodeUpdatedAt → blind spots), hydrating every
+// links-param neighbor in the corpus to serve an error message. This
+// function is called only when a negation has ALREADY been rejected — a cold,
+// human-facing path — so its edge read plus proxy hydrate are paid there and
+// nowhere else. Best-effort in the same style as its sibling: any read failure
+// yields an empty result, never a flag and never a panic.
+func MethodlessCodeCitations(ctx context.Context, gc Caller, thoughtID string) []string {
+	if gc == nil || thoughtID == "" {
+		return nil
+	}
+	// nil read-memo: a single-thought on-demand resolution with no propagation pass
+	// in hand, exactly as resolveThoughtCurrentSource takes it.
+	edges, err := memoTypedEdges(ctx, gc, []string{thoughtID}, []kgtypes.EdgeType{kgtypes.EdgeRelatesTo}, nil)
+	if err != nil {
+		return nil
+	}
+	proxyIDSet := map[string]bool{}
+	for i := range edges {
+		e := &edges[i]
+		if kgtypes.EdgeType(e.Type) != kgtypes.EdgeRelatesTo || e.Method == codeRefMethod {
+			continue
+		}
+		if e.FromId != thoughtID { // pollution guard, mirroring codeRefProxiesByThought.
+			continue
+		}
+		proxyIDSet[e.ToId] = true
+	}
+	if len(proxyIDSet) == 0 {
+		return nil
+	}
+	proxyIDs := make([]string, 0, len(proxyIDSet))
+	for pid := range proxyIDSet {
+		proxyIDs = append(proxyIDs, pid)
+	}
+	refByProxy, _ := codeRefsFromProxies(fetchNodesByIDs(ctx, gc, proxyIDs))
+	fidSet := make(map[string]bool, len(refByProxy))
+	for _, ref := range refByProxy {
+		fidSet[ref.fid] = true
+	}
+	fids := make([]string, 0, len(fidSet))
+	for fid := range fidSet {
+		fids = append(fids, fid)
+	}
+	// SORTED FOR THE SAME REASON codeOrigins SORTS: the ids arrive in graph
+	// edge-read order, which is not stable, and they are rendered into an error
+	// message that tests assert over.
+	sort.Strings(fids)
+	return fids
 }
 
 // codeRef is a hydrated code proxy's pointer into the code graph: the repo and the

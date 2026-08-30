@@ -35,13 +35,6 @@ import (
 // hydrate read resolves the ranked Hit IDs to nodes) — the segment lifecycle is
 // entirely local.
 
-// notLoggedInCaller is the not-logged-in loginState the offline Manager takes so the
-// source factory selects the L2-local segmentSource (no server segment RPC). It is
-// the tools-side analog of segmentdist's own login stub (unexported there).
-type notLoggedInCaller struct{}
-
-func (notLoggedInCaller) LoggedIn(context.Context) bool { return false }
-
 // offlineBM25Corpus builds a fixed-size BM25 corpus (kept at the MinSegmentDocs
 // default; the field write force-seals it into one segment) where one designated
 // target doc carries a unique high-IDF term. Mirrors segmentdist/manager_search_test.go's
@@ -95,16 +88,18 @@ func TestInterceptSearchKnowledge_OfflineReturnsRealResults(t *testing.T) {
 	ep, eh := knowledgev1connect.NewEngineServiceHandler(eng)
 	mux.Handle(ep, eh)
 	srv := httptest.NewServer(h2c.NewHandler(mux, &http2.Server{}))
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 
 	gc := graphclient.NewGraphClientForURL(srv.URL)
+	t.Cleanup(gc.CloseIdleConnections)
 
 	// Populate the Manager with real BM25 segments under knowledge/"default" (the
 	// graph+name composeKnowledgeSearch queries). A NOT-logged-in caller routes the
 	// Manager to the L2-local source, so the field write plus its re-emit seal the
 	// field-bearing docs into the on-disk L2 cache with ZERO server RPC — the offline
 	// degrade arm is BM25-over-local-L2, no vectors.
-	mgr := segmentdist.NewManager(notLoggedInCaller{}, t.TempDir(), 0)
+	mgr := segmentdist.NewManager(t.TempDir(), 0)
+	t.Cleanup(mgr.Close)
 	require.NoError(t, mgr.AddAndMarkDirtyFields(ctx, kgtypes.GraphKnowledge, knowledgeDefaultName, docs))
 	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphKnowledge, knowledgeDefaultName))
 

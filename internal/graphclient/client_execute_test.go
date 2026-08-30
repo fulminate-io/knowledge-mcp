@@ -59,12 +59,6 @@ func (s *stubEngine) Index(
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("stubEngine: Index not scripted"))
 }
 
-func (s *stubEngine) Hive(
-	context.Context, *connect.Request[knowledgev1.HiveRequest],
-) (*connect.Response[knowledgev1.HiveResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("stubEngine: Hive not scripted"))
-}
-
 func (s *stubEngine) PipelineScan(
 	context.Context, *connect.Request[knowledgev1.PipelineScanRequest],
 ) (*connect.Response[knowledgev1.PipelineScanResponse], error) {
@@ -110,9 +104,9 @@ func newEngineHarness(
 
 	h2s := &http2.Server{}
 	srv := httptest.NewServer(h2c.NewHandler(mux, h2s))
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 
-	return NewGraphClientForURL(srv.URL)
+	return closeIdleOnCleanup(t, NewGraphClientForURL(srv.URL))
 }
 
 // TestGraphClientExecute_ReturnsResponse asserts the wrapper issues

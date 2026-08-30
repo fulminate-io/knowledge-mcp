@@ -17,6 +17,11 @@
 // would re-fire every tick forever. So the trigger is SELF-CALIBRATING: after a pass
 // it re-reads both operands and remembers the gap it settled at, and only a gap
 // LARGER than that remembered residue fires again.
+//
+// THE ROUND-ROBIN SCHEDULING LIVES IN client_segment_repair_rotation.go — the per-pass
+// reset, the offer and the grant this cascade calls at STEP 1 and STEP 7b. It is a
+// separate concern: that file decides whose turn it is, this one decides whether the
+// graph whose turn it is actually needs a repair.
 
 package bootstrap
 
@@ -33,56 +38,6 @@ import (
 // whole auto-heal, and a repair that cannot run is no reason to stop healing a pool
 // that collapses later.
 const repairFailureDisarm = 3
-
-// beginRepairTick resets the per-pass round-robin bookkeeping. Called at the head of
-// every reconcile pass.
-//
-// THE WRAP USES THE PREVIOUS PASS'S OFFER COUNT, which is why segmentRepairSeen is
-// kept rather than derived. Wrapping only when a pass granted nothing would cost a
-// whole idle tick per rotation, and on a single-graph daemon it would starve that
-// graph on every other pass — the cursor would sit at 1 with nothing at index 1 to
-// serve.
-func (c *client) beginRepairTick() {
-	c.segmentRepairMu.Lock()
-	defer c.segmentRepairMu.Unlock()
-	if c.segmentRepairSeen > 0 && c.segmentRepairCursor >= c.segmentRepairSeen {
-		c.segmentRepairCursor = 0
-	}
-	c.segmentRepairTickClaimed = false
-	c.segmentRepairSeen = 0
-}
-
-// claimRepairSlot decides, under ONE critical section, whether this graph is the
-// pass's repair slot.
-//
-// THE CURSOR ADVANCES AT CLAIM, NOT ON SUCCESS. Rotating only after a successful
-// repair starves every graph behind one whose repair keeps failing.
-//
-// CONCURRENT PASSES, stated rather than assumed: the flag is per-client and reset per
-// pass, and the reconcile pass has no re-entrancy guard, so a boot-delay pass
-// overlapping the ticker can admit at most TWO repairs in that window rather than
-// one. That is the accepted bound — RepairUncoveredSegments' own single-flight still
-// prevents two passes on the SAME graph.
-func (c *client) claimRepairSlot() bool {
-	c.segmentRepairMu.Lock()
-	defer c.segmentRepairMu.Unlock()
-	// The offer count advances for EVERY graph, including the ones that do not get
-	// the slot: it is what the next pass's wrap compares the cursor against, so it
-	// has to measure the whole rotation. Stopping it at the grant leaves it reading 1
-	// forever, which wraps the cursor every pass and starves every graph but the
-	// first.
-	seen := c.segmentRepairSeen
-	c.segmentRepairSeen++
-	if c.segmentRepairTickClaimed {
-		return false
-	}
-	if seen < c.segmentRepairCursor {
-		return false // an earlier graph in the rotation owns a later tick's slot.
-	}
-	c.segmentRepairTickClaimed = true
-	c.segmentRepairCursor++
-	return true
-}
 
 // repairUncoveredGraph is the detector: it decides whether ONE graph sits in the
 // coverage-repair band and, if so, runs a pass and recalibrates from what it
@@ -118,6 +73,28 @@ func repairCoverageReads(
 	return embedded, covered, true
 }
 
+// repairBandAdmits reports whether a graph's coverage counts sit in the band the
+// BOUNDED repair arm serves. Its three clauses are the arm's admission rule and each
+// is load-bearing: below the floor the ratio is noise and the zero-presence heal owns
+// the graph; at or above the denominator this is the over-coverage residue class, not
+// this arm's; below the ratio the existing heal already fires.
+//
+// ITS OPERANDS ARE COVERAGE COUNTS, and a caller supplying a different pair is making
+// a claim rather than reusing a helper: `embedded` is the denominator of nodes the
+// local index is expected to hold, and `covered` is the numerator of distinct
+// live-searchable ids it actually holds.
+//
+// TWO CALLERS: the periodic backstop detector's STEP 4 below, and the quiescence
+// balance verdict's routing to this same arm. It is EXTRACTED rather than copied for
+// the reason degenerateAgainstEmbedded records at its own declaration — a second copy
+// of a band predicate beside the first is precisely how the two come to disagree about
+// which graphs need rebuilding.
+func repairBandAdmits(embedded, covered int) bool {
+	return embedded >= tools.SegmentCoverageFloor &&
+		covered < embedded &&
+		float64(covered) >= tools.CoverageRatioThreshold*float64(embedded)
+}
+
 // repairUncoveredGraphWith is the body, parameterized on its dependencies.
 func (c *client) repairUncoveredGraphWith(
 	ctx context.Context, g segmentGraphRef, deps repairArmDeps, periodic bool,
@@ -127,11 +104,13 @@ func (c *client) repairUncoveredGraphWith(
 	// PERIODIC sweep and only for a graph whose persisted record does not already
 	// answer the question.
 	//
-	// IT PRECEDES THE ROUND-ROBIN CLAIM ON PURPOSE. The claim ADVANCES THE ROTATION
-	// CURSOR for every graph it is offered, so a gated graph placed after it would
-	// consume the rotation slot it then declines — starving the one graph that
-	// actually needs a scan behind a fleet of converged ones. It also precedes the two
-	// coverage reads, which is the RPC cost it exists to avoid paying.
+	// IT PRECEDES THE ROUND-ROBIN OFFER ON PURPOSE. The offer advances the rotation's
+	// OFFER COUNT for every graph it sees, so a gated graph placed after it would take a
+	// turn it then declines. It also precedes the two coverage reads, which is the RPC
+	// cost it exists to avoid paying — and after the offer/grant split that matters
+	// MORE, not less: every graph offered before the tick grants now pays those reads,
+	// so the gate that keeps converged graphs from being offered at all is what bounds
+	// the fleet-wide cost.
 	//
 	// An unreadable record falls through to a scan, which is the safe direction: an
 	// un-run backstop costs one pass, a wrongly-skipped one leaves corruption unfound.
@@ -150,15 +129,24 @@ func (c *client) repairUncoveredGraphWith(
 
 	// STEP 0b — THE RESIDENCY GATE (see repairArmDeps.Evicted for why a zero from an
 	// evicted pool must not reach STEP 4's band, and why this writes NO STEP 4a
-	// record). Ahead of the claim below for STEP 0's reason: the claim advances the
-	// rotation cursor for every graph it is offered.
+	// record). Ahead of the offer below for STEP 0's reason, and so an evicted pool is
+	// never loaded to answer a question this arm has already declined.
 	if deps.Evicted(g) {
 		return
 	}
 
-	// STEP 1 — the round-robin slot, taken BEFORE any probe read, so a graph without
-	// the slot costs nothing at all: not a scan, not even the two reads.
-	if !c.claimRepairSlot() {
+	// STEP 1 — the round-robin OFFER. It does not spend the tick's grant; STEP 7b does,
+	// once every gate that can decline has passed. A graph the offer turns away costs
+	// nothing at all — not a scan, not even the two reads — and once the tick has
+	// granted, every later graph is turned away here.
+	//
+	// AN OFFERED GRAPH THAT LATER DECLINES DOES pay the two coverage reads, which is the
+	// price of the fix: the alternative is a decliner consuming the tick's only grant and
+	// every graph behind it waiting a whole tick. Three things bound the set that pays —
+	// STEP 0 excludes every graph with a converged record fresher than the backstop
+	// interval, STEP 0b excludes evicted pools, and a STEP 4 decliner seeds a record that
+	// makes STEP 0 suppress it from the next tick onward.
+	if !c.offerRepairSlot() {
 		return
 	}
 
@@ -168,13 +156,9 @@ func (c *client) repairUncoveredGraphWith(
 		return
 	}
 
-	// STEP 4 — the band. Every clause is load-bearing: below the floor the ratio is
-	// noise and the zero-presence heal owns the graph; at or above the denominator
-	// this is the over-coverage residue class, not this arm's; below the ratio the
-	// existing heal already fires.
-	if embedded < tools.SegmentCoverageFloor ||
-		covered >= embedded ||
-		float64(covered) < tools.CoverageRatioThreshold*float64(embedded) {
+	// STEP 4 — the band, through the one predicate the quiescence verdict's routing
+	// shares. Every clause is load-bearing; repairBandAdmits states which and why.
+	if !repairBandAdmits(embedded, covered) {
 		// STEP 4a — THE DECLINED-GRAPH SEED. A graph this arm declines never reaches
 		// STEP 8, so it would never earn a repair record and never earn a merge
 		// horizon: STEP 0 would re-read its two coverage counts on every rotation
@@ -220,6 +204,11 @@ func (c *client) repairUncoveredGraphWith(
 			"graph_type", g.gt, "name", g.name)
 		return
 	}
+
+	// STEP 7b — SPEND THE TICK'S GRANT. Placed after every gate that can decline, which
+	// is the whole point of splitting the offer from the grant: the slot is spent on a
+	// graph that is about to be repaired, never on one that is about to say no.
+	c.grantRepairSlot()
 
 	// STEP 8 — the pass.
 	out, err := deps.Repair(ctx, g)
@@ -426,6 +415,23 @@ func (c *client) claimBackstopSeed(g segmentGraphRef) bool {
 		return false
 	}
 	c.segmentBackstopSeeded[g] = struct{}{}
+	return true
+}
+
+// claimFloorRecovery reports whether this process has yet to attempt the
+// unreadable-retention-floor recovery rebuild for g, marking it attempted. Same
+// shape and same mutex as claimBackstopSeed, and lazily created for the same reason:
+// a *client built directly by a test harness needs no extra wiring.
+func (c *client) claimFloorRecovery(g segmentGraphRef) bool {
+	c.segmentRepairMu.Lock()
+	defer c.segmentRepairMu.Unlock()
+	if c.segmentFloorRecovered == nil {
+		c.segmentFloorRecovered = make(map[segmentGraphRef]struct{})
+	}
+	if _, done := c.segmentFloorRecovered[g]; done {
+		return false
+	}
+	c.segmentFloorRecovered[g] = struct{}{}
 	return true
 }
 

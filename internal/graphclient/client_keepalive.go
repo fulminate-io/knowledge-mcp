@@ -17,7 +17,7 @@ import (
 // loop can be driven by a mock in tests without spinning up an
 // httptest server per unit case.
 type healthPinger interface {
-	Check(ctx context.Context, req *connect.Request[knowledgev1.HealthCheckRequest]) (*connect.Response[knowledgev1.HealthCheckResponse], error)
+	Check(ctx context.Context, req *connect.Request[knowledgev1.CheckRequest]) (*connect.Response[knowledgev1.CheckResponse], error)
 }
 
 // StartKeepalive launches a background goroutine that pings
@@ -61,7 +61,7 @@ func (c *GraphClient) keepaliveLoopWith(
 		case <-ticks:
 			pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			_, err := pinger.Check(pingCtx,
-				connect.NewRequest(&knowledgev1.HealthCheckRequest{}))
+				connect.NewRequest(&knowledgev1.CheckRequest{}))
 			cancel()
 			if err != nil {
 				consecutive++

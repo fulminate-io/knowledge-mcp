@@ -86,9 +86,9 @@ func TestAccountHeader_ConnectCloudClient(t *testing.T) {
 
 	capt := newAccountCapture(t)
 	srv := httptest.NewServer(capt)
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 
-	gc := NewCloudGraphClient(srv.URL, auth.StaticTokenSource{AccessToken: "tok-acct"})
+	gc := closeIdleOnCleanup(t, NewCloudGraphClient(srv.URL, auth.StaticTokenSource{AccessToken: "tok-acct"}))
 	_, err := gc.Execute(opCtx(), &knowledgev1.ExecuteRequest{
 		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{ById: "x"}},
 	})
@@ -110,9 +110,9 @@ func TestAccountHeader_AbsentWhenUnsetAndOnLocalClient(t *testing.T) {
 
 		capt := newAccountCapture(t)
 		srv := httptest.NewServer(capt)
-		t.Cleanup(srv.Close)
+		t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 
-		gc := NewCloudGraphClient(srv.URL, auth.StaticTokenSource{AccessToken: "tok-none"})
+		gc := closeIdleOnCleanup(t, NewCloudGraphClient(srv.URL, auth.StaticTokenSource{AccessToken: "tok-none"}))
 		_, err := gc.Execute(opCtx(), &knowledgev1.ExecuteRequest{
 			Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{ById: "x"}},
 		})
@@ -128,9 +128,9 @@ func TestAccountHeader_AbsentWhenUnsetAndOnLocalClient(t *testing.T) {
 
 		capt := newAccountCapture(t)
 		srv := httptest.NewServer(h2c.NewHandler(capt, &http2.Server{}))
-		t.Cleanup(srv.Close)
+		t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 
-		gc := NewGraphClientForURL(srv.URL)
+		gc := closeIdleOnCleanup(t, NewGraphClientForURL(srv.URL))
 		_, err := gc.Execute(opCtx(), &knowledgev1.ExecuteRequest{
 			Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{ById: "x"}},
 		})
@@ -157,9 +157,9 @@ func TestAccountInterceptor_RefusesRejectedSelection(t *testing.T) {
 		mu.Unlock()
 		capt.ServeHTTP(w, r)
 	}))
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 
-	gc := NewCloudGraphClient(srv.URL, auth.StaticTokenSource{AccessToken: "tok-refuse"})
+	gc := closeIdleOnCleanup(t, NewCloudGraphClient(srv.URL, auth.StaticTokenSource{AccessToken: "tok-refuse"}))
 	req := &knowledgev1.ExecuteRequest{
 		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{ById: "x"}},
 	}

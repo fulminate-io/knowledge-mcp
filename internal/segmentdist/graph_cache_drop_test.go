@@ -38,7 +38,7 @@ func plantCacheFile(t *testing.T, path string, size int) {
 func TestDropGraphCache_RemovesEveryFormatDir(t *testing.T) {
 	t.Parallel()
 
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	hnswDir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "dropRepo", hnsw.New().Name())
 	bm25Dir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "dropRepo", bm25.New().Name())
@@ -73,7 +73,7 @@ func TestDropGraphCache_RemovesEveryFormatDir(t *testing.T) {
 func TestDropGraphCache_NeverLoadedGraphIsCleanNoOp(t *testing.T) {
 	t.Parallel()
 
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	otherDir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "keepRepo", hnsw.New().Name())
 	plantCacheFile(t, filepath.Join(otherDir, "keep.seg"), 42)

@@ -37,11 +37,10 @@ const (
 
 // propGraph is one graph under test in the randomized property test: a real HNSW
 // embed engine over the seam-injected instrumented cache, reconstructable across a
-// simulated restart (same dir + same caller, fresh distManager).
+// simulated restart (same dir, fresh distManager).
 type propGraph struct {
 	name    string
 	dir     string
-	caller  *fakeSegmentSource
 	dm      *distManager[[]byte, struct{}]
 	ic      *instrumentedCache
 	nextDoc int
@@ -87,13 +86,12 @@ func runPropertyWithSeed(t *testing.T, seed int64) {
 
 	graphs := make([]*propGraph, propGraphsPerStream)
 	for i := range graphs {
-		_, gc := newSegmentHarness(t)
 		// Seed-scoped graph name so distinct streams never collide on a cache dir or
 		// a server graphKey (each stream gets its own t.TempDir() too).
 		name := graphNameFor(seed, i)
 		dir := t.TempDir()
-		dm, ic := buildHNSWReclaimManagerOn(t, gc, gt, name, dir, randCountTarget(rng))
-		graphs[i] = &propGraph{name: name, dir: dir, caller: gc, dm: dm, ic: ic}
+		dm, ic := buildHNSWReclaimManagerOn(t, gt, name, dir, randCountTarget(rng))
+		graphs[i] = &propGraph{name: name, dir: dir, dm: dm, ic: ic}
 	}
 	defer func() {
 		for _, g := range graphs {
@@ -151,15 +149,18 @@ func runPropertyWithSeed(t *testing.T, seed int64) {
 			if id, ok := anyLiveDocID(g.dm); ok && liveDocCount(g.dm) >= 6 {
 				g.dm.engine.Delete(id)
 			}
-		case 2: // ROLE-B embed ship
-			_, err := g.dm.ship(ctx, g.dm.locallyShipped)
-			require.NoError(t, err)
-		case 3: // ROLE-A: a full-corpus replace-prune ship (the FinalizeRebuild shape)
-			_, err := g.dm.ship(ctx, g.dm.shippedIDs)
-			require.NoError(t, err)
-		case 4: // restart: fresh distManager over the same dir + caller, then reload
+		case 2, 3:
+			// THE TWO SHIP ROLES COLLAPSED INTO ONE OPERATION. They were ROLE-B (prune
+			// against the locally-shipped set) and ROLE-A (replace-prune against the
+			// full shipped set);
+			// both were distinguished by which server-side prune scope they passed, and
+			// there is no server prune. What remains of either is the same local write.
+			// Both arms are kept so the randomized walk still reaches this operation at
+			// the original frequency rather than half of it.
+			require.NoError(t, g.dm.writeNewBlobsToL2(g.dm.engine.Export()))
+		case 4: // restart: fresh distManager over the same dir, then reload
 			g.dm.engine.Close()
-			dm, ic := buildHNSWReclaimManagerOn(t, g.caller, gt, g.name, g.dir, randCountTarget(rng))
+			dm, ic := buildHNSWReclaimManagerOn(t, gt, g.name, g.dir, randCountTarget(rng))
 			g.dm, g.ic = dm, ic
 			require.NoError(t, g.dm.load(ctx))
 		}

@@ -65,27 +65,54 @@ func dispatchQueryByID(ctx context.Context, exec ExecuteFn, args json.RawMessage
 	}
 
 	// Edge summary (include_edges): paged pivot edge read + ONE bulk peer hydrate.
+	// truncated is the HYDRATE's verdict; the edge drain itself is complete-or-loud.
+	truncated := false
 	var edges []nodeEdgeInfo
 	if wantEdges {
-		edges, err = composeEdgeSummary(ctx, exec, a.ID, a.IncludeTombstones, target)
+		var edgesTruncated bool
+		edges, edgesTruncated, err = composeEdgeSummary(ctx, exec, a.ID, a.IncludeTombstones, target)
 		if err != nil {
 			return renderEngineError(err), true
 		}
+		truncated = truncated || edgesTruncated
 	}
 
 	// Cross-links (include_cross_links): generic linkage-graph queries.
 	var links []crossLink
 	if wantCrossLinks {
-		links, err = composeCrossLinks(ctx, exec, a.ID)
+		var linksTruncated bool
+		links, linksTruncated, err = composeCrossLinks(ctx, exec, a.ID)
 		if err != nil {
 			return renderEngineError(err), true
 		}
+		truncated = truncated || linksTruncated
 	}
 
-	if isKnowledge {
-		return renderKnowledgeNode(node, edges, links), true
-	}
-	return renderGenericNode(node, label, edges, links), true
+	// THE DISCLOSURE IS THE PEER HYDRATES', not the edge drains'. Dispatch returns
+	// this result BEFORE Compile, so nothing here reaches engine.Render. The base
+	// node read cannot truncate (one row against a 10,000-row ceiling) and both
+	// edge drains are complete-or-loud, but each composition ends in ONE unbounded
+	// QueryPlan{Ids} over a peer set the drain can make arbitrarily large, and the
+	// server clamps an id set above 10,000 on the request alone. A clamped hydrate
+	// renders edge peers under their id-prefix fallback name and DROPS cross-link
+	// rows outright, both indistinguishable from the honest absence — so the arm
+	// discloses for itself.
+	//
+	// THE ROW COUNT IS BOTH SECTIONS, not the edge list. Either flag can raise the
+	// verdict independently, and an include_cross_links-only read has no edges at
+	// all — counting len(edges) there rendered "Showing 0 rows — the server row
+	// ceiling engaged", a correct disclosure attached to a number that contradicts
+	// it.
+	//
+	// THE FORMAT CHOICE IS renderByIDResult's, not this function's: dispatch_byid.go
+	// is within a handful of lines of the 500-line cap, and the shape rules (which
+	// envelope, which legacy body, where the truncated key rides) belong beside the
+	// renderers they describe. a.Format is threaded rather than dropped — a
+	// format:"json" by-id read used to receive prose or a markdown-suffixed body
+	// with no error and no tell.
+	rows := len(edges) + len(links)
+	return WithTruncationNoticeFor(
+		renderByIDResult(node, label, isKnowledge, a.Format, edges, links, truncated), truncated, rows), true
 }
 
 // byIDNodeRead issues ONE Execute for the bare by-id node (RETURN_MODE_NODES)
@@ -121,7 +148,7 @@ func byIDNodeRead(ctx context.Context, exec ExecuteFn, id string, includeTombsto
 // composeEdgeSummary reads the node's raw edges through the bounded pivot drain
 // and hydrates their peers in ONE bulk ids[] read, shaping the result into the
 // []nodeEdgeInfo the render_node.go renderers consume. This replaces the
-// server's per-peer N+1 BuildEdgeInfo (tools_query_edges.go:51): the peer
+// server's since-removed per-peer N+1 edge-info build: the peer
 // hydrate is a single call whatever the peer count, and the edge read is paged
 // rather than per-peer. Returns nil (the renderer omits the Edges section) when
 // the node has no edges.
@@ -129,11 +156,29 @@ func byIDNodeRead(ctx context.Context, exec ExecuteFn, id string, includeTombsto
 // A node whose edge count exceeds the drain's per-page ceiling cannot be served
 // completely, and paging.DrainPivotEdges errors by name rather than returning a short
 // summary — the by-id render must not present a silent sample as the whole.
-func composeEdgeSummary(ctx context.Context, exec ExecuteFn, id string, includeTombstones bool, target *knowledgev1.GraphSelector) ([]nodeEdgeInfo, error) {
+//
+// THE EDGE READ IS COMPLETE OR THE CALL FAILS, so it contributes no truncation
+// verdict. pivotEdgePage threads the server's truncated flag out of every page,
+// but paging.DrainPivotEdges never ACCEPTS a saturated page: it halves the pivot
+// set, then re-reads a single pivot as a from_id band tiling, splits a saturating
+// band at its median interior id, and only a pivot no band can divide returns an
+// error naming the pivot and the ceiling. Its sibling DrainBandedEdges states the
+// invariant outright — "A short union is never returned." Capturing an
+// intermediate page's flag and reporting it as "this result may be incomplete"
+// would be a FALSE statement about a provably complete union.
+//
+// THE PEER HYDRATE IS A DIFFERENT READ AND IT IS NOT COMPLETE-OR-LOUD. It is one
+// unbounded QueryPlan{Ids} over the drained union's peer set, and the server
+// clamps an id set above 10,000 on the request alone — see bulkHydratePeers. Its
+// verdict is the bool this function returns, and it is the ONLY truncation this
+// arm can suffer. An earlier revision of this comment certified the whole
+// composition complete-or-loud on the strength of the edge read alone; that was
+// true of the edges and false of the summary.
+func composeEdgeSummary(ctx context.Context, exec ExecuteFn, id string, includeTombstones bool, target *knowledgev1.GraphSelector) ([]nodeEdgeInfo, bool, error) {
 	if id == "" {
 		// An edges plan with no pivot means "every edge of the graph" — never what
 		// an empty by-id summary wants.
-		return nil, nil
+		return nil, false, nil
 	}
 	// (2) RETURN_MODE_EDGES: raw []knowledgev1.Edge for the pivot, both
 	// directions (Forward unset → BothEdges in collectEdgesForReturnMode), read
@@ -143,10 +188,10 @@ func composeEdgeSummary(ctx context.Context, exec ExecuteFn, id string, includeT
 			return pivotEdgePage(ctx, exec, idPage, paging.EdgeFromBandOrNil(fromIDGte, fromIDLt), includeTombstones, target)
 		})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if len(rawEdges) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 
 	// Shape []knowledgev1.Edge → []nodeEdgeInfo (peer-name unresolved yet). For an
@@ -174,23 +219,23 @@ func composeEdgeSummary(ctx context.Context, exec ExecuteFn, id string, includeT
 	for pid := range peerSet {
 		peerIDs = append(peerIDs, pid)
 	}
-	peers, err := bulkHydratePeers(ctx, exec, peerIDs, target)
+	peers, peersTruncated, err := bulkHydratePeers(ctx, exec, peerIDs, target)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	for i := range infos {
 		if peer, ok := peers[infos[i].PeerID]; ok {
 			infos[i].PeerName = peer.SymbolName
 			infos[i].PeerType = peer.Type
 		}
-		// Fallback peer name mirrors BuildEdgeInfo (tools_query_edges.go:63): a
+		// Fallback peer name carries forward the server's rendering: a
 		// truncated id when the peer has no SymbolName / was not resolved.
 		if infos[i].PeerName == "" {
 			pid := infos[i].PeerID
 			infos[i].PeerName = pid[:min(12, len(pid))]
 		}
 	}
-	return infos, nil
+	return infos, peersTruncated, nil
 }
 
 // pivotEdgePage issues ONE bounded RETURN_MODE_EDGES read over a page of pivot
@@ -241,34 +286,45 @@ func pivotEdgePage(
 // bulkHydratePeers issues ONE Execute (QueryPlan{Ids: peerIDs} → []*knowledgev1.Node)
 // and returns a peerID→Node map. An empty id set is a no-op (no Execute, empty
 // map). This is the single bulk read that replaces the per-peer N+1.
-func bulkHydratePeers(ctx context.Context, exec ExecuteFn, peerIDs []string, target *knowledgev1.GraphSelector) (map[string]*knowledgev1.Node, error) {
+//
+// THE SECOND RETURN IS THE SERVER'S TRUNCATION VERDICT, and it is REAL on this
+// read rather than a formality. The plan carries NO Limit, and the id set is
+// unbounded by construction: it is the peer set of a drained edge union, and the
+// drain's band split exists precisely to serve a pivot whose edge count exceeds
+// the 50,000-row edge cap. executeTruncation flags
+// `len(p.GetIds()) > maxExecuteNodeRows` (10,000) on the REQUEST alone, so a
+// hot node's peer set is clamped and the server returns at most 10,000 rows.
+// Every unreturned peer then renders under the truncated-id fallback name,
+// indistinguishable from a peer that genuinely has no SymbolName — which is the
+// silent narrowing this whole read path exists to stop.
+func bulkHydratePeers(ctx context.Context, exec ExecuteFn, peerIDs []string, target *knowledgev1.GraphSelector) (map[string]*knowledgev1.Node, bool, error) {
 	if len(peerIDs) == 0 {
-		return map[string]*knowledgev1.Node{}, nil
+		return map[string]*knowledgev1.Node{}, false, nil
 	}
 	resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{Ids: peerIDs}},
 		Target: target,
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	nodes, derr := decodeNodes(resp)
 	if derr != nil {
-		return nil, derr
+		return nil, false, derr
 	}
 	out := make(map[string]*knowledgev1.Node, len(nodes))
 	for _, n := range nodes {
 		out[n.Id] = n
 	}
-	return out, nil
+	return out, resp.GetTruncated(), nil
 }
 
 // linkageTarget is the GraphSelector for the linkage graph — the second DB the
 // cross-link composition queries, mirroring the legacy ResolveLinkageGraph.
 var linkageTarget = &knowledgev1.GraphSelector{Graph: "linkage"}
 
-// composeCrossLinks reproduces the server-side cross-link collection
-// (FindLinkageProxies + CollectProxyCrossLinks, tools_query_linkage.go) using
+// composeCrossLinks reproduces the server-side cross-link collection (proxy
+// lookup then per-proxy cross-link gather, both since removed) using
 // GENERIC Execute primitives against the linkage graph:
 //
 //   - FindLinkageProxies: (1) a by-id read against linkage — if the node IS a
@@ -286,20 +342,24 @@ var linkageTarget = &knowledgev1.GraphSelector{Graph: "linkage"}
 // per-proxy edge reads drain bounded pages, and the peer hydrate is one bulk
 // ids[] read rather than a per-peer round trip. The proxy count is low single
 // digits in practice.
-func composeCrossLinks(ctx context.Context, exec ExecuteFn, nodeID string) ([]crossLink, error) {
+func composeCrossLinks(ctx context.Context, exec ExecuteFn, nodeID string) ([]crossLink, bool, error) {
 	proxies, err := findLinkageProxies(ctx, exec, nodeID)
 	if err != nil {
-		return nil, nil //nolint:nilerr // absent/empty linkage graph = no cross-links, not an error (mirrors legacy collectCrossLinks)
+		return nil, false, nil //nolint:nilerr // absent/empty linkage graph = no cross-links, not an error (mirrors legacy collectCrossLinks)
 	}
 	var links []crossLink
+	truncated := false
 	for _, proxy := range proxies {
-		pls, perr := collectProxyCrossLinks(ctx, exec, proxy)
+		pls, pTruncated, perr := collectProxyCrossLinks(ctx, exec, proxy)
 		if perr != nil {
-			return nil, perr
+			return nil, false, perr
 		}
+		// OR across proxies: any clamped peer hydrate drops cross-link rows, and a
+		// later whole proxy does not restore them.
+		truncated = truncated || pTruncated
 		links = append(links, pls...)
 	}
-	return links, nil
+	return links, truncated, nil
 }
 
 // findLinkageProxies resolves the linkage proxies referencing nodeID via the two
@@ -371,21 +431,26 @@ func findLinkageProxies(ctx context.Context, exec ExecuteFn, nodeID string) ([]*
 // proxy: the proxy's edges (both directions) read through the bounded pivot
 // drain + ONE bulk peer hydrate, building []crossLink with proxyInfoWire for
 // each peer.
-func collectProxyCrossLinks(ctx context.Context, exec ExecuteFn, proxy *knowledgev1.Node) ([]crossLink, error) {
+//
+// The second return is the peer hydrate's truncation verdict, and it matters
+// MORE here than on the edge summary: an unresolved peer is not merely rendered
+// without a name, it is SKIPPED (see the loop below), so a clamped hydrate drops
+// cross-link rows outright.
+func collectProxyCrossLinks(ctx context.Context, exec ExecuteFn, proxy *knowledgev1.Node) ([]crossLink, bool, error) {
 	if proxy.GetId() == "" {
 		// An edges plan with no pivot means "every edge of the graph" — never what
 		// a per-proxy cross-link read wants.
-		return nil, nil
+		return nil, false, nil
 	}
 	rawEdges, err := paging.DrainPivotEdges([]string{proxy.Id}, paging.EdgePivotPageSize, CorrelationsEdgeScanCap,
 		func(idPage []string, fromIDGte, fromIDLt string) ([]knowledgev1.Edge, bool, error) {
 			return pivotEdgePage(ctx, exec, idPage, paging.EdgeFromBandOrNil(fromIDGte, fromIDLt), false, linkageTarget)
 		})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if len(rawEdges) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 
 	// Shape edges → (peerID, edgeType, direction); collect peer IDs.
@@ -410,9 +475,9 @@ func collectProxyCrossLinks(ctx context.Context, exec ExecuteFn, proxy *knowledg
 	for pid := range peerSet {
 		peerIDs = append(peerIDs, pid)
 	}
-	peers, err := bulkHydratePeers(ctx, exec, peerIDs, linkageTarget)
+	peers, peersTruncated, err := bulkHydratePeers(ctx, exec, peerIDs, linkageTarget)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	links := make([]crossLink, 0, len(rows))
@@ -430,5 +495,5 @@ func collectProxyCrossLinks(ctx context.Context, exec ExecuteFn, proxy *knowledg
 			PeerInfo:  kgwire.ProxyInfo(peer),
 		})
 	}
-	return links, nil
+	return links, peersTruncated, nil
 }

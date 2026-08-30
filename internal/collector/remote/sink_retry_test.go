@@ -244,6 +244,7 @@ func TestCollectChunkRetry_BudgetBoundedAndAppErrorsSurface(t *testing.T) {
 // "remote sink: Finalize: unknown: 524" — the same ambiguous shape landing on
 // the one upload call that had no retry at all.
 func TestFinalizeRetry_AmbiguousUnknownRetriedOnce(t *testing.T) {
+	isolateDiscoveryStore(t)
 	eng := &scriptedIngest{
 		onFinalize: func(n int32) error {
 			if n == 1 {
@@ -295,6 +296,7 @@ func TestFinalizeRetry_AmbiguousUnknownRetriedOnce(t *testing.T) {
 // happens. It does NOT prove the server sheds at the floor; that is the admission
 // test's job, and the live pgdog check's.
 func TestFinalizeRetry_ShedThenSucceeds(t *testing.T) {
+	isolateDiscoveryStore(t)
 	for _, tc := range []struct {
 		name string
 		opts []connect.ClientOption

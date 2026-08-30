@@ -6,7 +6,9 @@ import (
 	"context"
 	"time"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
 // pipeline_collectors.go holds the per-graph collector lifecycle on *Pipeline:
@@ -17,9 +19,11 @@ import (
 // RegisterGraph spawns the per-graph collector goroutines for (gt, name): one
 // loop per ENABLED axis — the summary loop when a summarizer is configured
 // (p.summaryEnabled()) and the embed loop when an embedder is configured
-// (p.embedEnabled()), both threaded onto the collector here. Called by the
-// registry hook (Phase 6) when a graph loads. Re-registration of an
-// already-tracked graph is a no-op — the registry hook fires once per load.
+// (p.embedEnabled()), both threaded onto the collector here. Called by
+// refreshOnce (pipeline_refresh.go), the client-side graph-list refresh loop
+// — its only production caller. Re-registration of an already-tracked graph
+// is a no-op, so a refresh pass that re-lists a known graph does not
+// double-register.
 //
 // No client-side graph-type eligibility gate (Option B): the
 // collector is spawned for EVERY loaded graph regardless of summary/embed
@@ -29,11 +33,9 @@ import (
 // does one empty scan then cheap-tick-polls forever (no per-tick O(N) walk).
 // The graph-type eligibility decision lives server-side exclusively.
 //
-// MUST NOT call back into the store registry synchronously per ticket
-// reviewer R1: graph-load → notifyGraphLoaded → RegisterGraph runs while
-// the registry's writeMu may still be held by callers in the resolution
-// path. The collector goroutines lazy-Retrieve on their first tick so
-// no synchronous lookup happens here.
+// Does no synchronous graph lookup: the collector goroutines lazy-Retrieve
+// on their first tick, so registration is cheap and never blocks the refresh
+// loop on a backend round-trip.
 func (p *Pipeline) RegisterGraph(ctx context.Context, gt kgtypes.GraphType, name string) {
 	key := graphKey{GraphType: gt, GraphName: name}
 	// Resolve the CONCRETE backend this collector scans + stamps. Login-routed
@@ -80,7 +82,48 @@ func (p *Pipeline) RegisterGraph(ctx context.Context, gt kgtypes.GraphType, name
 	if p.collectGateFactory != nil {
 		collectInFlight = p.collectGateFactory(gt, name)
 	}
-	c := newCollector(gt, name, p.cfg, p.summaryCh, p.embedCh, p.metrics, backend, base, idleMax, flush, heal, p.summaryEnabled(), p.embedEnabled(), p.genSnapshotFor, collectInFlight)
+	// The epoch source stays NIL when no factory is wired, and the collector treats
+	// that as "cannot evaluate" rather than as epoch zero — see
+	// AttachCollectEpochFactory.
+	var collectEpoch func() uint64
+	if p.collectEpochFactory != nil {
+		collectEpoch = p.collectEpochFactory(gt, name)
+	}
+	c := newCollector(gt, name, p.cfg, p.summaryCh, p.embedCh, p.metrics, backend, base, idleMax, flush, heal, p.summaryEnabled(), p.embedEnabled(), p.genSnapshotFor, collectInFlight, collectEpoch)
+	// Build the per-graph QUIESCENCE-EDGE balance verdict from the bootstrap-supplied
+	// factory, over the same closure seam as flush and heal above. Assigned after
+	// construction rather than threaded through newCollector's already-long positional
+	// list, matching how the BM25 arm's closures below are installed. nil when nothing
+	// is wired (test fakes) or when the factory declines a graph with no rebuildable
+	// segments → the collector's balance edge no-ops.
+	if p.balanceFactory != nil {
+		c.balanceAtQuiescence = p.balanceFactory(gt, name)
+	}
+	// Build the BM25 arm's closures over the SAME p.segmentMgr the flush closure
+	// uses, so the collector keeps no segmentdist dependency — it sees only funcs.
+	// Bound to (gt, name) so each arm reads and advances only its own graph's cursor.
+	//
+	// THE GRAPH GATE IS AN EXISTING PREDICATE (HasRebuildableSegments), reused rather
+	// than re-derived: it is fail-closed, so transformers/linkage/logs/web/pdf are
+	// excluded by construction rather than by a hand-rolled rule that could silently
+	// admit them. checks IS admitted — its check findings carry segments, and its
+	// deliberately-wrong fixture nodes are refused server-side by node type.
+	if bm25ArmEnabledFor(gt, p.segmentMgr != nil) {
+		mgr := p.segmentMgr
+		c.bm25 = bm25Arm{
+			enabled:     true,
+			wake:        make(chan struct{}, 1),
+			loadCursors: func() ([]*knowledgev1.LayerCursor, error) { return mgr.LoadBM25Cursors(gt, name) },
+			saveCursors: func(cur []*knowledgev1.LayerCursor) error { return mgr.SaveBM25Cursors(gt, name, cur) },
+			corpusStamp: func() (int64, bool) { return p.corpusStampFor(key) },
+			ship: func(sctx context.Context, docs []searchengine.Document) error {
+				return mgr.AddAndMarkDirtyFields(sctx, gt, name, docs)
+			},
+			deleteIDs: func(dctx context.Context, ids []searchengine.ExternalID) error {
+				return mgr.DeleteFromBuckets(dctx, gt, name, ids)
+			},
+		}
+	}
 	p.collectorWakes[key] = []chan struct{}{c.summaryWake, c.embedWake}
 	p.collectorWG.Go(func() {
 		c.run(cctx)

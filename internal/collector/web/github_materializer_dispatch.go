@@ -113,7 +113,7 @@ func (s *crawlState) materializeRepo(ctx context.Context, fc *fetchClient, raw s
 		return
 	}
 
-	enrichForRecipes(nodes, repoName)
+	enrichForRecipes(nodes, repoName, raw)
 
 	ghRoot, ghEdges := buildGhRoot(repoInfo, raw, nodes)
 	nodes = append(nodes, ghRoot)
@@ -137,7 +137,12 @@ func (s *crawlState) materializeRepo(ctx context.Context, fc *fetchClient, raw s
 // this pass a recipe operating on a github-materialized graph cannot see
 // the file path or language a NodeFile carries.
 //
-// Per NodeFile we set:
+// EVERY node in the slice — NodeFile rows, tree-sitter chunk nodes and
+// language hubs alike — is stamped with Metadata["uri"] = sourceURL, the
+// github URL the crawl was given. That stamp is written ABOVE the NodeFile
+// gate below; only the per-NodeFile enrichment is gated.
+//
+// Per NodeFile we additionally set:
 //   - SymbolName = repo-relative path (e.g. "pkg/foo.go") so page.name
 //     is meaningful and recipes can filter via page.name ~= /\.go$/.
 //   - Metadata["file_path"] = full namespaced FilePath
@@ -145,20 +150,22 @@ func (s *crawlState) materializeRepo(ctx context.Context, fc *fetchClient, raw s
 //   - Metadata["language"] = Language struct value
 //   - Metadata["repo"] = "<owner>/<repo>@<ref>"
 //
-// Other node types (chunks, language hubs) are left untouched.
-func enrichForRecipes(nodes []*knowledgev1.Node, repoName string) {
+// Other node types (chunks, language hubs) receive the uri stamp and
+// nothing else.
+func enrichForRecipes(nodes []*knowledgev1.Node, repoName, sourceURL string) {
 	prefix := repoName + "/"
 	for i := range nodes {
 		n := nodes[i]
+		if n.Metadata == nil {
+			n.Metadata = map[string]string{}
+		}
+		n.Metadata["uri"] = sourceURL
 		if kgtypes.NodeType(n.Type) != kgtypes.NodeFile {
 			continue
 		}
 		relpath := strings.TrimPrefix(n.FilePath, prefix)
 		if n.SymbolName == "" {
 			n.SymbolName = relpath
-		}
-		if n.Metadata == nil {
-			n.Metadata = map[string]string{}
 		}
 		n.Metadata["file_path"] = n.FilePath
 		n.Metadata["relpath"] = relpath
@@ -192,6 +199,10 @@ func perURLTarget(info githubURLInfo, ghRootID string) string {
 // (no path component) — there is exactly one gh-root per (owner, repo, ref)
 // and it represents the whole repository. Per-URL link targets are
 // computed separately by perURLTarget().
+//
+// sourceURL — the github URL the crawl was given — is recorded under BOTH
+// "source_url" (this node's existing spelling) and "uri" (the key every node
+// the web collector emits carries). Both stay; neither replaces the other.
 func buildGhRoot(info githubURLInfo, sourceURL string, nodes []*knowledgev1.Node) (*knowledgev1.Node, []kgwire.BatchEdge) {
 	id := fmt.Sprintf("gh-root:%s/%s@%s", info.Owner, info.Repo, info.Ref)
 	name := fmt.Sprintf("%s/%s@%s", info.Owner, info.Repo, info.Ref)
@@ -223,6 +234,7 @@ func buildGhRoot(info githubURLInfo, sourceURL string, nodes []*knowledgev1.Node
 			"repo":            info.Repo,
 			"ref":             info.Ref,
 			"source_url":      sourceURL,
+			"uri":             sourceURL,
 			"materialized_at": time.Now().UTC().Format(time.RFC3339),
 			"file_count":      fmt.Sprintf("%d", fileCount),
 		},
@@ -244,7 +256,7 @@ func buildGhRoot(info githubURLInfo, sourceURL string, nodes []*knowledgev1.Node
 // fresh shot (e.g. if maxBytes was raised mid-crawl, hypothetically).
 func (s *crawlState) appendWarning(raw string, info githubURLInfo, w *materializerWarning, key githubKey) {
 	parentID := "" // seed-URL warnings have no parent page; future enhancement could thread one through
-	node, edges := emitMaterializerWarning(parentID, info, w)
+	node, edges := emitMaterializerWarning(parentID, raw, info, w)
 	s.mu.Lock()
 	s.matNodes = append(s.matNodes, node)
 	s.matEdges = append(s.matEdges, edges...)

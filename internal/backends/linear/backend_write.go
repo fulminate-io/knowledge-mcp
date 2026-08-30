@@ -32,7 +32,7 @@ func truncateRunes(s string, maxRunes int) string {
 // in backend_write.go (rather than backend.go) because backend.go was
 // authored in Phase 3 when only 3 of 9 methods were implemented. If any
 // method's signature drifts or a method is removed, the build fails here.
-// Mirrors domains/llm/anthropic/anthropic.go (var _ llm.Client = (*Service)(nil)).
+// Mirrors internal/llm/anthropic/anthropic.go (var _ llm.Client = (*Service)(nil)).
 var _ backends.Backend = (*Backend)(nil)
 
 // resolvedTeam holds team UUID + workflow state map + label-name→id map

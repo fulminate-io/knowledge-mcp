@@ -70,7 +70,7 @@ func ParseWhere(data []byte) (*WhereNode, error) {
 	dec.DisallowUnknownFields()
 	var w WhereNode
 	if err := dec.Decode(&w); err != nil {
-		return nil, fmt.Errorf("ast/where: parse where-tree: %w (valid keys: all, any, not, kind, matches, equals, same_node, same_text, inside_pattern, contains_pattern; leaf keys: kind={of,is}, matches={of,regex}, equals={of,value}, same_node={captures}, same_text={captures}, inside_pattern={of,pattern,where,as}, contains_pattern={of,pattern,where,as})", err)
+		return nil, fmt.Errorf("ast/where: parse where-tree: %w (valid keys: all, any, not, kind, matches, equals, same_node, same_text, inside_pattern, contains_pattern, flows_to; leaf keys: kind={of,is}, matches={of,regex}, equals={of,value}, same_node={captures}, same_text={captures}, inside_pattern={of,pattern,where,as}, contains_pattern={of,pattern,where,as}, flows_to={from,to,within})", err)
 	}
 	return &w, nil
 }

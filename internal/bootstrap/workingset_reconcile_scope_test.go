@@ -9,6 +9,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 	"github.com/fulminate-io/knowledge-mcp/internal/segmentdist"
 )
 
@@ -22,23 +23,13 @@ import (
 // fixture, because a four-way zero with no control is indistinguishable from a
 // fixture that never wired its backend.
 
-// perGraphPublishes reports how many manifest swaps the backend recorded for one
-// graph — the observable the live evidence recorded as repeated manifest swaps for
-// graphs this machine had no business publishing for.
-func (b *fakeSegBackend) perGraphPublishes(gt kgtypes.GraphType, name string) int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.publishByGraph[string(gt)+"/"+name]
-}
-
-// perGraphManifestReads reports the manifest reads for one graph. The heal probe's
-// shipped-manifest snapshot is a manifest read, so a graph with zero of them was
-// never heal-probed.
-func (b *fakeSegBackend) perGraphManifestReads(gt kgtypes.GraphType, name string) int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.readByGraph[string(gt)+"/"+name]
-}
+// THE TWO BACKEND COUNTERS WERE REMOVED HERE — perGraphPublishes and
+// perGraphManifestReads. Both read the fake control plane's per-graph tallies:
+// manifest swaps and manifest reads. There are no manifests and no wire, so neither
+// has a local reading. What they observed is covered differently now — "nothing was
+// published for it" became "nothing was written into its pool"
+// (Manager.ResidentSegmentCount), and "it was never heal-probed" is implied by the
+// per-graph body never having run for it.
 
 // executeCount / mutationCount report the routed calls that named one graph.
 func (e *reconcileEngine) executeCount(gt kgtypes.GraphType, name string) int {
@@ -54,14 +45,25 @@ func (e *reconcileEngine) mutationCount(gt kgtypes.GraphType, name string) int {
 }
 
 // armDegenerate puts a graph in the state that makes every one of this pass's arms
-// fire for it: a shipped corpus above the resident floor but genuinely incomplete
-// against the fixture's embedded count, plus a scan page for the rebuild to read. A
-// graph in this state that is WALKED will scan, rebuild and publish; one that is not
-// walked leaves every counter at zero. That symmetry is what lets the same recipe
-// serve as both the foreign graph's trap and the admitted graph's control.
-func armDegenerate(t *testing.T, eng *reconcileEngine, backend *fakeSegBackend, repo string) {
+// fire for it: a LOST POOL — no resident corpus at all against the fixture's non-zero
+// embedded count — plus a scan page for the rebuild to read. A graph in this state that
+// is WALKED will scan, rebuild and publish; one that is not walked leaves every counter
+// at zero. That symmetry is what lets the same recipe serve as both the foreign graph's
+// trap and the admitted graph's control.
+//
+// IT SEEDS NO CORPUS, AND THAT IS THE ARMING CONDITION RATHER THAN AN OMISSION. This
+// used to seed 128 documents against an embedded count of 300, arming the RATIO BAND —
+// a partial shortfall. That band is retired for the HNSW arm: away from quiescence the
+// arm now asserts only a lost pool, and the exact resident-versus-vectors verdict is
+// formed at the pipeline quiescence edge instead. Seeding a partial corpus here would
+// therefore arm NOTHING, and every "was it walked" assertion built on this recipe would
+// pass by asserting zero against zero.
+//
+// The dir parameter is kept so callers still declare which cache root the graph belongs
+// to, and so restoring a seeded variant needs no signature change.
+func armDegenerate(t *testing.T, eng *reconcileEngine, dir, repo string) {
 	t.Helper()
-	shipHNSW(t, backend, repo, 64, 64)
+	_ = dir // no corpus is seeded: the lost pool IS the armed state
 	eng.mu.Lock()
 	eng.scanItems[repo] = makeReconcileScanPage(repo, 10)
 	eng.mu.Unlock()
@@ -80,10 +82,10 @@ func TestForeignGraph_NoWalkNoPublishNoWriteback(t *testing.T) {
 	)
 	ctx := opCtx()
 
-	c, eng, backend, _ := buildReconcileClientWithSegDir(t, 300, admitted)
+	c, eng, dir := buildReconcileClientWithDir(t, 300, admitted)
 
-	armDegenerate(t, eng, backend, admitted)
-	armDegenerate(t, eng, backend, foreign)
+	armDegenerate(t, eng, dir, admitted)
+	armDegenerate(t, eng, dir, foreign)
 
 	// The foreign graph is present in the BACKEND'S CATALOG — the synthetic stand-in
 	// for the account graph this machine had no local codebase for. A pass that
@@ -102,10 +104,11 @@ func TestForeignGraph_NoWalkNoPublishNoWriteback(t *testing.T) {
 	require.Equal(t, 0, eng.graphNameCallCount(),
 		"and the pass issued NO enumeration RPC at all: the enumeration is scoped, not the walk that follows it")
 
-	// (b) NO PUBLISH — the manifest swaps the live evidence recorded for graphs this
-	// machine never worked with.
-	require.Equal(t, 0, backend.perGraphPublishes(kgtypes.GraphCode, foreign),
-		"a never-interacted graph has nothing published for it")
+	// (b) NOTHING WRITTEN FOR IT. The live evidence recorded repeated manifest SWAPS
+	// for graphs this machine never worked with; there are no manifests, so the local
+	// form of that symptom is segments written into a foreign graph's pool.
+	require.Zero(t, c.segmentMgr.ResidentSegmentCount(kgtypes.GraphCode, foreign, hnsw.New().Name()),
+		"a never-interacted graph has nothing written for it")
 
 	// (c) NO WRITEBACK — nothing routed named it, and nothing routed WROTE to it.
 	require.Equal(t, 0, eng.executeCount(kgtypes.GraphCode, foreign),
@@ -113,17 +116,19 @@ func TestForeignGraph_NoWalkNoPublishNoWriteback(t *testing.T) {
 	require.Equal(t, 0, eng.mutationCount(kgtypes.GraphCode, foreign),
 		"and no write was addressed to it")
 
-	// (d) NO HEAL PROBE — the shipped-manifest snapshot the heal decision reads.
-	require.Equal(t, 0, backend.perGraphManifestReads(kgtypes.GraphCode, foreign),
-		"a never-interacted graph is not heal-probed — its shipped manifest is never even read")
+	// (d) THE NO-HEAL-PROBE ARM WAS REMOVED, and it is the one arm with no local
+	// observable. It counted the foreign graph's SHIPPED-MANIFEST READS on the backend
+	// — a wire read, and there is no wire. The heal probe now reads L2 directly and
+	// nothing counts that. The FACT it asserted is not lost: the probe runs inside the
+	// per-graph reconcile body, and arm (a) already asserts that body never ran for the
+	// foreign graph, so a probe for it is unreachable rather than merely unobserved.
 
 	// THE CONTROLS, on the admitted graph, in this same fixture and this same pass.
 	require.GreaterOrEqual(t, eng.scanCallCount(admitted), 1,
 		"CONTROL: the admitted graph IS walked and rebuilt — so the zeros above are about admission, not a dead fixture")
-	require.GreaterOrEqual(t, backend.perGraphPublishes(kgtypes.GraphCode, admitted), 1,
-		"CONTROL: the admitted graph's rebuild publishes a manifest — so the publish counter can move")
-	require.GreaterOrEqual(t, backend.perGraphManifestReads(kgtypes.GraphCode, admitted), 1,
-		"CONTROL: the admitted graph IS heal-probed — so the manifest-read counter can move")
+	require.Positive(t, c.segmentMgr.ResidentSegmentCount(kgtypes.GraphCode, admitted, hnsw.New().Name()),
+		"CONTROL: the admitted graph's rebuild DOES write segments — so the zero above is about admission, "+
+			"not a pool nothing could ever have written to")
 
 	// THE RECORDER CONTROL for (c). This pass writes nothing through the routed seam
 	// for any graph, so a zero mutation count proves nothing until the recorder is
@@ -154,14 +159,15 @@ func TestSearchAdmitsThenGraphIsWalked(t *testing.T) {
 	const foreign = "searchAdmitsRepo"
 	ctx := opCtx()
 
-	c, eng, backend, dir := buildReconcileClientWithSegDir(t, 300)
-	c.segmentMgr = segmentdist.NewManager(c.router, dir, 0,
-		segmentdist.WithSegmentTransport(backend.transportBuilder()),
+	c, eng, dir := buildReconcileClientWithDir(t, 300)
+	c.segmentMgr = segmentdist.NewManager(dir, 0,
 		segmentdist.WithGraphAdmitter(func(gt kgtypes.GraphType, name string) {
 			c.AdmitGraph(gt, name, "search")
 		}))
+	// Only Manager.Close stops the per-engine merger goroutines this will spawn.
+	t.Cleanup(c.segmentMgr.Close)
 
-	armDegenerate(t, eng, backend, foreign)
+	armDegenerate(t, eng, dir, foreign)
 	eng.namesByType[string(kgtypes.GraphCode)] = []string{foreign}
 
 	c.reconcileSegmentCoverage(ctx)

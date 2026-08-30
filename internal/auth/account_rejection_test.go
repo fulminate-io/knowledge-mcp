@@ -202,7 +202,7 @@ func TestAccountRejection_NeverFallsBack(t *testing.T) {
 	tr := NewSyncTransport(srv.URL, StaticTokenSource{AccessToken: "tok"}, WithAccountSelection(sel))
 
 	_ = tr.PushGraph(context.Background(), "knowledge", "default", []byte{0x01})
-	_, _ = tr.SegmentControlJSON(context.Background(), "presign", []byte(`{}`))
+	_, _ = tr.SyncControlJSON(context.Background(), "presign", []byte(`{}`))
 
 	seen := backend.seen()
 	if len(seen) == 0 {

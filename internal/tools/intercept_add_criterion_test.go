@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -169,6 +168,7 @@ func TestInterceptAddCriterion_Success(t *testing.T) {
 		"type":        "criterion",
 		"step_id":     testStepID,
 		"description": "Test that the thing works",
+		"summary":     "the thing works",
 	})
 	handled, res := InterceptAddCriterion(opCtx(), deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
 	require.True(t, handled)
@@ -205,21 +205,20 @@ func TestInterceptAddCriterion_Success(t *testing.T) {
 
 // TestInterceptAddCriterion_RoutesStatusContentMetadata_RejectsDerivedName pins
 // both halves of the criterion arm's accounting: status, content and metadata
-// now persist on the upserted node, while name and summary are REJECTED because
-// both are derived — name from description, summary from criterion_type +
-// description + command. Accepting a caller value for a derived field would
-// silently lose it to the derivation, which is the same silent-drop shape in
-// reverse, so the rejection explains what to set instead.
+// now persist on the upserted node, while name is REJECTED because it is
+// derived from the description's first line. Accepting a caller value for a
+// derived field would silently lose it to the derivation, which is the same
+// silent-drop shape in reverse, so the rejection explains what to set instead.
 //
-// The derivation itself is deliberately untouched here; only the accounting for
-// caller-supplied values changes.
+// The name derivation itself is deliberately untouched here; only the
+// accounting for caller-supplied values changes.
 func TestInterceptAddCriterion_RoutesStatusContentMetadata_RejectsDerivedName(t *testing.T) {
 	t.Run("status, content and metadata persist on the upserted node", func(t *testing.T) {
 		gc := seededStepGc()
 		args := mustMarshal(t, map[string]any{
 			"operation": "create", "type": "criterion", "step_id": testStepID,
 			"description": "Test that the thing works", "command": "go test ./...",
-			"status": "pending", "content": "the long form",
+			"summary": "the thing works", "status": "pending", "content": "the long form",
 			// "type" collides with the derived criterion-type key on purpose.
 			"metadata": map[string]string{"owner": "me", "type": "caller-loses"},
 		})
@@ -248,9 +247,10 @@ func TestInterceptAddCriterion_RoutesStatusContentMetadata_RejectsDerivedName(t 
 	t.Run("the caller's metadata map is copied, never aliased", func(t *testing.T) {
 		callerMeta := map[string]string{"owner": "me"}
 		gc := seededStepGc()
-		err := upsertCriterionNode(opCtx(), gc, "crit-1", criterionCreateArgs{
+		_, err := upsertCriterionNode(opCtx(), gc, "crit-1", criterionCreateArgs{
 			Operation: "create", Type: "criterion", StepID: testStepID,
-			Description: "Test that the thing works", Command: "go test ./...",
+			Description: "Test that the thing works", Summary: "the thing works",
+			Command:  "go test ./...",
 			Metadata: callerMeta,
 		})
 		require.NoError(t, err)
@@ -258,12 +258,13 @@ func TestInterceptAddCriterion_RoutesStatusContentMetadata_RejectsDerivedName(t 
 			"the caller's map must be byte-identical — never gaining the derived type/command keys")
 	})
 
-	for _, param := range []string{"name", "summary"} {
+	for _, param := range []string{"name"} {
 		t.Run(param+" rejects with zero mutations and explains the derivation", func(t *testing.T) {
 			gc := seededStepGc()
 			args := mustMarshal(t, map[string]any{
 				"operation": "create", "type": "criterion", "step_id": testStepID,
-				"description": "Test that the thing works", param: "caller supplied",
+				"description": "Test that the thing works", "summary": "the thing works",
+				param: "caller supplied",
 			})
 			handled, res := InterceptAddCriterion(opCtx(), &logE2EDeps{gc: gc}, kgtools.CallToolParams{
 				Name: "mutate", Arguments: args,
@@ -289,6 +290,7 @@ func TestInterceptAddCriterion_EmptyStepID(t *testing.T) {
 		"operation":   "create",
 		"type":        "criterion",
 		"description": "anything",
+		"summary":     "anything at all",
 	})
 	handled, res := InterceptAddCriterion(opCtx(), deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
 	require.True(t, handled)
@@ -308,6 +310,7 @@ func TestInterceptAddCriterion_StepNotFound(t *testing.T) {
 		"type":        "criterion",
 		"step_id":     "missing-step-id",
 		"description": "anything",
+		"summary":     "anything at all",
 	})
 	handled, res := InterceptAddCriterion(opCtx(), deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
 	require.True(t, handled)
@@ -345,6 +348,7 @@ func TestInterceptAddCriterion_EmptyDescription_AfterStepCheck(t *testing.T) {
 		"type":        "criterion",
 		"step_id":     testStepID,
 		"description": "   ",
+		"summary":     "anything at all",
 	})
 	handled, res := InterceptAddCriterion(opCtx(), deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
 	require.True(t, handled)
@@ -355,36 +359,9 @@ func TestInterceptAddCriterion_EmptyDescription_AfterStepCheck(t *testing.T) {
 	assert.Equal(t, "query", gc.calls[0].tool)
 }
 
-// A description whose DERIVED criterion summary overflows 500 runes fails
-// FAST client-side via validate.DerivedSummary BEFORE the upsert RPC, with an
-// actionable error (criterion.summary field, "derived from", "over by", a
-// quoted prefix). Fails-when-absent: without the gate the over-long payload
-// would be upserted and die on the server's context-free exceeds-500 error.
-func TestInterceptAddCriterion_DerivedSummaryOverflow(t *testing.T) {
-	gc := seededStepGc()
-	deps := &logE2EDeps{gc: gc}
-
-	// "manual criterion: " (18 runes) + 490-rune description = 508 runes > 500.
-	longDesc := strings.Repeat("d", 490)
-	args := mustMarshal(t, map[string]any{
-		"operation":   "create",
-		"type":        "criterion",
-		"step_id":     testStepID,
-		"description": longDesc,
-	})
-	handled, res := InterceptAddCriterion(opCtx(), deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
-	require.True(t, handled)
-	require.True(t, res.IsError)
-	msg := extractText(res)
-	assert.Contains(t, msg, "criterion.summary")
-	assert.Contains(t, msg, "derived from")
-	assert.Contains(t, msg, "over by")
-	assert.Contains(t, msg, "Derived prefix:")
-	// The step was looked up (validation passed step+description gates) but no
-	// upsert/link fired — the derived-summary gate stopped the sequence.
-	require.Len(t, gc.calls, 1)
-	assert.Equal(t, "query", gc.calls[0].tool)
-}
+// The author-supplied summary contract — absent, verbatim, over-cap-clamped —
+// lives in the sibling intercept_add_criterion_summary_test.go, split out for
+// the file-length gate.
 
 // Upsert RPC fails → intercept surfaces the error verbatim and skips
 // the link calls.
@@ -398,6 +375,7 @@ func TestInterceptAddCriterion_UpsertFailure(t *testing.T) {
 		"type":        "criterion",
 		"step_id":     testStepID,
 		"description": "desc",
+		"summary":     "the desc",
 	})
 	handled, res := InterceptAddCriterion(opCtx(), deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
 	require.True(t, handled)
@@ -407,25 +385,9 @@ func TestInterceptAddCriterion_UpsertFailure(t *testing.T) {
 	require.Len(t, gc.calls, 2)
 }
 
-// Link RPC failure → success message still returned (matches the
-// server's slog.Warn-and-continue tolerance at tools_walk.go:355).
-func TestInterceptAddCriterion_LinkFailure_StillSucceeds(t *testing.T) {
-	gc := seededStepGc()
-	gc.linkErr = map[string]error{"verifies": errors.New("transient")}
-	deps := &logE2EDeps{gc: gc}
-
-	args := mustMarshal(t, map[string]any{
-		"operation":   "create",
-		"type":        "criterion",
-		"step_id":     testStepID,
-		"description": "desc",
-	})
-	handled, res := InterceptAddCriterion(opCtx(), deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
-	require.True(t, handled)
-	require.False(t, res.IsError, "link failure must not turn into an error result")
-	assert.Contains(t, extractText(res), "Criterion added: desc → ID:")
-	require.Len(t, gc.calls, 4, "all 4 RPCs fired even though link failed")
-}
+// The criterion ATTACHMENT contract — what happens when a verifies/contains link
+// RPC fails — and the multi-line NAME derivation live in the sibling
+// intercept_add_criterion_attachment_test.go, split out for the file-length gate.
 
 // Wrong tool → fall through.
 func TestInterceptAddCriterion_WrongTool_FallsThrough(t *testing.T) {

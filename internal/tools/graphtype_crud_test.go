@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // graphtype_crud_test.go — covers InterceptGraphType dispatch + the
-// register/update/delete/list handlers. Mirrors worker_crud_test.go.
+// register/update/delete/list handlers.
 
 package tools
 
@@ -14,10 +14,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -91,17 +91,14 @@ type graphTypeTestDeps struct {
 	crud GraphTypeCRUDAPI
 }
 
-func (d graphTypeTestDeps) LocalLiveness() LocalLiveness                 { return nil }
-func (d graphTypeTestDeps) Sink() collector.Sink                         { return nil }
-func (d graphTypeTestDeps) RootDir() string                              { return "" }
-func (d graphTypeTestDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
-func (d graphTypeTestDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
-func (d graphTypeTestDeps) WorkerReady() bool                            { return true }
-func (d graphTypeTestDeps) PropReady() bool                              { return true }
-func (d graphTypeTestDeps) PipelineReady() bool                          { return true }
-func (d graphTypeTestDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
-func (d graphTypeTestDeps) BanSet() *hivemonitor.BanSet                  { return nil }
-func (d graphTypeTestDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d graphTypeTestDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d graphTypeTestDeps) Sink() collector.Sink            { return nil }
+func (d graphTypeTestDeps) RootDir() string                 { return "" }
+func (d graphTypeTestDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+
+func (d graphTypeTestDeps) PropReady() bool     { return true }
+func (d graphTypeTestDeps) PipelineReady() bool { return true }
+
 func (d graphTypeTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return d.crud }
 func (d graphTypeTestDeps) Embedder() embed.BinaryEmbedder               { return nil }
 func (d graphTypeTestDeps) BackendResolver() BackendResolver             { return nil }
@@ -141,7 +138,7 @@ func callGraphType(t *testing.T, deps ClientDeps, argsJSON string) (handled bool
 // "graph_type" wire name, which is no longer recognized after the rename.
 func TestInterceptGraphType_NameFiltering(t *testing.T) {
 	deps := graphTypeTestDeps{crud: &fakeGraphTypeCRUD{}}
-	for _, name := range []string{"graph_type", "worker", "ast", "collect", "manage", "search", ""} {
+	for _, name := range []string{"graph_type", "ast", "collect", "manage", "search", ""} {
 		params := kgtools.CallToolParams{Name: name, Arguments: json.RawMessage(`{}`)}
 		handled, res := InterceptGraphType(opCtx(), deps, params)
 		assert.False(t, handled, "tool %q must not be handled by InterceptGraphType", name)

@@ -48,8 +48,8 @@ func perHitBlocks(text string) string {
 func TestRenderPracticeFanOut_ParityWithSingle(t *testing.T) {
 	r := practiceFixtureResult("p:1", "WorkerPool", "bound goroutines with a semaphore", 0.91)
 
-	single := RenderPracticeResults("go", "pool", []SearchResult{r}).Content[0].Text
-	fan := RenderPracticeFanOut("pool", []string{"go"}, []PracticeFanOutHit{{Graph: "go", Result: r}}).Content[0].Text
+	single := RenderPracticeResults("go", "pool", []SearchResult{r}, "").Content[0].Text
+	fan := RenderPracticeFanOut("pool", []string{"go"}, []PracticeFanOutHit{{Graph: "go", Result: r}}, "").Content[0].Text
 
 	// Fan-out header names the graph count + the graphs searched.
 	assert.Contains(t, fan, "Searched 1 practice graphs (go)")
@@ -72,7 +72,7 @@ func TestRenderPracticeFanOut_MultiGraphAttribution(t *testing.T) {
 	goHit := PracticeFanOutHit{Graph: "go", Result: practiceFixtureResult("p:go", "GoPattern", "go content", 0.80)}
 	pyHit := PracticeFanOutHit{Graph: "python", Result: practiceFixtureResult("p:py", "PyPattern", "py content", 0.70)}
 
-	text := RenderPracticeFanOut("pattern", []string{"go", "python"}, []PracticeFanOutHit{goHit, pyHit}).Content[0].Text
+	text := RenderPracticeFanOut("pattern", []string{"go", "python"}, []PracticeFanOutHit{goHit, pyHit}, "").Content[0].Text
 
 	assert.Contains(t, text, "Searched 2 practice graphs (go, python)")
 	assert.Contains(t, text, "### 1. GoPattern [high] (concurrency) — go")

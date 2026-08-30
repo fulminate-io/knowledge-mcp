@@ -4,6 +4,7 @@ package tools
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -108,4 +109,68 @@ func TestInterceptQueryPlanTree_CompleteResponse_AppendsNothing(t *testing.T) {
 		assert.NotContains(t, res.Content[0].Text, "may be incomplete",
 			"a complete tree carries no truncation notice (format=%q)", format)
 	}
+}
+
+// TestPlanTreeJSON_TruncatedField pins the `truncated` key on the plan_tree JSON
+// envelope — the sixth ceiling-engageable query read, and the one whose absence
+// would have made query_schema.go's own new sentence false on the day it shipped.
+//
+// THE KEY IS ON THE ENVELOPE ROOT AND NOWHERE ELSE. buildPlanTreeJSON is
+// recursive and returns the root row AS the whole payload, so putting the key
+// inside it would stamp all 9 rows of this fixture. Truncation is a property of
+// the READ, not of a node — the row-count assertion below is what holds that
+// placement in place.
+//
+// TWO POLARITIES. The FALSE leg matters more than usual here because the SAME
+// bool already drives the prose notice block, so a constant-wired key would still
+// look right wherever that block appears.
+func TestPlanTreeJSON_TruncatedField(t *testing.T) {
+	planID := "00000000000000000000000000000001"
+
+	payloadFor := func(t *testing.T, truncated bool) map[string]any {
+		t.Helper()
+		f := newParityFixture()
+		seedPlanTreeFixture(f)
+		f.truncated = truncated
+		args := mustMarshal(t, map[string]any{"mode": "plan_tree", "id": planID, "format": "json"})
+		_, res := InterceptQueryPlanTree(opCtx(), &parityDeps{gc: f.gc()},
+			kgtools.CallToolParams{Name: "query", Arguments: args})
+		require.False(t, res.IsError)
+		require.NotEmpty(t, res.Content)
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal([]byte(res.Content[0].Text), &payload),
+			"the payload block must stay parseable with the key added")
+		return payload
+	}
+
+	t.Run("clamped traversal renders the root key true", func(t *testing.T) {
+		payload := payloadFor(t, true)
+		got, ok := payload["truncated"]
+		require.True(t, ok, "the plan_tree envelope root carries no truncated key")
+		assert.Equal(t, true, got)
+	})
+
+	t.Run("whole traversal renders the root key false", func(t *testing.T) {
+		payload := payloadFor(t, false)
+		got, ok := payload["truncated"]
+		require.True(t, ok,
+			"the key is UNCONDITIONAL: an absent key is indistinguishable from an old binary")
+		assert.Equal(t, false, got)
+	})
+
+	t.Run("exactly one row carries the key — the root", func(t *testing.T) {
+		// THE PLACEMENT GATE. The fixture is 9 rows (root + 2 phases + 6 steps); if
+		// the key ever moves inside buildPlanTreeJSON this counts 9 and fails, which
+		// is the arrangement with the larger blast radius on every large tree.
+		f := newParityFixture()
+		seedPlanTreeFixture(f)
+		f.truncated = true
+		args := mustMarshal(t, map[string]any{"mode": "plan_tree", "id": planID, "format": "json"})
+		_, res := InterceptQueryPlanTree(opCtx(), &parityDeps{gc: f.gc()},
+			kgtools.CallToolParams{Name: "query", Arguments: args})
+		require.False(t, res.IsError)
+		assert.Equal(t, 1, strings.Count(res.Content[0].Text, `"truncated"`),
+			"the key belongs on the envelope ROOT only — truncation is a property of the read, "+
+				"not of a node, and a leaf asserting truncated:false says nothing about anything")
+	})
 }

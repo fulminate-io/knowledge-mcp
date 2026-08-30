@@ -81,25 +81,10 @@ const (
 	NodeUseCase    NodeType = "use_case"    // granular pattern applies-when / avoid-when condition (pattern → use_case via applies-when / avoid-when edge)
 	NodeExample    NodeType = "example"     // pattern exemplar — code snippet or reference with language/attribution metadata
 
-	// NodeWorker is a graph-resident dream-worker configuration record.
-	// Stored in GraphKnowledge so config survives across server restarts.
-	// Identity: name (used as ID — stable, immutable). Body fields:
-	//   - description, system_prompt, provider, model, max_iterations,
-	//     max_wallclock_seconds, enabled, tool_allowlist (JSON-encoded list),
-	//     triggers (JSON-encoded array of dream.Trigger structs).
-	//
-	// hardcoded=true is NEVER stored on disk — the dream Registry sets it
-	// on merge from the in-memory hardcoded slice. Workers loaded from the
-	// graph always carry Hardcoded=false.
-	//
-	// Like NodeLogBackend, the type is a configuration record and opts out
-	// of both LLM summarization and embedding (see node_type_eligibility.go).
-	NodeWorker NodeType = "worker"
-
 	// NodeGraphTypeDef is the user-registered graph-type configuration record.
 	// It carries the combined collector + behavior definition for a
 	// new arbitrary graph type, stored as a per-account, graph-resident config
-	// node. Like NodeWorker / NodeLogBackend it is a configuration record and
+	// node. Like NodeLogBackend it is a configuration record and
 	// opts out of LLM summarization and embedding. The record body is persisted
 	// as a single base64 serialized-proto blob under the "graph_type_def_pb"
 	// metadata key (see cmd/knowledge/internal/graphtypecrud/codec.go), so both
@@ -120,28 +105,6 @@ const (
 	// knowledgeTypes so the IsCodeType classifier doesn't mistakenly
 	// route them through the code-graph summarization path.
 	NodeMetaValue NodeType = "meta_value"
-
-	// Hive work-queue node types (cloud-only feature; the OSS server fails
-	// loud on every hive op). These are graph-native operational records,
-	// NOT user/LLM knowledge — like NodeWorker / NodeGraphTypeDef they are
-	// deliberately left OUT of the knowledgeTypes map and instead carry an
-	// explicit zero-value entry in the server-side nodeTypeBehavior table so
-	// they opt out of both LLM summarization and embedding (high-churn
-	// work-queue records must never feed the pipeline). The wire literals are
-	// mirrored verbatim by the server store vocabulary
-	// (cmd/knowledge-server/internal/store/node_types_vocab.go) — a deliberate
-	// per-module duplicate (no shared package); per-module drift-guard tests
-	// pin the two copies in lockstep.
-	//
-	//   - NodeHive       : one node per named hive (implicit on first register/send).
-	//   - NodeMessage    : one unit of work; status pending|leased|done|blocked,
-	//                      contained-by → its hive, responds-to → the message it answers.
-	//   - NodeHiveMember : a member IS a session — true identity is the unfakeable
-	//                      harness session-id the daemon resolves from the agent's
-	//                      own session transcript; name is a human-friendly label.
-	NodeHive       NodeType = "hive"
-	NodeMessage    NodeType = "message"
-	NodeHiveMember NodeType = "hive_member"
 )
 
 // knowledgeTypes is the set of node types created by users/LLM.

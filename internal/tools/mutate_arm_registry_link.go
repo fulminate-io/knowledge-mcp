@@ -24,6 +24,34 @@ const justifyFallthroughLinkGraph = "the engine link arm cannot route link_graph
 	"a link_graph:linkage call reaches this path only when the cross-graph composer declined it, " +
 	"which can be a transient graph-enumeration failure — retry before treating this as unsupported"
 
+// justifyUnlinkLinkGraph explains the link_graph rejection on the UNLINK arm and,
+// unlike the generic message, names the call that works. The rejection itself is
+// honest — only `link` is dispatched ahead of the cross-graph composer
+// (intercept_mutate.go:222), so unlink never reaches the one path that routes the
+// param, and the engine denies any non-empty link_graph outright
+// (engine/compile_mutate.go). But a linkage edge IS deletable today, and a caller
+// told only "this path does not route it" reasonably concludes the linkage graph
+// is unreachable from unlink, which is false.
+//
+// THE ASYMMETRY IS DOCUMENTED, NOT REPAIRED, and it runs on two axes: the graph
+// is named `link_graph` on link but `graph` on unlink, and link RESOLVES a raw
+// foreign id (materializing the proxy) while unlink does no resolution and needs
+// the proxy id the link already created. Routing link_graph on unlink would be
+// worth nothing without also giving unlink the composer's proxy resolution.
+const justifyUnlinkLinkGraph = "unlink addresses the linkage graph through `graph`, not `link_graph`: " +
+	"mutate(unlink, from:<id>, to:\"proxy:knowledge:<code-id>\", relationship:\"...\", graph:\"linkage\"). " +
+	"The endpoint must be the PROXY id — unlike link, unlink resolves no raw foreign id"
+
+// justifyUnlinkName names the shape that DOES route `name` on an unlink, which
+// the generic "issue a separate call that does" leaves the caller to guess at.
+// This arm is reached only on the knowledge family (the non-knowledge guard
+// claims every foreign-graph unlink under armNonKnowledgeFallthrough), and there
+// the resolver reads no selector name and an unlink writes no node body — so the
+// param reaches nothing HERE while being perfectly routable one graph over.
+const justifyUnlinkName = "this arm runs only on the knowledge family, whose resolver reads no selector " +
+	"name and whose unlink writes no node body; `name` is the graph-INSTANCE selector, so it routes only " +
+	"on a name-addressed graph — mutate(unlink, graph:\"<family>\", name:\"<instance>\", from/to/relationship)"
+
 // WHY THE NEGATION PROOF PARAMS ARE classConsumed, not classDeliberatelyIgnored,
 // on the arms a negation call can select. It is the SAME shape as `graph`, whose
 // treatment mutate_arm_registry.go:82-86 already justifies: a param the layer
@@ -47,6 +75,7 @@ var linkArmSpecs = map[armID]armSpec{
 			"verified_quote", "cited_range",
 		),
 		rejected: paramSet(
+			"repo", "account",
 			"supports",
 			"type", "id", "ids", "name", "description", "summary", "content", "status",
 			"expand_to_descendants", "source", "evidence", "question_id", "concludes", "scope",
@@ -85,6 +114,7 @@ var linkArmSpecs = map[armID]armSpec{
 			"verified_quote", "cited_range",
 		),
 		rejected: paramSet(
+			"repo", "account",
 			"supports",
 			"type", "id", "ids", "description", "summary", "content", "status",
 			"expand_to_descendants", "source", "evidence", "question_id", "concludes", "scope",
@@ -111,8 +141,9 @@ var linkArmSpecs = map[armID]armSpec{
 	armUnlink: {
 		operation: "unlink",
 		handler:   "engine compileMutateByIDLinkUnlink",
-		consumed:  paramSet("operation", "from", "to", "relationship", "graph", "language", "format"),
+		consumed:  paramSet("operation", "from", "to", "relationship", "graph", "format"),
 		rejected: paramSet(
+			"repo", "account",
 			"supports",
 			"name",
 			"type", "id", "ids", "description", "summary", "content", "status",
@@ -123,7 +154,12 @@ var linkArmSpecs = map[armID]armSpec{
 			"references", "items", "nodes", "edges", "updates",
 			"verified_quote", "cited_range",
 		),
+		rejectionReasons: map[string]string{
+			"link_graph": justifyUnlinkLinkGraph,
+			"name":       justifyUnlinkName,
+		},
 		deliberatelyIgnored: map[string]string{
+			"language":       justifyKnowledgeSingletonSelector,
 			"weight":         justifyUnlinkEdgeMetadata,
 			"confidence":     justifyUnlinkEdgeMetadata,
 			"method":         justifyUnlinkEdgeMetadata,
@@ -132,8 +168,8 @@ var linkArmSpecs = map[armID]armSpec{
 		},
 	},
 
-	// The practice/transformers passthrough re-dispatches the caller's verbatim
-	// args through the engine, so it is OPERATION-POLYMORPHIC over create,
+	// The practice/checks/transformers passthrough re-dispatches the caller's
+	// verbatim args through the engine, so it is OPERATION-POLYMORPHIC over create,
 	// create_batch, update and delete; `operation` below names one representative
 	// of that set. Its consumed set is the union of what those four engine arms
 	// read.
@@ -146,6 +182,7 @@ var linkArmSpecs = map[armID]armSpec{
 			"verified_quote", "cited_range",
 		),
 		rejected: paramSet(
+			"repo", "account",
 			"supports",
 			"expand_to_descendants", "evidence", "question_id", "concludes", "scope", "enforcement",
 			"step_id", "command", "criterion_type", "from", "to", "relationship", "conclusion",
@@ -181,6 +218,11 @@ var linkArmSpecs = map[armID]armSpec{
 			"branches_from", "links", "session", "ticket_id", "polarity", "weight", "reasoning",
 			"charge_evidence", "thought_parent", "references", "items", "nodes", "edges", "updates", "supports",
 			"verified_quote", "cited_range",
+			// The graph-INSTANCE selectors. This is the arm every non-knowledge
+			// mutate is accounted under and the arm that declines to the engine,
+			// where the Target is built — so it is the one place repo and account
+			// are routing rather than an unaddressable param.
+			"repo", "account",
 		),
 		rejected:            paramSet(),
 		deliberatelyIgnored: map[string]string{},

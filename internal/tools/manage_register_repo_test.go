@@ -168,7 +168,7 @@ func TestRegisterRepo_EndToEndResolveRepoDir(t *testing.T) {
 	require.False(t, res.IsError, "register_repo: %s", toolResultText(res))
 
 	deps := astTestDeps{rootDir: cwdTree}
-	got, err := resolveRepoDir(context.Background(), deps, "otherrepo")
+	got, err := resolveRepoDir(context.Background(), deps, "ast", "otherrepo")
 	require.NoError(t, err, "a just-registered cross-repo name must resolve via the manifest")
 	assert.Equal(t, target, got, "register_repo → resolveRepoDir must round-trip through the same manifest")
 }

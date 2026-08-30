@@ -77,6 +77,8 @@ func TestRowJSONColumns(t *testing.T) {
 		"cache_creation_1h_tokens", "cache_creation_5m_tokens", "service_tier",
 		"web_search_count", "web_fetch_count", "stop_reason", "is_api_error",
 		"is_meta", "interrupted", "mcp_server", "mcp_tool", "skill",
+		"tool_result_bytes", "tool_result_images", "tool_result_spilled",
+		"run_in_background",
 	}
 	wantSet := make(map[string]bool, len(want))
 	for _, k := range want {

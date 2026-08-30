@@ -44,8 +44,8 @@ const (
 // file exists to detect and would mask the defect entirely.
 func straddleFixture(t *testing.T, ctx context.Context, graphName string) (*Manager, kgtypes.GraphType) {
 	t.Helper()
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	gt := kgtypes.GraphCode
 
 	seed := prefixIDs(hnswVecDocs(straddleSeedN), "straddle-seed-")
@@ -158,8 +158,7 @@ func TestTickDerivesTheTrueCorpusCount(t *testing.T) {
 	const name = "trueCount"
 	const n = searchengine.DefaultMinSegmentDocs // derives exactly ONE partition
 
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	gt := kgtypes.GraphCode
 
 	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, prefixIDs(hnswVecDocs(n), "truecount-")))
@@ -226,8 +225,7 @@ func TestClosureRebuildSetStaysBounded(t *testing.T) {
 	const name = "closureBound"
 	const seedN = 5000 // derives 8 partitions; +100 stays at 8, so the count is STABLE
 
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	gt := kgtypes.GraphCode
 
 	seed := prefixIDs(hnswVecDocs(seedN), "closure-seed-")
@@ -241,7 +239,7 @@ func TestClosureRebuildSetStaysBounded(t *testing.T) {
 	// so exactly one partition is rebuilt however large the corpus is.
 	window := docsInBucket(t, 0, stable, 100, "closure-win-")
 	dm := mgr.managerFor(gt, name)
-	published, err := replaceBucketGroups(dm, nil, window, nil, dm.engine.ResidentDocCount()+len(window))
+	published, _, err := replaceBucketGroups(dm, nil, window, nil, dm.engine.ResidentDocCount()+len(window), nil)
 	require.NoError(t, err)
 	require.Len(t, published, 1,
 		"on a stable count a window confined to one partition must rebuild exactly that partition — the delta stays a delta")
@@ -307,8 +305,7 @@ func TestPartialRebuildSetAcrossACountChangeLosesNothing(t *testing.T) {
 		corpusN = seedN + windowN
 	)
 
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	gt := kgtypes.GraphCode
 
 	seed := prefixIDs(hnswVecDocs(seedN), "partial-seed-")

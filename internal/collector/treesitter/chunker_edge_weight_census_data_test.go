@@ -60,6 +60,18 @@ var edgeWeightConsumerCensus = []weightReaderRow{
 			"edge ever reaches these lines.",
 	},
 	{
+		Path:        "cmd/knowledge/internal/collector/parser/flow_edges.go",
+		Disposition: dispositionOptsIn,
+		Reason: "The flow arms copy Weight onto every resolved flow edge, exactly as the reference " +
+			"arms beside them do. THE VALUE IS ALWAYS ZERO ON THIS PATH, and the copy is " +
+			"deliberate anyway: the chunker stamps no count on a flow edge — a fact is about a " +
+			"PARAMETER rather than a call site, so there is nothing to count — and forwarding the " +
+			"field rather than omitting it keeps these arms structurally identical to the " +
+			"reference arms beside them, so a later producer change cannot be silently dropped " +
+			"here. A cardinality must never be moved onto Weight for these types; the gonum feed " +
+			"row above records why.",
+	},
+	{
 		Path:        "cmd/knowledge/internal/collector/contribhash/contribhash.go",
 		Disposition: dispositionOptsIn,
 		Reason: "Folds Weight into the per-row contribution hash and into its sort key, exactly as it " +

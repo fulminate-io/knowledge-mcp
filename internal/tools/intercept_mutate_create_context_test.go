@@ -76,6 +76,7 @@ func TestRecordDecision_TicketContains(t *testing.T) {
 		Name: "record_decision",
 		Arguments: json.RawMessage(`{
 			"name": "use X over Y",
+			"summary": "X is chosen over Y for its simplicity",
 			"choice": "X",
 			"rationale": "X is simpler",
 			"ticket_id": "tkt-2"
@@ -169,4 +170,108 @@ func TestMutateCreateFinding_CodeLinkFailure_CreateStillSucceeds(t *testing.T) {
 	// A CREATE landed; the failing LINK is the post-create relates-to.
 	m := firstCreatePlan(t, fc)
 	require.NotNil(t, m)
+}
+
+// TestMutateCreateDocument_TicketContainsAndLinks (FAILS-WHEN-ABSENT) asserts the
+// document create born-links exactly as the finding path does. It MIRRORS the
+// TestMutateCreateFinding_TicketContains / _AbsentTicket_NodeStillCreated pair
+// above rather than inventing a fixture shape, because the contract it gates is
+// the same one — buildContextLinks, reused unchanged.
+//
+// It drives the TYPE-BLIND handler rather than a document-specific one: document
+// has no handler of its own, and the born-linking it gets is the born-linking
+// every type gets. The test keeps document as its subject anyway, because what
+// it fences is that this named type still born-links — a property whose loss
+// would be invisible in a test that only ever probed a generic type.
+//
+// Leg 3 is both-directions cover for legs 1 and 2: without it they are satisfiable
+// by a handler that refuses any create whose links do not all resolve, which is
+// precisely the fail-tolerance contract this handler must NOT redesign.
+func TestMutateCreateDocument_TicketContainsAndLinks(t *testing.T) {
+	t.Run("a resolvable ticket_id produces ticket--contains-->document", func(t *testing.T) {
+		fc := &fakeGraphCaller{
+			queryResponses: map[string]kgtools.ToolResult{
+				"tkt-doc": nodeResultJSON(t, "tkt-doc", "ticket", nil),
+			},
+			mutateIDs: []string{"doc-1"},
+		}
+		res := handleClientMutateCreateContextLinked(context.Background(), interceptTestDeps{gc: fc}, withRawArgs(mutateArgs{
+			Operation: "create", Type: "document",
+			Name: "a retro guide", Summary: "a searchable document summary",
+			TicketID: "tkt-doc",
+		}, `{"operation":"create","type":"document","name":"a retro guide","summary":"a searchable document summary","ticket_id":"tkt-doc"}`))
+		require.False(t, res.IsError, "create must succeed: %s", toolResultText(res))
+
+		m := firstCreatePlan(t, fc)
+		assert.True(t, findContainsToNewNode(m, "tkt-doc"),
+			"document create MutationPlan must carry ticket--contains-->document")
+	})
+
+	t.Run("a resolvable links target produces document--relates-to-->target", func(t *testing.T) {
+		fc := &fakeGraphCaller{
+			queryResponses: map[string]kgtools.ToolResult{
+				"rel-1": nodeResultJSON(t, "rel-1", "finding", nil),
+			},
+			mutateIDs: []string{"doc-2"},
+		}
+		res := handleClientMutateCreateContextLinked(context.Background(), interceptTestDeps{gc: fc}, withRawArgs(mutateArgs{
+			Operation: "create", Type: "document",
+			Name: "a retro guide", Summary: "a searchable document summary",
+			Links: []string{"rel-1"},
+		}, `{"operation":"create","type":"document","name":"a retro guide","summary":"a searchable document summary","links":["rel-1"]}`))
+		require.False(t, res.IsError, "create must succeed: %s", toolResultText(res))
+
+		m := firstCreatePlan(t, fc)
+		found := false
+		for _, e := range m.GetEdges() {
+			if e.GetToId() == "rel-1" && e.GetType() == string(kgtypes.EdgeRelatesTo) {
+				found = true
+			}
+		}
+		assert.True(t, found, "document create MutationPlan must carry document--relates-to-->rel-1; edges: %v", m.GetEdges())
+	})
+
+	t.Run("an absent ticket_id drops the link and still creates the document", func(t *testing.T) {
+		// THE FAIL-TOLERANCE CONTRACT, inherited from buildContextLinks and asserted
+		// here because a handler that added its own error return would break it for
+		// this type alone.
+		fc := &fakeGraphCaller{mutateIDs: []string{"doc-3"}} // ticket resolves nowhere.
+		res := handleClientMutateCreateContextLinked(context.Background(), interceptTestDeps{gc: fc}, withRawArgs(mutateArgs{
+			Operation: "create", Type: "document",
+			Name: "a retro guide", Summary: "a searchable document summary",
+			TicketID: "ghost-ticket",
+		}, `{"operation":"create","type":"document","name":"a retro guide","summary":"a searchable document summary","ticket_id":"ghost-ticket"}`))
+		require.False(t, res.IsError, "an absent ticket must NOT fail the create")
+		assert.Contains(t, toolResultText(res), "doc-3", "node ID is still returned")
+		assert.Contains(t, toolResultText(res), "ghost-ticket", "a drop warning is rendered")
+
+		m := firstCreatePlan(t, fc)
+		for _, e := range m.GetEdges() {
+			assert.NotEqual(t, "ghost-ticket", e.GetFromId(),
+				"no ticket--contains edge may ride the batch for an unresolvable ticket")
+		}
+	})
+
+	t.Run("the dispatcher routes type document to this handler", func(t *testing.T) {
+		// WITHOUT THIS LEG the handler could be correct and unreachable: the three
+		// legs above call it directly, so none of them would notice a missing
+		// claim in the dispatcher, and the fallthrough arm would keep rejecting the
+		// three context params exactly as before. The claim it exercises is the
+		// trio predicate — document reaches the handler because the payload carries
+		// a ticket_id, not because the dispatcher names the type.
+		fc := &fakeGraphCaller{
+			queryResponses: map[string]kgtools.ToolResult{
+				"tkt-doc": nodeResultJSON(t, "tkt-doc", "ticket", nil),
+			},
+			mutateIDs: []string{"doc-4"},
+		}
+		handled, res := dispatchClientMutateCreate(context.Background(), interceptTestDeps{gc: fc}, withRawArgs(mutateArgs{
+			Operation: "create", Type: "document",
+			Name: "a retro guide", Summary: "a searchable document summary",
+			TicketID: "tkt-doc",
+		}, `{"operation":"create","type":"document","name":"a retro guide","summary":"a searchable document summary","ticket_id":"tkt-doc"}`))
+		require.True(t, handled, "the create dispatcher CLAIMS type:document rather than declining to the engine arm")
+		require.False(t, res.IsError, "and serves it: %s", toolResultText(res))
+		assert.True(t, findContainsToNewNode(firstCreatePlan(t, fc), "tkt-doc"))
+	})
 }

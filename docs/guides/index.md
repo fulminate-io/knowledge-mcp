@@ -34,8 +34,8 @@ collectors.
 
 - [Set up with Claude Code](setup-claude.md) — first-run setup for Claude Code.
 - [Set up with Codex](setup-codex.md) — first-run setup for Codex.
-- [Configuration](config.md) — the `~/.knowledge/config` reference (providers,
-  models, and credentials).
+- [Configuration](config.md) — the `~/.knowledge/config` reference (LLM
+  providers and models, the `[embedder]`/`[reranker]` sections, and credentials).
 - [Run with Docker](docker.md) — the `ghcr.io/fulminate-io/knowledge-mcp` image:
   a local HTTP stack, a stdio MCP client, and collecting a repository in CI.
 
@@ -62,6 +62,9 @@ collectors.
   rather than OCR.
 - [Recipes](recipes.md) — transform a collected raw graph into structured domain
   nodes with a graph-resident, zero-LLM recipe: authoring, dry-run, and force.
+- [Corpus checks](corpus-checks.md) — deterministic, fixture-validated assertions
+  about source code: the contract keys, the fire-on-bad / silent-on-good admission
+  gate, and how to write a good fixture that actually discriminates.
 
 ### Tools
 
@@ -77,7 +80,6 @@ collectors.
 - [delete](tools/delete.md) — remove or prune nodes.
 - [file_symbols](tools/file_symbols.md) — list the symbols in a file.
 - [help](tools/help.md) — built-in documentation.
-- [hive](tools/hive.md) — coordinate agents over the cloud work-queue (optional paid tier).
 - [manage](tools/manage.md) — server and pipeline operations.
 - [mutate](tools/mutate.md) — create, update, and link nodes.
 - [query](tools/query.md) — lookup, browse, and special read modes.

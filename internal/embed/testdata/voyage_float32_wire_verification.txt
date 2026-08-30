@@ -1,0 +1,140 @@
+voyage float32 output_dtype wire-spelling verification
+==========================================================================
+
+STATUS:      VERIFIED 2026-08-28 — REJECTED. The wire spelling "float32" is
+             NOT accepted. HTTP 400, body verbatim below, which also
+             ENUMERATES the accepted set for this model:
+             ['binary', 'float', 'int8', 'ubinary', 'uint8'].
+Date issued: 2026-08-28T19:58:05Z
+Issued by:   the operator holding the Voyage key, from the local
+             environment. ONE call, no retry — no second call was issued
+             with "float" or any other spelling, because the rejection body
+             enumerated the vocabulary and a second call would have been
+             spend for a string already printed.
+Spend:       one embedding call on a single one-token input. The request was
+             refused on ARGUMENT VALIDATION, before any embedding work.
+
+WHY THIS FILE EXISTS. Three places in this repo state that the shape of
+Voyage's float response "belongs in a recorded one-time verification", and
+../voyage.go stated that the wire-spelling question "is tracked separately".
+Before this file, none of that resolved anywhere: there was no float32
+counterpart to the ubinary record beside this one, and no ticket under the
+float-producer work covering it. An obligation asserted in three comments and
+recorded in none is indistinguishable from an obligation nobody holds. This
+file is the recorder; it was created ahead of the answer so the three
+comments cited something real, and it now holds the answer.
+
+THE PRECEDENT is ful1498_voyage_code4_verification.txt beside this file:
+one deliberate call, recorded verbatim with its raw status and body, whose
+conclusion changed exactly one claim in the code and nothing else. This file
+follows that form.
+
+
+WHAT WAS UNVERIFIED, precisely
+------------------------------
+
+callVoyageBatch used to send the RESOLVED CONFIG'S dtype string straight
+through as the request's output_dtype field:
+
+    OutputType: e.Dtype
+
+For a float32 profile that put the literal string "float32" on the wire. The
+one prior recorded verification showed the wire value "ubinary" for the
+ubinary path, which is a value Voyage's documented output_dtype vocabulary
+contains. Whether "float32" was ALSO a value that vocabulary contains is what
+was unestablished. The published vocabulary for output_dtype is
+float|int8|uint8|binary|ubinary — note "float", not "float32" — so the
+spelling this client sent might not be the spelling the provider accepts.
+
+THE CONFIG VOCABULARY AND THE WIRE VOCABULARY ARE TWO DIFFERENT SETS, and
+this repo used one string for both. That is the question this file records,
+and the answer below is that the two sets genuinely differ.
+
+
+THE CALL AS ISSUED
+------------------
+
+    curl -sS -o resp.json -w '%{http_code}\n' \
+      -H "Authorization: Bearer ***REDACTED***" \
+      -H 'Content-Type: application/json' \
+      --data-binary @body.json \
+      https://api.voyageai.com/v1/embeddings
+
+body.json (verbatim, exactly as sent):
+
+    {"input":["package main"],"model":"voyage-code-3","input_type":"document","output_dimension":1024,"output_dtype":"float32"}
+
+The key was issued exactly as the precedent file's was: read from the
+operator's config, written to a mktemp file under umask 077 and chmod 600,
+passed to curl as -H @<file>, deleted immediately after the call. It never
+appeared in argv, in shell history, or in any recorded output. The
+Authorization header is written above as "Bearer ***REDACTED***".
+
+Raw status: 400
+
+Raw response body (verbatim, 170 bytes — the entire body):
+
+    {"detail":"Value 'float32' supplied for argument 'output_dtype' is not valid -- accepted values for 'voyage-code-3' are ['binary', 'float', 'int8', 'ubinary', 'uint8']."}
+
+
+ACCEPT / REJECT CRITERION, AND THE GRADE
+----------------------------------------
+
+ACCEPT — the spelling this client sent is correct — required ALL of:
+
+    raw status                       = 200
+    len(data[0].embedding)           = 1024   (values, not bytes)
+    every element is a JSON decimal  = true   (not an integer array)
+    model echoed by the API          = the model requested
+
+REJECT — the client sends a spelling the provider does not accept — if the
+status is 4xx and the body names output_dtype or its accepted values.
+
+GRADE: REJECT, on the criterion's own terms. The status is 400 and the body
+names both output_dtype and its accepted values. A rejection is the LOUD
+outcome and is not a data-integrity problem: the arm surfaces it as a
+terminal, non-transient llm.LLMError on the first float32 call, so no corrupt
+vector was ever produced by this failure mode. What it meant is that the
+float32 config surface could not reach Voyage at all until the request-side
+spelling was translated.
+
+A 200 whose embedding array held INTEGERS rather than decimals would also
+have been a REJECT, and a more interesting one, since the arm cannot detect
+that direction — every integer is a valid JSON decimal. That branch is MOOT
+here: the request was refused on argument validation and never reached
+embedding generation, so nothing about the response representation was
+observed and nothing about it is claimed.
+
+
+WHAT THIS DOES AND DOES NOT CHANGE
+----------------------------------
+
+THE SHIPPED CODE IS NOW CONDITIONED ON THIS RECORD, which the earlier draft
+of this file said it was not. ../voyage.go carries two constants where it
+carried one: voyageDtypeUbinary/voyageDtypeFloat32 remain the CONFIG
+vocabulary (the strings config.AcceptedEmbedDtypes admits, and the strings
+the decode branches on), while voyageWireDtypeUbinary/voyageWireDtypeFloat
+are what output_dtype carries. voyageWireDtype translates between them at the
+one point the request is built.
+
+BOTH WIRE SPELLINGS COME FROM THE BODY ABOVE, not from reasoning: "float" and
+"ubinary" are two of the five values that rejection enumerated. No spelling
+was invented, and no second call was spent to confirm one the provider had
+already printed.
+
+AN UNTRANSLATABLE DTYPE IS REFUSED, NOT FORWARDED. Forwarding whatever the
+config held is what produced this 400, so voyageWireDtype errors on any value
+outside the two it can name, and callVoyageBatch surfaces that as a terminal
+config error before a request is built.
+
+THE UBINARY PATH IS UNCHANGED, byte for byte. "ubinary" is spelled the same
+in both vocabularies, so the request body a ubinary profile sends is
+identical to the one it sent before the translation existed;
+TestVoyageArm_UbinaryRequestBodyUnchanged pins the whole body against a
+hand-written literal, and it passed against the pre-change tree as well.
+
+The arm's DECODE path is untouched by all of this and was never in question:
+it is verified against canned payloads by TestVoyageFloatBatch, which reads
+the response according to the CONFIG dtype the arm carries.
+
+No default model and no default dtype changed as a result of this record.

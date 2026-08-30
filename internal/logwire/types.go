@@ -6,9 +6,10 @@
 // runtime logic. Pipeline, QueryEngine, Materialize, label/aggregation
 // machinery stay in their respective owning binaries.
 //
-// Parallel to domains/collectorwire (Phase 1): a leaf package both
-// binaries can import without dragging in the other half of the
-// collector tree.
+// Parallel to internal/collectorwire (Phase 1): a leaf package importable
+// across the client tree without dragging in the other half of the
+// collector tree. Client-only — the server binary is a separate module and
+// imports neither this package nor collectorwire.
 package logwire
 
 import (

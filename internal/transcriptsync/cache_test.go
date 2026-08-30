@@ -17,9 +17,13 @@ import (
 // hit) does NOT rewrite it; (3) --seed forces a rewrite; (4) DryRun writes no cache
 // file at all.
 func TestCacheSessionParquet_Lifecycle(t *testing.T) {
+	prevTempDir, prevCacheRoot := tempParquetDir, cacheRootDir
 	tempParquetDir = t.TempDir()
 	cacheRootDir = t.TempDir()
-	t.Cleanup(func() { tempParquetDir = ""; cacheRootDir = "" })
+	// Restore the PREVIOUS values, not the empty string: clearing cacheRootDir would undo
+	// TestMain's package-level redirect for every test that runs after this one, and this
+	// test runs first.
+	t.Cleanup(func() { tempParquetDir, cacheRootDir = prevTempDir, prevCacheRoot })
 
 	dir := t.TempDir()
 	path := writeOffsetsFile(t, dir, "s.jsonl", 1, 2, 3)
@@ -85,12 +89,14 @@ func TestCacheSessionParquet_Lifecycle(t *testing.T) {
 // prepareFile logs and CONTINUES: it returns no error and the session's temp parquet
 // is still produced and will ship. The cache write never perturbs the ship flow.
 func TestCacheSessionParquet_BestEffort(t *testing.T) {
+	prevTempDir, prevCacheRoot := tempParquetDir, cacheRootDir
 	tempParquetDir = t.TempDir()
 	// Point the cache root beneath a regular file so os.MkdirAll returns ENOTDIR.
 	notDir := filepath.Join(t.TempDir(), "iamafile")
 	require.NoError(t, os.WriteFile(notDir, []byte("x"), 0o600))
 	cacheRootDir = filepath.Join(notDir, "cache")
-	t.Cleanup(func() { tempParquetDir = ""; cacheRootDir = "" })
+	// Restore the PREVIOUS values, not the empty string — see the Lifecycle test's cleanup.
+	t.Cleanup(func() { tempParquetDir, cacheRootDir = prevTempDir, prevCacheRoot })
 
 	// The helper itself surfaces the failure (returned for LOGGING only).
 	require.Error(t, cacheSessionParquet("src", "S", notDir),

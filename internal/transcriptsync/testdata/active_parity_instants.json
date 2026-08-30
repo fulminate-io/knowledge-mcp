@@ -1,0 +1,9 @@
+{"cases":[
+  {"name":"empty","instants":[],"expected_active_ms":0},
+  {"name":"single","instants":["2026-06-01T12:00:00Z"],"expected_active_ms":0},
+  {"name":"two_close","instants":["2026-06-01T12:00:00Z","2026-06-01T12:01:30Z"],"expected_active_ms":90000},
+  {"name":"gap_at_threshold_dropped","instants":["2026-06-01T12:00:00Z","2026-06-01T12:10:00Z"],"expected_active_ms":0},
+  {"name":"gap_just_below_threshold_kept","instants":["2026-06-01T12:00:00Z","2026-06-01T12:09:59.999Z"],"expected_active_ms":599999},
+  {"name":"unsorted_input","instants":["2026-06-01T12:01:30Z","2026-06-01T12:00:00Z"],"expected_active_ms":90000},
+  {"name":"midnight_crossing","instants":["2026-06-20T23:59:59Z","2026-06-21T00:00:01.9995Z"],"expected_active_ms":2999}
+]}

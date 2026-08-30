@@ -16,6 +16,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
+	"github.com/fulminate-io/knowledge-mcp/internal/projects/render"
 )
 
 // TestPersistBatch_OneRPC asserts a single create_batch Mutation Execute (the
@@ -92,6 +93,39 @@ func TestPersistBatch_EdgeMetadataSurvivesProjection(t *testing.T) {
 	})
 }
 
+// TestPersistBatch_CallerSuppliedIDSurvives is the durable guard against the
+// persistBatchNode projection dropping a caller-supplied node id. It asserts on
+// the DECODED create_batch NodeBody — post marshal + engine.Compile — because a
+// field carrying the wrong json tag round-trips to an empty Id there while an
+// in-memory struct assertion would still pass. The second leg is the omitempty
+// guarantee: a node with an empty Id marshals with no "id" key at all, which is
+// what keeps every existing PersistBatch caller byte-identical.
+func TestPersistBatch_CallerSuppliedIDSurvives(t *testing.T) {
+	t.Run("a caller-supplied id reaches the decoded node body", func(t *testing.T) {
+		fc := &fakeGraphCaller{mutateIDs: []string{"caller-supplied-id"}}
+		nodes := []*knowledgev1.Node{{
+			Id:         "caller-supplied-id",
+			Type:       string(kgtypes.NodeDocument),
+			SymbolName: "doc",
+		}}
+		_, err := PersistBatch(context.Background(), fc, nodes, nil, "")
+		require.NoError(t, err)
+		require.Len(t, fc.execMutations, 1)
+		bodies := fc.execMutations[0].GetNodeBodies()
+		require.Len(t, bodies, 1)
+		assert.Equal(t, "caller-supplied-id", bodies[0].GetId(),
+			"the id must survive marshal + Compile onto the create_batch node body")
+	})
+
+	t.Run("an empty id marshals with no id key (omitempty)", func(t *testing.T) {
+		wn := persistBatchNode{Type: string(kgtypes.NodeThought), Name: "t"}
+		b, err := json.Marshal(wn)
+		require.NoError(t, err)
+		assert.NotContains(t, string(b), `"id"`,
+			"an unset id must omit the key so existing callers stay byte-identical")
+	})
+}
+
 // TestUpdateBatchStatus_OneUpdate asserts UpdateBatchStatus issues a single
 // uniform UPDATE Mutation Execute over Selection.Ids with set_fields{status}.
 func TestUpdateBatchStatus_OneUpdate(t *testing.T) {
@@ -153,7 +187,7 @@ func TestTraverseDescendants_OneRPC_FiltersRoot(t *testing.T) {
 			{Distance: 1, Node: &knowledgev1.Node{Id: "child-2", Type: string(kgtypes.NodeStep), Status: "pending"}},
 		},
 	}
-	nodes, err := TraverseDescendants(context.Background(), fc, "root", kgtypes.EdgeKGContains, 16)
+	nodes, err := render.TraverseDescendants(context.Background(), fc, "root", kgtypes.EdgeKGContains, 16)
 	require.NoError(t, err)
 	assert.Equal(t, 1, fc.execCalls, "exactly one traversal Execute")
 	require.Len(t, nodes, 2, "rootID must be filtered out")
@@ -239,7 +273,7 @@ func TestTraverseDescendantsWithEdges(t *testing.T) {
 		},
 	}
 
-	nodes, edges, truncated, err := TraverseDescendantsWithEdges(context.Background(), fc, "root", kgtypes.EdgeKGContains, depth)
+	nodes, edges, truncated, err := render.TraverseDescendantsWithEdges(context.Background(), fc, "root", kgtypes.EdgeKGContains, depth)
 	require.NoError(t, err)
 	assert.False(t, truncated, "an untruncated response must not report truncation")
 
@@ -282,7 +316,7 @@ func TestTraverseDescendantsWithEdges_TruncatedPropagates(t *testing.T) {
 		},
 	}
 
-	nodes, edges, truncated, err := TraverseDescendantsWithEdges(context.Background(), fc, "root", kgtypes.EdgeKGContains, 16)
+	nodes, edges, truncated, err := render.TraverseDescendantsWithEdges(context.Background(), fc, "root", kgtypes.EdgeKGContains, 16)
 	require.NoError(t, err)
 	assert.True(t, truncated, "resp.Truncated must reach the caller, not be dropped on the floor")
 	// The clamped result still comes back — truncation reports partiality, it

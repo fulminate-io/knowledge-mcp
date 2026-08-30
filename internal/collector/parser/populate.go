@@ -428,17 +428,44 @@ func indexDeclaration(ix *declIndex, result *treesitter.Result, chunk treesitter
 // language), creating and appending the node on first sight. The langNodes
 // map ensures exactly one NodeLanguage per language per
 // chunkResultsToPopulate invocation.
+//
+// IT ALSO STAMPS THE FLOW CAPABILITY MARKER, and only where an arm is
+// registered. That distinction is the whole point: a consumer needs a THREE-WAY
+// answer, and an always-set key collapses two of the three.
+//
+//   - hub node present WITH flow_arm — this language's declarations were walked
+//     by a flow-armed collector, so the ABSENCE of a flow fact is a fact about
+//     the code.
+//   - hub node present WITHOUT the key — collected before flow facts existed, or
+//     by a collector with no arm for this language. Absence proves nothing, and
+//     a scan must refuse rather than report clean.
+//   - no hub node at all — the language is not in this graph.
 func ensureLangNode(repoName, language string, langNodes map[string]string, nodes *[]*knowledgev1.Node) string {
 	if id, ok := langNodes[language]; ok {
 		return id
 	}
 	id := "lang:" + repoName + ":" + language
 	langNodes[language] = id
-	*nodes = append(*nodes, &knowledgev1.Node{
+	node := &knowledgev1.Node{
 		Id:         id,
 		Type:       string(kgtypes.NodeLanguage),
 		SymbolName: language,
 		Language:   language,
-	})
+	}
+	if _, armed := treesitter.FlowStepsArm(treesitter.Language(language)); armed {
+		node.Metadata = map[string]string{flowArmMetadataKey: flowArmVersion}
+	}
+	*nodes = append(*nodes, node)
 	return id
 }
+
+// flowArmMetadataKey and flowArmVersion are the collector-capability marker.
+//
+// THE VALUE IS A VERSION, NOT A BOOLEAN. A later change to what an arm computes
+// bumps it to "2", so a consumer can refuse a graph collected under semantics it
+// does not understand. A boolean would force a second key the first time that
+// happened.
+const (
+	flowArmMetadataKey = "flow_arm"
+	flowArmVersion     = "1"
+)

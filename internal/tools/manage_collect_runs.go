@@ -54,7 +54,14 @@ func collectRunSection(deps ClientDeps) string {
 // renderCollectRunsText renders the operator-facing collect-run block: one line
 // per target — a running target as "<label>: running (<elapsed> elapsed)" (elapsed
 // = now - StartedAt, rounded to the second) and a completed/failed target as
-// "<label>: <state> (<duration>[, error: <err>])". Mirrors renderTranscriptHealthText.
+// "<label>: <state> (<duration>[, error: <err>][, <composition>])". Mirrors
+// renderTranscriptHealthText.
+//
+// ONE CARRIER PER PATH: the composition rides the COMPLETED line only. A failed
+// run's composition is already embedded in the error text the failure carries, so
+// appending it here as well would print it twice on the exact failure the whole
+// mechanism exists to report. An empty composition degrades to nothing, keeping a
+// composition-free run's line byte-identical.
 func renderCollectRunsText(runs []CollectRunStatus) string {
 	now := time.Now()
 	lines := make([]string, 0, len(runs))
@@ -64,6 +71,8 @@ func renderCollectRunsText(runs []CollectRunStatus) string {
 			lines = append(lines, fmt.Sprintf("  %s: running (%s elapsed)", r.Label, now.Sub(r.StartedAt).Round(time.Second)))
 		case r.Err != "":
 			lines = append(lines, fmt.Sprintf("  %s: %s (%s, error: %s)", r.Label, r.State, r.FinishedAt.Sub(r.StartedAt).Round(time.Second), r.Err))
+		case r.Composition != "":
+			lines = append(lines, fmt.Sprintf("  %s: %s (%s, %s)", r.Label, r.State, r.FinishedAt.Sub(r.StartedAt).Round(time.Second), r.Composition))
 		default:
 			lines = append(lines, fmt.Sprintf("  %s: %s (%s)", r.Label, r.State, r.FinishedAt.Sub(r.StartedAt).Round(time.Second)))
 		}
@@ -74,7 +83,12 @@ func renderCollectRunsText(runs []CollectRunStatus) string {
 // addCollectRunsJSON merges the collect-run snapshot into the status map under the
 // "collect_runs" key so format:json carries it too. Each entry carries target,
 // label, and state, plus elapsed_seconds (running) or duration_seconds + error
-// (completed/failed). Mirrors addTranscriptHealthJSON.
+// (completed/failed), plus composition on a COMPLETED entry. Mirrors
+// addTranscriptHealthJSON.
+//
+// The composition key is present on completed entries only, for the same
+// one-carrier-per-path reason renderCollectRunsText carries: a failed run's
+// composition already rides its error string.
 func addCollectRunsJSON(m map[string]any, runs []CollectRunStatus) {
 	now := time.Now()
 	entries := make([]map[string]any, 0, len(runs))
@@ -86,6 +100,9 @@ func addCollectRunsJSON(m map[string]any, runs []CollectRunStatus) {
 			e["duration_seconds"] = r.FinishedAt.Sub(r.StartedAt).Round(time.Second).Seconds()
 			if r.Err != "" {
 				e["error"] = r.Err
+			}
+			if r.Err == "" && r.Composition != "" {
+				e["composition"] = r.Composition
 			}
 		}
 		entries = append(entries, e)

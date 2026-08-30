@@ -5,6 +5,7 @@ package parser
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -96,6 +97,28 @@ func DiscoverFiles(ctx context.Context, repoDir string) ([]string, error) {
 // out afterward, so a narrow scope stops paying to enumerate the whole tree —
 // on a 20k-file repo that enumeration, not the matching, is what a single-file
 // query spends its time on.
+// gitStderrLine returns the first non-empty line git wrote to stderr before
+// failing, or "" when err carries none.
+//
+// cmd.Output() ALREADY CAPTURES stderr into ExitError.Stderr, and the error's
+// own Error() then renders only "exit status 128" — so the sentence naming the
+// reason is collected and thrown away at every site that logs just the error.
+// That cost a full investigation to re-derive "not a git repository" from a bare
+// 128, and sent it looking at container uids and safe.directory first. This
+// hands the reader the sentence git already wrote.
+func gitStderrLine(err error) string {
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) {
+		return ""
+	}
+	for line := range strings.SplitSeq(string(ee.Stderr), "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
 func discoverWithGit(ctx context.Context, repoDir string, opts DiscoveryOptions, rep *DiscoveryReport) ([]string, error) {
 	args := append([]string{"ls-files", "--cached", "--others", "--exclude-standard"}, pathspecsFor(opts.PackagePrefixes)...)
 	cmd := exec.CommandContext(ctx, "git", args...)

@@ -65,7 +65,7 @@ func (c *AzureCollector) Collect(ctx context.Context, id string, opts collector.
 		if rm != nil {
 			rm.Record(t.ID, t.ResolutionID)
 		}
-		if err := collector.Collect(ctx, t.Collector, t.ID, opts); err != nil {
+		if _, err := collector.Collect(ctx, t.Collector, t.ID, opts); err != nil {
 			slog.Warn("azure: cascade error",
 				"collector", t.Collector, "target", t.ID, "error", err)
 		}

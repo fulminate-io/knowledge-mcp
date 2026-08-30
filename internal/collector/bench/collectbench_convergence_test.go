@@ -63,7 +63,7 @@ const (
 // silently blend runs into one anchor and loosen the band with every gate green.
 //
 // THE MULTIPLIERS BELOW ARE A NOISE BUDGET, NOT A DESIGN-DELTA MODEL. There is no
-// modelled cost being allowed for — the anchor and the measurement are the same
+// modeled cost being allowed for — the anchor and the measurement are the same
 // tree — so the slack exists only to absorb container run-to-run variation.
 // THE TIME BOUND HAS ALREADY BEEN TIGHTENED ONCE ON A MEASURED SPREAD, and this
 // is the record of it rather than a pending instruction. A second same-tree

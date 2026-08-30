@@ -96,7 +96,7 @@ func goDeclIsInterface(declNode *sitter.Node) bool {
 		return false
 	}
 	body := spec.ChildByFieldName("type")
-	return body != nil && body.Type() == "interface_type"
+	return body != nil && goKinds().class(body.Symbol()) == goKindInterfaceType
 }
 
 // goDeclIsGeneric reports whether a type_declaration's spec carries type
@@ -114,8 +114,9 @@ func goDeclIsGeneric(declNode *sitter.Node) bool {
 	if spec == nil {
 		return false
 	}
+	classes := goKinds()
 	for i := range int(spec.NamedChildCount()) {
-		if spec.NamedChild(i).Type() == "type_parameter_list" {
+		if classes.class(spec.NamedChild(i).Symbol()) == goKindTypeParameterList {
 			return true
 		}
 	}
@@ -134,10 +135,11 @@ func goSoleTypeSpec(declNode *sitter.Node) *sitter.Node {
 	if declNode == nil {
 		return nil
 	}
+	classes := goKinds()
 	var found *sitter.Node
 	for i := range int(declNode.NamedChildCount()) {
 		child := declNode.NamedChild(i)
-		if child.Type() != "type_spec" {
+		if classes.class(child.Symbol()) != goKindTypeSpec {
 			continue
 		}
 		if found != nil {
@@ -216,11 +218,11 @@ func goStructFieldTypes(declNode *sitter.Node, src []byte) map[string]string {
 	// sides pay for it equally. goKindStructType and goKindFieldDeclarationList
 	// classify these same two kinds for the day it is converted with its own
 	// caller census.
-	structNode := findNodeByType(declNode, "struct_type")
+	structNode := findNodeByKind(declNode, goKindStructType)
 	if structNode == nil {
 		return nil
 	}
-	fieldList := findNodeByType(structNode, "field_declaration_list")
+	fieldList := findNodeByKind(structNode, goKindFieldDeclarationList)
 	if fieldList == nil {
 		return nil
 	}

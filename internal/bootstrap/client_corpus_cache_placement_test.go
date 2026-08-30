@@ -37,7 +37,8 @@ import (
 func TestCorpusCacheRecord_SurvivesSegmentGraphDrop(t *testing.T) {
 	root := t.TempDir()
 	segRoot := segmentCacheDirFor(root)
-	mgr := segmentdist.NewManager(nil, segRoot, 0)
+	mgr := segmentdist.NewManager(segRoot, 0)
+	t.Cleanup(mgr.Close)
 	c := &client{segmentMgr: mgr}
 
 	// A real segment artifact for the SAME graph the record describes, in the layout

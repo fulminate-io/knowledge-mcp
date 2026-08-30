@@ -27,7 +27,9 @@ func TestConstructClient_MachineAuthWiring(t *testing.T) {
 	// LocalDialer hands constructClient a throwaway *GraphClient pointed at an
 	// unused URL — no RPC is issued in this test, so it never dials.
 	dialer := func(int) *graphclient.GraphClient {
-		return graphclient.NewGraphClientForURL("http://local.invalid")
+		gc := graphclient.NewGraphClientForURL("http://local.invalid")
+		t.Cleanup(gc.CloseIdleConnections)
+		return gc
 	}
 
 	build := func(t *testing.T, cfg Config) *client {

@@ -5,6 +5,7 @@ package web
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"net/url"
@@ -18,18 +19,30 @@ import (
 // It never returns a nil *pageRecord on success — every field is populated
 // with at least a zero value so downstream emission has a stable shape.
 //
-// The walker is a single recursive DFS over the html.Node tree. A section
-// stack tracks open heading scopes so deeper headings nest beneath
-// shallower ones (H3 under H2 under H1). Content records are appended to
+// The walker is a single recursive DFS over the html.Node tree, preceded by
+// one whole-document pre-pass for the presentation-heuristic heading arm. A
+// section stack tracks open heading scopes so deeper headings nest beneath
+// shallower ones (H3 under H2 under H1), and the end of a sectioning element
+// closes every scope opened inside it. Content records are appended to
 // the top-of-stack section; when no section is open yet, a synthetic
 // "" (empty-heading, depth 0) root is used so pre-heading prose still
 // has a home.
+//
+// A section is opened by any of THREE layered arms — native h1-h6, then
+// role="heading" with an explicit aria-level, then the calibrated
+// presentation heuristic. See handleStructural.
 func parsePage(p *fetchedPage, cleaned *cleanedArticle) (*pageRecord, error) {
 	if p == nil {
 		return nil, fmt.Errorf("parsePage: nil fetchedPage")
 	}
 	if cleaned == nil {
 		return nil, fmt.Errorf("parsePage: nil cleanedArticle")
+	}
+	// The retention design rests on this: a pageRecord that reached emission
+	// with no body would produce a raw_html node holding no HTML. Refuse it
+	// by name rather than emit an unfaithful capture.
+	if len(p.Body) == 0 {
+		return nil, fmt.Errorf("parsePage: empty body for %q", p.URL)
 	}
 
 	base, err := url.Parse(p.FinalURL)
@@ -40,11 +53,14 @@ func parsePage(p *fetchedPage, cleaned *cleanedArticle) (*pageRecord, error) {
 	// Walk the RAW DOM, not readability's cleaned tree. Readability's
 	// heuristic chrome-strip drops author-marked content (e.g. Hohpe's
 	// <p class="pattern-solution"> paragraphs) that transformers rely on.
-	// HTML5 semantic chrome tags (nav/header/footer/aside/script/style/
-	// noscript/template) are honored as a generic skip list inside
-	// walker.walk — not as pattern-catalog-specific logic. Readability is
+	// There is NO chrome skip list here: isNonRenderable covers script/style/noscript/template only,
+	// and nav/header/footer/aside are walked like any other container per
+	// the locked generic-scraper principle (see walker.walk). Readability is
 	// still called upstream for title / byline / pubdate extraction via
-	// cleaned.
+	// cleaned. nav and aside do additionally END an open heading scope,
+	// because both are sectioning content (see isSectionBoundary) — that is
+	// section scoping, not a content skip: their subtrees are still walked
+	// and still emitted.
 	doc, err := html.Parse(bytes.NewReader(p.Body))
 	if err != nil {
 		return nil, fmt.Errorf("parsePage: html.Parse: %w", err)
@@ -59,6 +75,13 @@ func parsePage(p *fetchedPage, cleaned *cleanedArticle) (*pageRecord, error) {
 	pruneHiddenNodes(doc)
 
 	w := newWalker(base)
+	// The presentation-heuristic arm needs the WHOLE document before the walk
+	// starts — repetition and calibration are both judgements about an
+	// element's siblings — so its levels are computed here, once per page, and
+	// consulted per element by handleStructural. It runs after
+	// pruneHiddenNodes above, or a hidden repeated marker series would be
+	// admitted into a group and inflate it.
+	w.heuristic = w.heuristicHeadingLevels(doc)
 	seedRawLinks(w, p.Body, base)
 	w.walk(doc)
 	sections := w.finish()
@@ -73,6 +96,7 @@ func parsePage(p *fetchedPage, cleaned *cleanedArticle) (*pageRecord, error) {
 		PubDate:       cleaned.PubDate,
 		FetchedAt:     p.FetchedAt,
 		ContentHash:   hashBody(p.Body),
+		RawHTMLBase64: base64.StdEncoding.EncodeToString(p.Body),
 		HTTPStatus:    p.Status,
 		TopSections:   sections,
 		InternalLinks: w.internalLinks,
@@ -137,21 +161,46 @@ func pickTitle(cleaned, firstH1 string) string {
 type walker struct {
 	base          *url.URL
 	root          *sectionRecord   // synthetic depth-0 sink for pre-heading content
-	stack         []*sectionRecord // open section scopes, deepest last
+	stack         []openSection    // open section scopes, deepest last
 	completed     []*sectionRecord // top-level (depth-1) sections closed out
 	firstH1       string
 	internalLinks []string
 	externalCites []*linkRecord
 	seenLinks     map[string]struct{}
+
+	// sectionSeq is the monotonic push counter openSection.seq is stamped
+	// from. It only ever increases, so a section popped by a later heading
+	// never leaves its number behind to be reused.
+	sectionSeq int
+
+	// heuristic maps a presentation marker to the heading level the
+	// whole-document pre-pass assigned it. Populated once per page in
+	// parsePage; nil for a page with no marker series.
+	heuristic map[*html.Node]int
+
+	// blockLevel memoises isBlockLevelNode for the duration of ONE page
+	// walk. Scoped to the walker because parsePage runs concurrently across
+	// the crawler's worker pool.
+	blockLevel map[*html.Node]bool
+}
+
+// openSection is one entry on the section stack: the record itself plus the
+// push-sequence number it was stamped with. The number is what
+// closeSectionsOpenedSince keys on — see the comment there for why neither
+// the stack's length nor a remembered pointer can stand in for it.
+type openSection struct {
+	sec *sectionRecord
+	seq int
 }
 
 func newWalker(base *url.URL) *walker {
 	root := &sectionRecord{Depth: 0}
 	return &walker{
-		base:      base,
-		root:      root,
-		stack:     []*sectionRecord{root},
-		seenLinks: map[string]struct{}{},
+		base:       base,
+		root:       root,
+		stack:      []openSection{{sec: root}},
+		seenLinks:  map[string]struct{}{},
+		blockLevel: map[*html.Node]bool{},
 	}
 }
 
@@ -187,13 +236,17 @@ func (w *walker) finish() []*sectionRecord {
 
 // top returns the innermost open section on the stack.
 func (w *walker) top() *sectionRecord {
-	return w.stack[len(w.stack)-1]
+	return w.stack[len(w.stack)-1].sec
 }
 
 // pushSection closes out any open sections with depth >= newDepth and
 // starts a new section at newDepth. Depth-1 sections get appended to
 // w.completed as top-level sections; deeper sections get wrapped in a
 // nestedSectionRecord and attached to their parent's Children slice.
+//
+// This is no longer the only thing that closes a section: the end of a
+// sectioning element closes every section opened inside it, via
+// closeSectionsOpenedSince. The seq stamped here is what that pop keys on.
 func (w *walker) pushSection(s *sectionRecord) {
 	for len(w.stack) > 1 && w.top().Depth >= s.Depth {
 		w.stack = w.stack[:len(w.stack)-1]
@@ -204,7 +257,8 @@ func (w *walker) pushSection(s *sectionRecord) {
 		parent := w.top()
 		parent.Children = append(parent.Children, nestedSectionRecord{Section: s})
 	}
-	w.stack = append(w.stack, s)
+	w.sectionSeq++
+	w.stack = append(w.stack, openSection{sec: s, seq: w.sectionSeq})
 }
 
 // append puts a contentRecord into the innermost open section.
@@ -213,16 +267,21 @@ func (w *walker) append(r contentRecord) {
 }
 
 // walk is the DFS entry; it dispatches each element to a per-tag handler
-// and recurses otherwise. Non-element nodes contribute their text to the
-// active paragraph or code block; handler functions are small so the
-// combined cognitive complexity stays well under 30.
+// and hands anything unhandled to walkChildren, which partitions that
+// element's children into inline runs and emits each run as a record.
+// Handler functions are small so the combined cognitive complexity stays
+// well under 30.
 //
 // Content from inside <script>, <style>, <noscript>, and <template> is
 // not user-facing markup — skipping those four subtrees is not a chrome
 // heuristic but a correctness decision (script/style text isn't prose,
-// template content isn't rendered). Other semantic containers
-// (nav/header/footer/aside) ARE walked per the locked generic-scraper
-// principle; transformers filter them via tag/class/role metadata.
+// template content isn't rendered). The <head> subtree is skipped for the
+// same reason: under the run model its <title> text would otherwise be
+// partitioned into a run and emitted as page content, while readability
+// already supplies the title through cleaned.Title (see pickTitle). Other
+// semantic containers (nav/header/footer/aside) ARE walked per the locked
+// generic-scraper principle; transformers filter them via tag/class/role
+// metadata.
 func (w *walker) walk(n *html.Node) {
 	if n == nil {
 		return
@@ -231,18 +290,26 @@ func (w *walker) walk(n *html.Node) {
 		return
 	}
 	if n.Type != html.ElementNode {
-		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			w.walk(c)
-		}
+		// Text sitting directly under the document or a fragment is
+		// partitioned into runs too, not merely recursed past.
+		w.walkChildren(n)
 		return
+	}
+	if n.DataAtom == atom.Head {
+		return
+	}
+	// A sectioning element ends the scope of every heading opened inside it.
+	// The defer covers every return path out of walk, including the ones
+	// handleStructural takes, and sits BELOW the isNonRenderable and Head
+	// returns so a skipped subtree never arms it.
+	if isSectionBoundary(n.DataAtom) {
+		defer w.closeSectionsOpenedSince(w.sectionSeq)
 	}
 	if w.handleStructural(n) {
 		return
 	}
-	// Unhandled containers: recurse into children.
-	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		w.walk(c)
-	}
+	// Unhandled containers: partition their children into inline runs.
+	w.walkChildren(n)
 }
 
 // isNonRenderable reports whether a is a tag whose subtree is not

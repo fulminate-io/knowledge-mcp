@@ -122,6 +122,23 @@ func (m *Manager) flagReconcileNudge(gt kgtypes.GraphType, name string) {
 	}
 }
 
+// NudgeSegmentDelta records that the server's segment cheap tick reported this
+// graph has changes past the position this client last poked on, so the reconcile
+// loop pulls its delta now rather than at its next 5-minute tick. It is the
+// EXPORTED entry point the LLM pipeline's gen-poll consumer calls.
+//
+// IT CARRIES NO COOL-OFF, unlike nudgeMerge below, and that is deliberate rather
+// than an omission. nudgeMerge is driven by USER SEARCHES, an unbounded external
+// event stream that needs rate limiting at the recorder. This one is driven by a
+// SERVER-STAMPED MONOTONIC MAXIMUM that the caller has already debounced against
+// its own poke history — the pipeline pokes only when the served stamp EXCEEDS the
+// last stamp it poked on, so one call here IS one distinct advance. Adding a
+// second cool-off on top would drop real advances that arrived inside the window
+// and leave the client believing it had already reacted to them.
+func (m *Manager) NudgeSegmentDelta(gt kgtypes.GraphType, name string) {
+	m.flagReconcileNudge(gt, name)
+}
+
 // mergeNudgeCoolOff bounds how often ONE graph's searches may ask for an earlier
 // delta pull. It is per-graph rather than global because two graphs' searches are
 // independent events and collapsing them would let a hot graph starve a cold one.

@@ -61,12 +61,15 @@ func InterceptCreateTicket(ctx context.Context, deps ClientDeps, params kgtools.
 
 	var a createTicketArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
-		return true, errorResult("create_ticket: invalid arguments: " + err.Error())
+		return true, errorResult("create_ticket: invalid arguments: " + decodeArgsError(params.Arguments, err))
 	}
 	// Ahead of every validation and BEFORE any backend side-effect: the decode
 	// above discards any top-level key createTicketArgs has no field for, so an
 	// undeclared param would otherwise vanish into a successful create — and a
 	// rejection that ran later could leave an orphan remote ticket behind.
+	if err := rejectSwallowedParamValues("create_ticket", params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	if err := rejectUndeclaredParams("create_ticket", "", CreateTicketToolDef().InputSchema.Properties, params.Arguments); err != nil {
 		return true, errorResult(err.Error())
 	}
@@ -84,6 +87,20 @@ func InterceptCreateTicket(ctx context.Context, deps ClientDeps, params kgtools.
 	// runs (no orphan remote ticket). The resolved effective IDs + unresolved
 	// slices + warnings flow into both the backend-backed and local-only paths.
 	ticketArgs := buildTicketArgsFromWire(a)
+	// Each proposed pattern's summary is the author's, clamped under an indexed
+	// field path. ITERATION IS BY INDEX: a range-value loop would clamp a copy and
+	// ship the unclamped summary onward, passing every local assertion on the way.
+	var patternClampWarnings []string
+	for i := range ticketArgs.ProposedPatterns {
+		clampedPat, pw, perr := validate.ClampSummary("create_ticket", fmt.Sprintf("proposed_patterns[%d].summary", i), ticketArgs.ProposedPatterns[i].Summary)
+		if perr != nil {
+			return true, errorResult(perr.Error())
+		}
+		ticketArgs.ProposedPatterns[i].Summary = clampedPat
+		if pw != "" {
+			patternClampWarnings = append(patternClampWarnings, pw)
+		}
+	}
 	res, presolveErr := resolvePatternFields(ctx, gc, ticketArgs.PatternIDs, ticketArgs.NoPatternsReason, ticketArgs.ProposedPatterns, ticketArgs.LanguagePatterns)
 	if presolveErr != nil {
 		return true, errorResult("create_ticket: " + presolveErr.Error())
@@ -93,6 +110,7 @@ func InterceptCreateTicket(ctx context.Context, deps ClientDeps, params kgtools.
 	if clampWarn != "" {
 		res.warnings = append(res.warnings, clampWarn)
 	}
+	res.warnings = append(res.warnings, patternClampWarnings...)
 
 	_, parentBackendName, parentURL, parentBackendID, parentMeta, lookupErr := lookupNodeBackend(ctx, gc, a.ProjectID)
 	if lookupErr != nil {
@@ -175,7 +193,7 @@ func createTicketBackendBacked(ctx context.Context, gc GraphCaller, a createTick
 	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Ticket created: %s → ID: %s", a.Name, ticketID)
-	writeClientWarningsSection(&sb, res.warnings, "\n")
+	writeClientWarningsSection(&sb, res.warnings)
 	return textResult(sb.String() + " [graph: knowledge/default]")
 }
 
@@ -223,7 +241,7 @@ func createTicketLocalOnly(ctx context.Context, gc GraphCaller, a createTicketAr
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Ticket created: %s → ID: %s", a.Name, ticketID)
-	writeClientWarningsSection(&sb, res.warnings, "\n")
+	writeClientWarningsSection(&sb, res.warnings)
 	if section := suggestPatternsForPlanClient(a.Name, a.Description, a.NoPatternsReason); section != "" {
 		sb.WriteString(section)
 	}
@@ -248,14 +266,16 @@ func buildTicketArgsFromWire(a createTicketArgs) projects.TicketArgs {
 	}
 	if len(a.ProposedPatterns) > 0 {
 		var pps []struct {
-			Name   string `json:"name"`
-			Sketch string `json:"sketch,omitempty"`
+			Name    string `json:"name"`
+			Summary string `json:"summary"`
+			Sketch  string `json:"sketch,omitempty"`
 		}
 		if err := json.Unmarshal(a.ProposedPatterns, &pps); err == nil {
 			for _, pp := range pps {
 				ticketArgs.ProposedPatterns = append(ticketArgs.ProposedPatterns, projects.ProposedPatternArgs{
-					Name:   pp.Name,
-					Sketch: pp.Sketch,
+					Name:    pp.Name,
+					Summary: pp.Summary,
+					Sketch:  pp.Sketch,
 				})
 			}
 		}

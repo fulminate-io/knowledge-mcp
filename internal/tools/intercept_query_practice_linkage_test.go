@@ -30,6 +30,12 @@ type fanOutSegmentSearcher struct {
 	mu       sync.Mutex
 	hitsByGr map[string][]searchengine.Hit
 	calls    map[string]int
+	// errsByGr makes a NAMED graph's Search fail, so a test can drive a fan-out in
+	// which one graph errors while others return hits. Set directly on the returned
+	// struct rather than through newFanOutSegmentSearcher: a measured 12 call sites
+	// across 3 files depend on that constructor's signature, and a nil-valued lookup
+	// on a nil map returns nil, so every existing fixture keeps its behaviour.
+	errsByGr map[string]error
 }
 
 func newFanOutSegmentSearcher(hitsByGraph map[string][]searchengine.Hit) *fanOutSegmentSearcher {
@@ -42,7 +48,7 @@ func (f *fanOutSegmentSearcher) Search(
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls[name]++
-	return f.hitsByGr[name], nil
+	return f.hitsByGr[name], f.errsByGr[name]
 }
 
 // searchedNames returns the sorted set of graph names Search was invoked on.
@@ -235,54 +241,41 @@ func TestLinkageStats_JSON(t *testing.T) {
 	assert.NotContains(t, body, "Proxy Breakdown", "proxy breakdown stays markdown-only")
 }
 
-// TestRouteWebPDF_RetiresRankedTextPassesIndexFreeOps is the Phase 3
-// web/pdf criterion: a ranked-text query (text or queries[], no id/specialized
-// mode) returns the retired result; every index-free op (by-id, type-browse,
-// mode=stats, mode=modules) falls through unhandled to the engineDispatch path.
-func TestRouteWebPDF_RetiresRankedTextPassesIndexFreeOps(t *testing.T) {
-	for _, graph := range []string{"web", "pdf"} {
-		t.Run(graph+" ranked text retired", func(t *testing.T) {
-			for _, args := range []queryArgs{
-				{Graph: graph, Text: "x"},
-				{Graph: graph, Queries: []string{"x"}},
-				{Graph: graph, Mode: "text", Text: "x"},
-			} {
-				handled, res := gatedRouteWebPDF(args)
-				require.True(t, handled, "%s ranked text is claimed (retired)", graph)
-				body := textBodyTools(res)
-				assert.Contains(t, body, "retired")
-				assert.Contains(t, body, graph)
-			}
+// TestPracticeRoute_PassesThroughSiblingShapes pins the foreign-shape guard: the
+// practice arm DECLINES mode=metadata_stats and the two by-id shapes so the
+// intercepts that serve them (InterceptQueryMetadataStats, the engineDispatch
+// path) receive the call, while every shape the arm does serve stays claimed.
+//
+// The declining half drives a NIL ClientDeps deliberately: practiceShapeIsForeign
+// runs before statsSeamFor, so a correctly-placed guard never dereferences deps.
+// A guard moved below the seam resolution panics here rather than silently
+// passing.
+func TestPracticeRoute_PassesThroughSiblingShapes(t *testing.T) {
+	for _, raw := range []string{
+		`{"graph":"practice","language":"go","mode":"metadata_stats"}`,
+		`{"graph":"practice","language":"go","id":"n1"}`,
+		`{"graph":"practice","language":"go","ids":["n1","n2"]}`,
+	} {
+		handled, _ := InterceptQueryPracticeLinkage(opCtx(), nil, kgtools.CallToolParams{
+			Name: "query", Arguments: json.RawMessage(raw),
 		})
-		t.Run(graph+" index-free ops fall through", func(t *testing.T) {
-			for _, args := range []queryArgs{
-				{Graph: graph, ID: "n1"},        // by-id getNode
-				{Graph: graph, Type: "finding"}, // type-browse
-				{Graph: graph, Mode: "stats"},   // stats
-				{Graph: graph, Mode: "modules"}, // list-graphs
-				{Graph: graph},                  // bare
-			} {
-				handled, _ := gatedRouteWebPDF(args)
-				assert.False(t, handled, "%s index-free op %+v must fall through to engineDispatch", graph, args)
-			}
-		})
+		assert.Falsef(t, handled, "practice must DECLINE %s to the intercept that serves it", raw)
 	}
-}
 
-// TestInterceptQueryPracticeLinkage_WebPDFClaim asserts the top-level intercept
-// routes web/pdf ranked text through routeWebPDFClient (claimed) and lets their
-// index-free ops fall through (handled=false).
-func TestInterceptQueryPracticeLinkage_WebPDFClaim(t *testing.T) {
-	handled, res := InterceptQueryPracticeLinkage(opCtx(), nil, kgtools.CallToolParams{
-		Name: "query", Arguments: json.RawMessage(`{"graph":"web","text":"x"}`),
-	})
-	require.True(t, handled, "web ranked text is claimed + retired")
-	assert.Contains(t, textBodyTools(res), "retired")
-
-	handled, _ = InterceptQueryPracticeLinkage(opCtx(), nil, kgtools.CallToolParams{
-		Name: "query", Arguments: json.RawMessage(`{"graph":"pdf","id":"n1"}`),
-	})
-	assert.False(t, handled, "pdf by-id getNode falls through to engineDispatch")
+	var execHits atomic.Int64
+	gc := newInterceptHarness(t, &execHits, cannedNodesResp())
+	deps := &interceptDeps{gc: gc, segMgr: &fakeSegmentSearcher{}}
+	for _, raw := range []string{
+		`{"graph":"practice"}`,
+		`{"graph":"practice","language":"go","mode":"stats"}`,
+		`{"graph":"practice","language":"go","text":"errgroup"}`,
+		`{"graph":"practice","language":"all","text":"errgroup"}`,
+	} {
+		handled, _ := InterceptQueryPracticeLinkage(opCtx(), deps, kgtools.CallToolParams{
+			Name: "query", Arguments: json.RawMessage(raw),
+		})
+		assert.Truef(t, handled, "practice must CLAIM %s", raw)
+	}
 }
 
 // TestInterceptQueryPracticeLinkage_Gate asserts the intercept claims only

@@ -15,6 +15,7 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // TestInterceptCreatePlan_WrongTool_FallsThrough verifies the chain
@@ -131,60 +132,77 @@ func TestInterceptCreatePlan_ValidateName_Empty(t *testing.T) {
 	assert.Contains(t, toolResultText(res), "create_plan: name is required")
 }
 
-// TestInterceptCreatePlan_DerivedCriterionOverflow asserts an over-long DERIVED
-// criterion summary (long description deriving past 500 runes) fails create_plan
-// FAST client-side with the criteria fieldPath, the derivation explanation, the
-// overflow amount, and a quoted prefix — NOT the old context-free server error.
-// Fails-when-absent: without the criteria loop the payload passes client
-// validation and dies on the server's bare exceeds-500 error.
-func TestInterceptCreatePlan_DerivedCriterionOverflow(t *testing.T) {
-	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
-	// "manual criterion: " (18 runes) + 490-char description = 508 runes > 500.
-	longDesc := strings.Repeat("d", 490)
-	handled, res := InterceptCreatePlan(opCtx(), deps, kgtools.CallToolParams{
-		Name: "create_plan",
-		Arguments: json.RawMessage(`{
+// TestInterceptCreatePlan_CriterionSummary pins the author-supplied criterion
+// summary on create_plan: required non-empty at the indexed path, stored
+// verbatim, and clamped-not-rejected over the cap. The over-cap subtest asserts
+// the PERSISTED body rather than a local, because a `for k, c := range` loop
+// clamps a copy and ships the unclamped summary into PersistBatch.
+func TestInterceptCreatePlan_CriterionSummary(t *testing.T) {
+	const seededIDs = `{"ids":["plan-1","phase-1","step-1","crit-1"]}`
+	planArgs := func(critFields string) json.RawMessage {
+		return json.RawMessage(`{
 			"name":"p","goal":"g","summary":"s","no_patterns_reason":"x",
-			"phases":[{"name":"ph","overview":"o","summary":"s","steps":[{"name":"st","description":"step 1 description body","summary":"s","criteria":[{"description":"` + longDesc + `"}]}]}]
-		}`),
+			"phases":[{"name":"ph","overview":"o","summary":"s","steps":[{"name":"st","description":"step 1 description body","summary":"s","criteria":[{"description":"short criterion",` + critFields + `}]}]}],
+			"format":"json"
+		}`)
+	}
+	criterionBody := func(t *testing.T, fc *fakeGraphCaller) *knowledgev1.NodeBody {
+		t.Helper()
+		require.Len(t, fc.execMutations, 1)
+		for _, b := range fc.execMutations[0].GetNodeBodies() {
+			if b.GetType() == string(kgtypes.NodeCriterion) {
+				return b
+			}
+		}
+		t.Fatal("no criterion body reached the persisted batch")
+		return nil
+	}
+
+	t.Run("empty criterion summary is refused at the indexed path", func(t *testing.T) {
+		deps := interceptTestDeps{gc: &fakeGraphCaller{}}
+		handled, res := InterceptCreatePlan(opCtx(), deps, kgtools.CallToolParams{
+			Name: "create_plan", Arguments: planArgs(`"summary":""`),
+		})
+		require.True(t, handled)
+		require.True(t, res.IsError, "a criterion with no summary must be refused, never derived")
+		assert.Contains(t, toolResultText(res), "phases[0].steps[0].criteria[0].summary")
 	})
-	require.True(t, handled)
-	require.True(t, res.IsError)
-	msg := toolResultText(res)
-	assert.Contains(t, msg, "phases[0].steps[0].criteria[0].summary")
-	assert.Contains(t, msg, "derived from description + command")
-	assert.Contains(t, msg, "over by")
-	assert.Contains(t, msg, "Derived prefix:")
+
+	t.Run("explicit summary reaches the persisted body", func(t *testing.T) {
+		fc := &fakeGraphCaller{mutateResult: kgtools.ToolResult{
+			Content: []kgtools.ContentBlock{{Type: "text", Text: seededIDs}},
+		}}
+		const authored = "the census reports zero remaining sites"
+		handled, res := InterceptCreatePlan(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
+			Name: "create_plan", Arguments: planArgs(`"summary":"` + authored + `"`),
+		})
+		require.True(t, handled)
+		require.False(t, res.IsError, "an authored criterion summary must be accepted: %s", toolResultText(res))
+		body := criterionBody(t, fc)
+		assert.Equal(t, authored, body.GetSummary())
+		// "criterion: " is the retired derivation's signature.
+		assert.NotContains(t, body.GetSummary(), "criterion: ")
+	})
+
+	t.Run("over-cap summary clamps in the persisted body", func(t *testing.T) {
+		fc := &fakeGraphCaller{mutateResult: kgtools.ToolResult{
+			Content: []kgtools.ContentBlock{{Type: "text", Text: seededIDs}},
+		}}
+		handled, res := InterceptCreatePlan(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
+			Name: "create_plan", Arguments: planArgs(`"summary":"` + strings.Repeat("word ", 120) + `"`),
+		})
+		require.True(t, handled)
+		require.False(t, res.IsError, "an over-cap criterion summary CLAMPS — never a hard reject: %s", toolResultText(res))
+		assert.LessOrEqual(t, utf8.RuneCountInString(criterionBody(t, fc).GetSummary()), 500)
+		assert.Contains(t, toolResultText(res), "clamped")
+	})
 }
 
-// TestInterceptCreatePlan_DerivedQuestionOverflow asserts an over-long derived
-// open_question summary fails with the open_questions fieldPath + derivation
-// explanation + prefix.
-func TestInterceptCreatePlan_DerivedQuestionOverflow(t *testing.T) {
-	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
-	// "Question: " (10 runes) + 495-char question = 505 runes > 500.
-	longQ := strings.Repeat("q", 495)
-	handled, res := InterceptCreatePlan(opCtx(), deps, kgtools.CallToolParams{
-		Name: "create_plan",
-		Arguments: json.RawMessage(`{
-			"name":"p","goal":"g","summary":"s","no_patterns_reason":"x",
-			"phases":[{"name":"ph","overview":"o","summary":"s","steps":[{"name":"st","description":"step 1 description body","summary":"s"}]}],
-			"open_questions":[{"question":"` + longQ + `"}]
-		}`),
-	})
-	require.True(t, handled)
-	require.True(t, res.IsError)
-	msg := toolResultText(res)
-	assert.Contains(t, msg, "open_questions[0].summary")
-	assert.Contains(t, msg, "derived from question + context")
-	assert.Contains(t, msg, "over by")
-	assert.Contains(t, msg, "Derived prefix:")
-}
-
-// TestInterceptCreatePlan_UnderCapDerivedSummariesPass asserts under-cap and
+// TestInterceptCreatePlan_UnderCapAuthorSummariesPass asserts under-cap and
 // at-cap criteria/questions are NOT falsely rejected: the create proceeds to the
-// mutate RPC. Guards against the new derived-validation loop over-rejecting.
-func TestInterceptCreatePlan_UnderCapDerivedSummariesPass(t *testing.T) {
+// mutate RPC. Guards against the criterion and open-question clamp loops
+// over-rejecting.
+func TestInterceptCreatePlan_UnderCapAuthorSummariesPass(t *testing.T) {
 	fc := &fakePlanGraphCaller{
 		mutateResult: kgtools.ToolResult{
 			Content: []kgtools.ContentBlock{{Type: "text", Text: `{"ids":["plan-1","phase-1","step-1"]}`}},
@@ -195,12 +213,12 @@ func TestInterceptCreatePlan_UnderCapDerivedSummariesPass(t *testing.T) {
 		Name: "create_plan",
 		Arguments: json.RawMessage(`{
 			"name":"p","goal":"g","summary":"s","no_patterns_reason":"x",
-			"phases":[{"name":"ph","overview":"o","summary":"s","steps":[{"name":"st","description":"step 1 description body","summary":"s","criteria":[{"description":"short criterion","command":"go test ./..."}]}]}],
-			"open_questions":[{"question":"short question?","context":"some context"}]
+			"phases":[{"name":"ph","overview":"o","summary":"s","steps":[{"name":"st","description":"step 1 description body","summary":"s","criteria":[{"description":"short criterion","summary":"the short criterion","command":"go test ./..."}]}]}],
+			"open_questions":[{"question":"short question?","summary":"the short question","context":"some context"}]
 		}`),
 	})
 	require.True(t, handled)
-	require.False(t, res.IsError, "under-cap derived summaries must not be rejected: %s", toolResultText(res))
+	require.False(t, res.IsError, "under-cap author summaries must not be rejected: %s", toolResultText(res))
 }
 
 // TestInterceptCreatePlan_AuthorSummariesClampAndWarn proves the pointer-receiver
@@ -328,4 +346,62 @@ func (f *fakePlanGraphCaller) Execute(_ context.Context, req *knowledgev1.Execut
 	}
 	resp := enginetest.ResponseWithNodes([]*knowledgev1.Node{&n}...)
 	return resp, nil
+}
+
+// TestCreatePlan_OpenQuestionSummaryRequired pins the author-supplied summary on
+// create_plan's open_questions, in both directions: an entry omitting it is
+// refused at the indexed path, and a supplied one reaches the persisted question
+// node verbatim.
+//
+// The second arm is the control that stops the first from being satisfied by a
+// handler that refuses everything, and the verbatim comparison stops it being
+// satisfied by one that accepts the field and composes over it.
+func TestCreatePlan_OpenQuestionSummaryRequired(t *testing.T) {
+	planArgs := func(questionFields string) json.RawMessage {
+		return json.RawMessage(`{
+			"name":"p","goal":"g","summary":"s","no_patterns_reason":"x",
+			"phases":[{"name":"ph","overview":"o","summary":"s","steps":[{"name":"st","description":"step 1 description body","summary":"s"}]}],
+			"open_questions":[{"question":"which backend owns the sweep?",` + questionFields + `}],
+			"format":"json"
+		}`)
+	}
+	questionBody := func(t *testing.T, fc *fakeGraphCaller) *knowledgev1.NodeBody {
+		t.Helper()
+		require.Len(t, fc.execMutations, 1)
+		for _, b := range fc.execMutations[0].GetNodeBodies() {
+			if b.GetType() == string(kgtypes.NodeQuestion) {
+				return b
+			}
+		}
+		t.Fatal("no question body reached the persisted batch")
+		return nil
+	}
+
+	t.Run("an open question with no summary is refused", func(t *testing.T) {
+		fc := &fakeGraphCaller{}
+		handled, res := InterceptCreatePlan(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
+			Name: "create_plan", Arguments: planArgs(`"context":"the sweep runs nightly"`),
+		})
+		require.True(t, handled)
+		require.True(t, res.IsError, "an open question with no summary must be refused, never derived")
+		assert.Contains(t, toolResultText(res), "open_questions[0].summary is required and must be non-empty")
+		assert.Empty(t, fc.execMutations, "the refusal must precede any write")
+	})
+
+	t.Run("a supplied open-question summary reaches the persisted body", func(t *testing.T) {
+		const authored = "ownership of the nightly sweep is unassigned"
+		fc := &fakeGraphCaller{mutateResult: kgtools.ToolResult{
+			Content: []kgtools.ContentBlock{{Type: "text", Text: `{"ids":["plan-1","phase-1","step-1","q-1"]}`}},
+		}}
+		handled, res := InterceptCreatePlan(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
+			Name: "create_plan", Arguments: planArgs(`"context":"the sweep runs nightly","summary":"` + authored + `"`),
+		})
+		require.True(t, handled)
+		require.False(t, res.IsError, "an authored open-question summary must be accepted: %s", toolResultText(res))
+		body := questionBody(t, fc)
+		assert.Equal(t, authored, body.GetSummary(),
+			"the author's summary must reach the question node untouched")
+		// "Question: " was the retired derivation's prefix.
+		assert.NotContains(t, body.GetSummary(), "Question: ")
+	})
 }

@@ -10,7 +10,8 @@ import (
 
 // TestValue_ScalarParity locks the kgtypes metadata-accessor free funcs to the
 // scalar-map semantics of the store.Node wrapper methods they replace
-// (pkg/store/node_value.go). Wire-decoded nodes carry nil hints, so the store
+// (cmd/knowledge-server/internal/store/node_value.go). Wire-decoded nodes carry
+// nil hints, so the store
 // wrapper resolves every key scalar and falls through to n.Metadata[key]; these
 // free funcs ARE that fall-through, so the goldens are the exact store behavior
 // for a hint-less node.

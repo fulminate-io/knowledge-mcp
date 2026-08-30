@@ -135,6 +135,13 @@ type resolveStats struct {
 	// language contributes most binds — which tells a reader nothing about the
 	// language they are asking after.
 	TypedQualifierByRoute map[string]int
+
+	// Flow is the flow-fact residue, counted per OUTCOME and logged on its own
+	// line. It is a nested struct rather than more fields here for the reason the
+	// per-language route family is a second line: the flow outcomes answer a
+	// different question from the reference outcomes and summing across the two
+	// would state a property neither has.
+	Flow flowStats
 }
 
 // countRoute records one typed-qualifier bind against its caller's language and
@@ -210,6 +217,7 @@ func (s resolveStats) log() {
 		// shape depend on which languages the corpus happens to contain.
 		slog.Info("collector: typed-qualifier routes", s.routeAttrs()...)
 	}
+	s.Flow.log()
 }
 
 // resolveEdgesWithStats is resolveEdges plus the residue counts. It is the arm
@@ -240,6 +248,19 @@ func resolveEdgesWithStats(
 				})
 			case kgtypes.EdgeContains:
 				resolved = append(resolved, resolveContainment(e, ix, nodeIDs, ordinals)...)
+			case kgtypes.EdgeFlowsToReturn:
+				// THE THREE FLOW CASES ARE EXPLICIT RATHER THAN LEFT TO THE DEFAULT,
+				// and that is a correctness requirement rather than a stylistic one.
+				// resolveReference builds its bound edge with no Evidence at all and
+				// stamps its OWN group key on a grouped one, so a flow edge routed
+				// there would arrive with its source and sink positions silently
+				// gone. The EdgeImports case above is the precedent: it carries a
+				// key through rather than rebuilding it.
+				resolved = append(resolved, resolveFlowSelf(e, nodeIDs, &stats.Flow)...)
+			case kgtypes.EdgeFlowsToArg:
+				resolved = append(resolved, resolveFlowArg(e, ix, nodeIDs, &stats.Flow, ordinals)...)
+			case kgtypes.EdgeFlowsToField:
+				resolved = append(resolved, resolveFlowField(e, ix, nodeIDs, &stats.Flow, ordinals)...)
 			default:
 				resolved = append(resolved, resolveReference(e, ix, nodeIDs, &stats, ordinals)...)
 			}
@@ -276,11 +297,8 @@ func resolveContainment(
 	if e.FromID == "" || e.Ref == nil {
 		return nil
 	}
-	receiver := e.FromID
-	if i := strings.LastIndexByte(receiver, '.'); i >= 0 {
-		receiver = receiver[i+1:]
-	}
-	candidates := ix.lookup(declKey{Scope: e.Ref.Scope, Name: baseDeclName(receiver)})
+	receiver := receiverTypeName(e.FromID)
+	candidates := receiverCandidates(ix, e.Ref, receiver)
 	switch len(candidates) {
 	case 0:
 		// Declared in no file of this package. Emit nothing rather than

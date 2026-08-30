@@ -29,6 +29,18 @@ import (
 // prototype's bare "?" and can only decline matches the prototype also declined
 // on shape.
 func goSigTypeExpr(node *sitter.Node, src []byte) TypeExpr {
+	// A BARE LEAF NEEDS NO BUILDER, and it is by far the commonest shape a
+	// parameter or result takes. Its rendering is the separator alone — a
+	// constant — so composing it through writeGoTypeExpr would allocate a
+	// strings.Builder buffer per parameter to produce a string already known.
+	// goLeafTypeExpr is the same rendering the unnamed-run path uses, so the two
+	// spellings of a leaf cannot drift.
+	if node != nil {
+		switch goKinds().class(node.Symbol()) {
+		case goKindTypeIdentifier, goKindQualifiedType:
+			return goLeafTypeExpr(node.Content(src))
+		}
+	}
 	var b strings.Builder
 	var leaves []string
 	writeGoTypeExpr(&b, &leaves, node, src)
@@ -37,50 +49,59 @@ func goSigTypeExpr(node *sitter.Node, src []byte) TypeExpr {
 
 // writeGoTypeExpr is goSigTypeExpr's recursion, appending to one builder and one
 // leaf slice so a nested function type costs no intermediate allocation.
+//
+// IT DISPATCHES ON Symbol(), NOT ON Type(), and the difference is the arm's
+// dominant allocation cost rather than a style preference: Type() is
+// C.GoString(C.ts_node_type) in the vendored binding, so a string switch
+// allocates once for EVERY node this walk visits. The class table
+// (chunker_kind_symbols.go) indexes a dense []uint8 by the node's numeric
+// symbol instead. The default arm still spells Type(), because a kind this walk
+// does not handle has to be NAMED in its rendering — and that is the one arm
+// where paying for the string is the point.
 func writeGoTypeExpr(b *strings.Builder, leaves *[]string, node *sitter.Node, src []byte) {
 	if node == nil {
 		b.WriteString("?nil")
 		return
 	}
-	switch node.Type() {
-	case "parenthesized_type":
+	switch goKinds().class(node.Symbol()) {
+	case goKindParenthesizedType:
 		// Parens carry no identity — `(*T)` and `*T` are the same type.
 		writeGoTypeExpr(b, leaves, lastNamedChild(node), src)
-	case "pointer_type":
+	case goKindPointerType:
 		b.WriteString("*")
 		writeGoTypeExpr(b, leaves, lastNamedChild(node), src)
-	case "slice_type":
+	case goKindSliceType:
 		b.WriteString("[]")
 		writeGoTypeExpr(b, leaves, lastNamedChild(node), src)
-	case "array_type":
+	case goKindArrayType:
 		// THE LENGTH IS DROPPED, matching the prototype, whose ast.ArrayType arm
 		// renders "[]"+elem for a sized array and a slice alike. The element is
 		// the LAST named child because a sized array's length literal is a named
 		// child preceding it.
 		b.WriteString("[]")
 		writeGoTypeExpr(b, leaves, lastNamedChild(node), src)
-	case "channel_type":
+	case goKindChannelType:
 		// Direction is dropped with the same reasoning as the array length: the
 		// prototype's ast.ChanType arm renders "chan "+value regardless of Dir.
 		b.WriteString("chan ")
 		writeGoTypeExpr(b, leaves, lastNamedChild(node), src)
-	case "map_type":
+	case goKindMapType:
 		// Exactly two named children, key then value.
 		b.WriteString("map[")
 		writeGoTypeExpr(b, leaves, node.NamedChild(0), src)
 		b.WriteString("]")
 		writeGoTypeExpr(b, leaves, lastNamedChild(node), src)
-	case "function_type":
+	case goKindFunctionType:
 		b.WriteString("func")
 		writeGoSigShape(b, leaves, node, src)
-	case "generic_type":
+	case goKindGenericType:
 		// `Box[int]` — the base is the `type` field and the arguments are a
 		// sibling type_arguments node whose entries are type_elem wrappers.
 		writeGoTypeExpr(b, leaves, node.ChildByFieldName("type"), src)
 		b.WriteString("[")
 		writeGoTypeArgs(b, leaves, node, src)
 		b.WriteString("]")
-	case "interface_type":
+	case goKindInterfaceType:
 		// An inline interface has no name to resolve, so it renders as a literal
 		// rather than a leaf. Empty and non-empty are DISTINCT: `any` is
 		// satisfied by everything, a non-empty inline interface is not.
@@ -89,7 +110,7 @@ func writeGoTypeExpr(b *strings.Builder, leaves *[]string, node *sitter.Node, sr
 			return
 		}
 		b.WriteString("ext:iface")
-	case "type_identifier", "qualified_type":
+	case goKindTypeIdentifier, goKindQualifiedType:
 		// THE ONLY LEAVES. A bare name or a package-qualified name is what the
 		// parser can bind to a declaration; everything else above is composition.
 		b.WriteString(TypeExprLeafSep)
@@ -102,12 +123,13 @@ func writeGoTypeExpr(b *strings.Builder, leaves *[]string, node *sitter.Node, sr
 
 // writeGoTypeArgs renders a generic instantiation's type arguments, comma-joined.
 func writeGoTypeArgs(b *strings.Builder, leaves *[]string, generic *sitter.Node, src []byte) {
+	classes := goKinds()
 	args := generic.ChildByFieldName("type_arguments")
 	if args == nil {
 		// The grammar does not always attach the field name; the arguments are
 		// the sibling type_arguments node.
 		for i := range int(generic.NamedChildCount()) {
-			if generic.NamedChild(i).Type() == "type_arguments" {
+			if classes.class(generic.NamedChild(i).Symbol()) == goKindTypeArguments {
 				args = generic.NamedChild(i)
 				break
 			}
@@ -120,7 +142,7 @@ func writeGoTypeArgs(b *strings.Builder, leaves *[]string, generic *sitter.Node,
 	for i := range int(args.NamedChildCount()) {
 		arg := args.NamedChild(i)
 		// Each argument arrives wrapped in a type_elem; unwrap to the type.
-		if arg.Type() == "type_elem" {
+		if classes.class(arg.Symbol()) == goKindTypeElem {
 			arg = lastNamedChild(arg)
 		}
 		if !first {
@@ -134,11 +156,12 @@ func writeGoTypeArgs(b *strings.Builder, leaves *[]string, generic *sitter.Node,
 // writeGoSigShape renders `(params)(results)` for a node carrying parameter
 // lists — a function_type nested inside a larger type expression.
 func writeGoSigShape(b *strings.Builder, leaves *[]string, fn *sitter.Node, src []byte) {
+	classes := goKinds()
 	var params, result *sitter.Node
 	n := int(fn.NamedChildCount())
 	i := 0
 	for ; i < n; i++ {
-		if fn.NamedChild(i).Type() == "parameter_list" {
+		if classes.class(fn.NamedChild(i).Symbol()) == goKindParameterList {
 			params = fn.NamedChild(i)
 			i++
 			break
@@ -168,24 +191,24 @@ func goParamTypeExprs(list *sitter.Node, src []byte) []TypeExpr {
 	if list == nil {
 		return nil
 	}
+	classes := goKinds()
 	out := make([]TypeExpr, 0, int(list.NamedChildCount()))
 	for i := range int(list.NamedChildCount()) {
 		decl := list.NamedChild(i)
-		switch decl.Type() {
-		case "parameter_declaration":
+		switch classes.class(decl.Symbol()) {
+		case goKindParameterDeclaration:
 			if exprs, unnamed := goUnnamedParamExprs(decl, src); unnamed {
 				out = append(out, exprs...)
 				continue
 			}
-			names, typeNode := goNamesAndType(decl, src)
+			reps, typeNode := goNamesAndType(decl, src)
 			if typeNode == nil {
 				// An UNNAMED parameter is a type with no identifiers before it,
 				// so goNamesAndType finds no names and returns no type. Its type
 				// is the declaration's only named child.
 				typeNode = lastNamedChild(decl)
-				names = nil
+				reps = 0
 			}
-			reps := len(names)
 			if reps == 0 {
 				reps = 1
 			}
@@ -193,7 +216,7 @@ func goParamTypeExprs(list *sitter.Node, src []byte) []TypeExpr {
 			for range reps {
 				out = append(out, expr)
 			}
-		case "variadic_parameter_declaration":
+		case goKindVariadicParameterDeclaration:
 			// `...T` is its own declaration kind in this grammar rather than an
 			// ellipsis wrapping the type, so the marker is written here. It stays
 			// DISTINCT from `[]T`: the two are different types, and a signature
@@ -226,32 +249,36 @@ func goParamTypeExprs(list *sitter.Node, src []byte) []TypeExpr {
 // signature would match something.
 func goUnnamedParamExprs(decl *sitter.Node, src []byte) ([]TypeExpr, bool) {
 	ids, rest := goLeadingIdentifiers(decl)
-	if len(ids) == 0 || rest == nil {
+	if ids == 0 || rest == nil {
 		return nil, false
 	}
 	keyword := -1
-	for i, id := range ids {
-		if goTypeKeywords[id.Content(src)] {
+	for i := range ids {
+		if goIsTypeKeyword(decl.NamedChild(i), src) {
 			keyword = i
 			break
 		}
 	}
 	if keyword < 0 {
+		// THE COMMON EXIT, and the reason nothing above it may allocate: every
+		// ordinary parameter declaration reaches here, so an allocation before
+		// this point is paid once per parameter of every declaration in the file
+		// to answer "no".
 		return nil, false
 	}
 
-	out := make([]TypeExpr, 0, len(ids))
-	for _, id := range ids[:keyword] {
+	out := make([]TypeExpr, 0, ids)
+	for i := range keyword {
 		// An identifier standing alone in an unnamed run spells a whole type, so
 		// it is a LEAF — the same rendering a type_identifier gets. Passing it to
 		// writeGoTypeExpr would tag it `?identifier`, since `identifier` is a name
 		// kind and never appears where that walk expects a type.
-		out = append(out, goLeafTypeExpr(id.Content(src)))
+		out = append(out, goLeafTypeExpr(decl.NamedChild(i).Content(src)))
 	}
-	if keyword != len(ids)-1 {
+	if keyword != ids-1 {
 		return append(out, TypeExpr{Shape: "?unnamed-run"}), true
 	}
-	return append(out, goFusedKeywordExpr(ids[keyword].Content(src), rest, src)), true
+	return append(out, goFusedKeywordExpr(decl.NamedChild(keyword).Content(src), rest, src)), true
 }
 
 // goLeafTypeExpr renders one written spelling as a resolvable leaf.
@@ -275,7 +302,7 @@ func goFusedKeywordExpr(keyword string, rest *sitter.Node, src []byte) TypeExpr 
 	var b strings.Builder
 	var leaves []string
 	switch {
-	case keyword == "map" && rest.Type() == "array_type" && rest.NamedChildCount() >= 2:
+	case keyword == "map" && goKinds().class(rest.Symbol()) == goKindArrayType && rest.NamedChildCount() >= 2:
 		b.WriteString("map[")
 		writeGoUnnamedLeaf(&b, &leaves, rest.NamedChild(0), src)
 		b.WriteString("]")
@@ -297,7 +324,7 @@ func goFusedKeywordExpr(keyword string, rest *sitter.Node, src []byte) TypeExpr 
 // qualified or composed map key still arrives as its own node and must be
 // rendered as one.
 func writeGoUnnamedLeaf(b *strings.Builder, leaves *[]string, node *sitter.Node, src []byte) {
-	if node != nil && node.Type() == "identifier" {
+	if node != nil && goKinds().class(node.Symbol()) == goKindIdentifier {
 		b.WriteString(TypeExprLeafSep)
 		*leaves = append(*leaves, node.Content(src))
 		return
@@ -312,7 +339,7 @@ func goResultTypeExprs(result *sitter.Node, src []byte) []TypeExpr {
 	if result == nil {
 		return nil
 	}
-	if result.Type() == "parameter_list" {
+	if goKinds().class(result.Symbol()) == goKindParameterList {
 		return goParamTypeExprs(result, src)
 	}
 	return []TypeExpr{goSigTypeExpr(result, src)}
@@ -351,13 +378,14 @@ func writeGoResultShapes(b *strings.Builder, leaves *[]string, result *sitter.No
 // parameter_list, then the optional result — which is exactly why a spec and the
 // method satisfying it render alike.
 func goMethodElemSigParts(declNode *sitter.Node) (params, result *sitter.Node) {
-	if declNode == nil || declNode.Type() != "method_elem" {
+	classes := goKinds()
+	if declNode == nil || classes.class(declNode.Symbol()) != goKindMethodElem {
 		return nil, nil
 	}
 	n := int(declNode.NamedChildCount())
 	i := 0
 	for ; i < n; i++ {
-		if declNode.NamedChild(i).Type() == "parameter_list" {
+		if classes.class(declNode.NamedChild(i).Symbol()) == goKindParameterList {
 			params = declNode.NamedChild(i)
 			i++
 			break
@@ -412,19 +440,20 @@ func extractGoInterfaceEmbeds(node *sitter.Node, src []byte) []string {
 	if spec == nil {
 		return nil
 	}
+	classes := goKinds()
 	body := spec.ChildByFieldName("type")
-	if body == nil || body.Type() != "interface_type" {
+	if body == nil || classes.class(body.Symbol()) != goKindInterfaceType {
 		return nil
 	}
 	var embeds []string
 	for i := range int(body.NamedChildCount()) {
 		elem := body.NamedChild(i)
-		if elem.Type() != "type_elem" || elem.NamedChildCount() != 1 {
+		if classes.class(elem.Symbol()) != goKindTypeElem || elem.NamedChildCount() != 1 {
 			continue
 		}
 		inner := elem.NamedChild(0)
-		switch inner.Type() {
-		case "type_identifier", "qualified_type", "generic_type":
+		switch classes.class(inner.Symbol()) {
+		case goKindTypeIdentifier, goKindQualifiedType, goKindGenericType:
 			if name := qualifiedTypeName(inner, src); name != "" {
 				embeds = append(embeds, name)
 			}

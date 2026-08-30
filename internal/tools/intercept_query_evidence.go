@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package tools — InterceptQueryEvidence ports the server-side
-// handleEvidenceFor handler client-side. Claims query(mode:"evidence").
+// Package tools — InterceptQueryEvidence serves query(mode:"evidence")
+// client-side. It began as a port of the server-side handleEvidenceFor
+// handler; that handler and the file that held it are both gone —
+// verified repo-wide by symbol and by path — and no server-side
+// evidence arm replaced them, so this intercept is the whole
+// implementation.
 //
 // Walks the informed-by → references chain from a decision via the
 // existing render.FetchNode + render.IterEdges wire helpers. Both
-// markdown and JSON formats are supported with byte-parity goldens.
-//
-// Must be wired BEFORE the server-side evidence shortcut is deleted.
+// markdown and JSON formats are supported with byte-parity goldens
+// (testdata/evidence.golden, testdata/evidence.json.golden).
 
 package tools
 
@@ -64,9 +67,16 @@ func InterceptQueryEvidence(ctx context.Context, deps ClientDeps, params kgtools
 	return true, kgtools.TextResult(renderEvidenceMarkdown(ctx, gc, decision))
 }
 
-// renderEvidenceMarkdown ports the markdown branch of
-// handleEvidenceFor (tools_knowledge_query.go:82-127). Pure
-// formatting over wire-fetched edges + nodes.
+// renderEvidenceMarkdown is pure formatting over wire-fetched edges +
+// nodes: the decision header, then one bullet per informed-by evidence
+// node, then its references indented beneath.
+//
+// PROVENANCE, NOT A POINTER: this wording was ported byte-for-byte from
+// the markdown branch of the server-side handleEvidenceFor, which no
+// longer exists by symbol or by path. WHAT HOLDS THE FORMAT NOW is
+// TestInterceptQueryEvidence_TextFormat_ByteIdentical against
+// testdata/evidence.golden — that assertion, not the vanished port
+// source, is the standing contract.
 func renderEvidenceMarkdown(ctx context.Context, gc GraphCaller, decision *knowledgev1.Node) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Decision: %s\n", decision.SymbolName)
@@ -106,8 +116,18 @@ func renderEvidenceMarkdown(ctx context.Context, gc GraphCaller, decision *knowl
 	return sb.String()
 }
 
-// evidenceRefRow / evidenceRow mirror the server-side JSON payload
-// shape at tools_knowledge_query.go:143-155.
+// evidenceRefRow / evidenceRow are the JSON payload shape for
+// query(mode:"evidence", format:"json"). They began as named copies of
+// two anonymous structs declared inside the since-deleted server-side
+// buildEvidenceJSON; that file is gone by path and those types with it.
+//
+// WHAT PINS THE SHAPE NOW is testdata/evidence.json.golden, asserted
+// byte-for-byte by TestInterceptQueryEvidence_JSONFormat_ByteIdentical.
+// Note the reach of that golden: its fixture emits one url-typed
+// reference per finding, so it pins the field set and field ORDER of
+// the fully-populated form. The refType "file" and default branches,
+// and the omitted form of the three omitempty fields, have no fixture
+// in this package and are therefore unpinned.
 type evidenceRefRow struct {
 	ID    string `json:"id"`
 	Name  string `json:"name"`
@@ -123,9 +143,15 @@ type evidenceRow struct {
 	References []evidenceRefRow `json:"references,omitempty"`
 }
 
-// buildEvidenceJSON ports buildEvidenceJSON
-// (tools_knowledge_query.go:133-186) with FetchNode + IterEdges
-// substitutions.
+// buildEvidenceJSON assembles the evidence payload: the decision header,
+// then one row per informed-by node with its references nested.
+//
+// PROVENANCE, NOT A POINTER: it is a port of a server-side function of
+// the same name, which is gone by symbol and by path along with the file
+// that held it. The one substitution the port made is the reason the two
+// bodies are not identical — every direct store query became a wire call
+// through render.FetchNode (node by ID) and render.IterEdges (edge walk),
+// because a client-side intercept has no store handle.
 func buildEvidenceJSON(ctx context.Context, gc GraphCaller, decision *knowledgev1.Node) map[string]any {
 	out := map[string]any{
 		"decision": map[string]any{

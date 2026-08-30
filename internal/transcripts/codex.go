@@ -14,8 +14,8 @@ import (
 // per-record state needed to attribute a token row (session id, cwd, cli_version,
 // git branch, current model) lives in EARLIER lines (the line-1 session_meta and
 // the per-turn turn_context). The parser therefore carries scan state across
-// lines — that is why these structs are richer than hivemonitor's liveness-only
-// codexRolloutPayload (which models no token/model/meta fields).
+// lines, and these structs model the token/model/meta fields that state is
+// assembled from.
 
 // codexErrorRe is the best-effort Codex tool-failure heuristic: Codex rollouts
 // carry NO structured per-call error flag, so a non-zero "Process exited with

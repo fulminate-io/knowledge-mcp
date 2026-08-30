@@ -82,8 +82,13 @@ func parityProbe(param string, prop kgtools.Property, fx parityFixture) (value a
 	case "metadata":
 		return map[string]any{"probe-metadata-key": "probe-metadata"}, "probe-metadata"
 	case "references":
-		return []any{map[string]any{"url": "https://probe-references.invalid", "title": "probe-references"}},
-			"probe-references"
+		// A url reference CREATES a reference node, so it carries the author
+		// summary that kind requires; without one the probe is refused and the
+		// param reads as rejected when it is in fact consumed.
+		return []any{map[string]any{
+			"url": "https://probe-references.invalid", "title": "probe-references",
+			"summary": "probe-references summary",
+		}}, "probe-references"
 	case "nodes":
 		return []any{map[string]any{"type": "finding", "name": "probe-nodes", "summary": "probe-nodes summary"}},
 			"probe-nodes"
@@ -96,11 +101,17 @@ func parityProbe(param string, prop kgtools.Property, fx parityFixture) (value a
 		return []any{map[string]any{
 			"id": paritySeedLocalA, "metadata": map[string]any{"probe-updates-key": "probe-updates"},
 		}}, "probe-updates"
-	case "question_id", "thought_parent", "branches_from", "ticket_id", "from", "to", "step_id":
+	case "question_id", "thought_parent", "branches_from", "ticket_id", "from", "to":
 		// Derivation / edge-endpoint params: probe with a SEEDED id so the derived
 		// edge actually resolves. An unseeded id is dropped with a warning, which
 		// would make a consumed row fail against correct routing.
 		return paritySeedLocalB, paritySeedLocalB
+	case "step_id":
+		// Same rule, one type constraint further: the criterion arm gates step_id
+		// against the criteria-owning container vocabulary, so the seeded id must
+		// be a CONTAINER. paritySeedLocalB is a finding and would be refused for
+		// its type, failing a consumed row against correct routing.
+		return paritySeedStep, paritySeedStep
 	case "findings":
 		return paritySeedLocalA, paritySeedLocalA
 	case "links", "charge_evidence":

@@ -23,6 +23,12 @@ type countingExec struct {
 	hydrateReqs []*knowledgev1.QueryPlan
 	siblings    []knowledgev1.Edge
 	nodes       []*knowledgev1.Node
+	// hydrateTruncated makes the CANDIDATE hydrate answer with the server's
+	// truncated flag set. That read is one unbounded QueryPlan{Ids} over every
+	// candidate of every group, so the server clamps it above 10,000 ids — and a
+	// clamped hydrate leaves candidates nameless, indistinguishable from
+	// candidates that genuinely carry no symbol name.
+	hydrateTruncated bool
 }
 
 func (c *countingExec) fn() ExecuteFn {
@@ -34,7 +40,7 @@ func (c *countingExec) fn() ExecuteFn {
 			return &knowledgev1.ExecuteResponse{Edges: edgesToProtoForTest(c.siblings)}, nil
 		}
 		c.hydrateReqs = append(c.hydrateReqs, plan)
-		return &knowledgev1.ExecuteResponse{Nodes: c.nodes}, nil
+		return &knowledgev1.ExecuteResponse{Nodes: c.nodes, Truncated: c.hydrateTruncated}, nil
 	}
 }
 
@@ -106,6 +112,69 @@ func TestEnrichCandidateGroups(t *testing.T) {
 		assert.False(t, got["q/d.go:Run"], "a foreign group key must never be adopted")
 		assert.False(t, got["q/e.go:Run"], "a foreign group key must never be adopted")
 		assert.True(t, out[0].Complete())
+	})
+
+	t.Run("clamped_candidate_hydrate_is_reported_and_partials_survive", func(t *testing.T) {
+		// THE GATE FOR THE FOURTH HYDRATE SITE. The candidate hydrate is one
+		// unbounded QueryPlan{Ids} over every candidate of every group; the server
+		// clamps an id set above 10,000 on the request alone, and a clamped hydrate
+		// leaves candidates nameless — indistinguishable from candidates that
+		// genuinely carry no symbol name.
+		//
+		// The verdict rides this function's ERROR return on purpose: that is the
+		// "visible rather than silent" channel its own contract documents, and its
+		// sole production caller converts it to a flagged incompleteness rather
+		// than a failed read (see the analyze-side test for that half).
+		groups := []CandidateGroup{{
+			FromID: src, EdgeType: "CALLS", Method: kgtypes.EdgeMethodAmbiguousName, Key: key, Declared: 3,
+			Members: []knowledgev1.Edge{
+				memberEdge(src, "p/a.go:Run", key, 1.0/3.0),
+				memberEdge(src, "p/b.go:Run", key, 1.0/3.0),
+			},
+		}}
+		fake := &countingExec{
+			hydrateTruncated: true,
+			siblings:         []knowledgev1.Edge{memberEdge(src, "p/c.go:Run", key, 1.0/3.0)},
+			// Only ONE of the three candidates comes back — the clamp.
+			nodes: []*knowledgev1.Node{node("p/a.go:Run", "p/a.go", "func Run()", 10)},
+		}
+		enriched, nodes, err := EnrichCandidateGroups(context.Background(), fake.fn(), groups, nil)
+
+		require.Error(t, err, "a clamped candidate hydrate must be REPORTED, not swallowed")
+		assert.Contains(t, err.Error(), "candidate hydrate clamped",
+			"the error names the condition so a reader can act on it")
+
+		// THE PARTIALS RIDE ALONGSIDE THE ERROR, and that is the contract rather
+		// than an accident: the caller keeps the enrichment and the candidates that
+		// DID resolve. Asserting only the error would let an implementation return
+		// (nil, nil, err) and still pass.
+		require.Len(t, enriched, 1)
+		assert.Len(t, enriched[0].Members, 3, "the sibling enrichment survives the clamped hydrate")
+		require.NotNil(t, nodes, "the candidates the server DID return are handed back")
+		assert.Contains(t, nodes, "p/a.go:Run")
+	})
+
+	t.Run("whole_candidate_hydrate_reports_nothing", func(t *testing.T) {
+		// The known-negative for the leg above: without it, an implementation that
+		// errored on EVERY hydrate would satisfy the clamped assertion perfectly.
+		groups := []CandidateGroup{{
+			FromID: src, EdgeType: "CALLS", Method: kgtypes.EdgeMethodAmbiguousName, Key: key, Declared: 3,
+			Members: []knowledgev1.Edge{
+				memberEdge(src, "p/a.go:Run", key, 1.0/3.0),
+				memberEdge(src, "p/b.go:Run", key, 1.0/3.0),
+			},
+		}}
+		fake := &countingExec{
+			siblings: []knowledgev1.Edge{memberEdge(src, "p/c.go:Run", key, 1.0/3.0)},
+			nodes: []*knowledgev1.Node{
+				node("p/a.go:Run", "p/a.go", "func Run()", 10),
+				node("p/b.go:Run", "p/b.go", "func Run(n int)", 20),
+				node("p/c.go:Run", "p/c.go", "func Run(s string)", 30),
+			},
+		}
+		_, nodes, err := EnrichCandidateGroups(context.Background(), fake.fn(), groups, nil)
+		require.NoError(t, err, "a whole hydrate must not be reported as clamped")
+		assert.Len(t, nodes, 3)
 	})
 
 	t.Run("hydrate_is_one_bulk_call", func(t *testing.T) {

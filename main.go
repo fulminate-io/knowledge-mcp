@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Command knowledge is the CLI front end for the knowledge graph: it
-// dispatches subcommands (serve / start / stop / status / login / logout /
-// doctor / install-claude-assets / install-codex-assets) and otherwise
-// directs the user to the daemon.
+// dispatches subcommands and otherwise directs the user to the daemon.
+//
+// The dispatched set, in the order RunSubcommand's switch takes them: login,
+// logout, auth-status, accounts, account, start, stop, status, serve, install,
+// setup, install-claude-assets, install-codex-assets, transcript-upload, tunnel,
+// check, doctor and version. The list is exhaustive on purpose — an earlier one
+// named nine of them, and a comment that is wrong about its own dispatcher is
+// worse than no list at all.
 //
 // MCP is served by the `knowledge serve` daemon over a loopback
-// streamable-HTTP endpoint (one shared process for every editor + dream
-// worker); editors register that URL via install-claude-assets /
-// install-codex-assets. Bare `knowledge` (no subcommand) no longer serves
-// MCP over stdio — it returns a hint pointing at `knowledge serve`.
+// streamable-HTTP endpoint (one shared process for every editor); editors
+// register that URL via install-claude-assets / install-codex-assets. Bare
+// `knowledge` (no subcommand) no longer serves MCP over stdio — it returns a
+// hint pointing at `knowledge serve`.
 //
 // Usage:
 //
@@ -52,11 +57,9 @@ import (
 	// Register tree-sitter parsers (parser.Populate walks this).
 	_ "github.com/fulminate-io/knowledge-mcp/internal/collector/treesitter"
 
-	// Register LLM providers via blank imports. The dream Runner runs
-	// client-side now; each sub-package's init() calls llm.RegisterProvider
-	// so domains/dream's runReAct can resolve a worker's provider via
-	// llm.NewClient. anthropic / openai / gemini drive tool-use via the
-	// in-Go eino ReAct loop; claude-cli / codex-cli drive tool-use via
+	// Register LLM providers via blank imports. Each sub-package's init()
+	// calls llm.RegisterProvider so a configured consumer can resolve its
+	// provider via llm.NewClient. claude-cli / codex-cli drive tool-use via
 	// --mcp-config pointed at the daemon (see
 	// cmd/knowledge/internal/llm/claudecli/translate.go::buildMCPConfig).
 	_ "github.com/fulminate-io/knowledge-mcp/internal/llm/anthropic"
@@ -85,9 +88,6 @@ func main() {
 	// bootstrap.Run, which now directs the user to `knowledge serve`
 	// (bare `knowledge` no longer serves MCP over stdio).
 	if handled, code := bootstrap.RunSubcommand(); handled {
-		os.Exit(code)
-	}
-	if handled, code := bootstrap.RunWorkerSubcommand(); handled {
 		os.Exit(code)
 	}
 	// Bare `knowledge --version` / `-v` must print the version and exit 0

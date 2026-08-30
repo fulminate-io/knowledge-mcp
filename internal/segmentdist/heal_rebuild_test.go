@@ -32,9 +32,9 @@ func TestHealRebuildsIntoNewFormatFamily(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	_, view := newSegmentHarness(t)
+
 	cacheDir := t.TempDir()
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, cacheDir, 0, withSegmentSource(view)))
+	mgr := closeOnCleanup(t, NewManager(cacheDir, 0))
 	gt, name := kgtypes.GraphCode, "heal-family"
 
 	// The cache starts genuinely empty — no tree for either format family.
@@ -101,8 +101,7 @@ func TestRetiredTreeSurvivesUntilTheNewFamilyExists(t *testing.T) {
 	require.NoError(t, os.MkdirAll(retired, 0o750))
 	require.NoError(t, os.WriteFile(filepath.Join(retired, "legacy.seg"), []byte("v1 bytes"), 0o600))
 
-	_, view := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, cacheDir, 0, withSegmentSource(view)))
+	mgr := closeOnCleanup(t, NewManager(cacheDir, 0))
 	// Constructing the manager alone must not reclaim anything: no new family
 	// directory exists yet.
 	_ = mgr.bm25ManagerFor(kgtypes.GraphCode, "legacy")

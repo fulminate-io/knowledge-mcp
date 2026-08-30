@@ -26,8 +26,7 @@ import (
 //     while their flag is false and NEVER panic: a knowledge TEXT search AND a
 //     knowledge query text-search (both → composeKnowledgeSearch, gated on
 //     PipelineReady — the T2-A panic arm; the segment Manager is left nil, the
-//     exact window state), worker:trigger (WorkerReady), thoughts propagate
-//     force_full (PropReady);
+//     exact window state) and thoughts propagate force_full (PropReady);
 //   - flipping the flags via mark*Ready() lets the same ops reach the wired/degrade
 //     path WITHOUT panicking.
 //
@@ -36,9 +35,10 @@ import (
 func TestServeBindFirst_EngineOpWorks_RuntimeOpsGated(t *testing.T) {
 	localURL, eng := startCountingEngine(t)
 	local := graphclient.NewGraphClientForURL(localURL)
+	t.Cleanup(local.CloseIdleConnections)
 	// Logged-out client → router dispatches to the local fake engine. Readiness
 	// flags default false (zero value) — the bind-first wiring window.
-	c := buildE2EClient(local, "http://cloud.invalid", newFakeAuthStore(), 0)
+	c := closeRouterOnCleanup(t, buildE2EClient(local, "http://cloud.invalid", newFakeAuthStore(), 0))
 
 	ctx := opCtx()
 
@@ -80,12 +80,11 @@ func TestServeBindFirst_EngineOpWorks_RuntimeOpsGated(t *testing.T) {
 	}{
 		{"knowledge-search", "search", map[string]any{"query": "anything", "graph": "knowledge"}},
 		{"knowledge-query-text", "query", map[string]any{"text": "anything", "mode": "text", "graph": "knowledge"}},
-		{"worker-trigger", "worker", map[string]any{"operation": "trigger", "name": "smoke"}},
 		{"propagate-force-full", "thoughts", map[string]any{"operation": "propagate", "force_full": true}},
 	}
 	for _, tc := range gatedCases {
 		t.Run("gated/"+tc.name, func(t *testing.T) {
-			require.False(t, c.PipelineReady() || c.WorkerReady() || c.PropReady(),
+			require.False(t, c.PipelineReady() || c.PropReady(),
 				"this subtest requires the pre-wiring window (all flags false)")
 			res, handled := call(tc.tool, tc.args)
 			require.True(t, handled, "the gated op must be handled client-side, not fall through")
@@ -99,7 +98,6 @@ func TestServeBindFirst_EngineOpWorks_RuntimeOpsGated(t *testing.T) {
 	// the same ops now reach the wired/degrade path WITHOUT panicking. The runtimes
 	// are nil here (no real wiring in this harness), so they hit their permanent
 	// degrade message, NOT the not-ready message — and crucially do not panic.
-	c.markWorkerReady()
 	c.markPropReady()
 	c.markPipelineReady()
 

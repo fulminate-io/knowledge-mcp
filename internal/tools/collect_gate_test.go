@@ -37,9 +37,9 @@ func TestCollectGate_ReleasesAfterFailedCollect(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rt := NewCollectRuntime()
 			release := make(chan struct{})
-			h, started, _ := rt.Start("code\x00/x", "code /x", gateTestGraph, func() error {
+			h, started, _ := rt.Start("code\x00/x", "code /x", gateTestGraph, func() (string, error) {
 				<-release
-				return tc.work()
+				return "", tc.work()
 			})
 			require.True(t, started)
 
@@ -72,9 +72,9 @@ func TestCollectGate_StaleEntryDoesNotGateForever(t *testing.T) {
 
 	block := make(chan struct{})
 	t.Cleanup(func() { close(block) })
-	_, started, _ := rt.Start("code\x00/x", "code /x", gateTestGraph, func() error {
+	_, started, _ := rt.Start("code\x00/x", "code /x", gateTestGraph, func() (string, error) {
 		<-block // never returns during the test — the hung-collect shape
-		return nil
+		return "", nil
 	})
 	require.True(t, started)
 
@@ -95,9 +95,9 @@ func TestCollectGate_IgnoresOtherGraphsAndTypes(t *testing.T) {
 	rt := NewCollectRuntime()
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
-	_, started, _ := rt.Start("code\x00/x", "code /x", gateTestGraph, func() error {
+	_, started, _ := rt.Start("code\x00/x", "code /x", gateTestGraph, func() (string, error) {
 		<-release
-		return nil
+		return "", nil
 	})
 	require.True(t, started)
 

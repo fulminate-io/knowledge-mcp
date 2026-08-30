@@ -67,7 +67,7 @@ func TestMergeConverges(t *testing.T) {
 		for range runs {
 			// Fresh inputs each run: a merge must not depend on which objects it was
 			// handed, only on the content it accepts.
-			merged, err := Format{}.Merge(
+			merged, err := mergeSegments(t,
 				[]searchengine.Segment[[]byte, struct{}]{build(left), build(right)},
 				[]func(searchengine.ExternalID) bool{nil, nil},
 			)
@@ -84,7 +84,7 @@ func TestMergeConverges(t *testing.T) {
 
 	t.Run("a merge-of-one reproduces Build's bytes", func(t *testing.T) {
 		built := build(left)
-		merged, err := Format{}.Merge(
+		merged, err := mergeSegments(t,
 			[]searchengine.Segment[[]byte, struct{}]{build(left)},
 			[]func(searchengine.ExternalID) bool{nil},
 		)
@@ -107,14 +107,14 @@ func TestMergeConverges(t *testing.T) {
 	})
 
 	t.Run("the merge is independent of input ORDER", func(t *testing.T) {
-		forward, err := Format{}.Merge(
+		forward, err := mergeSegments(t,
 			[]searchengine.Segment[[]byte, struct{}]{build(left), build(right)},
 			[]func(searchengine.ExternalID) bool{nil, nil},
 		)
 		if err != nil {
 			t.Fatalf("Merge forward: %v", err)
 		}
-		reversed, err := Format{}.Merge(
+		reversed, err := mergeSegments(t,
 			[]searchengine.Segment[[]byte, struct{}]{build(right), build(left)},
 			[]func(searchengine.ExternalID) bool{nil, nil},
 		)

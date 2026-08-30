@@ -2,8 +2,11 @@ package searchengine
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"testing"
 )
 
 // mockQuery is a single search term matched against Document.Fields[FieldContent].
@@ -20,7 +23,7 @@ type mockStats struct {
 // mockRow is one indexed document row: the mock's "live indexed data". Build
 // copies docs into rows; Decode reconstructs the SAME rows from JSON, so a
 // decoded mockSegment is indistinguishable from a built one — which is exactly
-// why Merge works on decoded/pulled segments.
+// why MergeTo works on decoded/pulled segments.
 type mockRow struct {
 	ID      ExternalID `json:"id"`
 	Content string     `json:"content"`
@@ -53,12 +56,21 @@ func (mockFormat) Decode(blob []byte) (Segment[mockQuery, mockStats], error) {
 	return &mockSegment{rows: rows}, nil
 }
 
-// Merge type-asserts each input to *mockSegment (the format owns its concrete
+// MergeTo type-asserts each input to *mockSegment (the format owns its concrete
 // type — the Lucene-style "read your own indexed internals" pattern; the Segment
-// interface gains no accessor), keeps rows where accept[i](id) is true, and
-// concatenates the survivors into one all-live segment. Works identically on
-// built and decoded inputs because Decode rebuilds the same rows.
-func (mockFormat) Merge(segs []Segment[mockQuery, mockStats], accept []func(ExternalID) bool) (Segment[mockQuery, mockStats], error) {
+// interface gains no accessor), keeps rows where accept[i](id) is true,
+// concatenates the survivors into one all-live segment and writes its encoded
+// bytes into dst. Works identically on built and decoded inputs because Decode
+// rebuilds the same rows.
+//
+// A double has no streaming emitter to exercise, so the honest shape is the one
+// that produces the same segment the engine would otherwise have been handed and
+// reports its length.
+//
+// IT DOES NOT TRUNCATE, CLOSE OR UNLINK dst, matching the contract the interface
+// states: the engine owns the destination. A double that tidied up after itself
+// would hide an engine that forgot to.
+func (mockFormat) MergeTo(dst MergeSink, segs []Segment[mockQuery, mockStats], accept []func(ExternalID) bool) (int64, error) {
 	var merged []mockRow
 	for i, s := range segs {
 		ms := s.(*mockSegment)
@@ -69,7 +81,64 @@ func (mockFormat) Merge(segs []Segment[mockQuery, mockStats], accept []func(Exte
 			}
 		}
 	}
-	return &mockSegment{rows: merged}, nil
+	return writeMergedSegment(dst, &mockSegment{rows: merged})
+}
+
+// writeMergedSegment is the shared tail of every MergeTo in this package's
+// doubles: encode the merged segment and place it at offset zero.
+//
+// A DOUBLE EMBEDDING mockFormat DELEGATES TO mockFormat.MergeTo RATHER THAN
+// REACHING HERE, so its own gate runs first. See gateFormat.MergeTo for what goes
+// wrong when the delegation is left implicit.
+func writeMergedSegment(dst MergeSink, merged Segment[mockQuery, mockStats]) (int64, error) {
+	blob, err := merged.Encode()
+	if err != nil {
+		return 0, err
+	}
+	n, err := dst.WriteAt(blob, 0)
+	if err != nil {
+		return 0, err
+	}
+	return int64(n), nil
+}
+
+// mergeMockSegments consolidates segs through a format's MergeTo and returns the
+// merged Segment, doing on the test's behalf what the ENGINE does in production:
+// create a destination, call MergeTo, size it from the reported length, decode.
+//
+// IT EXISTS FOR TESTS THAT WANT THE MERGED SEGMENT rather than its length,
+// which the interface now reports instead of materializing. It takes the format
+// as a parameter rather than hard-coding
+// mockFormat{} so a double with its own injection is exercised through ITS
+// MergeTo, not around it.
+func mergeMockSegments(
+	t *testing.T, f SegmentFormat[mockQuery, mockStats],
+	segs []Segment[mockQuery, mockStats], accept []func(ExternalID) bool,
+) (Segment[mockQuery, mockStats], error) {
+	t.Helper()
+
+	file, err := os.Create(filepath.Join(t.TempDir(), "merged.seg")) //nolint:gosec // test-owned temp path
+	if err != nil {
+		t.Fatalf("creating the merge destination: %v", err)
+	}
+	defer func() {
+		if err := file.Close(); err != nil {
+			t.Errorf("closing the merge destination: %v", err)
+		}
+	}()
+
+	n, err := f.MergeTo(file, segs, accept)
+	if err != nil {
+		return nil, err
+	}
+	if err := file.Truncate(n); err != nil {
+		t.Fatalf("sizing the merge destination to %d: %v", n, err)
+	}
+	blob, err := os.ReadFile(file.Name()) //nolint:gosec // test-owned temp path
+	if err != nil {
+		t.Fatalf("reading the merged segment back: %v", err)
+	}
+	return f.Decode(blob)
 }
 
 func (mockFormat) AggregateStats(segs []Segment[mockQuery, mockStats]) mockStats {

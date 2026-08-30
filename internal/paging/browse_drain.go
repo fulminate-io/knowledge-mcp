@@ -11,7 +11,7 @@ import (
 // drain. It lives in its own LEAF package because every bounded whole-type read in
 // the client needs it — the thought graph's type browses and adjacency read, the
 // file_symbols/ast file index, the topology type fetch, the graph-wide node
-// enumeration and the hive monitor's member reads — and those callers sit on both
+// enumeration — and those callers sit on both
 // sides of the engine boundary. Every file here imports only the standard library
 // and the generated protobuf types, so no importer can be pulled into a cycle by
 // reaching for the drain.

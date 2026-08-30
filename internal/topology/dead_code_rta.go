@@ -52,7 +52,7 @@ type deadFunc struct {
 // runRTA loads repoRoot's Go module, builds the SSA call graph, runs RTA
 // reachability, and returns every source-level FuncDecl that is not in
 // the reachable set. When the load step fails or the package set has
-// errors, runRTA returns (nil, nil, "<diagnostic>", nil) — the analyzer
+// errors, runRTA returns (nil, "<diagnostic>", nil) — the analyzer
 // treats a non-empty diagnostic as "skip cleanly with an info log" rather
 // than a hard error so dream cycles don't spam logs across non-Go repos.
 //
@@ -66,9 +66,13 @@ type deadFunc struct {
 // function of repo bytes, identical with or without a Go installation. Keep it
 // that way; a toolchain dependency introduced anywhere else would make a
 // collected graph depend on which machine collected it.
-func runRTA(ctx context.Context, repoRoot string, tests bool) ([]deadFunc, *ssa.Program, string, error) {
+// IT RETURNS NO *ssa.Program. It used to, and no caller ever read it: the
+// program is an intermediate the dead-function walk consumes here and nothing
+// downstream needs. Returning it made every call site spell an underscore for a
+// value that had no consumer.
+func runRTA(ctx context.Context, repoRoot string, tests bool) ([]deadFunc, string, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, nil, "", fmt.Errorf("topology/dead_code: %w", err)
+		return nil, "", fmt.Errorf("topology/dead_code: %w", err)
 	}
 
 	cfg := &packages.Config{
@@ -87,17 +91,17 @@ func runRTA(ctx context.Context, repoRoot string, tests bool) ([]deadFunc, *ssa.
 	}
 	initial, err := packages.Load(cfg, "./...")
 	if err != nil {
-		return nil, nil, fmt.Sprintf("packages.Load failed: %v", err), nil
+		return nil, fmt.Sprintf("packages.Load failed: %v", err), nil
 	}
 	if len(initial) == 0 {
-		return nil, nil, "no packages found", nil
+		return nil, "no packages found", nil
 	}
 	if packages.PrintErrors(initial) > 0 {
-		return nil, nil, "package load failed (broken build)", nil
+		return nil, "package load failed (broken build)", nil
 	}
 
 	if err := ctx.Err(); err != nil {
-		return nil, nil, "", fmt.Errorf("topology/dead_code: %w", err)
+		return nil, "", fmt.Errorf("topology/dead_code: %w", err)
 	}
 
 	prog, pkgs := ssautil.AllPackages(initial, ssa.InstantiateGenerics)
@@ -105,22 +109,22 @@ func runRTA(ctx context.Context, repoRoot string, tests bool) ([]deadFunc, *ssa.
 
 	roots := collectRoots(prog, pkgs)
 	if len(roots) == 0 {
-		return nil, nil, "no entry points (no main / test packages)", nil
+		return nil, "no entry points (no main / test packages)", nil
 	}
 
 	if err := ctx.Err(); err != nil {
-		return nil, nil, "", fmt.Errorf("topology/dead_code: %w", err)
+		return nil, "", fmt.Errorf("topology/dead_code: %w", err)
 	}
 
 	res := rta.Analyze(roots, false)
 	if res == nil {
-		return nil, nil, "rta analysis returned nil", nil
+		return nil, "rta analysis returned nil", nil
 	}
 
 	reachablePosn := buildReachablePosn(prog, res)
 	moduleFilter := buildModuleFilter(initial)
 	deadFuncs := collectDeadFuncs(initial, prog, reachablePosn, moduleFilter)
-	return deadFuncs, prog, "", nil
+	return deadFuncs, "", nil
 }
 
 // buildModuleFilter returns a predicate that accepts only packages whose

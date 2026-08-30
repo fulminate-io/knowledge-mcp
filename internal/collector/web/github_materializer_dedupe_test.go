@@ -110,7 +110,7 @@ func TestEmitMaterializerWarning(t *testing.T) {
 		Cap:       50 << 20,
 	}
 
-	node, edges := emitMaterializerWarning("page-id-123", info, w)
+	node, edges := emitMaterializerWarning("page-id-123", "https://github.com/owner/repo/tree/main", info, w)
 
 	if node.Type != "document" {
 		t.Errorf("Type=%q want=document", node.Type)
@@ -118,7 +118,7 @@ func TestEmitMaterializerWarning(t *testing.T) {
 	if node.Metadata["materialization_skipped"] != "size_cap_pre_read" {
 		t.Errorf("metadata.materialization_skipped=%q", node.Metadata["materialization_skipped"])
 	}
-	for _, k := range []string{"reason", "url", "bytes_seen", "cap_bytes", "owner", "repo", "ref"} {
+	for _, k := range []string{"reason", "url", "uri", "bytes_seen", "cap_bytes", "owner", "repo", "ref"} {
 		if _, ok := node.Metadata[k]; !ok {
 			t.Errorf("metadata key %q missing", k)
 		}
@@ -146,7 +146,7 @@ func TestEmitMaterializerWarning_NoParent(t *testing.T) {
 		Reason: "size_cap_mid_stream",
 		URL:    "https://github.com/owner/repo",
 	}
-	node, edges := emitMaterializerWarning("", info, w)
+	node, edges := emitMaterializerWarning("", "https://github.com/owner/repo", info, w)
 	if node.Id == "" {
 		t.Errorf("node ID empty")
 	}

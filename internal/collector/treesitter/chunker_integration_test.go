@@ -170,24 +170,46 @@ func TestChunkQualitySpot(t *testing.T) {
 	})
 }
 
-func BenchmarkChunkFile(b *testing.B) {
-	root := repoRoot(b)
+// benchInputFixture is the FROZEN benchmark input's path on disk, relative to
+// this package directory, and benchInputPath is the synthetic path handed to
+// ChunkFile — the extension is all language detection reads, and the fixture
+// deliberately does not carry a .go one.
+const (
+	benchInputFixture = "testdata/chunker_bench_input.go.txt"
+	benchInputPath    = "internal/collector/treesitter/chunker_bench_input.go"
+)
 
-	// A representative, declaration-dense Go file that lives INSIDE this
-	// module, so repoRoot's walk to the nearest go.mod — which lands on
-	// cmd/knowledge — actually reaches it.
-	//
-	// THIS BENCHMARK WAS DEAD AND SILENTLY SO. It previously read
-	// core/domains/memory/writer.go, a pre-migration path that exists nowhere
-	// in this repository, so every run hit the skip below while `go test` still
-	// exited 0 — which makes any perf guard built on it permanently vacuous.
-	// The skip is now a FATAL for exactly that reason: a benchmark that quietly
-	// measures nothing is the defect, not a tolerable degradation.
-	path := filepath.Join(root, "internal", "collector", "treesitter", "chunker_identity.go")
-	src, err := os.ReadFile(path)
+// loadBenchInput returns the frozen benchmark input's bytes.
+//
+// A MISSING FIXTURE IS FATAL, NEVER A SKIP. Both callers are guards, and a
+// guard that skips when its input is absent reports success while measuring
+// nothing — the exact defect this benchmark already carried once.
+func loadBenchInput(tb testing.TB) []byte {
+	tb.Helper()
+	src, err := os.ReadFile(benchInputFixture)
 	if err != nil {
-		b.Fatalf("benchmark input not found: %s: %v", path, err)
+		tb.Fatalf("frozen benchmark input not found: %s: %v", benchInputFixture, err)
 	}
+	return src
+}
+
+func BenchmarkChunkFile(b *testing.B) {
+	// THE INPUT IS A FROZEN FIXTURE, NOT A LIVE SOURCE FILE, and that is
+	// load-bearing rather than tidy. This benchmark previously read
+	// chunker_identity.go — a file in the package under test — so the
+	// allocation ratchet, being a RATIO, took whatever that file happened to
+	// look like at the measured commit as its DENOMINATOR. Editing it re-based
+	// both legs and moved the ratio with no code change: the same tree scored
+	// 3823/5707 against the then-current file and 4032/5885 against a
+	// 53-line-longer earlier revision. A ratio gate whose denominator is a file
+	// the team edits weekly cannot hold a stable number.
+	//
+	// It previously read core/domains/memory/writer.go as well, a pre-migration
+	// path existing nowhere in this repository, and SKIPPED — so every run
+	// exited 0 while measuring nothing. loadBenchInput is fatal on a miss for
+	// that reason.
+	src := loadBenchInput(b)
+	path := benchInputPath
 
 	// BOTH SIDES ARE MEASURED IN ONE INVOCATION, and that is the whole point of
 	// the sub-benchmark shape. The chunk-time guard previously compared two
@@ -207,8 +229,8 @@ func BenchmarkChunkFile(b *testing.B) {
 			RegisterTypeFacts(LangGo, goTypeFacts)
 		})
 		// KNOWN-POSITIVE CONTROL: without this, an unregister that silently did
-		// nothing would make both sides measure the SAME code, and the ratio
-		// would sit at 1.0 forever while proving nothing at all.
+		// nothing would make both sides measure the SAME code, and the two legs
+		// would report the same number forever while proving nothing at all.
 		if _, ok := qualifierTypeResolvers[LangGo]; ok {
 			b.Fatal("control: the Go qualifier-type arm is still registered, so this side is not the arm-off measurement")
 		}
@@ -229,6 +251,59 @@ func BenchmarkChunkFile(b *testing.B) {
 		}
 		if _, ok := typeFactsResolvers[LangGo]; !ok {
 			b.Fatal("control: the Go type-facts arm is NOT registered, so this side is not the arm-on measurement")
+		}
+		benchmarkChunkPath(b, path, src)
+	})
+
+	// THE FLOW ARM IS DELIBERATELY LEFT REGISTERED ON BOTH SIDES ABOVE, and the
+	// two legs below are what measure it instead.
+	//
+	// THE CANCELLATION ARGUMENT THAT USED TO BE WRITTEN HERE IS FALSE, and the
+	// correction matters because it was the basis for calling the old ratio
+	// blind. It read: the flow arm's cost appears in both terms as a constant F,
+	// so (d+F) <= (b+F)*m follows from d <= b*m. That assumes the two arms are
+	// ADDITIVE. They are not — they share the per-node cost of materializing Go
+	// wrappers for the declaration body, because Tree.cachedNode memoizes each
+	// node and whichever arm descends first pays for it. Measured on one tree,
+	// all four cells of the 2x2, allocs/op:
+	//
+	//                       flow OFF   flow ON
+	//     qual+tf OFF          3836      5945
+	//     qual+tf ON           5309      6241
+	//
+	// So registering the flow arm does not add a constant to both legs — it CUTS
+	// the qualifier+type-facts marginal cost from 1473 to 296, because the flow
+	// walk has already paid for the nodes. The shared term is 1177, derived
+	// identically from either side, and 296 + 932 + 1177 = 2405 reconciles to the
+	// allocation against the both-off baseline.
+	//
+	// THE GATE IS NO LONGER A RATIO in any case: it is two ABSOLUTE per-leg
+	// ceilings, so the flow arm's cost IS gated — it lands in arm_off (which runs
+	// with flow on) and in arm_on (which runs with everything on).
+	//
+	// THE LEG NAMES DELIBERATELY AVOID THE SUBSTRINGS arm_off AND arm_on. Two
+	// landed gates in another plan reduce this benchmark's output with UNANCHORED
+	// awk patterns, so a leg named flow_arm_off would be the last line matching
+	// and would silently replace the qualifier measurement in both of them.
+	b.Run("flow_off", func(b *testing.B) {
+		UnregisterFlowSteps(LangGo)
+		// RESTORE THE PRODUCTION ARM, for the reason arm_off's cleanup gives: an
+		// arm left unregistered silently disarms the feature for every later test
+		// in this binary.
+		b.Cleanup(func() { RegisterFlowSteps(LangGo, goFlowSteps) })
+		// KNOWN-POSITIVE CONTROL: without this, an unregister that silently did
+		// nothing would make both sides measure the SAME code and report the same
+		// number forever while proving nothing at all.
+		if _, ok := flowStepResolvers[LangGo]; ok {
+			b.Fatal("control: the Go flow-step arm is still registered, so this side is not the flow-off measurement")
+		}
+		benchmarkChunkPath(b, path, src)
+	})
+
+	b.Run("flow_on", func(b *testing.B) {
+		// The production registration, restored by the flow_off cleanup above.
+		if _, ok := flowStepResolvers[LangGo]; !ok {
+			b.Fatal("control: the Go flow-step arm is NOT registered, so this side is not the flow-on measurement")
 		}
 		benchmarkChunkPath(b, path, src)
 	})

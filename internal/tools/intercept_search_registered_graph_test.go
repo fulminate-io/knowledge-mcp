@@ -26,8 +26,12 @@ func TestRegisteredGraphSearch_SearchToolRoutesToClientEngine(t *testing.T) {
 	gc, handler := newInterceptHarnessWithHandler(t, &execHits, cannedNodesResp(
 		&knowledgev1.Node{Id: "h1", Type: "fact", SymbolName: "HelloWorld"},
 	))
+	handler.graphNames = []string{"demo"}
 	mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "h1", Score: 0.9}}}
-	deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
+	deps := &interceptDeps{
+		gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr,
+		gtCRUD: registeredGraphTypes("hellograph"),
+	}
 
 	handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
 		"graph": "hellograph",
@@ -52,25 +56,32 @@ func TestRegisteredGraphSearch_SearchToolRoutesToClientEngine(t *testing.T) {
 	assert.Contains(t, engine.FirstTextContent(out), "HelloWorld")
 }
 
-// TestRegisteredGraphSearch_EmptyNameGracefulEmpty proves an un-collected / empty
-// instance key renders zero results cleanly (Manager.Search over an unkeyed set
-// returns no hits, NOT an error) — graceful empty, the cloud-arm contract.
-func TestRegisteredGraphSearch_EmptyNameGracefulEmpty(t *testing.T) {
+// TestRegisteredGraphSearch_EmptyNameIsNotFound proves an un-collected / empty
+// instance key is refused, not searched. This case USED to render zero results
+// "cleanly" — the graceful-empty lane — which made a forgotten collect
+// indistinguishable from a graph that was searched and matched nothing. The
+// selector gate now classifies it the way the server's resolveRegisteredCustom
+// already did, as a not-found naming the graph.
+func TestRegisteredGraphSearch_EmptyNameIsNotFound(t *testing.T) {
 	var execHits, embedCalls atomic.Int64
 	gc, handler := newInterceptHarnessWithHandler(t, &execHits, &knowledgev1.ExecuteResponse{})
+	handler.graphNames = []string{"demo"} // the type HAS a collected graph; "" is not it.
 	mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{}}
-	deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
+	deps := &interceptDeps{
+		gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr,
+		gtCRUD: registeredGraphTypes("hellograph"),
+	}
 
 	handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
 		"graph": "hellograph",
 		"query": "world", // no name → empty instance key
 	}))
 	require.True(t, handled)
-	require.False(t, out.IsError, "empty name renders zero results, not an error")
-	require.Equal(t, int64(1), mgr.calls.Load(), "Manager.Search still ran (returned empty)")
-	require.Empty(t, mgr.lastName, "empty name threaded through verbatim")
+	require.True(t, out.IsError, "an empty instance key is a not-found, not a clean zero")
+	require.Contains(t, engine.FirstTextContent(out), `hellograph graph "" not found`)
+	require.Equal(t, int64(0), mgr.calls.Load(), "the engine is not driven for a graph that does not exist")
 	require.False(t, dispatchedAServerSearch(handler.recordedReqs()),
-		"empty-name custom search must NOT dispatch a server search")
+		"a refused custom search must NOT dispatch a server search")
 }
 
 // TestRegisteredGraphSearch_BuiltinGraphNotClaimed proves the search arm gate is
@@ -109,8 +120,12 @@ func TestInterceptQueryRegisteredGraphSearch(t *testing.T) {
 		gc, handler := newInterceptHarnessWithHandler(t, &execHits, cannedNodesResp(
 			&knowledgev1.Node{Id: "h1", Type: "fact", SymbolName: "HelloWorld"},
 		))
+		handler.graphNames = []string{"demo"}
 		mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "h1", Score: 0.9}}}
-		deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
+		deps := &interceptDeps{
+			gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr,
+			gtCRUD: registeredGraphTypes("hellograph"),
+		}
 
 		// mode default (hybrid) carrying ONLY a text query is a claimed text-search shape.
 		handled, out := InterceptQueryRegisteredGraphSearch(opCtx(), deps, queryParams(t, map[string]any{
@@ -132,9 +147,13 @@ func TestInterceptQueryRegisteredGraphSearch(t *testing.T) {
 
 	t.Run("mode=text custom query is claimed", func(t *testing.T) {
 		var execHits, embedCalls atomic.Int64
-		gc := newInterceptHarness(t, &execHits, cannedNodesResp())
+		gc, handler := newInterceptHarnessWithHandler(t, &execHits, cannedNodesResp())
+		handler.graphNames = []string{"demo"}
 		mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{}}
-		deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
+		deps := &interceptDeps{
+			gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr,
+			gtCRUD: registeredGraphTypes("hellograph"),
+		}
 
 		handled, _ := InterceptQueryRegisteredGraphSearch(opCtx(), deps, queryParams(t, map[string]any{
 			"graph": "hellograph", "name": "demo", "mode": "text", "text": "world",

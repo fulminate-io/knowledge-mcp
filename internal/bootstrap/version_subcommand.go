@@ -22,9 +22,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
@@ -99,7 +101,21 @@ func renderVersionOutput(clientVer, daemonVer string, daemonKnown bool) string {
 // version print must not depend on a live daemon. The 2s budget mirrors
 // checkServer (doctor_checks.go).
 func probeDaemonVersion(port int) (string, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	return probeDaemonVersionWithin(port, versionProbeBudget)
+}
+
+// versionProbeBudget is the wall-clock ceiling probeDaemonVersion gives the
+// whole round trip. Named rather than inlined so the value the shipped path
+// uses is one readable constant, and so a test can pin it independently of the
+// tests that drive the probe on a shortened budget.
+const versionProbeBudget = 2 * time.Second
+
+// probeDaemonVersionWithin is probeDaemonVersion with the round-trip budget
+// supplied by the caller. The budget is a parameter ONLY so tests can drive the
+// deadline-expires-mid-request path in milliseconds instead of seconds; every
+// shipped caller goes through probeDaemonVersion and gets versionProbeBudget.
+func probeDaemonVersionWithin(port int, budget time.Duration) (string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 
 	// Minimal MCP initialize request — exactly the shape handleHTTPInitialize
@@ -114,7 +130,14 @@ func probeDaemonVersion(port int) (string, bool) {
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := newVersionProbeClient().Do(httpReq)
+	// The probe client is single-use, so the connection it dials has no second
+	// caller and no owner but this call. Releasing it here keeps the h2 read
+	// loop (and the peer's serve goroutines) from outliving the one request they
+	// were opened for.
+	probeClient, releaseProbeConns := newVersionProbeClient()
+	defer releaseProbeConns()
+
+	resp, err := probeClient.Do(httpReq)
 	if err != nil {
 		return "", false
 	}
@@ -147,15 +170,52 @@ func probeDaemonVersion(port int) (string, bool) {
 }
 
 // newVersionProbeClient builds the h2c (cleartext HTTP/2) client the daemon's
-// /mcp endpoint requires. Mirrors the stdlib-only transport shape of the bench
-// harness's newWireHTTPClient (cmd/server-bench/internal/bench/spawn_oss.go):
-// HTTP/1.1 OFF, unencrypted HTTP/2 ON, so the request reaches the daemon's
+// /mcp endpoint requires, and the release func that tears its connections down.
+// Mirrors the stdlib-only transport shape of the bench harness's
+// newWireHTTPClient (cmd/server-bench/internal/bench/spawn_oss.go): HTTP/1.1
+// OFF, unencrypted HTTP/2 ON, so the request reaches the daemon's
 // h2c.NewHandler. No global client timeout — the per-call context deadline in
-// probeDaemonVersion bounds the request.
-func newVersionProbeClient() *http.Client {
-	t := &http.Transport{}
+// probeDaemonVersionWithin bounds the request.
+//
+// WHY RELEASE OWNS THE DIALED CONNECTIONS instead of calling
+// CloseIdleConnections. A pool-level release only reaches connections the pool
+// considers IDLE. When the probe's deadline fires while the request is still in
+// flight — a slow or loaded daemon, which is precisely when the probe times out
+// — the connection still carries the aborted stream at release time, so the
+// pool skips it; and because this transport sets no IdleConnTimeout, nothing
+// reaps it afterwards either. The connection, its read loop and the peer's
+// serve goroutines then live for the rest of the process. Holding the net.Conn
+// the transport dialed makes teardown unconditional, and unconditional is
+// correct here: the client serves exactly one request and is discarded.
+func newVersionProbeClient() (client *http.Client, release func()) {
+	var (
+		mu     sync.Mutex
+		dialed []net.Conn
+	)
+
+	t := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			var d net.Dialer
+			conn, err := d.DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			mu.Lock()
+			dialed = append(dialed, conn)
+			mu.Unlock()
+			return conn, nil
+		},
+	}
 	t.Protocols = new(http.Protocols)
 	t.Protocols.SetHTTP1(false)
 	t.Protocols.SetUnencryptedHTTP2(true)
-	return &http.Client{Transport: t}
+
+	return &http.Client{Transport: t}, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, conn := range dialed {
+			_ = conn.Close()
+		}
+		dialed = nil
+	}
 }

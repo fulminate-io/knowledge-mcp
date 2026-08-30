@@ -148,7 +148,14 @@ const (
 	// sync backend). It is stamped onto every shipped rollupPayload and persisted into
 	// the per-session watermark; a stored version below this forces a whole-session
 	// re-derive + re-ship (the schema-bump backfill).
-	rollupSchemaVersion = 1
+	rollupSchemaVersion = 2
+
+	// rollupSubagentIdleGapMs is the inter-event gap at or above which an agent lane is
+	// considered idle: gaps strictly BELOW it count as working time, gaps at or above it
+	// are pauses and are dropped. Hand-mirrored from the daemon-local analyzer's
+	// subagentIdleGapMs (transcriptanalytics/detectors_schema.go) — the two consts MUST
+	// move together, and a gate asserts they are numerically equal.
+	rollupSubagentIdleGapMs int64 = 600_000 // 10m in ms
 
 	// rollupIdleGuardCeilingMs is the last-resort idle guard for tool-execution time: a
 	// span longer than 2h is assumed to straddle a paused/resumed session and is EXCLUDED
@@ -233,6 +240,23 @@ type factRow struct {
 	WebFetchCount         int64  `json:"web_fetch_count"`
 	MinRecordTS           string `json:"min_record_ts"`
 	MaxRecordTS           string `json:"max_record_ts"`
+
+	// The two per-agent active measures, denormalized onto every qualifying row of the
+	// agent's grain (the reader takes MAX at each field's own grain and NEVER SUMs).
+	//
+	// active_ms is the WHOLE-LIFE per-(session, agent_id) active total and is the only
+	// field carrying an exact daemon-parity claim.
+	//
+	// day_active_ms is the per-(session, agent_id, day) bucket and is a documented LOWER
+	// BOUND: a gap spanning midnight falls in neither day's instant list and is dropped
+	// entirely.
+	//
+	// nil means UNMEASURED and is never the same statement as a measured 0. A measured 0
+	// is real and common (any agent-day with fewer than two instants). Neither field
+	// carries omitempty: a nil must marshal as an explicit null so the key stays present
+	// on the wire, which is what keeps unmeasured distinguishable from a v1 payload.
+	ActiveMs    *int64 `json:"active_ms"`
+	DayActiveMs *int64 `json:"day_active_ms"`
 }
 
 // latencyHistRow is a sparse tool-latency histogram bin: only trustworthy tool rows

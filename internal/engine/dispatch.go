@@ -7,12 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"syscall"
 
 	"connectrpc.com/connect"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
 
@@ -38,8 +36,9 @@ type ExecuteFn func(ctx context.Context, req *knowledgev1.ExecuteRequest) (*know
 // the create path flows straight to Compile→exec, and the server
 // engine enforces the system-managed/step/embed-only-summary rules in
 // decodeCreate, returning invalidMutation (CodeInvalidArgument) that
-// renderEngineError relays to the LLM verbatim. The query precheck seam below
-// (precheckQuery) is the remaining pre-Compile validation hook.
+// renderEngineError relays to the LLM verbatim. The two precheck seams below —
+// precheckQuery on the query branch and precheckTraverse on the traverse
+// branch — are the remaining pre-Compile validation hooks.
 func Dispatch(ctx context.Context, exec ExecuteFn, tool string, args json.RawMessage) (kgtools.ToolResult, error) {
 	// Special-shape pre-Compile seam: a query(id) carrying
 	// include_edges / include_cross_links is NOT a single-plan compile — the
@@ -69,7 +68,18 @@ func Dispatch(ctx context.Context, exec ExecuteFn, tool string, args json.RawMes
 	// composes it from a Match-all enumeration + the RETURN_MODE_EDGES ids[]→union
 	// carrier; it returns handled=false for a from_id walk / logs traverse so
 	// Dispatch proceeds to the generic compileTraverse flow.
+	//
+	// precheckTraverse runs FIRST, for the same reason precheckQuery does on the
+	// query branch: an unknown direction is a validation failure, not a generic
+	// deny. Ordering is load-bearing, and it was MEASURED rather than assumed —
+	// with the precheck placed after it, a start-less traverse carrying
+	// "sideways" issued its Execute and returned a result, because
+	// dispatchGraphWideEdges never uses direction to shape the walk and only
+	// echoes the caller's value back in its JSON payload.
 	if tool == "traverse" {
+		if verr := precheckTraverse(args); verr != nil {
+			return errorResult(verr.Error()), nil
+		}
 		if out, handled := dispatchGraphWideEdges(ctx, exec, args); handled {
 			return out, nil
 		}
@@ -112,62 +122,6 @@ func (e validationErr) Error() string { return e.msg }
 // validationError wraps a validation message as a validationErr error.
 func validationError(msg string) error { return validationErr{msg: msg} }
 
-// renderEngineError maps an error returned by the Engine.Execute transport
-// into an LLM-facing error ToolResult. The mapping ladder, in order:
-//
-//  1. graphclient.ErrNoBackend — Router.pick returned no backend
-//     (local==nil AND not logged in). Surfaces "no backend available — run
-//     `knowledge install` ... `knowledge login`" so the LLM has an
-//     actionable hint rather than the raw sentinel text.
-//  2. Local-server-unreachable transport failure — connect-go's
-//     CodeUnavailable, or a wrapped syscall.ECONNREFUSED in a net.OpError
-//     chain. The local server was named (Router.pick chose it) but the
-//     underlying HTTP/2 dial failed. Surfaces "local server unreachable —
-//     run `knowledge start` ... `knowledge login`" so the user sees the
-//     restart hint, not a raw "connect: connection refused" leak.
-//  3. CodeInvalidArgument / CodeNotFound — engine validation / missing-node
-//     errors. Message relayed verbatim (legacy behavior).
-//  4. Any other connect.Error — generic "engine: <message>" fallback.
-//  5. Non-connect errors — generic "engine: <error>" fallback.
-//
-// Ordering matters: branches (1) and (2) MUST fire before the generic connect
-// switch because CodeUnavailable would otherwise land in the default arm with
-// the raw "connect: connection refused" leak.
-func renderEngineError(err error) kgtools.ToolResult {
-	if errors.Is(err, graphclient.ErrNoBackend) {
-		return errorResult("no backend available — run `knowledge install` to start the local server, or `knowledge login` to use Fulminate Cloud.")
-	}
-	if isLocalServerUnreachable(err) {
-		return errorResult("local server unreachable — run `knowledge start` to restart it, or `knowledge login` to use Fulminate Cloud.")
-	}
-	if ce, ok := errors.AsType[*connect.Error](err); ok {
-		switch ce.Code() {
-		case connect.CodeInvalidArgument, connect.CodeNotFound:
-			return errorResult(ce.Message())
-		default:
-			return errorResult("engine: " + ce.Message())
-		}
-	}
-	return errorResult("engine: " + err.Error())
-}
-
-// isLocalServerUnreachable reports whether err carries the
-// local-server-unreachable signature: either a connect.Error with
-// CodeUnavailable (the connect-go transport surfaces this when the underlying
-// HTTP/2 dial fails) OR a wrapped syscall.ECONNREFUSED (the underlying connect
-// error sometimes presents as a net.OpError carrying ECONNREFUSED — errors.Is
-// catches the wrapped case). Mirrors the retryable-transport classification in
-// graphclient/retry.go for the dispatcher's render path.
-func isLocalServerUnreachable(err error) bool {
-	if errors.Is(err, syscall.ECONNREFUSED) {
-		return true
-	}
-	if ce, ok := errors.AsType[*connect.Error](err); ok {
-		return ce.Code() == connect.CodeUnavailable
-	}
-	return false
-}
-
 // isNotFound reports whether err is a connect CodeNotFound error — the by-id
 // result miss the engine returns. dispatchQueryByID treats it as not-found
 // (surfacing the not-found message) rather than a hard error.
@@ -183,25 +137,39 @@ func isNotFound(err error) bool {
 // the render context (graph label, search mode, node type, offset, format,
 // fields, meta keys, traverse start/direction, mutation kind) — the same intent
 // Compile lowered into the plan.
-// It also carries the server's truncation notice through to the caller. This is
-// the SINGLE function through which every response becomes a ToolResult, so one
-// wrapper covers every tool; appending in the five per-tool renderers instead
-// would be five places to forget.
+// It also carries the server's truncation notice through to the caller, by
+// calling WithTruncationNotice on what renderByTool built. This is the single
+// function through which every COMPILED response becomes a ToolResult, so one
+// wrapper here covers every tool; appending in the five per-tool renderers
+// instead would be five places to forget. It is NOT the only disclosing site in
+// the client: the intercept arms return their own results without ever reaching
+// Render, so they call WithTruncationNotice themselves — the census in
+// tools/truncation_disclosure_census_test.go is what keeps that set complete.
 func Render(tool string, args json.RawMessage, resp *knowledgev1.ExecuteResponse) (kgtools.ToolResult, error) {
 	res, err := renderByTool(tool, args, resp)
-	if err != nil || !resp.GetTruncated() {
+	if err != nil {
 		// A notice appended to a failed render would be noise.
 		return res, err
 	}
-	// A SEPARATE content block, never concatenated into the existing text: the
-	// blocks are delivered as an array, so a format=json payload stays in its own
-	// block and remains independently parseable.
-	res.Content = append(res.Content, kgtools.ContentBlock{
-		Type: "text",
-		Text: truncationNotice(resp),
-	})
-	return res, nil
+	return WithTruncationNotice(res, resp), nil
 }
+
+// WithTruncationNotice appends the standard truncation disclosure to an
+// already-rendered result, returning res unchanged when the response reports no
+// ceiling engaged.
+//
+// EXPORTED because Render is not the only place a response becomes a ToolResult:
+// the client intercept arms issue their own Execute and return their own result
+// without ever reaching Render, so they need THIS declaration of the notice
+// rather than a copy-pasted sentence. The tools->engine import is one-way (no
+// cycle) — the same seam engine.BrowseJSONResult already uses.
+func WithTruncationNotice(res kgtools.ToolResult, resp *knowledgev1.ExecuteResponse) kgtools.ToolResult {
+	return WithTruncationNoticeFor(res, resp.GetTruncated(), responseRowCount(resp))
+}
+
+// WithTruncationNoticeFor, and the sentence both wrappers append, live in the
+// sibling truncation_notice.go so dispatch.go stays under the 500-line cap —
+// the same split dispatch_byid.go documents for the same reason.
 
 // renderByTool is Render's per-tool dispatch.
 func renderByTool(tool string, args json.RawMessage, resp *knowledgev1.ExecuteResponse) (kgtools.ToolResult, error) {
@@ -219,17 +187,6 @@ func renderByTool(tool string, args json.RawMessage, resp *knowledgev1.ExecuteRe
 	default:
 		return kgtools.ToolResult{}, fmt.Errorf("Render: unrenderable tool %q", tool)
 	}
-}
-
-// truncationNotice is the caller-facing sentence for a clamped result. Product
-// copy: plain, actionable, and free of internal vocabulary — it says "the server
-// row ceiling", never a constant name. It names `limit` verbatim so a reader
-// maps the advice onto the actual parameter.
-func truncationNotice(resp *knowledgev1.ExecuteResponse) string {
-	return fmt.Sprintf(
-		"Showing %d rows — the server row ceiling engaged, so this result may be incomplete. "+
-			"Re-run with an explicit `limit` and page until a short page for a complete set.",
-		responseRowCount(resp))
 }
 
 // responseRowCount is the number of rows the response actually carries.
@@ -321,20 +278,21 @@ func renderQueryTool(args json.RawMessage, resp *knowledgev1.ExecuteResponse) (k
 	// full-node hydration regardless of the requested projection).
 	switch {
 	case len(a.IDs) > 0:
-		return renderNodesByIDsResponse(resp, label, a.Format, a.Fields)
+		return renderNodesByIDsResponse(resp, label, a.Format, a.Fields, a.IncludeTombstones)
 	case a.ID != "":
-		return renderNodeResponse(resp, label, a.ID, a.Graph == "" || a.Graph == "knowledge", a.Fields)
+		return renderNodeResponse(resp, label, a.ID, a.Graph == "" || a.Graph == "knowledge", a.Format, a.Fields, a.IncludeTombstones)
 	case a.Text != "":
 		return renderSearchResponse(resp, a.Text, a.Format, a.Fields, knowledgev1.SearchMode_SEARCH_MODE_HYBRID, mode)
 	default:
 		// type-browse or meta-only.
 		return renderBrowseResponse(resp, browseContext{
-			Label:    label,
-			NodeType: a.Type,
-			Offset:   a.Offset,
-			Format:   a.Format,
-			Fields:   a.Fields,
-			MetaKeys: metaKeys(a.Meta),
+			Label:             label,
+			NodeType:          a.Type,
+			Offset:            a.Offset,
+			Format:            a.Format,
+			Fields:            a.Fields,
+			MetaKeys:          metaKeys(a.Meta),
+			IncludeTombstones: a.IncludeTombstones,
 		})
 	}
 }
@@ -362,7 +320,7 @@ func renderTraverseTool(args json.RawMessage, resp *knowledgev1.ExecuteResponse)
 	}
 	dir := a.Direction
 	if dir == "" {
-		dir = "out" // validateDirection default.
+		dir = "out" // the documented default ValidateTraverseDirection admits.
 	}
 	return renderTraversalResponse(resp, traverseContext{
 		Start:     a.Start,
@@ -414,7 +372,7 @@ func firstQueryLabel(query string, queries []string) string {
 	return query
 }
 
-// queryGraphLabelFor mirrors the server queryGraphLabel (tools_query_dispatch.go:149):
+// queryGraphLabelFor mirrors the server queryGraphLabel:
 // the short graph identifier for the render header. Empty graph → "knowledge".
 func queryGraphLabelFor(a queryArgs) string {
 	switch a.Graph {
@@ -425,6 +383,10 @@ func queryGraphLabelFor(a queryArgs) string {
 			return "practice:" + a.Language
 		}
 		return "practice"
+	case "checks":
+		// One graph, so the family name IS the instance name — unlike practice,
+		// there is no per-language instance to disambiguate in the header.
+		return "checks"
 	case "cloud":
 		if a.Account != "" {
 			return "cloud:" + a.Account

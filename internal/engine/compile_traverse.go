@@ -4,13 +4,18 @@ package engine
 
 import (
 	"encoding/json"
+	"fmt"
+	"slices"
 	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
-// traverseArgs is the compile-local view of the `traverse` tool's wire shape,
-// mirroring the server-side traverseArgs (tools_traverse.go:68).
+// traverseArgs is the compile-local view of the `traverse` tool's wire shape.
+// The published schema (tools/traverse_schema.go) is what it mirrors — there is
+// no server-side twin to track: the server holds no traverse tool at all, only
+// MergeBothTraversals for the engine's both-direction walk, and the client owns
+// traverse rendering end to end.
 type traverseArgs struct {
 	Start               string   `json:"start"`
 	Direction           string   `json:"direction"`
@@ -30,11 +35,76 @@ type traverseArgs struct {
 	Format string `json:"format"`
 }
 
+// traverseDirections is the direction vocabulary the traverse tool PUBLISHES
+// (traverse_schema.go's Enum{out,in,both}), and the SINGLE declaration of it on
+// this side: both the membership test and the refusal message read this slice,
+// so there is no second copy to drift from. Rendered in the schema's own order —
+// out first, because it is the documented default — so the refusal message and
+// the tool description name the values the same way round.
+//
+// A linear scan over three elements is the membership test: a set would be a
+// second declaration of the same three tokens to keep in step, which is the
+// trade the projection vocabulary makes for eighteen keys and this does not need.
+var traverseDirections = []string{"out", "in", "both"}
+
+// traverseDirectionList is the rendered accepted-values list, built ONCE at
+// package scope so the refusal path allocates only its formatted message.
+var traverseDirectionList = strings.Join(traverseDirections, ", ")
+
+// ValidateTraverseDirection refuses a direction outside the published
+// vocabulary, naming the offending value AND the accepted values — the
+// bad-input rule: a rejected value is never coerced, defaulted or degraded, and
+// the caller is told what would have worked.
+//
+// An EMPTY direction is accepted: the tool documents it as the "out" default,
+// and compileTraverse's switch applies that default. The normalization here is
+// the SAME lowercase-of-trimmed form that switch uses, and the two must stay
+// that way — a value this accepts and that switch then fails to recognize would
+// fall into its default arm and be denied generically, which is the exact defect
+// this validator exists to remove.
+//
+// EXPORTED because the direction vocabulary is a tool-surface contract rather
+// than a compile-local detail: a caller outside this package that wants to
+// refuse a bad direction the same way should call this rather than restate the
+// set.
+func ValidateTraverseDirection(direction string) error {
+	d := strings.ToLower(strings.TrimSpace(direction))
+	if d == "" || slices.Contains(traverseDirections, d) {
+		return nil
+	}
+	return validationError(fmt.Sprintf(
+		"traverse: unknown direction %q. Accepted values: %s — an omitted or empty direction defaults to %q",
+		direction, traverseDirectionList, "out"))
+}
+
+// precheckTraverse runs the traverse validation that must happen BEFORE any
+// dispatch decision. It is invoked by Dispatch's traverse branch (a NAMED
+// special-shape seam, the twin of precheckQuery): a non-nil error is rendered as
+// an explicit validation-error result and NO Execute RPC is issued.
+//
+// It runs AHEAD of dispatchGraphWideEdges deliberately. That arm serves a
+// start-less traverse without consulting direction at all and echoes the
+// caller's value back in its JSON payload, so validating after it would leave
+// the start-less shape accepting "sideways" and reporting it as the direction it
+// walked.
+//
+// A payload that does not parse yields no gate here: Compile re-parses and
+// returns ok=false, so the deny path surfaces the malformed call. Mirrors
+// precheckQuery's disposition for the same reason.
+func precheckTraverse(args json.RawMessage) error {
+	var a traverseArgs
+	if err := json.Unmarshal(args, &a); err != nil {
+		return nil //nolint:nilerr // malformed JSON is not a validation failure — let Compile (which re-parses) return ok=false so the deny path surfaces the parse error
+	}
+	return ValidateTraverseDirection(a.Direction)
+}
+
 // compileTraverse translates a reducible `traverse` call into a QueryPlan
-// traversal. Returns ok=false (default-deny → legacy) for:
+// traversal. Returns ok=false — the explicit DENY, there is no legacy
+// fallback — for:
 //   - graph=logs (the client intercept owns formatted traversal output)
-//   - a start-less graph-wide-edges traverse (handleTraverseGraphWideEdges —
-//     a distinct fast path, not a from_id walk)
+//   - a start-less graph-wide-edges traverse (dispatchGraphWideEdges claims it
+//     in the Dispatch seam — a distinct two-step fast path, not a from_id walk)
 //
 // include_edge_metadata=true IS reducible: the engine re-walks the
 // traversed edges and returns the per-edge metadata in
@@ -93,9 +163,9 @@ func compileTraverse(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 		plan.IncludeEdgeMetadata = true
 	}
 
-	// forward tri-state from direction. Empty direction defaults to "out"
-	// (validateDirection); "both" leaves Forward nil so the engine returns the
-	// both-union.
+	// forward tri-state from direction. Empty direction defaults to "out" (the
+	// default ValidateTraverseDirection documents and admits); "both" leaves
+	// Forward nil so the engine returns the both-union.
 	switch strings.ToLower(strings.TrimSpace(a.Direction)) {
 	case "", "out":
 		t := true
@@ -106,7 +176,13 @@ func compileTraverse(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 	case "both":
 		// leave Forward nil → engine both-union.
 	default:
-		return nil, false // invalid direction → let legacy surface the error.
+		// Unreachable from the LLM surface: precheckTraverse refuses an unknown
+		// direction in the Dispatch seam, before Compile is reached. It stays as
+		// the compile-side default-deny for the OTHER Compile caller — thought/
+		// wire.go's fetchTraversalPeerIDs, which builds the arg map itself — so a
+		// programmatic caller that passes an unrecognized literal is denied rather
+		// than silently walked in the "out" default direction.
+		return nil, false
 	}
 
 	// MaxHops from depth only when supplied — the engine applies the store

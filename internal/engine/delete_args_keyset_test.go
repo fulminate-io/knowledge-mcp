@@ -33,7 +33,7 @@ import (
 // deleteToolReadKeys is the locked read surface: deleteArgs' json tags plus the
 // literal "format", which both render paths decode from an anonymous struct.
 var deleteToolReadKeys = []string{
-	"ids", "older_than", "type", "session_id", "dry_run", "hard", "graph", "language", "format",
+	"ids", "id", "older_than", "type", "session_id", "dry_run", "hard", "graph", "language", "repo", "account", "format",
 }
 
 // deleteDecodeSites names every function that decodes the DELETE tool's caller

@@ -47,6 +47,57 @@ func cannedNodesResp(nodes ...*knowledgev1.Node) *knowledgev1.ExecuteResponse {
 	return &knowledgev1.ExecuteResponse{Nodes: nodes}
 }
 
+// cannedEmbeddedNodesResp is cannedNodesResp for a graph that HAS been embedded:
+// the same hydrate nodes plus a catalog entry recording which embedder produced
+// its vectors.
+//
+// IT IS A SEPARATE HELPER RATHER THAN A CHANGE TO cannedNodesResp, and the
+// distinction is load-bearing. Several tests in this package assert the
+// NO-EMBEDDER behaviour — that a graph with nothing to embed against ranks by
+// BM25 alone, and that mode:vector is refused rather than served empty. Handing
+// every canned response an identity would have quietly given those tests an
+// embedder and turned their subject into something else.
+func cannedEmbeddedNodesResp(nodes ...*knowledgev1.Node) *knowledgev1.ExecuteResponse {
+	return &knowledgev1.ExecuteResponse{Nodes: nodes, GraphNames: cannedKnowledgeCatalog()}
+}
+
+// cannedKnowledgeCatalog is the graph catalog the knowledge arm now reads to
+// learn which embedder produced the graph's vectors.
+//
+// IT IS ON THE SAME CANNED RESPONSE AS THE NODES because the harness serves one
+// response to every Execute, and the two readers look at different fields: the
+// hydrate reader at Nodes, the catalog reader at GraphNames. Carrying both keeps
+// the harness a single canned response rather than a per-request router.
+//
+// THE FAKE PROVIDER IS DELIBERATE: it needs no credential and makes no network
+// call, so a test that reaches the embedder exercises the real resolution path
+// without a key, and a failure is about identity resolution rather than about a
+// missing secret.
+func cannedKnowledgeCatalog() []*knowledgev1.GraphInfo {
+	return []*knowledgev1.GraphInfo{{
+		Name:   knowledgeDefaultName,
+		Loaded: true,
+		EmbedIdentity: &knowledgev1.EmbedIdentity{
+			Provider: "fake", Model: "canned", Dimension: cannedCatalogDim, Dtype: "ubinary",
+		},
+	}}
+}
+
+// cannedCatalogDim is deliberately NOT the default width, and that is what makes
+// every fixture using this catalog able to discriminate.
+//
+// A TEST THAT CARRIES BOTH A STUB EMBEDDER AND A CATALOG IDENTITY CANNOT TELL
+// THEM APART IF THEY PRODUCE THE SAME SHAPE. Both would yield a non-empty
+// vector, so "the vector reached the engine" would pass whether the arm resolved
+// from the graph's identity or fell back to the configured embedder — which is
+// exactly the regression the wiring exists to prevent, sitting under a green
+// gate. At 1024 dims the identity-resolved vector is 128 bytes and the stub's is
+// 32, so the width IS the answer to "which one ran".
+const cannedCatalogDim = 1024
+
+// cannedCatalogVecBytes is the byte width cannedCatalogDim implies.
+const cannedCatalogVecBytes = cannedCatalogDim / 8
+
 // dispatchedAServerSearch reports whether any captured ExecuteRequest was a
 // server RETURN_MODE_SEARCH dispatch (a Queries-bearing search plan) — the thing
 // the GO-LIVE reroute must NOT do for the knowledge arm. The hydrate read is an
@@ -71,7 +122,7 @@ func dispatchedAServerSearch(reqs []*knowledgev1.ExecuteRequest) bool {
 // Execute serves the hydrate nodes read and proves no SEARCH plan was sent.
 func TestInterceptSearchKnowledge_RoutesToClientEngine(t *testing.T) {
 	var execHits, embedCalls atomic.Int64
-	gc, handler := newInterceptHarnessWithHandler(t, &execHits, cannedNodesResp(
+	gc, handler := newInterceptHarnessWithHandler(t, &execHits, cannedEmbeddedNodesResp(
 		&knowledgev1.Node{Id: "n1", Type: "finding", SymbolName: "FirstHit"},
 		&knowledgev1.Node{Id: "n2", Type: "finding", SymbolName: "SecondHit"},
 	))
@@ -89,7 +140,10 @@ func TestInterceptSearchKnowledge_RoutesToClientEngine(t *testing.T) {
 	require.Equal(t, int64(1), mgr.calls.Load(), "Manager.Search drove the knowledge arm")
 	require.Equal(t, kgtypes.GraphKnowledge, mgr.lastGT)
 	require.Equal(t, knowledgeDefaultName, mgr.lastName)
-	require.NotEmpty(t, mgr.lastVec, "client-embedded query vector reached the HNSW arm")
+	require.Len(t, mgr.lastVec, cannedCatalogVecBytes,
+		"the query vector must come from the GRAPH's recorded identity (1024 dims = 128 bytes), not "+
+			"from the configured stub embedder (32 bytes) — equal widths would make this assertion "+
+			"pass under either source and the whole resolution revertible in silence")
 
 	// No SERVER search dispatch — only the hydrate Ids[] read went to the wire.
 	require.False(t, dispatchedAServerSearch(handler.recordedReqs()), "knowledge arm must NOT dispatch a server search")
@@ -348,4 +402,48 @@ func TestInterceptQueryKnowledgeSearch_RecentWithTypesFilter(t *testing.T) {
 	require.Len(t, got.Results, 2)
 	assert.Equal(t, "t1", got.Results[0].ID, "newer ticket ranks first")
 	assert.Equal(t, "p1", got.Results[1].ID, "older project ranks second")
+}
+
+// TestInterceptSearchKnowledge_UnconstructibleIdentitySurfaces pins the ARM's
+// half of the no-silent-degrade rule.
+//
+// THE RESOLVER'S OWN TEST PROVES IT RETURNS AN ERROR; this proves the SEARCH ARM
+// SURFACES it. Those are different failures with the same cause: an arm that
+// resolved the error and then embedded with nothing would answer the semantic
+// search with keyword results and report success, which is the exact outcome the
+// error exists to prevent — and no assertion in the resolver's own test would
+// notice.
+func TestInterceptSearchKnowledge_UnconstructibleIdentitySurfaces(t *testing.T) {
+	// An API provider with no credential anywhere: constructible identity on the
+	// graph, unconstructible embedder on this machine.
+	t.Setenv("VOYAGE_API_KEY", "")
+	var execHits, embedCalls atomic.Int64
+	resp := cannedNodesResp(&knowledgev1.Node{Id: "n1", Type: "finding", SymbolName: "Hit"})
+	resp.GraphNames = []*knowledgev1.GraphInfo{{
+		Name:   knowledgeDefaultName,
+		Loaded: true,
+		EmbedIdentity: &knowledgev1.EmbedIdentity{
+			Provider: "voyage", Model: "voyage-code-4", Dimension: 256, Dtype: "ubinary",
+		},
+	}}
+	gc := newInterceptHarness(t, &execHits, resp)
+	mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "n1", Score: 0.9}}}
+	deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
+
+	handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
+		"query": "x", "graph": "knowledge",
+	}))
+	require.True(t, handled)
+	require.True(t, out.IsError,
+		"an identity this client cannot construct must SURFACE as an error, never be answered with "+
+			"BM25 results reported as success")
+	body := engine.FirstTextContent(out)
+	assert.Contains(t, body, "voyage", "the surfaced error names the provider")
+
+	// AND THE INJECTED STUB WAS NOT USED AS A SUBSTITUTE. Without this the arm
+	// could satisfy the error above and still have embedded with the configured
+	// embedder on some other path.
+	assert.Equal(t, int64(0), embedCalls.Load(),
+		"the configured embedder must not stand in for an identity that failed to resolve")
+	assert.Equal(t, int64(0), mgr.calls.Load(), "and no search runs on an unresolved identity")
 }

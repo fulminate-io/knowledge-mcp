@@ -13,9 +13,8 @@ const (
 	// entries. A single query can produce millions of nodes (templates,
 	// streams, chunks, labels). Log graphs are MUST NEVER be sent to the
 	// summarizer or embedder — doing so would cost thousands of dollars
-	// and take hours. SkipsLLMProcessing enforces this at the store layer;
-	// dream phases additionally exclude GraphLogs by only iterating
-	// specific graph types. Storage: ~/.knowledge/logs/
+	// and take hours. SkipsLLMProcessing enforces this at the store layer.
+	// Storage: ~/.knowledge/logs/
 	GraphLogs GraphType = "logs"
 	// GraphTransformers is the first-class graph that stores Transformer
 	// recipes — human/agent-authored executable bodies in the graph-agnostic
@@ -50,13 +49,45 @@ const (
 	// derived from the input file basename + content hash so re-collecting
 	// the same document is idempotent.
 	GraphPDFRaw GraphType = "pdf"
+	// GraphChecks is the SINGLE graph of deterministic corpus checks and the
+	// fixture example nodes that validate them, across every language. It is a
+	// singleton like GraphLinkage — there is one of it, addressed with no
+	// instance field. Storage: ~/.knowledge/checks/default.bin
+	//
+	// LANGUAGE IS A NODE LABEL, NOT A GRAPH SELECTOR. Every check already carries
+	// `language` as one of the contract's mandated keys, so a scan for one
+	// language narrows WITHIN this graph via a metadata predicate. A graph per
+	// language would have duplicated that key as a second source for one fact.
+	//
+	// SEPARATE FROM GraphPractice BY DESIGN. Practice graphs hold prose guidance
+	// and model entries — corpus an LLM reads. Checks are executable assertions
+	// whose fixtures are DELIBERATELY-BAD CODE authored to make a check fire, so
+	// co-locating them would put a snippet written specifically to be wrong into
+	// the ranked corpus that answers questions about good practice. Keeping them
+	// apart also makes the model/check boundary a graph boundary rather than a
+	// metadata convention.
+	//
+	// CHECK NODES RANK; FIXTURE NODES DO NOT, and the split is enforced by node
+	// type rather than by the graph's absence from any table. The server enrolls
+	// this graph as Embeddable-but-not-Summarizable — a check's summary is
+	// author-supplied, so the summarizer would only overwrite authored intent —
+	// and its per-graph node-type allow-list admits check findings while REFUSING
+	// the fixture example nodes. That allow-list is what now keeps a snippet
+	// written specifically to be wrong out of ranked and semantic search.
+	GraphChecks GraphType = "checks"
 )
 
 // allGraphTypes is the canonical ordered list of every GraphType. The first
-// seven are sync-eligible; the trailing three (logs/web/pdf) are the raw/
+// eight are sync-eligible; the trailing three (logs/web/pdf) are the raw/
 // LLM-skipped graphs SyncEligible filters out. Ordering is load-bearing:
 // SyncEligibleGraphTypes filters this slice in place, so the eligible-set
-// order is {knowledge, code, cloud, cicd, practice, linkage, transformers}.
+// order is {knowledge, code, cloud, cicd, practice, linkage, transformers,
+// checks}.
+//
+// Position does NOT decide eligibility — SyncEligible is a complement
+// predicate, so any type absent from its exclusion set is eligible wherever it
+// sits in this slice. checks sits in the eligible run because it IS eligible:
+// see SyncEligible's note and TestSyncEligible_ChecksAreEligibleDeliberately.
 var allGraphTypes = []GraphType{
 	GraphKnowledge,
 	GraphCode,
@@ -65,6 +96,7 @@ var allGraphTypes = []GraphType{
 	GraphPractice,
 	GraphLinkage,
 	GraphTransformers,
+	GraphChecks,
 	GraphLogs,
 	GraphWebRaw,
 	GraphPDFRaw,
@@ -88,6 +120,22 @@ var allGraphTypes = []GraphType{
 // it to the exclusion set below AND append it to allGraphTypes after the
 // eligible prefix). No cross-module compiler/test enforces this; the server
 // site carries the reciprocal pointer back to this function.
+//
+// GraphChecks IS ELIGIBLE, AND ITS ABSENCE FROM THE EXCLUSION SET IS THE
+// DECISION rather than an oversight. Checks are the compiled half of the
+// practice corpus, derived from practice example nodes, and practice is already
+// eligible — excluding the derived artifact while its source syncs would be
+// anomalous and would protect nothing. Portability is also the point of the
+// corpus: compiling prose into a deterministic check pays off only if the check
+// travels, or every machine re-pays the compile.
+//
+// DO NOT "FIX" THIS BY REASONING FROM LLM PROCESSING, in either direction. What
+// a graph does on the summarize and embed axes governs LLM spend and
+// ranked-search hygiene; sync governs where the bytes live. They are independent,
+// and the argument held equally when checks was not embedded at all and now that
+// it is. GraphLinkage is the standing precedent for the combination: absent from
+// the per-graph opt-in table, absent from store.SkipsLLMProcessing, and
+// sync-eligible. TestSyncEligible_ChecksAreEligibleDeliberately pins this.
 func SyncEligible(gt GraphType) bool {
 	return gt != GraphLogs && gt != GraphWebRaw && gt != GraphPDFRaw
 }
@@ -111,28 +159,62 @@ func SyncEligibleGraphTypes() []GraphType {
 // the client-side mirror of the server's store.GraphType.Embeddable()
 // (cmd/knowledge-server/internal/store/node_type_eligibility_table.go) — the SAME
 // gate the server's segment_rebuild scan uses (embedGapEligible → gt.Embeddable()).
-// The embeddable builtins {knowledge, code, cloud, cicd, practice} have rebuildable
-// segments; the non-embeddable types {linkage, transformers, logs, web, pdf} do
-// not (transformers is BM25-indexed but carries no embedded vectors, so the
-// embedding-gated rebuild scan yields nothing for it).
+// The embeddable builtins {knowledge, code, cloud, cicd, practice, checks} have
+// rebuildable segments; the non-embeddable types {linkage, transformers, logs,
+// web, pdf} do not (transformers is Summarizable-but-not-Embeddable on the
+// server, so the embedding-gated rebuild scan yields nothing for it).
+//
+// CHECKS IS ADMITTED AT THE GRAPH LEVEL AND NARROWED AT THE NODE LEVEL. The
+// server embeds its check findings and refuses its fixture example nodes through
+// a per-graph node-type allow-list, so the graph genuinely carries segments and
+// belongs here; the fixture exclusion lives one level down and is not this
+// predicate's business.
+//
+// TRANSFORMERS GETS NO SEGMENTS OF ANY KIND — not BM25 ones either, and this note
+// exists because the sentence above used to say it was BM25-indexed. THIS function
+// is what decides that: pipeline.bm25ArmEnabledFor (collector_bm25.go) gates the
+// BM25 collector arm on HasRebuildableSegments, so excluding transformers here
+// excludes it from the BM25 index as well as from the vector one. The false clause
+// read as a license — "the index is already there, ranked search just needs
+// wiring" — over a graph where a ranked query can only ever come back empty.
 //
 // DELIBERATE client-side DUPLICATE of the server predicate, for the same
 // module-boundary reason as SyncEligible: the client cannot import the
 // server-internal table. Written as the embeddable subset of SyncEligible (which
-// already drops logs/web/pdf) minus the two sync-eligible-but-non-embeddable types,
+// already drops logs/web/pdf) minus the three sync-eligible-but-non-embeddable types,
 // so a newly-added raw type stays excluded automatically. BI-DIRECTIONAL CONTRACT:
 // a new builtin set Embeddable=false on the server MUST be excluded here too.
 func HasRebuildableSegments(gt GraphType) bool {
 	return SyncEligible(gt) && gt != GraphLinkage && gt != GraphTransformers
 }
 
+// BuiltinGraphTypeNames returns the canonical built-in graph-type names in
+// allGraphTypes order, as a fresh slice the caller may not mutate into the
+// package's own state.
+//
+// It exists so a REFUSAL can list the accepted vocabulary — the client-side
+// graph-selector validation (tools/registered_graph_selector.go) names every
+// built-in when it rejects an unknown selector, and the standing bad-input rule
+// is that an error names the offending value AND the vocabulary that would have
+// worked. Deriving that list from allGraphTypes rather than restating it at the
+// error site is what keeps the message correct when a built-in is added: a
+// second hand-written list is a second source of truth that rots silently,
+// because a stale vocabulary in an error string fails no test.
+func BuiltinGraphTypeNames() []string {
+	out := make([]string, 0, len(allGraphTypes))
+	for _, gt := range allGraphTypes {
+		out = append(out, string(gt))
+	}
+	return out
+}
+
 // IsBuiltinGraphType reports whether name matches one of the canonical built-in
 // GraphType constants (knowledge / code / cloud / cicd / practice / linkage /
-// transformers / logs / web / pdf). It is the registration-time collision
+// transformers / checks / logs / web / pdf). It is the registration-time collision
 // predicate for user-registered graph types: a GraphTypeDef whose Name collides
 // with a built-in is rejected so a registered type can never shadow a built-in.
-// A predicate (not the slice) is exported so allGraphTypes stays package-private
-// and its existing readers are untouched.
+// A predicate is exported alongside BuiltinGraphTypeNames (which projects the
+// names) so allGraphTypes itself stays package-private and unaliasable.
 func IsBuiltinGraphType(name string) bool {
 	for _, gt := range allGraphTypes {
 		if string(gt) == name {

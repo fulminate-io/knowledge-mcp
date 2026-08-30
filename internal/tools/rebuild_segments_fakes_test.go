@@ -4,7 +4,6 @@ package tools
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -26,9 +25,14 @@ type fakeRebuildScanner struct {
 	cursors    []string
 	graphTypes []string // the GraphType requested on each PipelineScan
 	// afters records after_stamped_at_nanos per call — the field the server reads
-	// as the client's reported retention position.
-	afters   []int64
-	pageIter int
+	// as the client's reported retention position — and scanFroms records
+	// scan_from_stamped_at_nanos, the bound the scan itself reads from. They are
+	// appended in the SAME statement so index i of one always describes the same
+	// request as index i of the other; a test that read the floor of one call beside
+	// the scan bound of another would assert a request nobody sent.
+	afters    []int64
+	scanFroms []int64
+	pageIter  int
 }
 
 func (f *fakeRebuildScanner) PipelineScan(_ context.Context, req *knowledgev1.PipelineScanRequest) (*knowledgev1.PipelineScanResponse, error) {
@@ -37,7 +41,7 @@ func (f *fakeRebuildScanner) PipelineScan(_ context.Context, req *knowledgev1.Pi
 	f.calls++
 	f.cursors = append(f.cursors, req.GetAfterId())
 	f.graphTypes = append(f.graphTypes, req.GetGraphType())
-	f.afters = append(f.afters, req.GetAfterStampedAtNanos())
+	f.afters, f.scanFroms = append(f.afters, req.GetAfterStampedAtNanos()), append(f.scanFroms, req.GetScanFromStampedAtNanos())
 	if f.pageIter >= len(f.pages) {
 		return &knowledgev1.PipelineScanResponse{Items: nil}, nil
 	}
@@ -80,6 +84,12 @@ type fakeRebuildState struct {
 	// nothing, which correctly holds the reported floor at zero.
 	mergeWatermark    int64
 	mergeWatermarkErr error
+
+	// bm25Resets counts ResetBM25Cursors. It is the BM25 arm's feed position being
+	// cleared because this run is about to replace the BM25 layer the arm's cursor
+	// describes; bm25ResetErr scripts the failure the driver must abort on.
+	bm25Resets   int
+	bm25ResetErr error
 }
 
 // LoadMergeWatermark reports the delta-merge consumer's durable position.
@@ -122,6 +132,25 @@ func (s *fakeRebuildState) NoteDeletedIDs(_ kgtypes.GraphType, _ string, ids []s
 	s.noted = append(s.noted, append([]searchengine.ExternalID(nil), ids...))
 }
 
+// ResetBM25Cursors records the BM25 arm's cursor reset. bm25ResetErr scripts the
+// failure the driver must ABORT on rather than swap through.
+func (s *fakeRebuildState) ResetBM25Cursors(kgtypes.GraphType, string) error {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.bm25ResetErr != nil {
+		return s.bm25ResetErr
+	}
+	s.bm25Resets++
+	return nil
+}
+
+// resetCount reports how many times the driver reset the BM25 feed cursor.
+func (s *fakeRebuildState) resetCount() int {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.bm25Resets
+}
+
 // savedWatermark reads the persisted watermark under the fake's lock.
 func (s *fakeRebuildState) savedWatermark() int64 {
 	s.stateMu.Lock()
@@ -160,6 +189,12 @@ type fakeRebuildShipper struct {
 	// finalize fires — proving it ran AFTER every partition was staged.
 	stagesAtFinalize int64
 
+	// bm25ResetsAtFinalize is the same device for the BM25 cursor reset: the reset
+	// count observed AT the finalize. It is what distinguishes "reset before the
+	// swap" from "reset after the swap" — a total count alone cannot, because both
+	// orderings end the run at 1.
+	bm25ResetsAtFinalize int
+
 	// pruned / bm25Pruned are the retired sets the finalize reports PER FORMAT. They are
 	// separate fields because the two corpora carry separate manifests and retire
 	// independently: a live run read zero retired on the vector leg while all eight
@@ -183,7 +218,6 @@ type fakeRebuildShipper struct {
 	manifestFormats    []string
 	manifestCount      int
 	manifestConfigured bool
-	manifestErr        error
 	manifestSeq        []int
 
 	// Delta-path scripting. The ZERO VALUE is a landed, applicable delta at one
@@ -226,6 +260,7 @@ func (s *fakeRebuildShipper) FinalizeRebuild(
 	s.mu.Lock()
 	s.flushed = true
 	s.stagesAtFinalize = s.stageCalls.Load()
+	s.bm25ResetsAtFinalize = s.resetCount()
 	s.mu.Unlock()
 	if s.finalizeErr != nil {
 		return RebuildFinalizeResult{}, s.finalizeErr
@@ -243,32 +278,38 @@ func (s *fakeRebuildShipper) InvalidateLocal(_ kgtypes.GraphType, _ string, ids 
 	s.mu.Unlock()
 }
 
-// PublishedManifestCount models the manifest read-back. manifestCount defaults to
-// -1 (not configured), which the driver treats as "unavailable" and skips the
-// cardinality check for — so every pre-existing test that never configures it keeps
-// its prior behavior. manifestErr models a failed read-back.
-func (s *fakeRebuildShipper) PublishedManifestCount(_ context.Context, _ kgtypes.GraphType, _, format string) (int, error) {
+// ResidentSegmentCount models the engine's post-swap sealed-segment count.
+//
+// IT HAS NO ERROR PATH, AND THAT IS THE CONTRACT CHANGE RATHER THAN A SIMPLIFICATION
+// OF THE FAKE. Its predecessor modelled a manifest read back from the server, which
+// could fail; the real reader is now one atomic snapshot load and a slice length, so
+// a fake offering a failure mode would let tests exercise a branch production cannot
+// reach. manifestErr is gone for that reason.
+//
+// manifestSeq scripts a DIFFERENT reading per call, which is what the delta
+// cardinality check needs: its whole subject is the before/after comparison, and a
+// fake answering one constant can only ever model "unchanged".
+//
+// AN UNSCRIPTED FAKE ANSWERS ZERO, deliberately. There is no longer an "unavailable"
+// reading for the driver to skip on, so a test that does not script a count is
+// modelling an engine that holds nothing — which the gate reads as a short set and
+// WARNs about. A test that does not want that must script a count.
+func (s *fakeRebuildShipper) ResidentSegmentCount(_ kgtypes.GraphType, _, format string) int {
 	s.manifestReads.Add(1)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.manifestFormats = append(s.manifestFormats, format)
-	if s.manifestErr != nil {
-		return 0, s.manifestErr
-	}
-	// manifestSeq scripts a DIFFERENT reading per call, which is what the delta
-	// cardinality check needs: its whole subject is the before/after comparison, and a
-	// fake answering one constant can only ever model "unchanged".
 	if len(s.manifestSeq) > 0 {
 		i := int(s.manifestReads.Load()) - 1
 		if i >= len(s.manifestSeq) {
 			i = len(s.manifestSeq) - 1
 		}
-		return s.manifestSeq[i], nil
+		return s.manifestSeq[i]
 	}
 	if !s.manifestConfigured {
-		return 0, errors.New("fake shipper: no published manifest scripted")
+		return 0
 	}
-	return s.manifestCount, nil
+	return s.manifestCount
 }
 
 // ReEmitRebuiltDelta records the documents the delta path handed over and reports the

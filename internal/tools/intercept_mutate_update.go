@@ -19,11 +19,14 @@ import (
 // knowledge node (criterion / finding / rule / research / etc.) and routes its
 // create-time first-class params (command/criterion_type/scope/enforcement/
 // evidence/source) the generic UPDATE arm would otherwise drop on the floor,
-// re-derives the auto-summary when the caller passed none, and DERIVES a
-// criterion's name from its description — a caller-supplied name is rejected on
-// that type rather than silently discarded. Two classes of loud rejection, both
-// leaving the node byte-identical (no forward issued): params unroutable for the
-// (operation, type) pair, and a DERIVED criterion summary over the rune cap.
+// resolves the summary to forward through the single summary seam
+// (resolveTypedUpdateSummary, intercept_mutate_update_summary.go — an explicit
+// summary wins verbatim and everything else forwards nothing, leaving the stored
+// summary untouched), and DERIVES a criterion's name from its
+// description (its FIRST LINE — see projects.DeriveCriterionName) — a
+// caller-supplied name is rejected on that type rather than silently discarded.
+// ONE class of loud rejection remains, leaving the node byte-identical (no
+// forward issued): params unroutable for the (operation, type) pair.
 // Returns (false, _) when it does not claim the update (the caller routes it
 // through the cloud-aware engine dispatch).
 //
@@ -46,8 +49,9 @@ func handleClientMutateUpdateTyped(
 	nodeType := kgtypes.NodeType(node.GetType())
 
 	// Claim gate: the typed router owns an update only when it has per-type work —
-	// the node is a routing/derive type (criterion/rule/finding), OR a first-class
-	// per-type param is present (so an unroutable one is rejected loudly). Every
+	// the node is a per-type-param routing type (criterion, which also re-stamps
+	// its name) or a derive type (rule/finding), OR a first-class per-type param is
+	// present (so an unroutable one is rejected loudly). Every
 	// other typed update (e.g. a ticket name change) falls through to the generic
 	// engine dispatch byte-unchanged.
 	if !routesPerTypeUpdate(nodeType) && !hasFirstClassUpdateParam(a) {
@@ -79,9 +83,9 @@ func handleClientMutateUpdateTyped(
 	// Command-shape gate, on the value the merge is about to STORE and ONLY when
 	// the caller is SETTING one — either through the param or through a `command`
 	// metadata key. Thousands of stored criteria already carry a selector with no
-	// assertion; gating on the EFFECTIVE value instead (rederiveUpdateSummary's
-	// fallback to the stored command, below) would reject every ordinary edit to
-	// all of them, including the edits that replace those very commands.
+	// assertion; gating on the EFFECTIVE value instead — falling back to the
+	// stored command when this call supplies none — would reject every ordinary
+	// edit to all of them, including the edits that replace those very commands.
 	if nodeType == kgtypes.NodeCriterion {
 		_, metaCommandSupplied := a.Metadata["command"]
 		if a.Command != "" || metaCommandSupplied {
@@ -91,33 +95,20 @@ func handleClientMutateUpdateTyped(
 		}
 	}
 
-	// (c) Re-derive the auto-summary ONLY when the caller passed none AND a
-	// derive-source field changed. Caller-supplied summary always wins.
-	//
-	// The length gate lives INSIDE this branch by design: an explicit caller
-	// summary never reaches it, so it stays unvalidated and verbatim at any
-	// length — the carve-out holds by construction rather than by a check that
-	// could be written wrong. It is criterion-scoped because a criterion summary
-	// is derived-not-authored (create gates the same derivation), while rule and
-	// finding summaries are author-supplied and their derivations routinely
-	// exceed the cap. Rejecting before the forward is built keeps this handler's
-	// discipline that a rejected update issues zero writes.
-	summary := a.Summary
-	if summary == "" {
-		summary = rederiveUpdateSummary(nodeType, a, meta, node)
-		if nodeType == kgtypes.NodeCriterion {
-			if verr := validate.DerivedSummary("mutate(update, type=criterion)", "criterion.summary", "description + command", summary); verr != nil {
-				return true, errorResult(verr.Error())
-			}
-		}
-	}
+	// (c) Resolve the summary to forward — see resolveTypedUpdateSummary in
+	// intercept_mutate_update_summary.go, which owns the whole summary rule: an
+	// explicit summary wins, and everything else forwards nothing.
+	sr := resolveTypedUpdateSummary(a)
 
-	// (d) Criterion-only: DERIVE name=description when description changes
-	// (Name==Description convention from upsertCriterionNode). With a supplied
-	// name rejected above, this derivation can no longer discard anything.
+	// (d) Criterion-only: DERIVE the name from the description when the
+	// description changes (the Name==Description convention upsertCriterionNode
+	// establishes, CLAMPED TO THE DESCRIPTION'S FIRST LINE — see
+	// projects.DeriveCriterionName, which is the single source all three
+	// derivation sites share). With a supplied name rejected above, this
+	// derivation can no longer discard anything.
 	name := a.Name
 	if nodeType == kgtypes.NodeCriterion && a.Description != "" {
-		name = a.Description
+		name = projects.DeriveCriterionName(a.Description)
 	}
 
 	// Status rides the forward only when the CALLER named it — read from the raw
@@ -133,7 +124,7 @@ func handleClientMutateUpdateTyped(
 		ID:          a.ID,
 		Name:        name,
 		Description: a.Description,
-		Summary:     summary,
+		Summary:     sr.summary,
 		Content:     a.Content,
 		Status:      status,
 		Keywords:    a.Keywords,
@@ -157,12 +148,15 @@ func handleClientMutateUpdateTyped(
 	if _, uerr := executeMutate(ctx, gc, args); uerr != nil {
 		return true, errorResult("mutate(update): " + uerr.Error())
 	}
-	return true, textResult(fmt.Sprintf("mutate(update): updated %s [graph: knowledge/default]", a.ID))
+	return true, textResult(renderTypedUpdateReceipt(a, forward, sr))
 }
 
-// routesPerTypeUpdate reports whether nodeType has per-type param routing and a
-// derived summary the typed update router owns (criterion/rule/finding). Other
-// types fall through to the generic engine dispatch.
+// routesPerTypeUpdate reports whether nodeType has per-type work the typed
+// update router owns: per-type param routing into metadata for all three (rule
+// scope/enforcement, finding evidence/source, criterion command/criterion_type),
+// plus the criterion name re-stamp. No type has per-type SUMMARY work any more —
+// every summary is author-supplied and nothing derives one. Other types fall
+// through to the generic engine dispatch.
 func routesPerTypeUpdate(nodeType kgtypes.NodeType) bool {
 	switch nodeType {
 	case kgtypes.NodeCriterion, kgtypes.NodeRule, kgtypes.NodeFinding:
@@ -248,63 +242,6 @@ func mergeUpdateMetadata(a mutateArgs, nodeType kgtypes.NodeType) map[string]str
 	return meta
 }
 
-// rederiveUpdateSummary re-derives the auto-summary for a typed update using the
-// EFFECTIVE post-update fields. Metadata-backed sources (criterion type/command,
-// rule scope, finding evidence) are read from the MERGED metadata map via
-// effectiveMeta — the map this same call is about to store, so the derived
-// summary describes the value being written rather than the one being replaced.
-// Node FIELDS (name → SymbolName, description) have no metadata route and are
-// read from the looked-up node via proto getters with supplied args winning.
-// Returns "" for types with no derived summary (the caller then leaves summary
-// unchanged).
-func rederiveUpdateSummary(nodeType kgtypes.NodeType, a mutateArgs, meta map[string]string, node *knowledgev1.Node) string {
-	switch nodeType {
-	case kgtypes.NodeCriterion:
-		cType := effectiveMeta(meta, "type", node)
-		if cType == "" {
-			cType = "manual"
-		}
-		desc := effective(a.Description, node.GetDescription())
-		command := effectiveMeta(meta, "command", node)
-		return projects.DeriveCriterionSummary(cType, desc, command)
-	case kgtypes.NodeRule:
-		name := effective(a.Name, node.GetSymbolName())
-		scope := effectiveMeta(meta, "scope", node)
-		return projects.DeriveRuleSummary(name, scope)
-	case kgtypes.NodeFinding:
-		desc := effective(a.Description, node.GetDescription())
-		evidence := effectiveMeta(meta, "evidence", node)
-		return projects.DeriveFindingSummary(desc, evidence)
-	}
-	return ""
-}
-
-// effective returns supplied when non-empty, else the existing value off the
-// node. Encodes the "caller-supplied field wins; otherwise read the current
-// post-update-equivalent value off the looked-up node" rule.
-func effective(supplied, existing string) string {
-	if supplied != "" {
-		return supplied
-	}
-	return existing
-}
-
-// effectiveMeta returns the post-update value of a metadata-backed derive
-// source: the merged map's value whenever the key is PRESENT, otherwise the
-// node's current stored value. Presence rather than non-emptiness is the test,
-// because an explicit empty value is a CLEAR the update stores — falling back
-// on it would re-derive the summary from the value the caller just cleared.
-//
-// A nil meta map is safe to index: mergeUpdateMetadata returns nil when the
-// merged map is empty, and a read from a nil map yields ("", false), which
-// takes the node-value branch.
-func effectiveMeta(meta map[string]string, key string, node *knowledgev1.Node) string {
-	if v, ok := meta[key]; ok {
-		return v
-	}
-	return kgtypes.Value(node, key)
-}
-
 // rejectUnroutableUpdateParams returns a structured CodeInvalidArgument-style
 // error when a carries a first-class per-type param that is unroutable for an
 // update of nodeType (e.g. a finding update carrying scope, or a rule update
@@ -337,7 +274,8 @@ func rejectUnroutableUpdateParams(nodeType kgtypes.NodeType, a mutateArgs) error
 	if nodeType == kgtypes.NodeCriterion && a.Name != "" {
 		return fmt.Errorf(
 			"mutate(update, type=criterion): name is not applied by this path — " +
-				"a criterion's name is derived from its description; set description instead")
+				"a criterion's name is derived from the FIRST LINE of its description; " +
+				"set description instead, leading it with the line you want as the name")
 	}
 	type perType struct {
 		value   string

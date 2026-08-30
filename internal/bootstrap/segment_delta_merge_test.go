@@ -35,7 +35,7 @@ func TestMergeLandsCoWorkerDeltaAndAdvancesWatermark(t *testing.T) {
 		windowHorizon = int64(1_700_000_000_123_456_789)
 	)
 
-	c, eng, _ := buildReconcileClientWithSeg(t, embedded, repo)
+	c, eng := buildReconcileClientWith(t, embedded, repo)
 	require.NoError(t, c.segmentMgr.SaveMergeWatermark(kgtypes.GraphCode, repo, seededHorizon))
 	eng.setServedHorizon(windowHorizon)
 
@@ -101,7 +101,7 @@ func TestMergeSkippedUntilWatermarkSeeded(t *testing.T) {
 		scanHorizon = int64(1_700_000_000_123_456_789)
 	)
 
-	c, eng, _ := buildReconcileClientWithSeg(t, embedded, repo)
+	c, eng := buildReconcileClientWith(t, embedded, repo)
 	eng.setServedHorizon(scanHorizon)
 
 	docs := fastloadVecDocs(repo, corpusN)
@@ -162,7 +162,7 @@ func TestMergeSkippedUntilWatermarkSeeded(t *testing.T) {
 			convEmbedded = 10
 			convCorpusN  = 128
 		)
-		cc, ceng, _ := buildReconcileClientWithSeg(t, convEmbedded, convRepo)
+		cc, ceng := buildReconcileClientWith(t, convEmbedded, convRepo)
 		ceng.setServedHorizon(scanHorizon)
 
 		cdocs := fastloadVecDocs(convRepo, convCorpusN)

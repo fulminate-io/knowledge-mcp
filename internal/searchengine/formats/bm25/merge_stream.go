@@ -5,65 +5,9 @@ package bm25
 import (
 	"encoding/binary"
 	"fmt"
-	"os"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
-
-// mergeSegmentsV2 consolidates several offset-addressed segments into one,
-// streaming the output to a temp file instead of assembling it on the heap.
-//
-// The map-shaped merge it replaces built the whole merged segment in Go maps
-// before encoding it, so its peak was the accumulator PLUS the output. This one
-// holds a cursor per input dictionary, a reused posting buffer, and nothing that
-// grows with the corpus; the output exists only as bytes in a file until it is
-// read back once at the end.
-//
-// The returned segment is HEAP-backed: the temp file is read back after the last
-// patch and UNLINKED before this returns, on the success path and on every error
-// path, so nothing outside this call may depend on the file's name. Publishing
-// that payload as a mapping of a cache file — which is what makes merge
-// retention actually zero — is the distribution layer's job, not the format's;
-// this package creates no mappings and contains no platform code.
-func mergeSegmentsV2(ins []*mappedSegment, accept []func(searchengine.ExternalID) bool, kind byte) (*mappedSegment, error) {
-	if kind > dictHash {
-		return nil, fmt.Errorf("bm25 merge: unknown dictionary kind %d", kind)
-	}
-	blob, err := streamMergeToBlob(ins, accept, kind)
-	if err != nil {
-		return nil, err
-	}
-	return openSegmentV2(blob)
-}
-
-// streamMergeToBlob runs the streamed merge and reads the finished file back.
-// The read-back is the ONE whole-output allocation in the merge, and it is the
-// segment's own payload rather than writer scratch.
-func streamMergeToBlob(ins []*mappedSegment, accept []func(searchengine.ExternalID) bool, kind byte) ([]byte, error) {
-	f, err := os.CreateTemp("", "bm25-merge-*.seg")
-	if err != nil {
-		return nil, fmt.Errorf("bm25 merge: create temp: %w", err)
-	}
-	// Unlink and close on EVERY path. The file is an implementation detail of
-	// this call and must not outlive it, including when the merge fails.
-	defer func() {
-		_ = f.Close()
-		_ = os.Remove(f.Name())
-	}()
-
-	if err := streamMergeToFile(f, ins, accept, kind); err != nil {
-		return nil, err
-	}
-	size, err := f.Seek(0, 2)
-	if err != nil {
-		return nil, fmt.Errorf("bm25 merge: size temp: %w", err)
-	}
-	blob := make([]byte, size)
-	if _, err := f.ReadAt(blob, 0); err != nil {
-		return nil, fmt.Errorf("bm25 merge: read back: %w", err)
-	}
-	return blob, nil
-}
 
 // mergePlan is the merged segment's fixed prefix: every section whose size is
 // known once the surviving members and the surviving per-field term counts are,
@@ -164,83 +108,23 @@ func (p *mergePlan) planFieldDict(i, off int) int {
 	}
 }
 
-// mergeWriter appends to the tail of an output file and patches earlier offsets
-// in place. Errors are held and reported once at the end rather than checked at
-// every store: a partial file is discarded whole, so the first failure is the
-// only one that carries information.
-type mergeWriter struct {
-	f    *os.File
-	tail int64
-	err  error
-	// strBuf carries string payloads to WriteAt without a per-call conversion.
-	// Terms and member ids are written one at a time and in huge numbers, so a
-	// []byte(s) at each of them would allocate proportionally to the corpus —
-	// which is exactly the cost this writer exists to avoid.
-	strBuf []byte
-}
-
-// patch writes b at an already-planned offset in the fixed prefix.
-func (w *mergeWriter) patch(off int, b []byte) {
-	if w.err != nil {
-		return
-	}
-	if _, err := w.f.WriteAt(b, int64(off)); err != nil {
-		w.err = fmt.Errorf("bm25 merge: patch at %d: %w", off, err)
-	}
-}
-
-func (w *mergeWriter) patchU16(off int, v uint16) {
-	var b [2]byte
-	binary.LittleEndian.PutUint16(b[:], v)
-	w.patch(off, b[:])
-}
-
-func (w *mergeWriter) patchU32(off int, v uint32) {
-	var b [4]byte
-	binary.LittleEndian.PutUint32(b[:], v)
-	w.patch(off, b[:])
-}
-
-func (w *mergeWriter) patchU64(off int, v uint64) {
-	var b [8]byte
-	binary.LittleEndian.PutUint64(b[:], v)
-	w.patch(off, b[:])
-}
-
-// appendAligned writes b at the next tail offset that satisfies alignTo and
-// returns where it landed. Gaps left by alignment read back as zeros, which is
-// what keeps the output byte-identical between runs.
-func (w *mergeWriter) appendAligned(b []byte, alignTo int) int {
-	if w.err != nil {
-		return 0
-	}
-	at := int64(align(int(w.tail), alignTo))
-	if _, err := w.f.WriteAt(b, at); err != nil {
-		w.err = fmt.Errorf("bm25 merge: append at %d: %w", at, err)
-		return 0
-	}
-	w.tail = at + int64(len(b))
-	return int(at)
-}
-
-// appendStr appends a string's bytes through the writer's reusable buffer.
-func (w *mergeWriter) appendStr(s string, alignTo int) int {
-	w.strBuf = append(w.strBuf[:0], s...)
-	return w.appendAligned(w.strBuf, alignTo)
-}
-
-// patchStr writes a string's bytes at a planned offset.
-func (w *mergeWriter) patchStr(off int, s string) {
-	w.strBuf = append(w.strBuf[:0], s...)
-	w.patch(off, w.strBuf)
-}
-
-// streamMergeToFile writes the whole merged segment into f. It runs the k-way
-// merge TWICE over the same mapped inputs: once to count surviving terms, which
-// is all the fixed prefix's sizes depend on, and once to write. Both passes
-// apply the SAME accept filter, so a term the filter empties is absent from both
-// — the omission is true by construction rather than repaired afterwards.
-func streamMergeToFile(f *os.File, ins []*mappedSegment, accept []func(searchengine.ExternalID) bool, kind byte) error {
+// streamMergeToFile writes the whole merged segment into f and reports its byte
+// length. It runs the k-way merge TWICE over the same mapped inputs: once to
+// count surviving terms, which is all the fixed prefix's sizes depend on, and
+// once to write. Both passes apply the SAME accept filter, so a term the filter
+// empties is absent from both — the omission is true by construction rather than
+// repaired afterwards.
+//
+// IT DOES NOT TRUNCATE, AND THE CALLER MUST. w.tail can advance past the last
+// byte that actually carries content, because an append at an aligned offset
+// moves the tail to the alignment even when the payload appended is empty. The
+// returned length is the segment; a caller that sized the file by Stat instead
+// would get whatever the last aligned append reached.
+//
+// THE HEADER BACKPATCH NOW LANDS AFTER THE LENGTH IS KNOWN RATHER THAN BEFORE A
+// TRUNCATE, and the order is safe because v2HdrBlobLen sits in the header, far
+// below w.tail — truncating to w.tail could never have removed it.
+func streamMergeToFile(f searchengine.MergeSink, ins []*mappedSegment, accept []func(searchengine.ExternalID) bool, kind byte) (int64, error) {
 	members, remap := resolveMergeLayout(ins, accept)
 
 	termCount := make([]int, len(defaultFieldConfigs))
@@ -250,7 +134,7 @@ func streamMergeToFile(f *os.File, ins []*mappedSegment, accept []func(searcheng
 		func(string, int64) { dfCount++ })
 
 	p := planMerge(kind, members, termCount, dfCount)
-	w := &mergeWriter{f: f, tail: int64(p.prefixEnd)}
+	w := newMergeWriter(f, int64(p.prefixEnd))
 	writeMergePrefix(w, p, ins, remap)
 
 	e := newMergeEmitter(w, p)
@@ -258,22 +142,23 @@ func streamMergeToFile(f *os.File, ins []*mappedSegment, accept []func(searcheng
 	e.flushBlocks()
 
 	if w.err != nil {
-		return w.err
+		return 0, w.err
 	}
 	// The merged blob is addressed by the same u32 offsets a built one is, so it
 	// carries the same ceiling. A merge is the one operation that can grow a
 	// segment without bound — it consolidates every constituent — so this is
 	// where a silently truncated offset would actually be reachable.
 	if w.tail > v2MaxBlobBytes {
-		return fmt.Errorf(
+		return 0, fmt.Errorf(
 			"bm25 merge: merged segment would be %d bytes, past the %d-byte ceiling the format's u32 offsets can address; merge fewer segments at a time",
 			w.tail, v2MaxBlobBytes)
 	}
-	if err := f.Truncate(w.tail); err != nil {
-		return fmt.Errorf("bm25 merge: truncate: %w", err)
-	}
 	w.patchU32(v2HdrBlobLen, uint32(w.tail))
-	return w.err
+	w.flushAll()
+	if w.err != nil {
+		return 0, w.err
+	}
+	return w.tail, nil
 }
 
 // resolveMergeLayout assigns the merged segment's document ids. It walks the

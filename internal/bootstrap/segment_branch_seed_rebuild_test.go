@@ -55,6 +55,10 @@ type scanRecord struct {
 	GraphName           string
 	AfterID             string
 	AfterStampedAtNanos int64
+	// ScanFromStampedAtNanos is the bound the scan itself reads from, recorded in the
+	// same append as the retention floor beside it so a record's two values always
+	// describe the same request.
+	ScanFromStampedAtNanos int64
 }
 
 // seedScanEngine is the recording EngineService for this file. It differs from
@@ -83,11 +87,12 @@ func (e *seedScanEngine) PipelineScan(
 	m := req.Msg
 	e.mu.Lock()
 	e.requests = append(e.requests, scanRecord{
-		Axis:                m.GetAxis(),
-		GraphType:           m.GetGraphType(),
-		GraphName:           m.GetGraphName(),
-		AfterID:             m.GetAfterId(),
-		AfterStampedAtNanos: m.GetAfterStampedAtNanos(),
+		Axis:                   m.GetAxis(),
+		GraphType:              m.GetGraphType(),
+		GraphName:              m.GetGraphName(),
+		AfterID:                m.GetAfterId(),
+		AfterStampedAtNanos:    m.GetAfterStampedAtNanos(),
+		ScanFromStampedAtNanos: m.GetScanFromStampedAtNanos(),
 	})
 	if m.GetAxis() != "segment_rebuild" {
 		e.unexpected = append(e.unexpected,
@@ -99,11 +104,21 @@ func (e *seedScanEngine) PipelineScan(
 	e.mu.Unlock()
 
 	// Rows on the FIRST page only; the id-cursor scan terminates on an empty page.
+	//
+	// THE BOUND IS RESOLVED THE WAY THE HANDLER RESOLVES IT — the scan field when the
+	// request carries one, the retention field otherwise. Mirroring the handler is the
+	// whole point: a fake that filtered on the retention field alone would assert a
+	// contract the server does not implement, and would serve a second pass the rows
+	// the first already merged no matter what the client sent.
+	bound := m.GetScanFromStampedAtNanos()
+	if bound <= 0 {
+		bound = m.GetAfterStampedAtNanos()
+	}
 	var items []*knowledgev1.PipelineScanItem
 	if m.GetAfterId() == "" {
 		for _, n := range corpus {
-			if n.stampedAt <= m.GetAfterStampedAtNanos() {
-				continue // strictly AFTER, as the server compares
+			if n.stampedAt <= bound {
+				continue // strictly AFTER the RESOLVED bound, as the server compares
 			}
 			items = append(items, &knowledgev1.PipelineScanItem{
 				NodeId:       n.id,
@@ -141,9 +156,10 @@ func buildSeedRebuildClientAt(t *testing.T, dir string, repos ...string) (*clien
 	engPath, engHdlr := knowledgev1connect.NewEngineServiceHandler(eng)
 	mux.Handle(engPath, engHdlr)
 	srv := httptest.NewServer(h2c.NewHandler(mux, &http2.Server{}))
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 
 	local := graphclient.NewGraphClientForURL(srv.URL)
+	t.Cleanup(local.CloseIdleConnections)
 	authState := auth.NewAuthState(newFakeAuthStore(), time.Minute) // logged OUT → OSS-local source
 	router := graphclient.NewRouter(local, srv.URL, staticTokenSource{tok: "tok"}, authState)
 
@@ -151,10 +167,16 @@ func buildSeedRebuildClientAt(t *testing.T, dir string, repos ...string) (*clien
 		local:         local,
 		router:        router,
 		authState:     authState,
-		segmentMgr:    segmentdist.NewManager(router, dir, 0),
+		segmentMgr:    segmentdist.NewManager(dir, 0),
 		workingSet:    fixtureWorkingSet(repos...),
 		localPresence: fixturePresence(),
 	}
+	// Every graph this manager touches lazily builds an HNSW and a BM25 engine, and
+	// each engine starts a merger goroutine that only Manager.Close stops —
+	// segmentdist's own TestManagerCloseStopsEveryEngineMerger pins exactly that.
+	// Production never closes the client's manager because the daemon's exit ends
+	// the process, but a test binary runs hundreds of these in one process.
+	t.Cleanup(c.segmentMgr.Close)
 	return c, eng
 }
 

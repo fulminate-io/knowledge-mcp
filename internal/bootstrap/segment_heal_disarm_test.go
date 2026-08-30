@@ -110,23 +110,34 @@ func TestBuildHealFactory_DisarmsAfterNoProgress(t *testing.T) {
 // a pre-trip no-progress streak. Guards against a classifier that treats built==0 as
 // no-progress.
 func TestClassifyHealOutcome_ProgressDoesNotTrip(t *testing.T) {
-	ctx := context.Background()
 	const repo = "healProgressRepo"
 	c, _ := buildOSSHealClient(t, 120, repo)
-	require.True(t, c.segmentMgr.IsL2Authoritative(kgtypes.GraphCode, repo), "OSS caller → L2-authoritative path")
+	// THE L2-AUTHORITATIVE ASSERTION WAS REMOVED HERE. Its predicate distinguished an OSS
+	// caller's L2 source from a logged-in caller's cloud source. There is one
+	// source, so the predicate had one answer and no caller, and it is deleted.
+	// The question is VOID, not merely unasked — nothing replaces it.
 
-	// A built==0 / partial>0 pass is PROGRESS on the L2 path (judged by scanned only).
-	c.classifyHealOutcome(ctx, kgtypes.GraphCode, repo, true /*ran*/, 10 /*scanned*/, 0 /*built*/, 10 /*partial*/)
-	require.True(t, c.healBreaker.Allow(kgtypes.GraphCode, repo), "scanned>0/built==0/partial>0 is PROGRESS — no trip")
+	// A scanned>0 pass is PROGRESS on the L2 path.
+	//
+	// IT NO LONGER CARRIES built AND partial, AND THAT IS THE STRONGER STATEMENT. This
+	// call used to pass 0 built / 10 partial to show that a sub-1024 tail-only rebuild
+	// still reads as PROGRESS. The classifier does not take those two counts at all
+	// any more — the shipped-completeness sub-case that once read them is gone, so the
+	// "built==0 does not mean no-progress" reading is now structural rather than
+	// something a fixture has to demonstrate. What remains testable at this seam, and
+	// is what the three calls below pin, is the rule the breaker actually runs on:
+	// ran gates recording, and scanned alone separates progress from no-progress.
+	c.classifyHealOutcome(kgtypes.GraphCode, repo, true /*ran*/, 10 /*scanned*/)
+	require.True(t, c.healBreaker.Allow(kgtypes.GraphCode, repo), "scanned>0 is PROGRESS — no trip")
 
 	// It also RESETS a pre-trip no-progress streak: one no-progress then a progress pass
 	// means one more no-progress does not latch (the reset dropped the earlier streak).
 	require.False(t, c.healBreaker.RecordNoProgress(kgtypes.GraphCode, repo), "first no-progress below threshold")
-	c.classifyHealOutcome(ctx, kgtypes.GraphCode, repo, true, 10, 0, 10) // PROGRESS resets the streak
+	c.classifyHealOutcome(kgtypes.GraphCode, repo, true, 10) // PROGRESS resets the streak
 	require.False(t, c.healBreaker.RecordNoProgress(kgtypes.GraphCode, repo), "post-reset no-progress is below threshold again")
 	require.True(t, c.healBreaker.Allow(kgtypes.GraphCode, repo), "the progress pass reset the streak, so no latch yet")
 
 	// A ran==false outcome is NEVER recorded (coalesce / pipeline-not-wired no-op).
-	c.classifyHealOutcome(ctx, kgtypes.GraphCode, repo, false, 0, 0, 0)
+	c.classifyHealOutcome(kgtypes.GraphCode, repo, false, 0)
 	require.True(t, c.healBreaker.Allow(kgtypes.GraphCode, repo), "ran==false is not a heal outcome — never recorded")
 }

@@ -41,6 +41,25 @@ type Options struct {
 	// DryRun, when true, instructs the interpreter to compute its Result without
 	// writing anything: RunRecipe builds the Result but skips the Sink write.
 	DryRun bool
+
+	// Extract turns a run into EXTRACT MODE: nothing is written, and the emitted
+	// rows are captured onto Result.Extract for the caller to read.
+	Extract bool
+
+	// Body is an INLINE recipe body, used instead of loading a saved recipe by
+	// name. Only meaningful in extract mode.
+	Body string
+
+	// MaxRows caps how many rows extract mode returns. Zero or negative selects
+	// DefaultExtractMaxRows — never "no limit", because an unbounded extract is
+	// exactly what the bounded-output rule forbids.
+	//
+	// There is deliberately NO MaxBytes here. The byte cap can only be applied
+	// where rendered sizes are known, which is the renderer in the tools layer;
+	// a MaxBytes field on this struct would be declared and never read, so a
+	// direct caller setting it would be silently ignored while
+	// Result.Extract.Truncated reported on the row cap alone.
+	MaxRows int
 }
 
 // Result carries the outputs of a recipe run. On the client EVERY run (DryRun or
@@ -65,6 +84,12 @@ type Result struct {
 
 	// Stats holds the per-run counters surfaced to the MCP collect response.
 	Stats Stats
+
+	// Extract carries the captured rows of an EXTRACT-mode run, and is nil on
+	// every other run. Nodes/Edges/Lineage above accumulate exactly as they
+	// always have, including in extract mode — only this caller-facing row list
+	// is bounded.
+	Extract *ExtractResult
 }
 
 // Stats is the counter block rendered into the MCP collect response. New counter

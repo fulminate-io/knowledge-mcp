@@ -4,6 +4,7 @@ package segmentdist
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -20,16 +21,14 @@ import (
 // Hits (ranked node IDs + fused scores). The caller hydrates those IDs into full
 // nodes via a RETURN_MODE_NODES read (search_engine_hydrate.go).
 //
-// Both engines are loaded cache-first (dm.load / bm.load — idempotent, one
-// batched Fetch for the delta, parallel Import) before the search. There is NO
-// per-search recoverIfDegenerate backstop: the L2-first load() imports the full L2
-// corpus on the primary path, so resident is not left poisoned-degenerate after a
-// load, and a genuinely cold/partial L2 is healed OFF the hot path by the
-// boot-delay one-shot + the periodic reconcile (which drive recoverIfDegenerate's
-// cheap server re-import), not by a List(0) on every search (see the inline note
-// below). The two engine.Search calls run CONCURRENTLY over a bounded WaitGroup
-// (the engines are independent and each is internally per-segment parallel), not
-// serially.
+// Both engines are loaded cache-first (dm.load / bm.load — idempotent, parallel
+// Import) before the search. There is NO per-search degeneracy backstop: load()
+// imports the full L2 corpus, so resident is not left poisoned-degenerate after a
+// load, and a genuinely cold L2 is healed OFF the hot path by the boot-delay
+// one-shot + the periodic reconcile, not by any per-search probe (see the inline
+// note below). The two engine.Search calls run CONCURRENTLY over a bounded
+// WaitGroup (the engines are independent and each is internally per-segment
+// parallel), not serially.
 //
 // Failure-mode note: searchengine.SegmentedIndex.Search returns nil for an empty
 // segment set, so a graph whose segments are not yet built/shipped yields an
@@ -75,8 +74,51 @@ func (m *Manager) Search(
 	//
 	// Scope is the SEARCHED graph, not a global walk: a budget is global, a remap
 	// repair is not, and an eager sweep would be a new operational surface.
+	//
+	// THE DRAIN'S FAILURES SURFACE HERE, AND THIS IS WHERE THAT DECISION BELONGS.
+	// drainRemapPending RETURNS its write failures rather than absorbing them, so the
+	// policy call — what a failed mapping repair means — is made at the level that can
+	// see the whole operation instead of at the write site. This level's answer: the
+	// SEARCH IS NOT FAILED. The corpus is correct and was correctly searched; the
+	// repair only ever tried to restore a memory property, so failing a good search
+	// over it would turn a lost optimisation into a user-visible outage. It is
+	// announced at ERROR with the joined cause, once for both arms.
+	//
+	// THIS IS A TERMINUS, NOT A SWALLOW, and the distinction is why the shape must
+	// not be "tidied" back into a bare call. The Put error is RETURNED from the write
+	// site and RETURNED again from the drain; it stops here because this is the first
+	// level with enough context to decide, and it is surfaced rather than dropped. A
+	// future reader who replaces this with `arm.drainRemapPending()` and no handling
+	// reintroduces exactly the silent forfeit the return value was added to remove.
+	var repairErr error
 	for _, arm := range []remapArm{m.managerFor(gt, name), m.bm25ManagerFor(gt, name)} {
-		arm.drainRemapPending()
+		repairErr = errors.Join(repairErr, arm.drainRemapPending())
+	}
+	if repairErr != nil {
+		slog.Error("segmentdist: segment mapping repairs FAILED to re-persist — the segments stay correct but heap-resident for the life of this process",
+			"graph", gt, "name", name, "err", repairErr)
+	}
+
+	// NEXT-TOUCH CONVERGENCE for any merge reclaim this pool ABORTED, on the same
+	// terms and for BOTH ARMS for the same reason: reclaimMerged is wired through
+	// Options.OnMerge for both formats, so both families accumulate obligations.
+	// A retained obligation is the ONLY record naming the constituents an abort
+	// stranded — the merge that superseded them cannot run again, and the prune's
+	// live set is force-loaded from the L2 index it diffs — so an undrained arm
+	// leaves them on disk for the life of the process.
+	//
+	// ITS FAILURES STOP HERE TOO, and the answer is the same one the paragraph above
+	// argues: the SEARCH IS NOT FAILED. The corpus was correctly searched, and what a
+	// failed discharge forfeits is the reclaim of constituents that are still perfectly
+	// readable — dead weight on disk, never a wrong answer. It is announced at ERROR
+	// with the joined cause rather than dropped.
+	var dischargeErr error
+	for _, arm := range []reclaimArm{m.managerFor(gt, name), m.bm25ManagerFor(gt, name)} {
+		dischargeErr = errors.Join(dischargeErr, arm.drainReclaimPending())
+	}
+	if dischargeErr != nil {
+		slog.Error("segmentdist: aborted merge reclaims FAILED to discharge — their superseded constituents stay in this client's L2 cache",
+			"graph", gt, "name", name, "err", dischargeErr)
 	}
 
 	return reciprocalRankFusion([][]searchengine.Hit{hnswHits, bm25Hits}, k), nil
@@ -141,15 +183,13 @@ func (m *Manager) searchPoolArms(
 	dm.noteSearchTouch()
 	bm.noteSearchTouch()
 
-	// Load both engines' L2-resident set L2-first (server-independent on a populated
-	// cache; cold L2 falls through to the server). Load is idempotent — the l2Loaded
-	// once-guard short-circuits a repeated load() — so repeated searches do not
-	// re-pull. The per-search recoverIfDegenerate backstop was removed: with the
-	// L2-first load() the primary path imports the full L2 corpus, so resident is no
-	// longer left poisoned-degenerate after a load, and a genuinely cold/partial L2 is
-	// healed off the hot path by the boot-delay one-shot + the periodic reconcile
-	// (bootstrap), not by a List(0) on every search. recoverIfDegenerate remains for
-	// the reconcile's direct use + its dedicated tests.
+	// Load both engines' L2-resident set. Load is idempotent — the l2Loaded once-guard
+	// short-circuits a repeated load() — so repeated searches do not re-load. There is
+	// no per-search degeneracy backstop: load() imports the full L2 corpus, so resident
+	// is not left poisoned-degenerate after a load, and a genuinely cold L2 is healed
+	// off the hot path by the boot-delay one-shot + the periodic reconcile (bootstrap).
+	// A cold L2 returns an empty engine here rather than reaching for anything else —
+	// there is nothing else to reach for.
 	if err := dm.load(ctx); err != nil {
 		return nil, nil, err
 	}

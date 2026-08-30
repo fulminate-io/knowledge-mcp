@@ -8,7 +8,8 @@ import (
 
 // compile_mutate_batch.go holds the update_batch → MUTATION_KIND_UPDATE_ITEMS
 // lowering. Split out of compile_mutate.go (which is near the 500-line cap) into
-// this same-package sibling (precedent: pkg/store's composite_db_write_batch.go).
+// this same-package sibling (precedent: the server store's
+// composite_db_write_batch.go).
 // The compileMutate switch case + the mutateArgs/batchItem types live in
 // compile_mutate.go; only the bulky lowering + mapper live here.
 
@@ -45,7 +46,7 @@ func compileMutateUpdateBatch(a mutateArgs) (*knowledgev1.ExecuteRequest, bool) 
 	// not bypass the rule.
 	return &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-		Target: buildTarget(a.Graph, a.Repo, a.Account, mutateTargetName(a.Graph, a.Name), a.Language, a.Branch),
+		Target: mutateTarget(a.Graph, a.Repo, a.Account, a.Name, a.Language, a.Branch),
 	}, true
 }
 
@@ -53,14 +54,20 @@ func compileMutateUpdateBatch(a mutateArgs) (*knowledgev1.ExecuteRequest, bool) 
 // preserving the *string set/unset distinction onto the proto `optional` fields
 // (a nil pointer stays nil → "untouched"; a set pointer rides verbatim, including
 // a deliberate empty-string clear). binary_vector bytes + metadata map ride as-is.
+//
+// embed_identity rides through UNCHANGED AND UNSYNTHESIZED — a nil stays nil.
+// The lowering is not the layer that knows what produced a vector; the writeback
+// that HAS the embedder states it, and inventing one here would attach a claim
+// about bytes to a caller that made none.
 func batchItemToUpdateItem(it batchItem) *knowledgev1.UpdateItem {
 	return &knowledgev1.UpdateItem{
-		Id:           it.ID,
-		Summary:      it.Summary,
-		Keywords:     it.Keywords,
-		BinaryVector: it.BinaryVector,
-		Metadata:     it.Metadata,
-		Status:       it.Status,
+		Id:            it.ID,
+		Summary:       it.Summary,
+		Keywords:      it.Keywords,
+		BinaryVector:  it.BinaryVector,
+		Metadata:      it.Metadata,
+		Status:        it.Status,
+		EmbedIdentity: it.EmbedIdentity,
 	}
 }
 
@@ -108,6 +115,6 @@ func compileMutateBulkMetadata(a mutateArgs) (*knowledgev1.ExecuteRequest, bool)
 	// on a name-addressed one.
 	return &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-		Target: buildTarget(a.Graph, a.Repo, a.Account, mutateTargetName(a.Graph, a.Name), a.Language, a.Branch),
+		Target: mutateTarget(a.Graph, a.Repo, a.Account, a.Name, a.Language, a.Branch),
 	}, true
 }

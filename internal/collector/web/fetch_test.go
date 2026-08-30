@@ -4,6 +4,7 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -271,5 +272,73 @@ func TestFetchTimeout(t *testing.T) {
 	_, err := c.fetch(context.Background(), srv.URL)
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")
+	}
+}
+
+// TestFetch_LargeBodyLandsComplete is the fence on the removed page-body cap.
+//
+// The deleted mechanism read the body through a bounded reader at a fixed
+// ceiling and reported the truncated result as SUCCESS — measured against the
+// unfixed tree, a 10485760-byte prefix with a sha256 that does not match the
+// served bytes. This test drives a body strictly larger than that ceiling and
+// asserts the fetched body is byte-complete and hash-identical, so a
+// reintroduced ceiling of any size fails here rather than silently losing
+// bytes.
+//
+// The small-body control in the same run is what proves the harness measures
+// what it claims: without it, a fetch path that returned the served bytes for
+// no reason at all would be indistinguishable from a working one.
+func TestFetch_LargeBodyLandsComplete(t *testing.T) {
+	t.Parallel()
+
+	// Strictly larger than the ceiling that used to truncate here, so this
+	// test cannot pass on a body the deleted cap would have allowed through.
+	const oversizeLen = 10*1024*1024 + 4096
+	if oversizeLen <= 10*1024*1024 {
+		t.Fatalf("fixture length %d is not above the removed ceiling; the assertion below would be vacuous", oversizeLen)
+	}
+
+	large := make([]byte, oversizeLen)
+	for i := range large {
+		large[i] = byte('a' + i%26)
+	}
+	small := []byte("<html><body><p>a small control body</p></body></html>")
+
+	serve := func(t *testing.T, payload []byte) *fetchedPage {
+		t.Helper()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write(payload)
+		}))
+		t.Cleanup(srv.Close)
+
+		c := newFetchClient("", 0)
+		page, err := c.fetch(context.Background(), srv.URL)
+		if err != nil {
+			t.Fatalf("fetch: %v", err)
+		}
+		return page
+	}
+
+	// THE TARGET: a body past the removed ceiling arrives whole.
+	page := serve(t, large)
+	if len(page.Body) != len(large) {
+		t.Errorf("oversize body: got %d bytes, want %d — a ceiling is still truncating the read",
+			len(page.Body), len(large))
+	}
+	gotSum := sha256.Sum256(page.Body)
+	wantSum := sha256.Sum256(large)
+	if gotSum != wantSum {
+		t.Errorf("oversize body: sha256 %x != served %x", gotSum, wantSum)
+	}
+
+	// THE CONTROL: the same fetch path round-trips a small body byte-identically.
+	ctlPage := serve(t, small)
+	if len(ctlPage.Body) != len(small) {
+		t.Fatalf("control body: got %d bytes, want %d — the harness itself is broken",
+			len(ctlPage.Body), len(small))
+	}
+	if sha256.Sum256(ctlPage.Body) != sha256.Sum256(small) {
+		t.Fatal("control body: sha256 mismatch — the harness itself is broken")
 	}
 }

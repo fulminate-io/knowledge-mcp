@@ -13,10 +13,10 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/projects/render"
@@ -46,6 +46,18 @@ func InterceptQueryPlanTree(ctx context.Context, deps ClientDeps, params kgtools
 	}
 
 	if err := accountQueryParams(armPlanTree, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
+
+	// ONCE PER RESPONSE, ahead of the per-node walk — never per node, and ahead of
+	// every read, so an unsupported key is refused before the traversal is paid for.
+	// The validator and the accepted-key vocabulary are engine's, shared with the
+	// by-id and ids-hydrate arms: a plan_tree-local key list would give the tool two
+	// vocabularies that drift, and this one is rendered into the refusal callers read.
+	// The opt-in is FALSE, and that is a statement about this arm rather than the
+	// value the compiler made cheapest: plan_tree REJECTS include_tombstones, so a
+	// plan_tree read can hold no tombstoned row for tombstoned_at to project.
+	if err := engine.ValidateNodeProjection(a.Fields, false); err != nil {
 		return true, errorResult(err.Error())
 	}
 
@@ -85,14 +97,30 @@ func InterceptQueryPlanTree(ctx context.Context, deps ClientDeps, params kgtools
 	// the parent→child index is assembled client-side with no per-node
 	// fetch. edgeTypes[0] is the single structure edge type (the wire
 	// EdgeType field is singular — see the fallback comment above).
-	nodes, structureEdges, truncated, terr := TraverseDescendantsWithEdges(ctx, gc, a.ID, edgeTypes[0], depth)
+	nodes, structureEdges, truncated, terr := render.TraverseDescendantsWithEdges(ctx, gc, a.ID, edgeTypes[0], depth)
 	if terr != nil {
 		return true, errorResult("plan_tree: " + terr.Error())
 	}
 	childIndex, _ := render.BuildChildIndex(a.ID, nodes, structureEdges)
 
-	if a.Format == "json" {
-		return true, withTruncationNotice(jsonResult(buildPlanTreeJSON(node, 0, depth, childIndex)), truncated, len(nodes))
+	// A PROJECTION IS A JSON ENVELOPE, and supplying `fields` therefore selects the
+	// json render whatever `format` says — the same override both by-id arms carry
+	// (render_node.go, render_misc.go). A projected row is a field map, and the text
+	// tree has no way to express one.
+	if a.Format == "json" || len(a.Fields) > 0 {
+		payload := buildPlanTreeJSON(node, 0, depth, childIndex, a.Fields)
+		// THE KEY GOES ON THE ENVELOPE ROOT, never inside buildPlanTreeJSON.
+		// Truncation is a property of the READ, not of a node: a leaf row asserting
+		// truncated:false says nothing about anything, and per-row emission inflates
+		// exactly the large-tree payloads where truncation matters most. The file
+		// already draws this distinction the other way for updated_at, which IS
+		// per-row because a timestamp genuinely belongs to a node.
+		//
+		// Emitted UNCONDITIONALLY (true and false), the same contract every sibling
+		// envelope carries: an absent key is indistinguishable from an old binary.
+		// The prose block below STAYS — the two artifacts answer different questions.
+		payload["truncated"] = truncated
+		return true, render.AppendTruncationNotice(jsonResult(payload), truncated, len(nodes))
 	}
 
 	// Text path needs depends-on ordering. Fetch every node's depends-on
@@ -112,39 +140,7 @@ func InterceptQueryPlanTree(ctx context.Context, deps ClientDeps, params kgtools
 
 	var sb strings.Builder
 	render.RenderTreeFromIndex(&sb, node, 0, depth, childIndex, dependsOn)
-	return true, withTruncationNotice(kgtools.TextResult(sb.String()), truncated, len(nodes))
-}
-
-// withTruncationNotice carries the traversal's truncated flag onto the rendered
-// result. plan_tree assembles its own output and returns it directly, so it
-// never passes through engine.Render — the single place every other tool's
-// response picks up the notice. Without this the subtree a ceiling clamped
-// renders as a complete-looking tree with branches silently missing.
-//
-// The notice is a SEPARATE trailing block, never concatenated into the tree
-// text: blocks are delivered as an array, so a format=json payload stays in its
-// own block and remains independently parseable — the same reason
-// engine.Render appends rather than concatenates.
-//
-// Copy tracks engine's truncationNotice — the row count, the "server row
-// ceiling" phrasing, and `limit` named verbatim so a reader maps the advice
-// onto the actual parameter. The action clause deliberately differs: a tree has
-// no pages to walk, and plan_tree's `limit` IS the subtree depth (see the depth
-// default above), so the re-run that yields a complete result is a smaller one.
-// rows is the descendant count, mirroring engine's traversal-results row count
-// (which likewise excludes nothing but the filtered root).
-func withTruncationNotice(res kgtools.ToolResult, truncated bool, rows int) kgtools.ToolResult {
-	if !truncated {
-		return res
-	}
-	res.Content = append(res.Content, kgtools.ContentBlock{
-		Type: "text",
-		Text: fmt.Sprintf(
-			"Showing %d rows — the server row ceiling engaged, so this subtree may be incomplete. "+
-				"Re-run with a smaller `limit` (the subtree depth) for a complete tree at that depth.",
-			rows),
-	})
-	return res
+	return true, render.AppendTruncationNotice(kgtools.TextResult(sb.String()), truncated, len(nodes))
 }
 
 // buildPlanTreeJSON renders the recursive
@@ -164,11 +160,41 @@ func withTruncationNotice(res kgtools.ToolResult, truncated bool, rows int) kgto
 // the key, which is the accepted contract since the dangling target
 // renders nowhere either way. A tombstoned child never reaches here:
 // its structure edge is dropped server-side before the index is built.)
+//
+// When the caller supplied a `fields` projection, each row is that projection
+// instead of the fixed key set — see planTreeRow. The children key is unaffected:
+// it describes the TREE rather than the node, so it rides every row either way,
+// and a projection that dropped it would turn a tree read into a flat one.
 func buildPlanTreeJSON(
 	node *knowledgev1.Node,
 	depth, maxDepth int,
 	childIndex map[string][]*knowledgev1.Node,
+	fields []string,
 ) map[string]any {
+	row := planTreeRow(node, fields)
+	if depth >= maxDepth {
+		return row
+	}
+	children := childIndex[node.Id]
+	if len(children) == 0 {
+		return row
+	}
+	rows := make([]map[string]any, 0, len(children))
+	for _, child := range children {
+		rows = append(rows, buildPlanTreeJSON(child, depth+1, maxDepth, childIndex, fields))
+	}
+	row["children"] = rows
+	return row
+}
+
+// planTreeRow builds one node's json row: the full fixed key set when no
+// projection was supplied, otherwise the caller's projection through
+// engine.ProjectNodeJSON — the SAME projector the by-id and ids-hydrate arms use,
+// so the three cannot drift into three vocabularies.
+func planTreeRow(node *knowledgev1.Node, fields []string) map[string]any {
+	if len(fields) > 0 {
+		return engine.ProjectNodeJSON(node, fields)
+	}
 	row := map[string]any{
 		"id":          node.Id,
 		"name":        node.SymbolName,
@@ -183,17 +209,5 @@ func buildPlanTreeJSON(
 	if node.UpdatedAt != 0 {
 		row["updated_at"] = node.UpdatedAt
 	}
-	if depth >= maxDepth {
-		return row
-	}
-	children := childIndex[node.Id]
-	if len(children) == 0 {
-		return row
-	}
-	rows := make([]map[string]any, 0, len(children))
-	for _, child := range children {
-		rows = append(rows, buildPlanTreeJSON(child, depth+1, maxDepth, childIndex))
-	}
-	row["children"] = rows
 	return row
 }

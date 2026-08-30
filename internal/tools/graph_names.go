@@ -62,3 +62,58 @@ func fetchGraphNamesOfType(ctx context.Context, gc GraphCaller, graphType string
 	}
 	return infos, nil
 }
+
+// catalogEntry is one enumerated graph reduced to the two facts the catalog read
+// can supply WITHOUT touching the graph: its instance name and its image's size on
+// disk.
+//
+// BOTH ARE COLD BY CONSTRUCTION on the server side of this call. The enumeration
+// lowers to store.ListGraphsLite -> Registry.listGraphs, which os.ReadDirs the
+// type's directory and takes the size off each DirEntry's Info; it fills node and
+// edge counts ONLY for graphs already resident, and never loads one to answer. That
+// is what makes the size safe to render for a graph the coverage walk is otherwise
+// forbidden to read (manage_status_coverage_unmanaged.go).
+type catalogEntry struct {
+	name       string
+	imageBytes int64
+}
+
+// listCatalogOfType is listGraphNamesOfType's WIDER PROJECTION of the SAME single
+// enumeration RPC — name plus on-disk size, off one call rather than two.
+//
+// It is a sibling rather than a replacement because the name-only helper has a
+// dozen callers that want exactly a []string, and widening those would spread a
+// carrier through call sites with no use for it. Empty names are dropped here for
+// the identical reason they are dropped there: the default knowledge graph
+// enumerates an empty instance name and is emitted explicitly by its own caller.
+func listCatalogOfType(ctx context.Context, deps ClientDeps, graphType string) ([]catalogEntry, error) {
+	gc := deps.GraphCaller()
+	if gc == nil {
+		return nil, fmt.Errorf("graph client unavailable")
+	}
+	infos, err := fetchGraphNamesOfType(ctx, gc, graphType)
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]catalogEntry, 0, len(infos))
+	for _, gi := range infos {
+		if gi.GetName() == "" {
+			continue
+		}
+		entries = append(entries, catalogEntry{name: gi.GetName(), imageBytes: gi.GetFileSize()})
+	}
+	return entries, nil
+}
+
+// catalogNames projects the entries back to the bare name list the callers that
+// only need identities take.
+func catalogNames(entries []catalogEntry) []string {
+	if len(entries) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.name)
+	}
+	return names
+}

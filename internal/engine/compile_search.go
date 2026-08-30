@@ -9,8 +9,8 @@ import (
 )
 
 // searchArgs is the compile-local view of the `search` tool's wire shape. It
-// mirrors the server-side searchArgs (tools_search_args.go) for the fields the
-// reducible path needs; code-graph-only fields (include_source, group_by_file,
+// mirrors the params SearchToolDef (cmd/knowledge/internal/tools) declares for
+// the fields the reducible path needs; code-graph-only fields (include_source, group_by_file,
 // path_prefix, repos, staleness, include_tests, test_kinds, current_head,
 // uncommitted_count, commits_behind) are intentionally omitted because a
 // code-graph search is SPECIALIZED (ok=false before they ever matter).
@@ -129,10 +129,12 @@ func compileSearch(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 }
 
 // mergeQueries combines a single query and a batch queries slice into one
-// ordered, deduplicated list — mirroring the server-side mergeQueries
-// (tools_search_source.go:69). This is NOT result-set dedup (the engine owns
-// that); it is the trivial input-list normalization the legacy tool also does
-// before building the search, so the compiled Queries match the legacy input.
+// ordered, deduplicated list, dropping empty entries and preserving caller
+// order. This is NOT result-set dedup (the engine owns that); it is the
+// input-list normalization done before building the search, so the compiled
+// Queries match the caller's input. Note it does NOT trim surrounding
+// whitespace — the same-named helper in the tools package does, so the two are
+// deliberately not interchangeable.
 func mergeQueries(query string, queries []string) []string {
 	var result []string
 	seen := make(map[string]bool)

@@ -47,7 +47,15 @@ func (mockFormat) Decode(blob []byte) (searchengine.Segment[mockQuery, mockStats
 	return &mockSegment{rows: rows}, nil
 }
 
-func (mockFormat) Merge(segs []searchengine.Segment[mockQuery, mockStats], accept []func(searchengine.ExternalID) bool) (searchengine.Segment[mockQuery, mockStats], error) {
+// MergeTo keeps the rows accept admits, concatenates them into one all-live
+// segment and writes its encoded bytes into dst. A double has no streaming
+// emitter to exercise, so the honest shape is the one that produces the same
+// segment the engine would otherwise have been handed and reports its length. It
+// does not truncate, close or unlink dst — the engine owns the destination.
+func (mockFormat) MergeTo(
+	dst searchengine.MergeSink, segs []searchengine.Segment[mockQuery, mockStats],
+	accept []func(searchengine.ExternalID) bool,
+) (int64, error) {
 	var merged []mockRow
 	for i, s := range segs {
 		ms := s.(*mockSegment)
@@ -58,7 +66,24 @@ func (mockFormat) Merge(segs []searchengine.Segment[mockQuery, mockStats], accep
 			}
 		}
 	}
-	return &mockSegment{rows: merged}, nil
+	return writeMergedSegment(dst, &mockSegment{rows: merged})
+}
+
+// writeMergedSegment is the shared tail of every MergeTo in this package's
+// doubles: encode the merged segment and place it at offset zero.
+//
+// A DOUBLE EMBEDDING mockFormat DELEGATES TO mockFormat.MergeTo RATHER THAN
+// REACHING HERE, so its own injection runs first. See flakyRebuildFormat.MergeTo.
+func writeMergedSegment(dst searchengine.MergeSink, merged searchengine.Segment[mockQuery, mockStats]) (int64, error) {
+	blob, err := merged.Encode()
+	if err != nil {
+		return 0, err
+	}
+	n, err := dst.WriteAt(blob, 0)
+	if err != nil {
+		return 0, err
+	}
+	return int64(n), nil
 }
 
 func (mockFormat) AggregateStats(segs []searchengine.Segment[mockQuery, mockStats]) mockStats {

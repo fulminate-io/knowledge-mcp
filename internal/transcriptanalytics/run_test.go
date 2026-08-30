@@ -16,7 +16,7 @@ import (
 func TestRunDetectors_FullReport(t *testing.T) {
 	svc := newDetectorFixture(t)
 
-	rep, err := svc.RunDetectors(context.Background())
+	rep, err := svc.RunDetectors(context.Background(), Filters{})
 	require.NoError(t, err)
 	require.NotNil(t, rep)
 
@@ -41,7 +41,7 @@ func TestRunDetectors_EmptyCache(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = svc.Close() })
 
-	rep, err := svc.RunDetectors(context.Background())
+	rep, err := svc.RunDetectors(context.Background(), Filters{})
 	require.NoError(t, err)
 	require.NotNil(t, rep)
 	assert.Empty(t, rep.DuplicateCommands)

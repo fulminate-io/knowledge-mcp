@@ -8,6 +8,7 @@ import (
 	"errors"
 	"testing"
 
+	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -120,7 +121,7 @@ func TestIterEdges_ReconstructsFromCarrier(t *testing.T) {
 	gc := newFakeGc().seedEdges(
 		knowledgev1.Edge{FromId: "pivot", ToId: "child1", Type: "contains"},
 		knowledgev1.Edge{FromId: "pivot", ToId: "child2", Type: "contains"},
-		knowledgev1.Edge{FromId: "parent1", ToId: "pivot", Type: "contained-by"},
+		knowledgev1.Edge{FromId: "parent1", ToId: "pivot", Type: "relates-to"},
 	)
 	edges, err := IterEdges(context.Background(), gc, "pivot", kgwire.BothEdges)
 	require.NoError(t, err)
@@ -135,7 +136,7 @@ func TestIterEdges_ReconstructsFromCarrier(t *testing.T) {
 func TestIterEdges_DirectionFilterOutgoing(t *testing.T) {
 	gc := newFakeGc().seedEdges(
 		knowledgev1.Edge{FromId: "pivot", ToId: "c", Type: "contains"},
-		knowledgev1.Edge{FromId: "p", ToId: "pivot", Type: "contained-by"},
+		knowledgev1.Edge{FromId: "p", ToId: "pivot", Type: "relates-to"},
 	)
 	edges, err := IterEdges(context.Background(), gc, "pivot", kgwire.OutgoingEdges)
 	require.NoError(t, err)
@@ -147,7 +148,7 @@ func TestIterEdges_DirectionFilterOutgoing(t *testing.T) {
 func TestIterEdges_DirectionFilterIncoming(t *testing.T) {
 	gc := newFakeGc().seedEdges(
 		knowledgev1.Edge{FromId: "pivot", ToId: "c", Type: "contains"},
-		knowledgev1.Edge{FromId: "p", ToId: "pivot", Type: "contained-by"},
+		knowledgev1.Edge{FromId: "p", ToId: "pivot", Type: "relates-to"},
 	)
 	edges, err := IterEdges(context.Background(), gc, "pivot", kgwire.IncomingEdges)
 	require.NoError(t, err)
@@ -231,4 +232,40 @@ func TestGraphTarget_PerFamilySelectorField(t *testing.T) {
 	// name-keyed family addressed as "default" is not silently blanked.
 	def := graphTarget("logs", "default")
 	assert.Equal(t, "default", def.GetName())
+}
+
+// TestFetchNodeIn_NotFoundErrorIsAbsenceNotFailure pins the second dialect of
+// "absent". FetchNodeIn's contract is that a missing node returns (nil, nil), and
+// TestFetchNode_NotFoundReturnsZero above covers the empty-carrier spelling. A
+// backend may instead answer the by-id read with a NOT_FOUND status, and while
+// that leaked through as an error every caller had to know both spellings — the
+// one that did not read a create-shaped upsert as a hard failure.
+//
+// THE CONTROL IS THE SECOND ARM, and it is what keeps this from being "swallow
+// errors": a NON-NotFound status must still be an error. Without it, returning
+// (nil, nil) unconditionally would satisfy the first arm and erase the
+// distinction between "the read found nothing" and "the read did not happen".
+func TestFetchNodeIn_NotFoundErrorIsAbsenceNotFailure(t *testing.T) {
+	t.Run("CodeNotFound reads as absence", func(t *testing.T) {
+		gc := newFakeGc().seedExecErr(connect.NewError(connect.CodeNotFound, errors.New("node missing not found")))
+		node, err := FetchNodeIn(context.Background(), gc, "missing", "checks", "")
+		require.NoError(t, err, "a NOT_FOUND by-id read is the documented nil case, not a failure")
+		assert.Nil(t, node)
+	})
+
+	t.Run("any other status is still an error", func(t *testing.T) {
+		gc := newFakeGc().seedExecErr(connect.NewError(connect.CodePermissionDenied, errors.New("nope")))
+		_, err := FetchNodeIn(context.Background(), gc, "x", "checks", "")
+		require.Error(t, err, "only NOT_FOUND folds into absence; every other failure propagates")
+		assert.Contains(t, err.Error(), "nope")
+	})
+
+	t.Run("a bare non-connect error is still an error", func(t *testing.T) {
+		// The transport-layer case: no status code to classify, so it can only be
+		// a failure. Pins that the fold keys on the CODE rather than on the error
+		// text happening to contain "not found".
+		gc := newFakeGc().seedExecErr(errors.New("dial tcp: connection refused, not found upstream"))
+		_, err := FetchNodeIn(context.Background(), gc, "x", "checks", "")
+		require.Error(t, err, "an unclassified transport failure must never read as absence")
+	})
 }

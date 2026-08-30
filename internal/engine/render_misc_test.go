@@ -374,7 +374,7 @@ func TestRenderNodesByIDs_JSON(t *testing.T) {
 		{Id: "a", SymbolName: "A"},
 		{Id: "b", SymbolName: "B"},
 	}
-	out, err := renderNodesByIDsResponse(nodesResp(t, nodes, 2), "knowledge", "json", nil)
+	out, err := renderNodesByIDsResponse(nodesResp(t, nodes, 2), "knowledge", "json", nil, false)
 	require.NoError(t, err)
 	var payload struct {
 		Label string              `json:"label"`
@@ -390,7 +390,7 @@ func TestRenderNodesByIDs_DefaultIsJSON(t *testing.T) {
 	nodes := []*knowledgev1.Node{
 		{Id: "a", SymbolName: "A"},
 	}
-	out, err := renderNodesByIDsResponse(nodesResp(t, nodes, 1), "knowledge", "", nil)
+	out, err := renderNodesByIDsResponse(nodesResp(t, nodes, 1), "knowledge", "", nil, false)
 	require.NoError(t, err)
 	assert.Contains(t, out.Content[0].Text, `"label":"knowledge"`)
 }

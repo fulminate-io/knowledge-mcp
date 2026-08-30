@@ -36,7 +36,10 @@ func nanosToTime(nanos int64) time.Time {
 // than the engine's typed HydratedResult carrier.
 
 // SearchResult is the client-side search hit (node + score), mirroring the
-// former store.HydratedResult's field set (pkg/store/search_types.go:18) with
+// former store.HydratedResult's field set — since removed from the server store
+// package along with the rest of the retired search carriers, so there is no
+// line left to cite (cmd/knowledge-server/internal/store/search_types.go records
+// the removal) — with
 // the embedded node retyped to the wire proto *knowledgev1.Node — T5
 // drops the store.Node wrapper layer from the client read path. Method-free DTO.
 //
@@ -55,7 +58,8 @@ type SearchResult struct {
 }
 
 // TraversalResult is the client-side traversal hit (node + distance), mirroring
-// the former store.TraversalResult's field set (pkg/store/graph_types.go:197)
+// store.TraversalResult's field set
+// (cmd/knowledge-server/internal/store/graph_types.go:363)
 // with the embedded node retyped to *knowledgev1.Node. Method-free DTO.
 type TraversalResult struct {
 	Node     *knowledgev1.Node

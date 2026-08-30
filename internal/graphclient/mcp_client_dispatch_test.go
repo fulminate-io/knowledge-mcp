@@ -27,9 +27,9 @@ import (
 type healthyToolHandler struct{}
 
 func (h *healthyToolHandler) Check(
-	_ context.Context, _ *connect.Request[knowledgev1.HealthCheckRequest],
-) (*connect.Response[knowledgev1.HealthCheckResponse], error) {
-	return connect.NewResponse(&knowledgev1.HealthCheckResponse{}), nil
+	_ context.Context, _ *connect.Request[knowledgev1.CheckRequest],
+) (*connect.Response[knowledgev1.CheckResponse], error) {
+	return connect.NewResponse(&knowledgev1.CheckResponse{}), nil
 }
 
 func (h *healthyToolHandler) Status(
@@ -47,8 +47,8 @@ func newForwarderHarness(t *testing.T) *GraphClient {
 
 	h2s := &http2.Server{}
 	srv := httptest.NewServer(h2c.NewHandler(mux, h2s))
-	t.Cleanup(srv.Close)
-	return NewGraphClientForURL(srv.URL)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
+	return closeIdleOnCleanup(t, NewGraphClientForURL(srv.URL))
 }
 
 func toolCallReq(t *testing.T, name string, args map[string]any) kgtools.JSONRPCRequest {
@@ -90,7 +90,7 @@ func newUnhealthyLocalClient(t *testing.T) *GraphClient {
 	srv := httptest.NewServer(h2c.NewHandler(http.NewServeMux(), h2s))
 	url := srv.URL
 	srv.Close() // close immediately so the port is dead and Healthy()=false.
-	return NewGraphClientForURL(url)
+	return closeIdleOnCleanup(t, NewGraphClientForURL(url))
 }
 
 // TestHandleMCPToolCall_LoggedIn_SkipsEnsureServer proves a logged-in user

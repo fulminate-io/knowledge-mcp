@@ -21,4 +21,4 @@ package parser
 //
 // It starts at 1 because zero is reserved to mean "the producer did not stamp
 // it", which the sink refuses loudly rather than reading as unchanged.
-const CollectorOutputVersion uint32 = 1
+const CollectorOutputVersion uint32 = 2

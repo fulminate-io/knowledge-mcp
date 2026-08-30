@@ -140,7 +140,7 @@ func RepairUncoveredSegments(
 	// straight past the nodes this arm exists to find: a node whose ship was dropped
 	// is BY DEFINITION unchanged since the last landed rebuild, so every
 	// watermark-scoped page skips it and the repair converges on nothing.
-	items, _, horizon, err := scanRebuildSegmentsAs(ctx, graphclient.OpSegmentRepair, scanner, gt, name, 0)
+	items, _, horizon, err := scanRebuildSegmentsAs(ctx, graphclient.OpSegmentRepair, scanner, gt, name, 0, 0)
 	if err != nil {
 		return RepairOutcome{}, fmt.Errorf("segment_repair scan failed: %w", err)
 	}
@@ -158,7 +158,10 @@ func RepairUncoveredSegments(
 	}
 	out.MissingHNSW, out.MissingBM25 = len(missingHNSW), len(missingBM25)
 
-	hnswDocs, fieldDocs := buildRepairDocuments(items, missingHNSW, missingBM25)
+	hnswDocs, fieldDocs, err := buildRepairDocuments(items, missingHNSW, missingBM25)
+	if err != nil {
+		return RepairOutcome{}, fmt.Errorf("segment_repair %s/%s: %w", gt, name, err)
+	}
 
 	shipped := false
 	if len(hnswDocs) > 0 {
@@ -215,9 +218,19 @@ func RepairUncoveredSegments(
 //
 // Serial on purpose, a deliberate departure from the rebuild driver's NumCPU pool:
 // that pool builds the WHOLE corpus, this builds only the gap.
+// AN UNRESOLVABLE REPRESENTATION ABORTS THE REPAIR RATHER THAN TAGGING, for the
+// same reason the rebuild driver refuses: these documents carry vectors ALREADY
+// STORED, so a defaulted tag would re-seal a float32 corpus as ubinary and rank
+// its bit patterns by Hamming distance with nothing reporting a problem.
 func buildRepairDocuments(
 	items []rebuildSegItem, missingHNSW, missingBM25 []searchengine.ExternalID,
-) (hnswDocs, fieldDocs []searchengine.Document) {
+) (hnswDocs, fieldDocs []searchengine.Document, err error) {
+	dtype, err := resolvedEmbedDtype()
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"segment repair: cannot determine the representation of the stored vectors being re-sealed: %w", err)
+	}
+
 	hnswWanted := idSet(missingHNSW)
 	bm25Wanted := idSet(missingBM25)
 
@@ -233,7 +246,10 @@ func buildRepairDocuments(
 			bm25Docs = append(bm25Docs, pipeline.SegmentDoc{NodeID: it.nodeID, Fields: it.bm25Fields})
 		}
 	}
-	return pipeline.BuildHNSWDocuments(vectors, hnswIDs), pipeline.BuildBM25Documents(bm25Docs)
+	// Same resolved [embedder] representation the ship path and the rebuild
+	// driver tag with, so a repaired document is byte-identical to a
+	// freshly-embedded one in its dtype as well as its bytes.
+	return pipeline.BuildHNSWDocuments(vectors, hnswIDs, dtype), pipeline.BuildBM25Documents(bm25Docs), nil
 }
 
 // idSet indexes ids for O(1) membership during the per-item build walk.

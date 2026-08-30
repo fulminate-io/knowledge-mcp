@@ -13,16 +13,28 @@ import (
 // every symbol the table does not name, which is what makes an unclassified
 // symbol behave like a kind no arm matches rather than like a wrong one.
 //
-// Every constant below names a kind one of the two Go arm files SPELLS. Most
-// are spelled as a node-kind comparison; two are not, and the exception is
-// recorded rather than smoothed over: goKindStructType and
-// goKindFieldDeclarationList name the kinds passed as STRING ARGUMENTS to the
-// two findNodeByType calls in goStructFieldTypes. findNodeByType is a shared
-// helper of every Go arm, so it sits OUTSIDE this change's two-file fence and
-// is deliberately NOT converted here — converting a helper both benchmark
-// sides pay for would lower the arm_off denominator and raise the very ratio
-// the allocation budget is set from. The two classes exist so the table covers
-// the whole kind vocabulary the fenced files name.
+// Every constant below names a kind one of the THREE Go arm files SPELLS — the
+// qualifier arm, the type-facts arm, and the flow-step arm — and the table now
+// covers that vocabulary WHOLE. There is no longer a fenced-off remainder.
+//
+// WHY IT IS WORTH CLASSIFYING BY SYMBOL. Node.Type() is
+// C.GoString(C.ts_node_type) in the vendored binding, so every kind comparison
+// spelled as a string allocates a fresh Go string per node visited. That is
+// paid worst by the two RECURSIVE DESCENTS — findNodeByKind and
+// findTypeIdentifier — which walk a whole subtree asking one question per node.
+// Classifying on Symbol() is a dense []uint8 index instead.
+//
+// THE FENCE THAT USED TO LIVE HERE IS GONE, and the reason it existed is worth
+// keeping. findNodeByType (now findNodeByKind), goSoleTypeSpec and
+// extractGoInterfaceEmbeds all reach Chunker.emitDeclarationEdges through
+// goAllEmbeds, so they run whether the type-facts arm is registered or not.
+// While the standing allocation budget was a RATIO of the armed chunker's cost
+// to the un-armed one's, converting them removed real allocations from BOTH
+// terms — which lowered the denominator and RAISED the ratio, so the instrument
+// scored a genuine improvement as a regression. They were left unconverted for
+// that reason alone. The budget is now an ABSOLUTE per-leg allocation ceiling,
+// which has no such perversity, and the conversion was taken. Nothing about the
+// code changed the answer; the instrument did.
 //
 // CITED BY SYMBOL, NOT BY LINE, DELIBERATELY. An earlier form of this comment
 // carried line numbers into chunker_go_typefacts.go, and the same commit that
@@ -59,10 +71,29 @@ const (
 	goKindFieldDeclaration
 	goKindInterpretedStringLiteral
 	goKindRawStringLiteral
+	goKindSliceType
+	goKindArrayType
+	goKindChannelType
+	goKindMapType
+	goKindFunctionType
+	goKindInterfaceType
+	goKindTypeArguments
+	goKindTypeElem
+	goKindVariadicParameterDeclaration
+	goKindMethodElem
+	goKindTypeParameterList
+	goKindTypeSpec
+	// The flow-step arm's vocabulary. goKindVariadicParameterDeclaration is
+	// named by the signature composition above AND by the flow arm, and is
+	// declared ONCE: a second constant would be a second class code for one
+	// grammar spelling, and newSymbolClasses assigns a spelling to exactly one.
+	goKindAssignmentStatement
+	goKindReturnStatement
+	goKindArgumentList
 )
 
-// goKindNames maps every Go node-kind spelling the two arm files name onto its
-// class code. It is the input to newSymbolClasses and the enumeration
+// goKindNames maps every Go node-kind spelling the three arm files name onto
+// its class code. It is the input to newSymbolClasses and the enumeration
 // TestSymbolClassesCoverEveryGrammarSpelling walks, so a kind added to an arm
 // without an entry here classifies as goKindOther and is caught by the arm's
 // own behavior gates rather than silently mis-binding.
@@ -96,6 +127,26 @@ var goKindNames = map[string]uint8{
 	"field_declaration":          goKindFieldDeclaration,
 	"interpreted_string_literal": goKindInterpretedStringLiteral,
 	"raw_string_literal":         goKindRawStringLiteral,
+	// The signature-composition vocabulary. Every name below was checked
+	// against the vendored Go grammar's declared node kinds before being added,
+	// because newSymbolClasses PANICS at first use for a name the grammar
+	// declares no regular symbol under.
+	"slice_type":                     goKindSliceType,
+	"array_type":                     goKindArrayType,
+	"channel_type":                   goKindChannelType,
+	"map_type":                       goKindMapType,
+	"function_type":                  goKindFunctionType,
+	"interface_type":                 goKindInterfaceType,
+	"type_arguments":                 goKindTypeArguments,
+	"type_elem":                      goKindTypeElem,
+	"variadic_parameter_declaration": goKindVariadicParameterDeclaration,
+	"method_elem":                    goKindMethodElem,
+	"type_parameter_list":            goKindTypeParameterList,
+	"type_spec":                      goKindTypeSpec,
+	// The flow-step vocabulary.
+	"assignment_statement": goKindAssignmentStatement,
+	"return_statement":     goKindReturnStatement,
+	"argument_list":        goKindArgumentList,
 }
 
 // symbolClasses classifies a grammar's symbol ids by class code: one dense

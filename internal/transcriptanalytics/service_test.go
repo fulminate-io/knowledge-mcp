@@ -29,7 +29,7 @@ func TestService_CachePathsAndLoadCorpus(t *testing.T) {
 	require.Empty(t, paths, "an empty cache resolves to zero explicit paths")
 
 	// loadCorpus over an empty cache root: empty corpus, nil error, nothing decoded.
-	empty, err := svc.loadCorpus(context.Background())
+	empty, err := svc.loadCorpus(context.Background(), Filters{})
 	require.NoError(t, err)
 	require.NotNil(t, empty)
 	require.Empty(t, empty.sessions, "empty cache yields an empty corpus (no sessions)")
@@ -50,7 +50,7 @@ func TestService_CachePathsAndLoadCorpus(t *testing.T) {
 	require.Len(t, paths, 1, "the glob returns the one explicit cache file")
 
 	// loadCorpus decodes the file and folds the row into the accumulators.
-	got, err := svc.loadCorpus(context.Background())
+	got, err := svc.loadCorpus(context.Background(), Filters{})
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	require.Contains(t, got.sessions, "S", "the decoded row's session is aggregated")

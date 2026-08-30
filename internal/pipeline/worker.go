@@ -77,7 +77,7 @@ func runSummaryWorkerBatch(ctx context.Context, p *Pipeline, batch []SummaryWork
 
 	groups := groupSummaryByGraph(batch)
 	for key, items := range groups {
-		processSummaryGroup(ctx, p, key, items)
+		processSummaryLeaseGroup(ctx, p, key, items)
 	}
 }
 
@@ -134,10 +134,32 @@ func groupSummaryByGraph(batch []SummaryWork) map[groupKey][]SummaryWork {
 	return groups
 }
 
-// processSummaryGroup handles one (gt, name) group: fetches each node
-// via wire, builds chunks, calls the summarizer, and issues exactly ONE
-// mutate(update_batch) RPC for the per-id writeback.
-func processSummaryGroup(ctx context.Context, p *Pipeline, key groupKey, items []SummaryWork) {
+// summaryGroupOnce handles ONE summarizer call's worth of a (gt, name) group: it
+// builds the chunks, crosses the breaker and backoff gates, calls the
+// summarizer, and RETURNS the results and the idMap for its caller to write
+// back. Every early-return path yields nils, so a failed call contributes
+// nothing to its lease's merge without aborting the lease.
+//
+// THE PROVIDER CAP IS A PROMPT BOUND ON THIS AXIS, not merely a request-size
+// one: the summarizer puts every chunk of a call into ONE prompt. Handing it a
+// whole lease would build a prompt ten times the size the batch size was chosen
+// for, which is why the stride is not optional here.
+//
+// DURABILITY EXPOSURE THE LEASE BUYS, so the next reader can price it without
+// re-deriving it. A summary lease is up to LeaseProviderCalls sequential LLM
+// calls, so that many calls' worth of ALREADY-BILLED summaries sit in worker
+// memory before the single writeback lands. Two things can lose that window:
+// (a) daemon death, and (b) the SHARED-AXIS BREAKER LATCHING MID-LEASE —
+// p.summaryCircuit.waitResumed(ctx) runs at the head of every stride, and a
+// breaker that trips on stride 4 parks the worker there until a human runs
+// resume_pipeline, leaving the earlier strides' results unwritten for the whole
+// latch. Both are a proportional increase over the old one-call exposure and
+// both are the direct cost of the same-sized reduction in lock acquisitions.
+// NEITHER is a correctness change: the nodes stay summary-eligible and the next
+// scan re-discovers them, which is the pre-existing behaviour for any lost
+// writeback. They are spend consequences, and they are stated rather than
+// discovered.
+func summaryGroupOnce(ctx context.Context, p *Pipeline, key groupKey, items []SummaryWork) (map[string]llmproviders.SummarizeResult, map[string]string) {
 	gk := key.Key
 	be := backendOr(p, key.Backend)
 	slog.Debug("pipeline.summary: processing group", "graph_type", gk.GraphType, "graph_name", gk.GraphName, "items", len(items))
@@ -151,14 +173,14 @@ func processSummaryGroup(ctx context.Context, p *Pipeline, key groupKey, items [
 	if p.summarizer == nil {
 		slog.Debug("pipeline.summary: no summarizer configured — group skipped (nodes stay summary-eligible)",
 			"graph_type", gk.GraphType, "graph_name", gk.GraphName, "items", len(items))
-		return
+		return nil, nil
 	}
 
 	chunks, idMap := buildSummaryChunks(ctx, p, gk, items)
 	if len(chunks) == 0 {
 		slog.Debug("pipeline.summary: no chunks produced — batch skipped",
 			"graph_type", gk.GraphType, "graph_name", gk.GraphName, "items", len(items))
-		return
+		return nil, nil
 	}
 
 	// Block here while the SUMMARY circuit breaker is latched paused (a prior
@@ -175,7 +197,7 @@ func processSummaryGroup(ctx context.Context, p *Pipeline, key groupKey, items [
 		slog.Warn("pipeline.summary: summarizer call failed",
 			"graph_type", gk.GraphType, "graph_name", gk.GraphName, "chunks", len(chunks), "error", err)
 		handleSummarizerError(ctx, p, be, gk, items, err)
-		return
+		return nil, nil
 	}
 	// A successful summary call zeroes the SUMMARY axis's zero-success-window
 	// counter (and clears its per-class tally) on its own breaker; the embed axis
@@ -184,9 +206,7 @@ func processSummaryGroup(ctx context.Context, p *Pipeline, key groupKey, items [
 	p.backoff.ok()
 	slog.Debug("pipeline.summary: summarizer returned",
 		"chunks", len(chunks), "results", len(results), "graph_type", gk.GraphType, "graph_name", gk.GraphName)
-	writeSummaryResults(ctx, p, be, gk, results, idMap)
-	slog.Debug("pipeline.summary: writeSummaryResults done",
-		"chunks", len(chunks), "graph_type", gk.GraphType, "graph_name", gk.GraphName)
+	return results, idMap
 }
 
 // buildSummaryChunks builds the BatchChunk payload from the SERVER-COMPOSED

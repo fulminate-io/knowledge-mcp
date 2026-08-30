@@ -1,0 +1,201 @@
+# ast concurrent-load peak baseline — the in-flight parse-tree working set of
+# ast.Match, before and after the process-wide walk admission gate.
+#
+# WHAT IS GATED AND WHAT IS RECORD-ONLY. The only gated quantity in this file is
+# the RATIO of the concurrent arm's median peak to the sequential arm's over the
+# SAME total work; TestMatch_ConcurrentPeakIsBounded asserts it against
+# astPeakRatioCeiling (peak_concurrency_test.go). Every byte figure and every
+# wall_ms figure below is an OBSERVATION recorded for the audit trail. No
+# criterion in this plan pins a byte count, and none should: on a 2-CPU box the
+# absolute peak is far smaller while the ratio property is unchanged. peak_bytes
+# IS MACHINE-DEPENDENT; THE RATIO IS NOT. Never read a byte line here as a
+# criterion that was met.
+#
+# WHY THE PATTERN IS LOW-YIELD, AND WHY A FUTURE READER MUST NOT "IMPROVE" IT.
+# ast.Match's heap peak has two terms that both scale with concurrent call count:
+# the concurrently in-flight PARSE TREES (matchFile parses at match_walk.go:294
+# and the go-tree-sitter node cache stays reachable until matchFile returns), and
+# the RETAINED RawMatch RESULTS that mergeMatches accumulates into one shared
+# slice for the life of the call (count.go:351, roughly 1033 bytes per match). An
+# admission budget bounds in-flight FILES. It does not, and cannot, bound
+# retained results. A placeholder-rooted harness therefore measures a term this
+# fix cannot move, and its gate would be unsatisfiable by a correct
+# implementation of the fix. astPeakPattern = "x7 := $A + $B" matches exactly one
+# statement per generated file — 50 matches per call over this corpus — which
+# isolates the term the fix governs.
+#
+#   PLAN-TIME IN-TREE CALIBRATION (measured by the planner with go test -overlay
+#   against the real ast engine, same machine class as below; recorded here with
+#   its provenance rather than restated as this run's own reading):
+#     pattern "$_"            calls=1 peak 1573-1797MB, calls=4 peak 6049-6948MB,
+#                             750,350 matches for ONE call
+#     pattern "x7 := $A + $B" calls=1 peak   99-132MB, calls=4 peak  354-426MB
+#   The "$_" shape peaks near 6.9GB, which no permanent suite gate may cost —
+#   this client sets its own 4 GiB GOMEMLIMIT statement of a reasonable footprint
+#   at cmd/knowledge/internal/bootstrap/run.go:25.
+#
+#   CONFIRMED FIRST-HAND BY THIS IMPLEMENTATION RUN: a "$_" walk over this same
+#   corpus returned 750,350 matches for ONE call, reproducing the calibration's
+#   match count exactly. The FREEOSMEMORY section below carries that reading in
+#   full, taken in its own process because that measurement wants the largest
+#   available transient.
+#
+# ARM ORDER IS PINNED: every arm pair below ran SEQUENTIAL FIRST, then CONCURRENT.
+# A probe of the reverse order measured the uncapped ratio dropping to a minimum
+# of 3.783 against 5.021 in the pinned order, because the first arm warms the
+# allocator and raises the second arm's baseline.
+#
+# NO RSS FIGURE APPEARS IN THE BEFORE OR AFTER SECTIONS, DELIBERATELY. RSS is
+# monotone within a process, so an RSS reading taken alongside other arms in one
+# go test binary is the high-water mark of whichever arm ran first, not of the arm
+# it is written beside. RSS appears in this file exactly once, on the FREEOSMEMORY
+# line, captured in its own process.
+#
+# MACHINE STATE: darwin, goarch arm64, 16 logical CPUs, go1.26.4. Corpus is
+# countRetentionCorpus(t, 3000) — 50 non-git temp files of 62,699 bytes each, so
+# the walk logs the expected "git ls-files failed, falling back to filesystem
+# walk" per the nongit discovery path. That is not an error.
+#
+# HEAD: faa3790518c266cbf8d4cedc1d82f3b8ce9400ea
+#
+# LINE GRAMMAR (one line per arm, no leading whitespace):
+#   arm=<seq|conc> calls=<N> workers=<W> files=<F> reps=<R> peak_bytes=<B> matches=<M> wall_ms=<T>
+# <W> is the value runWorkers computes, min(runtime.NumCPU(), len(a.files)) at
+# match_walk.go:90, recorded so a reading from a 2-CPU machine is not mistaken for
+# one from a 16-CPU machine. <B> is the MEDIAN of <R> readings, which is what
+# medianArmPeak returns.
+
+BEFORE
+
+# Measured from TestMatch_ConcurrentPeakIsBounded at HEAD faa37905 with NO
+# admission gate in the tree — the red-first reproduction. Observed ratio
+# conc/seq = 4.568 against the 2.5 ceiling.
+#
+# HONEST NOTE ON THIS READING AGAINST THE PLAN'S POOLED RANGE: the plan's pooled
+# uncapped calibration was 5.021 - 6.792 across 9 runs, and 4.568 sits below that
+# band. This machine was carrying concurrent sibling work during the run, which
+# schedules fewer of the eight calls into genuine overlap and compresses the
+# concurrent arm. The reading is recorded as observed rather than re-rolled until
+# it landed in the published band. It does not change either gate's verdict: it
+# clears the 3.0 instrument-control floor by 52% and exceeds the 2.5 acceptance
+# ceiling by 83%.
+
+arm=seq calls=8 workers=16 files=50 reps=3 peak_bytes=153471768 matches=400 wall_ms=883
+arm=conc calls=8 workers=16 files=50 reps=3 peak_bytes=701018920 matches=400 wall_ms=679
+
+# CANDIDATE 5 — debug.FreeOSMemory after a large walk. The research left this one
+# REASONED rather than measured ("no evidence yet that the spans are reclaimable
+# on this workload"). This section supplies the measurement.
+#
+# HOW IT WAS TAKEN. In its OWN PROCESS — RSS is monotone within a process, so this
+# reading cannot share a go test binary with the arms above — via a temporary
+# scratch harness in this package, run once with -run and then DELETED. It is not
+# part of the changeset, and deliberately so: it drives a placeholder-rooted "$_"
+# walk at calls=8 through the UNCAPPED seam, because the question is whether a
+# LARGE transient's pages come back and that wants the largest transient
+# available. That is precisely the shape the permanent suite must not carry, and
+# precisely the shape a one-off measurement in its own process should use. The two
+# pattern choices are not in tension: the arms above isolate the term the fix
+# governs, this one maximises the term whose PAGES are in question.
+#
+# OBSERVED SEQUENCE (darwin arm64, go1.26.4, ps -o rss= on the test's own pid):
+#   rss_idle_mb=15
+#   matches_per_call=750350          <- reproduces the calibration exactly
+#   rss_after_walk_mb=13425
+#   rss_after_gc_mb=13427            <- runtime.GC() returned nothing
+#   rss_after_freeosmemory_mb=13427  <- debug.FreeOSMemory() returned nothing
+#   rss_after_settle_mb=13427        <- still nothing 300ms later
+#
+# THE HONEST LIMIT ON THIS READING, WHICH IS THE WHOLE REASON IT IS LABELLED. Go
+# on darwin releases pages with MADV_FREE-class calls, which leave pages counted
+# in RSS until the kernel reclaims them under pressure. What is MEASURED here is
+# that ps RSS did not drop. That the pages are NOT RECLAIMABLE is NOT established,
+# and ps RSS alone cannot establish it either way.
+#
+# DISPOSITION: NOT-SHIPPED. A library package issuing a process-wide
+# stop-the-world GC after every walk is a real cost — paid by every caller of the
+# ast tool, including the ones whose walks were small — and it needs a
+# demonstrated benefit rather than a plausible one. This measurement demonstrates
+# none. Had it shown a return, the placement question (inside a library package,
+# or at process level beside applyMemoryLimit at bootstrap/run.go:30 where
+# process-wide memory policy already lives) would have been routed rather than
+# decided here.
+#
+# rss_before_mb / rss_after_mb below bracket the debug.FreeOSMemory() call itself.
+FREEOSMEMORY: NOT-SHIPPED rss_before_mb=13427 rss_after_mb=13427
+
+# SUFFICIENCY. ratio_before is conc/seq from the BEFORE arms, ratio_after the
+# same quotient from the AFTER arms, threshold is astPeakRatioCeiling. All three
+# are derived from the arm lines recorded in this file, not copied from any plan
+# prose. The verdict is an assertion the tooling checks against these very
+# numbers, not a label: a MET whose own ratio_after exceeded threshold fails the
+# gate.
+SUFFICIENCY: MET ratio_before=4.568 ratio_after=0.847 threshold=2.50
+
+# WHAT MET CLOSES, AND WHAT IT DOES NOT. Candidates 2, 3 and 4 are out of scope
+# for this ticket because the admission budget alone brought the concurrent-vs-
+# sequential peak ratio inside the ceiling. Each still carries its recorded cost
+# below so a later reader has the trade without re-deriving it. astPeakRatioCeiling
+# was NOT moved at any point during implementation; the one reading that came
+# close to it (2.251, on a loaded machine) was recorded rather than accommodated.
+CANDIDATE2: NOT-IMPLEMENTED cut per-node materialisation in allChildren (walker.go:353, sole caller matchChildren at walker.go:234) — MEDIUM cost, hot correctness path; TreeCursor.CurrentNode also routes through cachedNode, so a cursor-based rewrite is not a free swap.
+CANDIDATE3: NOT-IMPLEMENTED clear the Go-side node cache per file — HIGH cost: Tree.cache is unexported in an UNMAINTAINED dependency at a pinned version (smacker/go-tree-sitter@v0.0.0-20240827094217-dd81d9e9be82), so it requires a fork or vendor, and it is the same struct the ast worker-pool data race lived in (match_race_test.go documents that history). Not a casual edit.
+CANDIDATE4: NOT-IMPLEMENTED lower the effective per-file ceiling for ast below the 500KB maxFileSize (collector/parser/indexer_discover.go:19) — small to implement, but it silently narrows ast's answer set. A product regression, not a memory fix; the research records it as the weakest candidate and this work does not adopt it.
+
+# WHAT THE CALIBRATION SETTLED ABOUT THE TICKET'S OWN OPEN VARIABLE. The research
+# left it unresolved whether the gap between the reproduced 40.40MB and the
+# observed 443MB is concurrency, file size, or pattern shape. PATTERN SHAPE IS A
+# FIRST-ORDER TERM, and this run measured it first-hand: over the identical
+# corpus, a "$_" walk returns 750,350 matches for ONE call and drove process RSS
+# from 15MB to 13,425MB at calls=8, while the low-yield arms above peak at
+# 99-169MB of heap objects for eight calls' worth of the same files. That is an
+# order-of-magnitude swing driven by the pattern alone — larger than the
+# concurrency multiplier this ticket fixes. It is ticket evidence rather than a
+# defect in this work, and it belongs where the next person profiling ast will
+# find it.
+
+AFTER
+
+# Measured through the SAME medianArmPeak driver as the BEFORE arms, over the
+# same corpus and constants, in a tree carrying the walkAdmission gate at
+# runtime.NumCPU(). Re-run, not re-derived: no figure here is computed from the
+# BEFORE section. Observed ratio conc/seq = 0.847 against the 2.5 ceiling, down
+# from 4.568 — the concurrent arm now peaks slightly BELOW the sequential one,
+# which is what "both arms hold the same in-flight budget" looks like.
+
+arm=seq calls=8 workers=16 files=50 reps=3 peak_bytes=168826528 matches=400 wall_ms=899
+arm=conc calls=8 workers=16 files=50 reps=3 peak_bytes=142939848 matches=400 wall_ms=708
+
+# THE LATENCY TRADE, MEASURED RATHER THAN REASSURED. Four figures and not two,
+# because the honest statement of this trade has two halves and only one of them
+# is a cost: the concurrent pair is where latency would be paid, and the
+# single-call pair is what shows an uncontended caller pays nothing. All four come
+# from ONE dedicated process so capped and uncapped are comparable, each the mean
+# wall over astPeakReps readings.
+LATENCY: calls=8 conc_uncapped_ms=769 conc_capped_ms=754 single_uncapped_ms=118 single_capped_ms=117
+
+# THE CONCURRENT COST IS BELOW THIS MACHINE'S NOISE FLOOR, AND THAT IS STATED AS
+# A LIMIT RATHER THAN AS A WIN. Two readings of the same four arms disagreed on
+# the SIGN of the concurrent difference: the first measured conc_capped=845
+# against conc_uncapped=756 (capped slower by 12%), the second conc_capped=754
+# against conc_uncapped=769 (capped FASTER by 2%). A cost whose sign flips
+# between runs is not resolved by this instrument on a loaded machine. What can be
+# said is bounded: the concurrent penalty is at most low single-digit percent and
+# may be zero. The single-call pair is the cleaner reading and both runs agree on
+# it — 114/117 capped against 116/118 uncapped, i.e. nothing measurable, which is
+# expected because a single call already runs min(NumCPU, len(files)) workers
+# (match_walk.go:90) and so never blocks at a NumCPU budget.
+#
+# THE TRADE IN A SENTENCE: bounded ast latency under concurrent load is what buys
+# a peak that no longer scales with concurrent call count. Here the peak win is a
+# 5.4x reduction in the concurrent-vs-sequential ratio (4.568 to 0.847) and the
+# latency cost did not rise above measurement noise.
+#
+# SCOPE BOUNDARY, RESTATED HERE AND NOT ONLY IN THE PLAN. What these AFTER numbers
+# demonstrate is that peak attributable to CONCURRENTLY IN-FLIGHT PARSE TREES
+# stops scaling with concurrent call count. They do NOT speak to peak attributable
+# to retained RawMatch results, which no admission budget governs and which this
+# work deliberately does not target. A reader who later measures ast peak with a
+# match-dense pattern and finds it large has not found a regression in this work;
+# they have found the term this work did not claim. The FREEOSMEMORY section above
+# is that term at full size: 750,350 matches for one call, 13.4GB of RSS.

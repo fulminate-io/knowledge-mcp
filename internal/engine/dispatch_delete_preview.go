@@ -48,9 +48,14 @@ func dispatchDeletePreview(ctx context.Context, exec ExecuteFn, args json.RawMes
 		), true
 	}
 
+	// mutateTarget, NOT buildTarget: the preview must resolve the SAME graph object
+	// the real delete resolves, so it goes through the same per-family projection
+	// deleteRequest uses. buildTarget copies every field the caller supplied onto
+	// the selector verbatim, and the server REFUSES a selector field the target
+	// family does not consume rather than ignoring it.
 	resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Query{Query: plan},
-		Target: buildTarget(a.Graph, "", "", "", a.Language, ""),
+		Target: mutateTarget(a.Graph, a.Repo, a.Account, "", a.Language, ""),
 	})
 	if err != nil {
 		return renderEngineError(err), true
@@ -64,7 +69,13 @@ func dispatchDeletePreview(ctx context.Context, exec ExecuteFn, args json.RawMes
 		Format string `json:"format"`
 	}
 	_ = json.Unmarshal(args, &format)
-	return renderDeletePreview(nodes, format.Format), true
+	// Dispatch returns this result BEFORE Compile, so the preview never passes
+	// through Render and picks up no notice there. The prune-by-age read carries
+	// no Limit, so the server row ceiling engages at 10,000 rows — and a
+	// "would delete N" that silently understates what the real delete removes is
+	// the worst place in the tool for an undisclosed clamp.
+	return WithTruncationNotice(
+		renderDeletePreview(nodes, format.Format, resp.GetTruncated()), resp), true
 }
 
 // deletePreviewPlan builds the read QueryPlan whose result set is exactly what
@@ -87,7 +98,11 @@ func deletePreviewPlan(a deleteArgs) (*knowledgev1.QueryPlan, bool) {
 // deliberately "Would delete" (not "Deleted") so the dry-run output cannot be
 // mistaken for a completed deletion (the old footgun rendered "Deleted N" on a
 // dry-run, reinforcing the lie).
-func renderDeletePreview(nodes []*knowledgev1.Node, format string) kgtools.ToolResult {
+//
+// truncated rides the JSON envelope UNCONDITIONALLY (true and false): a caller
+// reading would_delete needs to know whether the ceiling engaged, and an absent
+// key is indistinguishable from an old binary.
+func renderDeletePreview(nodes []*knowledgev1.Node, format string, truncated bool) kgtools.ToolResult {
 	if format == "json" {
 		rows := make([]map[string]any, len(nodes))
 		for i, n := range nodes {
@@ -97,6 +112,7 @@ func renderDeletePreview(nodes []*knowledgev1.Node, format string) kgtools.ToolR
 			"dry_run":      true,
 			"would_delete": len(nodes),
 			"nodes":        rows,
+			"truncated":    truncated,
 		})
 	}
 	var sb strings.Builder

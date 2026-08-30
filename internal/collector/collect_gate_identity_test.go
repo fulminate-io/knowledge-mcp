@@ -62,8 +62,9 @@ func TestCollectGate_RecordedIdentityMatchesRegisteredCollectorName(t *testing.T
 
 	// SIDE 1 — the collector's own name for this graph, taken from the real run.
 	sink := &gateCaptureSink{}
-	require.NoError(t, collector.Collect(context.Background(), "code", repoDir,
-		collector.CollectOptions{Sink: sink}))
+	_, err := collector.Collect(context.Background(), "code", repoDir,
+		collector.CollectOptions{Sink: sink})
+	require.NoError(t, err)
 	require.Len(t, sink.results, 1, "the collect must reach the sink exactly once")
 	collectorGraphName := sink.results[0].GraphName
 	require.NotEmpty(t, collectorGraphName, "the collector must name the graph it produced")
@@ -74,9 +75,9 @@ func TestCollectGate_RecordedIdentityMatchesRegisteredCollectorName(t *testing.T
 	t.Cleanup(func() { close(block) })
 	_, started, _ := rt.Start("code\x00"+repoDir, "code "+repoDir,
 		tools.CollectGateGraphName("code", repoDir),
-		func() error {
+		func() (string, error) {
 			<-block // hold the run open so the gate stays up for the assertion
-			return nil
+			return "", nil
 		})
 	require.True(t, started)
 
@@ -100,9 +101,9 @@ func TestCollectGate_RecordedIdentityMatchesRegisteredCollectorName(t *testing.T
 	qualified := tools.NewCollectRuntime()
 	_, startedQualified, _ := qualified.Start("code\x00"+repoDir, "code "+repoDir,
 		tools.CollectGateGraphName("code", repoDir)+"@some-branch",
-		func() error {
+		func() (string, error) {
 			<-block
-			return nil
+			return "", nil
 		})
 	require.True(t, startedQualified)
 	require.False(t, qualified.CollectInFlightForGraph(kgtypes.GraphCode, collectorGraphName),

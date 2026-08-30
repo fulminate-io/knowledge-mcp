@@ -44,7 +44,9 @@ func TestConstructClient_NoAuth_ForcesLocalOnly(t *testing.T) {
 	withConstructClientSeams := func(t *testing.T, cfg Config, store auth.Store, localURL string) *client {
 		t.Helper()
 		cfg.LocalDialer = func(int) *graphclient.GraphClient {
-			return graphclient.NewGraphClientForURL(localURL)
+			gc := graphclient.NewGraphClientForURL(localURL)
+			t.Cleanup(gc.CloseIdleConnections)
+			return gc
 		}
 		origStore := newAuthStoreFn
 		newAuthStoreFn = func() (auth.Store, error) { return store, nil }
@@ -104,8 +106,7 @@ func TestConstructClient_NoAuth_ForcesLocalOnly(t *testing.T) {
 		cloudURL, cloudEng := startCountingEngine(t)
 		store := newFakeAuthStore()
 		require.NoError(t, store.Set(ctx, auth.KeyRefreshToken, "frt-stub"))
-		c := buildE2EClient(
-			graphclient.NewGraphClientForURL("http://local.invalid"), cloudURL, store, time.Hour)
+		c := closeRouterOnCleanup(t, buildE2EClient(graphclient.NewGraphClientForURL("http://local.invalid"), cloudURL, store, time.Hour))
 		assert.True(t, c.router.LoggedIn(ctx),
 			"NoAuth=false with a seeded refresh token must follow the unchanged login selection (LoggedIn==true)")
 

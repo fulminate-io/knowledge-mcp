@@ -7,9 +7,13 @@ import (
 
 // DefaultHTTPTimeout is the per-request timeout used by API providers.
 //
-// 120s matches the existing knowledge summarizer pipeline
-// (domains/store/summarize_openai.go) and gives long context-completion
-// requests headroom while still bounding worst-case stalls.
+// 120s gives long context-completion requests headroom while still bounding
+// worst-case stalls. The value was originally chosen to match a separate
+// hand-rolled summarizer pipeline that predated this package; that pipeline is
+// gone and the summarizer is now a CONSUMER of this constant — it drives an
+// llm.Client whose provider builds its transport from DefaultHTTPClient below
+// (llmproviders/summarizer_llm.go) — so this is the definition rather than a
+// copy of one, and changing it moves the summarizer's timeout with it.
 const DefaultHTTPTimeout = 120 * time.Second
 
 // DefaultHTTPClient returns a fresh *http.Client suitable for LLM API

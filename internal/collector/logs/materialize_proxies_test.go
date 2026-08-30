@@ -87,7 +87,7 @@ func TestMaterializeLogGraph_ReturnsProxiesFromResolutions(t *testing.T) {
 // must yield CORRELATES_WITH BatchEdges whose Confidence field equals the
 // cooccurrence score. The end-to-end Confidence preservation (BatchEdge →
 // stored Edge) is covered by TestCompositeDBTxn_CreateBatch_PreservesConfidence
-// in domains/store; this test pins the materializer half.
+// in cmd/knowledge-server/internal/store; this test pins the materializer half.
 func TestMaterializeLogGraph_PreservesCorrelationConfidence(t *testing.T) {
 	correlations := []wirelogs.CorrelationResult{{
 		TemplateA:             "tplA",

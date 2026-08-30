@@ -96,8 +96,10 @@ func TestAssembleRenders_CarryUpdatedSuffix(t *testing.T) {
 			UpdatedAt:  suffixFixtureTS,
 		})
 
-		out, err := callRender(context.Background(), f, map[string]any{"id": id, "format": "json"})
-		require.NoError(t, err)
+		// The payload BLOCK, not the concatenation of every block: a json result
+		// trails a rendered-size disclosure in its own block, so flattening the
+		// result and unmarshalling that would fail on the disclosure's text.
+		out := assembleJSONPayload(t, f, map[string]any{"id": id, "format": "json"})
 
 		var payload struct {
 			Root struct {
@@ -119,8 +121,7 @@ func TestAssembleRenders_CarryUpdatedSuffix(t *testing.T) {
 			Status:     "active",
 		})
 
-		out, err := callRender(context.Background(), f, map[string]any{"id": id, "format": "json"})
-		require.NoError(t, err)
+		out := assembleJSONPayload(t, f, map[string]any{"id": id, "format": "json"})
 
 		var payload struct {
 			Root map[string]any `json:"root"`

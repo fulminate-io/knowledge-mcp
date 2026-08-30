@@ -13,10 +13,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
@@ -146,17 +146,14 @@ type similarityDispatchDeps struct {
 	propNotReady bool
 }
 
-func (d similarityDispatchDeps) LocalLiveness() LocalLiveness                 { return nil }
-func (d similarityDispatchDeps) Sink() collector.Sink                         { return nil }
-func (d similarityDispatchDeps) RootDir() string                              { return "" }
-func (d similarityDispatchDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
-func (d similarityDispatchDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
-func (d similarityDispatchDeps) WorkerReady() bool                            { return true }
-func (d similarityDispatchDeps) PropReady() bool                              { return !d.propNotReady }
-func (d similarityDispatchDeps) PipelineReady() bool                          { return true }
-func (d similarityDispatchDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
-func (d similarityDispatchDeps) BanSet() *hivemonitor.BanSet                  { return nil }
-func (d similarityDispatchDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d similarityDispatchDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d similarityDispatchDeps) Sink() collector.Sink            { return nil }
+func (d similarityDispatchDeps) RootDir() string                 { return "" }
+func (d similarityDispatchDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+
+func (d similarityDispatchDeps) PropReady() bool     { return !d.propNotReady }
+func (d similarityDispatchDeps) PipelineReady() bool { return true }
+
 func (d similarityDispatchDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
 func (d similarityDispatchDeps) Embedder() embed.BinaryEmbedder               { return nil }
 func (d similarityDispatchDeps) BackendResolver() BackendResolver             { return nil }

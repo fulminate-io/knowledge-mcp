@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/paging"
@@ -52,6 +54,11 @@ type Args struct {
 //     (NodeAgent | NodeSkill) → assembleInstruction, NodeDecision →
 //     assembleDecision, NodePattern → assemblePatternIn, default →
 //     assembleFallback. Mirrors the server-side dispatch exactly.
+//
+// THE SWITCH BELOW AND handleDispatchNodeTypes MUST BE KEPT IN STEP. A Go
+// switch's case set cannot be read reflectively, so the wire-cost gate compares
+// its coverage against that slice rather than against the switch itself. Adding
+// a case here without adding its type there leaves the new arm ungated.
 func Handle(ctx context.Context, gc GraphCaller, args json.RawMessage) kgtools.ToolResult {
 	var a Args
 	if err := json.Unmarshal(args, &a); err != nil {
@@ -77,30 +84,85 @@ func Handle(ctx context.Context, gc GraphCaller, args json.RawMessage) kgtools.T
 		return kgtools.ErrorResult(fmt.Sprintf("no node with id %q in knowledge or any practice graph", nodeID))
 	}
 
+	// Every arm's result funnels through the one appendRenderedSize call below
+	// rather than each arm appending for itself: the size is computable from the
+	// finished ToolResult alone, so the single dispatch choke point is where it
+	// belongs, and no arm can forget it. The truncation notice goes the other
+	// way — it is appended inside each arm, because only the arm holds both its
+	// result and its own truncation verdict.
+	var res kgtools.ToolResult
 	if a.Format == "json" {
-		return assembleJSON(ctx, gc, node)
+		res = assembleJSON(ctx, gc, node)
+	} else {
+		switch kgtypes.NodeType(node.Type) {
+		case kgtypes.NodePlan:
+			res = assemblePlan(ctx, gc, node)
+		case kgtypes.NodeProject:
+			res = assembleProjectContainer(ctx, gc, node)
+		case kgtypes.NodeTicket:
+			res = assembleTicket(ctx, gc, node)
+		case kgtypes.NodeTestPlan:
+			res = assembleTestPlan(ctx, gc, node, a.NewRun, a.RunSession)
+		case kgtypes.NodeResearch:
+			res = assembleResearch(ctx, gc, node)
+		case kgtypes.NodeAgent, kgtypes.NodeSkill:
+			res = assembleInstruction(ctx, gc, node)
+		case kgtypes.NodeDecision:
+			res = assembleDecision(ctx, gc, node)
+		case kgtypes.NodePattern:
+			res = assemblePatternIn(ctx, gc, node, graphType, graphName)
+		default:
+			res = assembleFallback(ctx, gc, node)
+		}
 	}
+	return appendRenderedSize(res)
+}
 
-	switch kgtypes.NodeType(node.Type) {
-	case kgtypes.NodePlan:
-		return assemblePlan(ctx, gc, node)
-	case kgtypes.NodeProject:
-		return assembleProjectContainer(ctx, gc, node)
-	case kgtypes.NodeTicket:
-		return assembleTicket(ctx, gc, node)
-	case kgtypes.NodeTestPlan:
-		return assembleTestPlan(ctx, gc, node, a.NewRun, a.RunSession)
-	case kgtypes.NodeResearch:
-		return assembleResearch(ctx, gc, node)
-	case kgtypes.NodeAgent, kgtypes.NodeSkill:
-		return assembleInstruction(ctx, gc, node)
-	case kgtypes.NodeDecision:
-		return assembleDecision(ctx, gc, node)
-	case kgtypes.NodePattern:
-		return assemblePatternIn(ctx, gc, node, graphType, graphName)
-	default:
-		return assembleFallback(ctx, gc, node)
+// handleDispatchNodeTypes names every node type Handle's switch routes to a
+// dedicated arm. It exists because a Go switch's case set is not readable at
+// run time: the wire-cost gate needs a list it can compare its table against,
+// and this is that list. It is declared beside Handle so the two are read
+// together, and Handle's doc comment names it as the thing to keep in step.
+//
+// The default (fallback) arm is deliberately absent — it has no node type, and
+// the gate covers it with an explicit row for an unrecognized type instead.
+var handleDispatchNodeTypes = []kgtypes.NodeType{
+	kgtypes.NodePlan,
+	kgtypes.NodeProject,
+	kgtypes.NodeTicket,
+	kgtypes.NodeTestPlan,
+	kgtypes.NodeResearch,
+	kgtypes.NodeAgent,
+	kgtypes.NodeSkill,
+	kgtypes.NodeDecision,
+	kgtypes.NodePattern,
+}
+
+// appendRenderedSize adds the trailing disclosure naming what the assembled
+// result costs a caller's context.
+//
+// A SEPARATE trailing content block, never concatenated into the payload, for
+// the same reason AppendTruncationNotice gives: blocks are delivered as an
+// array, so a format=json payload stays in its own block and remains
+// independently parseable.
+//
+// BYTES, NOT A TOKEN ESTIMATE. Bytes are measured off the string in hand; a
+// token count would be a derived number presented as a fact.
+//
+// The count covers every text block already on the result, which includes a
+// truncation notice when one was appended — that notice is part of what the
+// caller receives. It never counts itself: the size block is built from the
+// total and appended afterwards.
+func appendRenderedSize(res kgtools.ToolResult) kgtools.ToolResult {
+	total := 0
+	for _, b := range res.Content {
+		total += len(b.Text)
 	}
+	res.Content = append(res.Content, kgtools.ContentBlock{
+		Type: "text",
+		Text: fmt.Sprintf("%d rendered bytes.", total),
+	})
+	return res
 }
 
 // resolveAssembleByName performs a type+name lookup against the
@@ -207,15 +269,54 @@ func resolveAssembleNode(ctx context.Context, gc GraphCaller, nodeID string) (*k
 	if err == nil && node != nil {
 		return node, "", "", nil
 	}
-	// Practice fallback: enumerate practice graphs and try each.
+	// Practice fallback: enumerate practice graphs and probe them CONCURRENTLY.
+	// The probes are independent — each targets a different graph and none
+	// informs the next — so probing them serially costs one full round trip per
+	// loaded graph before the answer is known, on a path that is already the
+	// slow one.
 	langs := listPracticeGraphs(ctx, gc)
-	for _, lang := range langs {
-		pn, perr := FetchNodeIn(ctx, gc, nodeID, "practice", lang)
-		if perr != nil || pn == nil {
-			continue
-		}
-		return pn, "practice", lang, nil
+	if len(langs) == 0 {
+		return nil, "", "", fmt.Errorf("no node with id %q in knowledge or any practice graph", nodeID)
 	}
+
+	// RESULTS GO IN A PER-INDEX SLOT, NOT A SHARED APPEND. Probes finish in
+	// arbitrary order, and the serial loop this replaces returned the FIRST
+	// graph in listPracticeGraphs order that resolved. Picking the lowest
+	// populated slot after Wait preserves that exactly. In practice an id
+	// resolves in at most one graph — but "in practice" is not a contract, and
+	// a resolver that answers differently on different calls is a worse defect
+	// than a slow one.
+	found := make([]*knowledgev1.Node, len(langs))
+
+	g, gctx := errgroup.WithContext(ctx)
+	// These are network-bound probes, not CPU work, so the bound is a small
+	// constant rather than GOMAXPROCS: eight in-flight reads is enough to
+	// collapse the latency of every practice graph this corpus loads, without
+	// opening an unbounded fan-out if the number of graphs grows.
+	g.SetLimit(min(len(langs), 8))
+	for i, lang := range langs {
+		g.Go(func() error {
+			// A PROBE FAILURE IS NOT A RESOLUTION FAILURE. An error against
+			// graph A says nothing about graph B, and the serial loop already
+			// treated a per-graph error as "not here" and continued. Returning
+			// the error here would cancel the sibling probes through gctx and
+			// turn one unreachable graph into a global not-found.
+			pn, perr := FetchNodeIn(gctx, gc, nodeID, "practice", lang)
+			if perr == nil && pn != nil {
+				found[i] = pn
+			}
+			return nil
+		})
+	}
+	_ = g.Wait() // every probe returns nil; failures are recorded as empty slots
+
+	for i, pn := range found {
+		if pn != nil {
+			return pn, "practice", langs[i], nil
+		}
+	}
+	// Unchanged: this message covers both "probed and absent everywhere" and
+	// "every probe failed", which is the same outcome for a caller.
 	return nil, "", "", fmt.Errorf("no node with id %q in knowledge or any practice graph", nodeID)
 }
 

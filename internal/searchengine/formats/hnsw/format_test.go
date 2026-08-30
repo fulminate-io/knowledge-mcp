@@ -203,7 +203,7 @@ func TestMergeUnionOfLiveMembers(t *testing.T) {
 	acceptB := acceptExcept(deadB...)
 
 	assertMerge := func(t *testing.T, a, b searchengine.Segment[[]byte, struct{}]) {
-		merged, err := Format{}.Merge(
+		merged, err := mergeSegments(t,
 			[]searchengine.Segment[[]byte, struct{}]{a, b},
 			[]func(searchengine.ExternalID) bool{acceptA, acceptB},
 		)

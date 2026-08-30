@@ -63,8 +63,8 @@ import (
 // ONE NARROW SUPERSESSION OF THE FAIL-CLOSED RULE, for the WHOLE-PAYLOAD case
 // only. An absent or empty payload carries zero supplied keys and is ACCEPTED
 // here, because a no-arg call is a legal, documented shape across the tool
-// surface: help() with no topic is the documented way to list topics, and both
-// the propagate handler and the hive intercept explicitly guard on a non-empty
+// surface: help() with no topic is the documented way to list topics, and the
+// propagate handler explicitly guards on a non-empty
 // payload. Without this, wiring the rejection across those tools would refuse
 // every no-arg call. A NON-EMPTY payload that does not parse still fails closed,
 // and the empty-is-absent rule for individual VALUES is untouched.

@@ -127,7 +127,7 @@
 
   <where-tree note="optional JSON boolean filter on captures">
     <composers>all (AND) | any (OR) | not (negation)</composers>
-    <leaves>kind (node-kind) | matches (regex) | equals (literal) | same_node (AST identity) | same_text (same source text) | inside_pattern (ancestor matches sub-pattern) | contains_pattern (descendant matches sub-pattern)</leaves>
+    <leaves>kind (node-kind) | matches (regex) | equals (literal) | same_node (AST identity) | same_text (same source text) | inside_pattern (ancestor matches sub-pattern) | contains_pattern (descendant matches sub-pattern) | flows_to (intra-declaration dataflow)</leaves>
     <capture-refs>"X" local capture | "$match" outermost matched node (built-in) | "$outer.X" parent scope (chain "$outer.outer." to go deeper)</capture-refs>
   </where-tree>
 

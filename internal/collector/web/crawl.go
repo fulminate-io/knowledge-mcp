@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"regexp"
 	"runtime/debug"
+	"slices"
 	"sync"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
@@ -86,13 +87,19 @@ func crawl(
 	defer state.drainMaterializedCleanups()
 
 	if err := ctx.Err(); err != nil {
-		return state.pages, state.urlToID, state.matNodes, state.matEdges, err
+		return state.pages, state.urlToID, state.finishNodes(), state.matEdges, err
 	}
 	if state.budgetWasExhausted() {
 		slog.Warn("web.crawl: MaxPages budget exhausted — crawl truncated",
 			"max_pages", state.maxPages, "fetched", len(state.pages))
 	}
-	return state.pages, state.urlToID, state.matNodes, state.matEdges, nil
+	return state.pages, state.urlToID, state.finishNodes(), state.matEdges, nil
+}
+
+// finishNodes returns the materialized github nodes in a FRESH slice, so
+// crawl()'s two return paths cannot alias one backing array.
+func (s *crawlState) finishNodes() []*knowledgev1.Node {
+	return slices.Clone(s.matNodes)
 }
 
 // drainMaterializedCleanups runs every cleanup func registered by
@@ -147,10 +154,11 @@ type crawlState struct {
 
 	// github materialization state — populated by materializeGithub when
 	// a github URL is dispatched. matNodes / matEdges are appended to the
-	// CollectResult after the BFS drains. materializedCleanups holds the
-	// os.RemoveAll funcs returned by fetchCodeloadTarball; drained at the
-	// end of crawl() so temp dirs survive parser.PopulateForExternalGraph
-	// but don't outlive the collector call.
+	// CollectResult after the BFS drains; the node half goes out through
+	// finishNodes. materializedCleanups holds the os.RemoveAll funcs returned by
+	// fetchCodeloadTarball; drained at the end of crawl() so temp dirs
+	// survive parser.PopulateForExternalGraph but don't outlive the
+	// collector call.
 	githubMat            *githubMaterializerState
 	matNodes             []*knowledgev1.Node
 	matEdges             []kgwire.BatchEdge

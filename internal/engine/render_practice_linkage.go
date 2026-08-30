@@ -17,15 +17,34 @@ import (
 // traversalNodeName) rather than re-implementing proxy-target formatting.
 
 // RenderPracticeResults renders practice-graph search results — a port of the
-// server formatPracticeResults (cmd/knowledge-server/tools/tools_query_practice.go):
-// the "## <LANG> Best Practices" header + per-result importance/category lines.
-func RenderPracticeResults(lang, query string, results []SearchResult) kgtools.ToolResult {
+// server's since-removed formatPracticeResults: the
+// "## <LANG> Best Practices" header + per-result importance/category lines.
+//
+// searchMode is the ALWAYS-ON arm disclosure ("vector+text", "vector",
+// "BM25-only"), rendered as the same "_search mode: …_" footer renderText emits so
+// the two search surfaces read alike. It is not conditional on the result set: a
+// caller cannot tell a degraded hybrid search from a healthy one by looking at
+// rows, so the label has to be present when results ARE returned — that is
+// precisely the case where the degrade is invisible. Empty prints no footer, for
+// callers that have no arm information to report.
+func RenderPracticeResults(lang, query string, results []SearchResult, searchMode string) kgtools.ToolResult {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "## %s Best Practices — %d results for \"%s\"\n\n", capFirst(lang), len(results), query)
 	for i, r := range results {
 		writePracticeHit(&sb, i, r, "")
 	}
+	writeSearchModeFooter(&sb, searchMode)
 	return kgtools.TextResult(sb.String())
+}
+
+// writeSearchModeFooter appends the arm-disclosure footer both practice renderers
+// emit. Spelled once so the two cannot drift, and matched to renderText's wording
+// so a reader learns one form rather than three.
+func writeSearchModeFooter(sb *strings.Builder, searchMode string) {
+	if searchMode == "" {
+		return
+	}
+	fmt.Fprintf(sb, "\n_search mode: %s_\n", searchMode)
 }
 
 // writePracticeHit writes the per-hit render block shared by RenderPracticeResults
@@ -70,13 +89,19 @@ type PracticeFanOutHit struct {
 // graphs searched, then one entry per hit tagged with its source graph via the
 // shared writePracticeHit helper RenderPracticeResults also calls — so the two
 // renderers emit identical per-hit lines for the same SearchResult.
-func RenderPracticeFanOut(query string, graphs []string, hits []PracticeFanOutHit) kgtools.ToolResult {
+//
+// searchMode is the same ALWAYS-ON arm disclosure RenderPracticeResults renders,
+// and it matters MORE here: the fan-out embeds the query once and reuses that one
+// vector for every graph, so a single failed embed silently degrades the whole
+// cross-graph ranking rather than one graph's.
+func RenderPracticeFanOut(query string, graphs []string, hits []PracticeFanOutHit, searchMode string) kgtools.ToolResult {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Searched %d practice graphs (%s) — %d results for \"%s\"\n\n",
 		len(graphs), strings.Join(graphs, ", "), len(hits), query)
 	for i, h := range hits {
 		writePracticeHit(&sb, i, h.Result, h.Graph)
 	}
+	writeSearchModeFooter(&sb, searchMode)
 	return kgtools.TextResult(sb.String())
 }
 

@@ -97,6 +97,13 @@ const (
 	rustKindMutableSpecifier
 	rustKindClosureExpression
 	rustKindClosureParameters
+	rustKindCallExpression
+	rustKindArguments
+	rustKindFieldExpression
+	rustKindFieldIdentifier
+	rustKindAssignmentExpression
+	rustKindReturnExpression
+	rustKindScopedIdentifier
 )
 
 // rustKindNames maps every rust node-kind spelling this arm names onto its
@@ -120,6 +127,13 @@ var rustKindNames = map[string]uint8{
 	"mutable_specifier":      rustKindMutableSpecifier,
 	"closure_expression":     rustKindClosureExpression,
 	"closure_parameters":     rustKindClosureParameters,
+	"call_expression":        rustKindCallExpression,
+	"arguments":              rustKindArguments,
+	"field_expression":       rustKindFieldExpression,
+	"field_identifier":       rustKindFieldIdentifier,
+	"assignment_expression":  rustKindAssignmentExpression,
+	"return_expression":      rustKindReturnExpression,
+	"scoped_identifier":      rustKindScopedIdentifier,
 }
 
 // rustKindTable memoizes the rust class table for the process.

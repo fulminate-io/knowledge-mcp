@@ -34,15 +34,27 @@ type fakeWatermarkScanner struct {
 	horizon  int64
 	pageIter int
 
+	// failAfterPage, when positive, makes the scan FAIL once that many pages have
+	// been served — a drain that started and could not finish. It is the only way to
+	// build a genuinely TRUNCATED drain: the scan terminates normally on an empty
+	// page, so every other shape is a complete one.
+	failAfterPage int
+
 	cursors    []string
 	watermarks []int64
 }
+
+// errScanTruncated is what a drain that could not finish reports.
+var errScanTruncated = errors.New("pipeline scan failed mid-drain")
 
 func (f *fakeWatermarkScanner) PipelineScan(_ context.Context, req *knowledgev1.PipelineScanRequest) (*knowledgev1.PipelineScanResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.cursors = append(f.cursors, req.GetAfterId())
 	f.watermarks = append(f.watermarks, req.GetAfterStampedAtNanos())
+	if f.failAfterPage > 0 && f.pageIter >= f.failAfterPage {
+		return nil, errScanTruncated
+	}
 	resp := &knowledgev1.PipelineScanResponse{ServedHorizonNanos: f.horizon}
 	if f.pageIter < len(f.pages) {
 		resp.Items = f.pages[f.pageIter]
@@ -265,5 +277,116 @@ func TestZeroWatermarkRebuildsFullCorpus(t *testing.T) {
 		assert.Equal(t, fullBuckets, out.Built)
 		require.NotEmpty(t, shipper.seeded)
 		assert.Empty(t, shipper.seeded[0], "reset drops the retained ids along with the watermark")
+	})
+}
+
+// TestFullReScanPutsAZeroOnTheWire pins WHICH RUNS SCAN THE WHOLE CORPUS, on the one
+// observable that still carries the answer: the watermark the driver puts on the wire.
+//
+// IT REPLACES TestFinalizeCarriesCorpusCompleteProvenance, and the replacement is a
+// re-point rather than a deletion. That test asserted a corpus-complete BOOL the driver
+// threaded to FinalizeRebuild, which the ship side used to decide whether to compare the
+// built layer against the PRIOR MANIFEST's summed doc count. There is no prior manifest
+// and no such comparison — FinalizeRebuild's signature carries no such parameter any
+// more (deps_segments.go: FinalizeRebuild(ctx, gt, name) (RebuildFinalizeResult, error))
+// — so the claim had no consumer left to inform. It was also silently unfalsifiable: the
+// fake's recorder field survived as a legal, never-written slice, so the KNOWN-NEGATIVE
+// half ("a delta run makes no claim") asserted that an always-empty slice was empty and
+// could not have failed for any input.
+//
+// THE DECISION THE CLAIM REPORTED ON IS STILL REAL, which is why this is not a drop: a
+// run either asks the server for the whole corpus or for a bounded window, and getting
+// that wrong is a silent full-corpus read or a silently partial rebuild.
+//
+// THE THREE CASES ARE THE THREE WAYS THE DRIVER DECIDES. A reset scans from zero by
+// operator instruction; a graph with no record scans from zero because it has no window;
+// and a watermark-scoped run whose delta path cannot apply RE-SCANS from zero, which
+// makes the items in hand the corpus even though the run did not start that way. The
+// last is the one a reader would guess wrong, it is the one an implementation that
+// decided once at entry would get wrong too, and it is the only one of the three that
+// TestZeroWatermarkRebuildsFullCorpus does not already cover.
+func TestFullReScanPutsAZeroOnTheWire(t *testing.T) {
+	const priorWatermark = int64(1_600_000_000_000_000_000)
+
+	// The fallback case scans TWICE — the watermark-scoped window, then the full
+	// re-scan from zero — so its scanner has to serve the corpus page a second time.
+	// The nil page between them is what terminates the first scan's paging.
+	rescannable := func() *fakeWatermarkScanner {
+		page := makeScanPage("n-", 0, watermarkCorpusN)
+		return &fakeWatermarkScanner{pages: [][]*knowledgev1.PipelineScanItem{page, nil, page}}
+	}
+
+	cases := []struct {
+		name    string
+		reset   bool
+		scanner func() *fakeWatermarkScanner
+		prepare func(s *fakeRebuildShipper)
+		// scoped marks the run that STARTS at the stored watermark and only then falls
+		// back, which is what separates it from the two that scan from zero at entry.
+		scoped bool
+	}{
+		{name: "an operator reset", reset: true,
+			scanner: func() *fakeWatermarkScanner { return newWatermarkFixture(0) },
+			prepare: func(s *fakeRebuildShipper) { s.watermark = priorWatermark }},
+		{name: "a graph with no record", reset: false,
+			scanner: func() *fakeWatermarkScanner { return newWatermarkFixture(0) },
+			prepare: func(*fakeRebuildShipper) {}},
+		{name: "a delta that fell back to a full re-scan", reset: false, scoped: true,
+			scanner: rescannable,
+			prepare: func(s *fakeRebuildShipper) {
+				s.watermark = priorWatermark
+				s.deltaNotApplicable = true
+			}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			scanner := tc.scanner()
+			shipper := &fakeRebuildShipper{}
+			tc.prepare(shipper)
+
+			out, err := RebuildSegments(
+				context.Background(), scanner, shipper, kgtypes.GraphCode, "provenance-repo", tc.reset)
+			require.NoError(t, err)
+			require.True(t, out.Ran)
+
+			require.NotEmpty(t, scanner.watermarks, "the run must have asked the server for something")
+			last := scanner.watermarks[len(scanner.watermarks)-1]
+			assert.Zero(t, last,
+				"this run's scan covered the whole corpus, so the LAST thing it put on the wire is a "+
+					"zero watermark — a non-zero here means it built a full layer out of a bounded window")
+
+			if tc.scoped {
+				// The fallback case must be shown to have STARTED scoped, or it is
+				// indistinguishable from the two cases that scan from zero at entry —
+				// and an implementation deciding once at entry would pass it anyway.
+				assert.Equal(t, priorWatermark, scanner.watermarks[0],
+					"the run must have opened its scan at the stored watermark before falling back")
+			} else {
+				assert.Zero(t, scanner.watermarks[0],
+					"this run scans from zero at ENTRY, not after a fallback")
+			}
+		})
+	}
+
+	// THE KNOWN-NEGATIVE: a run that takes the delta path asks for a BOUNDED window and
+	// never re-scans. Without it every assertion above would be satisfied by a driver
+	// that hard-coded a zero on the wire, and the watermark would carry no information.
+	t.Run("a delta run asks for a bounded window and never re-scans", func(t *testing.T) {
+		scanner := newWatermarkFixture(0)
+		shipper := &fakeRebuildShipper{}
+		shipper.watermark = priorWatermark
+
+		out, err := RebuildSegments(
+			context.Background(), scanner, shipper, kgtypes.GraphCode, "delta-provenance-repo", false)
+		require.NoError(t, err)
+		require.True(t, out.Ran)
+		require.Positive(t, shipper.deltaCalls.Load(), "this run must take the DELTA path or the case is not what it says")
+		require.NotEmpty(t, scanner.watermarks)
+		for i, w := range scanner.watermarks {
+			assert.Equal(t, priorWatermark, w,
+				"scan %d asked from the stored watermark: a delta run re-emits against what the engines "+
+					"already hold and must never widen to the whole corpus", i)
+		}
 	})
 }

@@ -26,7 +26,8 @@ import (
 // the producer (pipeline) and the consumer (SegmentManager()) share one pointer by
 // construction; this test pins the accessor half.
 func TestSegmentManagerAccessorSharesOneInstance(t *testing.T) {
-	mgr := segmentdist.NewManager(nil, t.TempDir(), 0)
+	mgr := segmentdist.NewManager(t.TempDir(), 0)
+	t.Cleanup(mgr.Close)
 	c := &client{segmentMgr: mgr}
 
 	got := c.SegmentManager()
@@ -60,6 +61,7 @@ func TestEnsureSegmentManagerWiresOffline(t *testing.T) {
 	// exactly the offline wiring state.
 	authState := auth.NewAuthState(newFakeAuthStore(), time.Minute) // logged out → local
 	local := graphclient.NewGraphClientForURL("http://local.invalid")
+	t.Cleanup(local.CloseIdleConnections)
 	router := graphclient.NewRouter(local, "http://local.invalid", staticTokenSource{tok: "tok"}, authState)
 
 	c := &client{local: local, router: router, authState: authState}
@@ -69,6 +71,8 @@ func TestEnsureSegmentManagerWiresOffline(t *testing.T) {
 	// this same method, not an inline copy). A temp dir stands in for the
 	// --graph-storage data root the production caller threads through (f.GraphStorage).
 	c.ensureSegmentManager(t.TempDir(), 0)
+	// Only Manager.Close stops the per-engine merger goroutines the Manager spawns.
+	t.Cleanup(c.segmentMgr.Close)
 
 	require.NotNil(t, c.SegmentManager(),
 		"offline wiring (router only, no pipeline/embedder) leaves a non-nil read Manager")
@@ -121,7 +125,8 @@ func TestSegmentCacheDirCoLocation(t *testing.T) {
 // probe + rebuild behavior is covered by the segmentdist / tools / maybeHealCheck
 // tests).
 func TestBuildHealFactoryShape(t *testing.T) {
-	mgr := segmentdist.NewManager(nil, t.TempDir(), 0)
+	mgr := segmentdist.NewManager(t.TempDir(), 0)
+	t.Cleanup(mgr.Close)
 	c := &client{segmentMgr: mgr}
 
 	factory := c.buildHealFactory()

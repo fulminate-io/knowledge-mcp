@@ -7,9 +7,9 @@
 // ~/.knowledge/config, overridable with --config-file — that names which
 // LLM provider and model each substrate consumer should use:
 //
-//   - summarizer (domains/store) — chunk + node summarization
-//   - dream (background analysis) — out of scope for the initial wiring
-//   - transformer (domains/transformer) — graph→graph DSL bodies
+//   - summarizer — chunk + node summarization
+//   - supervisor — ranked recommendations for the agent-flow synthesis stage
+//   - topics — one-line topic summaries for the similarity lever
 //
 // Inheritance: a [default] section provides Provider/Model that any unset
 // per-consumer field falls back to. Resolve picks the matching per-consumer
@@ -23,7 +23,7 @@
 // config value wins when both are present. Accessors live in keys.go
 // (VoyageAPIKey, LinearAPIKey, APIKeyForProvider) and apply that
 // precedence. The Fulminate auth token is NOT in [credentials] — it
-// lives in the OS keychain via domains/fulminate/auth. CLI providers
+// lives in the OS keychain via cmd/knowledge/internal/auth. CLI providers
 // (claude-cli, codex-cli) need no key; they auth via the local CLI login.
 // The validator enforces presence of the required env var / config key /
 // binary at startup.

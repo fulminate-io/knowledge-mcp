@@ -18,10 +18,11 @@ package tools
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 
@@ -30,6 +31,15 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 )
+
+// contentText concatenates a ToolResult's text content blocks.
+func contentText(res kgtools.ToolResult) string {
+	var b strings.Builder
+	for _, c := range res.Content {
+		b.WriteString(c.Text)
+	}
+	return b.String()
+}
 
 // thoughtTestDeps satisfies ClientDeps for dispatch-only tests. All
 // accessors return zero values — the handlers reaching the
@@ -41,13 +51,8 @@ func (thoughtTestDeps) LocalLiveness() LocalLiveness                 { return ni
 func (thoughtTestDeps) Sink() collector.Sink                         { return nil }
 func (thoughtTestDeps) RootDir() string                              { return "" }
 func (thoughtTestDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
-func (thoughtTestDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
-func (thoughtTestDeps) WorkerReady() bool                            { return true }
 func (thoughtTestDeps) PropReady() bool                              { return true }
 func (thoughtTestDeps) PipelineReady() bool                          { return true }
-func (thoughtTestDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
-func (thoughtTestDeps) BanSet() *hivemonitor.BanSet                  { return nil }
-func (thoughtTestDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
 func (thoughtTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
 func (thoughtTestDeps) Embedder() embed.BinaryEmbedder               { return nil }
 func (thoughtTestDeps) BackendResolver() BackendResolver             { return nil }
@@ -76,7 +81,7 @@ func (thoughtTestDeps) TensionsProvider() TensionsProvider   { return nil }
 func TestInterceptThoughts_NameFiltering(t *testing.T) {
 	t.Parallel()
 	deps := thoughtTestDeps{}
-	for _, name := range []string{"worker", "ast", "collect", "manage", "search", ""} {
+	for _, name := range []string{"ast", "collect", "manage", "search", ""} {
 		params := kgtools.CallToolParams{Name: name, Arguments: json.RawMessage(`{}`)}
 		handled, res := InterceptThoughts(opCtx(), deps, params)
 		assert.False(t, handled, "tool %q must not be handled by InterceptThoughts", name)

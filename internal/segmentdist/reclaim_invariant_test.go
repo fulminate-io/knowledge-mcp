@@ -107,8 +107,7 @@ func TestAssertLiveSetBackedByL2SelfTest(t *testing.T) {
 
 	// --- HNSW instantiation ([]byte, struct{}) via a real embed engine. ---
 	t.Run("hnsw_clean_passes_and_orphan_fails", func(t *testing.T) {
-		_, gc := newSegmentHarness(t)
-		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+		mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 		dm := mgr.managerFor("code", "selftest-hnsw")
 
 		docs := vecContentDocs(searchengine.DefaultMinSegmentDocs)
@@ -141,8 +140,7 @@ func TestAssertLiveSetBackedByL2SelfTest(t *testing.T) {
 
 	// --- BM25 instantiation (bm25.Query, *bm25.CorpusStats) via a real engine. ---
 	t.Run("bm25_clean_passes_and_orphan_fails", func(t *testing.T) {
-		_, gc := newSegmentHarness(t)
-		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+		mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 		dm := mgr.bm25ManagerFor("code", "selftest-bm25")
 
 		docs := vecContentDocs(searchengine.DefaultMinSegmentDocs)

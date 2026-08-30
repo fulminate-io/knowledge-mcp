@@ -48,6 +48,36 @@ func TestBuildContextLinks_TicketAbsent_DropsAndWarns(t *testing.T) {
 	assert.Contains(t, cl.warnings[0], "dropped")
 }
 
+// TestBuildContextLinks_EmptyLinkID_DropsWithWarning is the fails-when-absent
+// guard for the one drop path in this helper that used to say nothing. An empty
+// entry in links is a caller mistake, and dropping it silently produced a create
+// with fewer edges than the caller asked for and no line of output saying so.
+//
+// Leg 3 is the both-directions leg: an entry after the empty one must still
+// resolve, which fails against a fix that turned the empty branch into an early
+// return or an error and discarded the rest of the list.
+func TestBuildContextLinks_EmptyLinkID_DropsWithWarning(t *testing.T) {
+	fc := &fakeGraphCaller{queryResponses: map[string]kgtools.ToolResult{
+		"rel-ok": nodeResultJSON(t, "rel-ok", "finding", nil),
+	}}
+	cl := buildContextLinks(context.Background(), fc, "", "", []string{"", "rel-ok"})
+
+	// (1) The warning names the POSITION, which is what distinguishes the
+	// prescribed message from a generic one appended anywhere in the helper.
+	require.Len(t, cl.warnings, 1)
+	assert.Contains(t, cl.warnings[0], "links[0]")
+	assert.Contains(t, cl.warnings[0], "dropped")
+
+	// (2) The drop is still a drop — the empty entry produces no edge of any kind.
+	assert.Empty(t, cl.codeLinks, "an empty entry is not a foreign target")
+	require.Len(t, cl.batchEdges, 1, "only the resolvable entry rides the batch")
+
+	// (3) The neighbor survives.
+	e := cl.batchEdges[0]
+	assert.Equal(t, kgtypes.EdgeRelatesTo, e.Type)
+	assert.Equal(t, "rel-ok", e.ToID, "the entry after the empty one still resolves")
+}
+
 // TestBuildContextLinks_SessionGetOrCreate asserts the session edge reuses
 // getOrCreateThoughtSessionClient: an existing session (found by the
 // NodeThoughtSession Match) yields a session--contains-->node batch edge.
@@ -122,12 +152,13 @@ func decisionInvoker(t *testing.T, fc *fakeGraphCaller, ticketID, session string
 	// refused, which is what surfaced it.
 	a := struct {
 		Name      string   `json:"name"`
+		Summary   string   `json:"summary"`
 		Choice    string   `json:"choice"`
 		Rationale string   `json:"rationale"`
 		TicketID  string   `json:"ticket_id,omitempty"`
 		Session   string   `json:"session,omitempty"`
 		Links     []string `json:"links,omitempty"`
-	}{Name: "d", Choice: "X", Rationale: "because", TicketID: ticketID, Session: session, Links: links}
+	}{Name: "d", Summary: "X is the chosen option", Choice: "X", Rationale: "because", TicketID: ticketID, Session: session, Links: links}
 	args, err := json.Marshal(a)
 	require.NoError(t, err)
 	_, res := InterceptRecordDecision(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{Name: "record_decision", Arguments: args})

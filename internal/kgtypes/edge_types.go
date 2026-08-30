@@ -23,7 +23,7 @@ const (
 	// METHOD-SET MATCHING infers satisfaction the language leaves implicit, by
 	// comparing resolved signatures, and stamps EdgeMethodMethodSet. DECLARED
 	// CONFORMANCE reads a supertype clause the source WROTE — an implements, an
-	// extends, a mixin, a behaviour, a trait — and stamps
+	// extends, a mixin, a behavior, a trait — and stamps
 	// EdgeMethodDeclaredConformance followed by that clause's kind. Both levels
 	// and the direction above are identical for either derivation; only the
 	// question each answers differs, so a consumer that cares reads the prefix
@@ -65,6 +65,109 @@ const (
 	// with direction="in" instead of materializing a separate
 	// "defined-in" edge type.
 	EdgeLanguage EdgeType = "LANGUAGE"
+
+	// EdgeFlowsToReturn, EdgeFlowsToArg and EdgeFlowsToField are the collector's
+	// MODEL-FREE FLOW FACTS: syntactic, per-declaration statements that a
+	// parameter or receiver reaches a return position, a call argument, or a
+	// field, derived from the declaration's own tree by a per-language flow-step
+	// arm plus a language-agnostic alias closure — no type checker, no
+	// interprocedural model, no taint configuration.
+	//
+	// THREE TYPES, NOT FOUR. The unresolved-callee fact is a FLOWS_TO_ARG edge in
+	// self-edge SHAPE, not a fourth type. Uppercase is forced by
+	// canonicalEdgeCasing (engine/compile.go:96-121).
+	//
+	// ENDPOINTS. FLOWS_TO_RETURN is a SELF-EDGE on the declaration. FLOWS_TO_ARG
+	// targets the callee's declaration — the same target the sibling CALLS edge
+	// names — or, where the callee resolves to nothing in-repo, is a SELF-EDGE
+	// carrying the callee spelling in Evidence. FLOWS_TO_FIELD targets the
+	// declaration owning the field, with the field name in Evidence. Self-edges
+	// are first-class on the collect path: store/graph_edges.go:272-297 keys edge
+	// membership on (type, toId, groupKey=Evidence) with no from==to guard, and
+	// cloud/store/collect_edge_decline_integration_test.go:136-146 drives them
+	// through a real collect.
+	//
+	// WHAT A FACT PROVES, AND WHAT ITS ABSENCE DOES NOT:
+	//
+	//   - PRESENCE IS PROOF. A fact on argument j proves that argument is
+	//     param-derived, hence not a constant literal.
+	//   - ABSENCE IS STRONG EVIDENCE, NOT PROOF. Alias closure is IN, so
+	//     `a := p; sink(a)` does record. Absence still does not prove a constant
+	//     where a flow shape no arm models is in play (a value crossing a
+	//     channel, a closure capture an arm declines, a container element), or
+	//     where the callee-spelling parity rule made an arm decline a call whose
+	//     spelling it could not reproduce byte-identically. Any consumer check
+	//     must say which of the two it relies on.
+	//   - NO ARGUMENT KIND OR TEXT, EVER, at any widening. The fact is about the
+	//     PARAM, not the argument's syntax; a check needing a literal's content
+	//     goes through the ast route instead.
+	//   - AN ALL-CONSTANT CALL PRODUCES NO FACT. These edges are anchored on
+	//     param flows rather than call sites and are not a call-site inventory,
+	//     which is also why a flow arm's callee set is a SUBSET of
+	//     extractCallEdges' set over a general fixture.
+	//
+	// TEST-ORIGIN FACTS CARRY NO DISTINCT EDGE TYPE. No FLOWS_TO_*_TEST variant
+	// exists, and this is NOT symmetric with CALLS → TEST_CALLS retyping. A
+	// consumer filters on the SOURCE NODE'S IsTest/TestKind instead: a non-empty
+	// TestBlocks query — which TEST_CALLS retyping depends on — covers 14
+	// languages and includes NEITHER Go NOR Python, while testKindClassifiers
+	// covers 17 including both, so the node flag is the only route that works
+	// there.
+	EdgeFlowsToReturn EdgeType = "FLOWS_TO_RETURN"
+	EdgeFlowsToArg    EdgeType = "FLOWS_TO_ARG"
+	EdgeFlowsToField  EdgeType = "FLOWS_TO_FIELD"
+
+	// EdgeEvidenceFlowPrefix opens the Evidence string every flow edge carries.
+	// The full grammar, authoritative for producers and consumers alike:
+	//
+	//	<evidence> := "flow:" <source> ">" <sink> [ "@" <callee spelling> ] [ "|" <groupkey> ]
+	//	<source>   := "p" <decimal param index>  |  "recv"
+	//	<sink>     := "r" <decimal result index> |  "a" <decimal arg index> | "f:" <field name>
+	//
+	// Examples: flow:p0>r0 · flow:p1>a2 · flow:recv>f:cache ·
+	// flow:p0>a0@exec.Command (unresolved callee) ·
+	// flow:p1>a2|svc.helper:FLOWS_TO_ARG:svc.handler:0 (ambiguous-callee group member).
+	//
+	// THE UNRESOLVED-CALLEE TEST IS STRUCTURAL, NEVER TEXTUAL. An edge is an
+	// unresolved-callee self-edge exactly when Type == FLOWS_TO_ARG &&
+	// FromId == ToId, and NOT when its Evidence contains an @.
+	//
+	// THE CALLEE SPELLING MAY CONTAIN @ AND >, measured rather than assumed:
+	// calleeIsNameable admits "_$@#-" as callee-name characters in every
+	// language, and calleeSeparators is ".:>", so > is an admitted qualifier
+	// separator in every language too. Ruby composes
+	// `@logger.info`, C++ composes `p->method`, and C# verbatim identifiers spell
+	// `@class.Method` — three ORDINARY RESOLVED callees the textual rule
+	// misclassifies.
+	//
+	// PARSE LEFT-TO-RIGHT, NEVER BY LastIndex. Both optional components stay
+	// recoverable because every component to their left is drawn from a CLOSED
+	// vocabulary: strip "flow:"; consume <source>, which is "recv" or "p" plus a
+	// decimal run and can contain neither > nor @; the NEXT byte is the ">"
+	// separator, the FIRST > in the string, which is why a > inside a callee
+	// spelling further right is harmless; consume <sink>, "r"/"a" plus a decimal
+	// run or "f:" plus a field name; a leading @ after an "a"<digits> sink then
+	// opens the callee spelling — FLOWS_TO_FIELD and FLOWS_TO_RETURN have no
+	// callee — running to the FIRST "|" or to end-of-string; a leading "|" opens
+	// the group key, running to end-of-string.
+	//
+	// "|" IS THE ONE SEPARATOR NO SPELLING CAN CONTAIN: it is absent from
+	// calleeSeparators (".:>"), from the admitted name set ("_$@#-"), and from
+	// every NameExtra and ChainOps value in chunker_callee_profile.go. A field
+	// name is a single grammar identifier and cannot contain one either.
+	//
+	// A CONSUMER MUST PARSE BOTH OPTIONAL COMPONENTS. Dropping the group-key
+	// suffix silently misreads an ambiguous-callee edge (Confidence 1/N) as an
+	// exact bind; dropping the @ component loses the callee spelling that makes
+	// an unresolved fact readable at all.
+	//
+	// DETERMINISM, required because Evidence is part of the
+	// (from,to,type,evidence) GC identity: every component derives from the
+	// declaration's own shape — ordinal positions, a written field name, a
+	// written callee spelling — and NONE from a byte offset, line number or walk
+	// order. treesitter/types.go records the measured defect a position-derived
+	// key caused on a live graph.
+	EdgeEvidenceFlowPrefix = "flow:"
 )
 
 // Knowledge edge types (lowercase, for knowledge graph relationships).
@@ -142,6 +245,12 @@ const (
 	//     cardinality: the clause states the relationship outright, so no method
 	//     set was measured and publishing a number would be a false statement in
 	//     the one field consumers weight on.
+	//  5. FLOW ATTRIBUTION — on a FLOWS_TO_* edge, introducing NO new vocabulary:
+	//     an exact bind carries population 2's resolving rung, a multi-candidate
+	//     group member carries population 1's group kind, and an unresolved-callee
+	//     self-edge carries an EMPTY Method because no rung fired. That empty is a
+	//     FACT rather than missing attribution, and it is recognized STRUCTURALLY
+	//     (FromId == ToId), never by scanning Evidence.
 	//
 	// THE SET IS OPEN, AND ADDING TO IT NEEDS NO EDIT HERE beyond a new member.
 	// Do not restate a total: a count of populations is exactly the sentence a new
@@ -227,16 +336,6 @@ const (
 	// slot name is already recoverable from the edge's own endpoint.
 	EdgeMethodSlotBind = "slot-bind:" // IMPLEMENTS: prefix + the capture shape
 
-	// Hive work-queue edge types (cloud-only feature). NEW edges — NOT reuse of
-	// EdgeKGContains: EdgeKGContains="contains" is parent→child (plan→phase),
-	// the OPPOSITE direction, so reusing it would invert the semantics. The wire
-	// literals mirror the server store vocabulary
-	// (cmd/knowledge-server/internal/store/edge_types_vocab.go) verbatim — a
-	// deliberate per-module duplicate (no shared package); per-module
-	// drift-guard tests pin the two copies in lockstep.
-	EdgeContainedBy EdgeType = "contained-by" // child → parent (message → hive, hive_member → hive)
-	EdgeRespondsTo  EdgeType = "responds-to"  // result message → the original message it answers (ack reply)
-
 	// Thought graph edge types.
 	EdgeNext            EdgeType = "next"             // sequential thought chain
 	EdgeBranchesFrom    EdgeType = "branches-from"    // new direction after invalidation
@@ -248,153 +347,4 @@ const (
 	// "A is true/happens because B is true/happens." Distinct from
 	// EdgeRelatesTo (general association) and EdgeInformedBy (evidential support).
 	EdgeBecause EdgeType = "because" // consequence → cause (causal/explanatory link)
-
-	// Cloud infrastructure edge types (uppercase, from resource JSON analysis).
-	EdgeMountsSecret    EdgeType = "MOUNTS_SECRET"    // workload → secret (volume or env ref)
-	EdgeMountsConfigMap EdgeType = "MOUNTS_CONFIGMAP" // workload → configmap (volume or env ref)
-	EdgeUsesSA          EdgeType = "USES_SA"          // workload → serviceaccount
-	EdgeUsesPVC         EdgeType = "USES_PVC"         // workload → persistentvolumeclaim
-	EdgeSelects         EdgeType = "SELECTS"          // service → workload (label selector match)
-	EdgeRoutesTo        EdgeType = "ROUTES_TO"        // ingress → service (backend ref)
-	EdgeInNamespace     EdgeType = "IN_NAMESPACE"     // namespaced resource → Namespace node (structural membership)
-	EdgeRunsInCluster   EdgeType = "RUNS_IN_CLUSTER"  // k8s resource → Cluster proxy (GKE/EKS/AKS, cross-graph linkage via postpopulate_cluster.go and cmd/knowledge/internal/collector/cloud/k8s/cluster_proxy_emit.go)
-	EdgeRunsOn          EdgeType = "RUNS_ON"          // pod → node (scheduled pod runs on k8s Node; pod.Spec.NodeName emitted by sub_pods.go)
-	EdgeBackedByVM      EdgeType = "BACKED_BY_VM"     // k8s Node → VM proxy (cross-graph linkage via postpopulate_nodes.go)
-
-	// NetworkPolicy / firewall reachability edges (post-resolution).
-	//
-	// These edges are NOT raw NetworkPolicy metadata — they are emitted by
-	// reachability analyzers after resolving label selectors, namespace
-	// selectors, ipBlocks, and default-deny semantics into concrete pod→pod
-	// relationships. The AWS Security Group Reachability analyzer reuses the
-	// Ingress/Egress variants for SG-to-resource reachability edges per the
-	// cross-plan alignment decision.
-	EdgeRestrictsIngress  EdgeType = "RESTRICTS_INGRESS"   // networkpolicy → pod (policy selects pod as ingress target)
-	EdgeRestrictsEgress   EdgeType = "RESTRICTS_EGRESS"    // networkpolicy → pod (policy selects pod as egress source)
-	EdgeAllowsIngressFrom EdgeType = "ALLOWS_INGRESS_FROM" // dst_pod → src_pod; dst allows ingress from src (also used by AWS SG reachability)
-	EdgeAllowsEgressTo    EdgeType = "ALLOWS_EGRESS_TO"    // src_pod → dst_pod; src allows egress to dst (also used by AWS SG reachability)
-
-	// AdminNetworkPolicy variants. Distinct edge types so multiple ANP rules
-	// can co-exist on the same (src,dst) pair as a regular NetworkPolicy edge
-	// without overwriting its metadata in the (FromID,Type,ToID)-keyed
-	// edgeMeta map. The K8s reachability analyzer evaluates these edges
-	// FIRST and applies priority dispatch (Allow / Deny / Pass) before
-	// falling through to ALLOWS_INGRESS_FROM / ALLOWS_EGRESS_TO.
-	EdgeANPIngressFrom EdgeType = "ANP_INGRESS_FROM" // dst_pod → src_pod; AdminNetworkPolicy ingress entry
-	EdgeANPEgressTo    EdgeType = "ANP_EGRESS_TO"    // src_pod → dst_pod; AdminNetworkPolicy egress entry
-
-	EdgeScales            EdgeType = "SCALES"              // hpa → workload (scaleTargetRef)
-	EdgeBindsRole         EdgeType = "BINDS_ROLE"          // rolebinding → role/clusterrole
-	EdgeBindsSubject      EdgeType = "BINDS_SUBJECT"       // rolebinding → serviceaccount
-	EdgeMemberOf          EdgeType = "MEMBER_OF"           // iam-user → iam-group membership
-	EdgeHasMember         EdgeType = "HAS_MEMBER"          // iam-group → iam-user; forward direction of EdgeMemberOf for efficient group membership traversal.
-	EdgeUsesStorageClass  EdgeType = "USES_STORAGE_CLASS"  // pvc → storageclass
-	EdgeGrants            EdgeType = "GRANTS"              // iam binding → service account
-	EdgeUsesNetwork       EdgeType = "USES_NETWORK"        // subnet → network/VPC
-	EdgeUsesSubnet        EdgeType = "USES_SUBNET"         // instance/nic → subnet
-	EdgeUsesSecurityGroup EdgeType = "USES_SECURITY_GROUP" // instance/nic → security group/NSG
-	EdgeTargets           EdgeType = "TARGETS"             // load balancer → target group/backend
-	EdgeAssumesRole       EdgeType = "ASSUMES_ROLE"        // instance/function → IAM role
-	EdgeWorkloadIdentity  EdgeType = "WORKLOAD_IDENTITY"   // k8s SA → GCP SA (GKE workload identity)
-	EdgeAssumesIdentity   EdgeType = "ASSUMES_IDENTITY"    // k8s ServiceAccount → IAM identity (cross-graph proxy; GCP SA, IRSA role, Azure managed identity)
-	EdgeConnectsTo        EdgeType = "CONNECTS_TO"         // workload → external cloud service endpoint (scanned from env var URIs)
-	EdgeUsesDisk          EdgeType = "USES_DISK"           // k8s PersistentVolume → underlying cloud disk (EBS volume, GCE PD, Azure Disk)
-	EdgeIssuedBy          EdgeType = "ISSUED_BY"           // certificate → issuer/clusterissuer
-	EdgeUsesMiddleware    EdgeType = "USES_MIDDLEWARE"     // ingressroute → middleware (Traefik)
-	EdgeSinksTo           EdgeType = "SINKS_TO"            // logging sink → destination bucket/topic
-	EdgeSubscribesTo      EdgeType = "SUBSCRIBES_TO"       // subscription → topic (Pub/Sub)
-	EdgeOwnedBy           EdgeType = "OWNED_BY"            // child → parent via k8s ownerReference
-	EdgeHasEndpointSlice  EdgeType = "HAS_ENDPOINT_SLICE"  // Service → EndpointSlice via kubernetes.io/service-name label
-	EdgeBacks             EdgeType = "BACKS"               // EndpointSlice → Pod via endpoint.targetRef (ready/serving/terminating on edge metadata)
-	EdgeBoundTo           EdgeType = "BOUND_TO"            // PVC → PV, EBS volume → EC2 instance
-	EdgeEncryptsWith      EdgeType = "ENCRYPTS_WITH"       // resource → KMS key (server-side encryption)
-	EdgeTriggers          EdgeType = "TRIGGERS"            // event source → function (SQS→Lambda, DynamoDB→Lambda)
-	EdgeDeadLettersTo     EdgeType = "DEAD_LETTERS_TO"     // queue → dead-letter queue (SQS RedrivePolicy)
-	EdgeReferencesStore   EdgeType = "REFERENCES_STORE"    // external secret → secret store (external-secrets CRD)
-	EdgeProtects          EdgeType = "PROTECTS"            // security policy → backend service (Cloud Armor, WAF)
-	EdgeUsesCert          EdgeType = "USES_CERT"           // resource → ACM/TLS certificate (ALB, CloudFront, API Gateway)
-	EdgeMonitors          EdgeType = "MONITORS"            // alarm → resource being monitored (CloudWatch alarm dimensions)
-	EdgeUsesImage         EdgeType = "USES_IMAGE"          // workload → container registry repo (K8s Deployment→ECR, ECS→ECR)
-	EdgeTrusts            EdgeType = "TRUSTS"              // trusted principal → IAM role (cross-account AssumeRole trust)
-	EdgeSharedWith        EdgeType = "SHARED_WITH"         // host VPC resource → service project (GCP Shared VPC)
-
-	// AWS network-layer edge types for Security Group reachability v2.
-	//
-	// EdgeAssociatedWithSubnet links a subnet to its controlling Network ACL
-	// (1:1 — every subnet belongs to exactly one NACL). The AWS SG reachability
-	// analyzer evaluates NACL rules at the subnet layer BEFORE checking SG
-	// rules so a packet is allowed iff (SG layer allows) AND (NACL layer allows).
-	//
-	// Cross-VPC reachability edges:
-	//  - EdgePeeredWith   : VPC ↔ VPC via an active peering connection
-	//  - EdgeRoutesVia    : subnet/VPC → Transit Gateway attachment
-	//  - EdgeExposedVia   : service → VPC endpoint (PrivateLink)
-	//  - EdgeRoutesToPeer : subnet → peer VPC CIDR range via a route table entry
-	EdgeAssociatedWithSubnet EdgeType = "ASSOCIATED_WITH_SUBNET" // subnet → NACL (reverse of NACL → subnet)
-	EdgePeeredWith           EdgeType = "PEERED_WITH"            // VPC → peer VPC via peering connection
-	EdgeRoutesVia            EdgeType = "ROUTES_VIA"             // subnet/VPC → transit gateway attachment
-	EdgeExposedVia           EdgeType = "EXPOSED_VIA"            // service → VPC endpoint (PrivateLink)
-	EdgeRoutesToPeer         EdgeType = "ROUTES_TO_PEER"         // subnet → peer VPC CIDR (route table entry)
-
-	// EdgeExposedBy links a K8s Service / Ingress / Gateway to the cross-graph
-	// proxy of the cloud load balancer (GCP forwardingRule, AWS ELB) that
-	// realizes its public address. Emitted by the per-kind resolvers in
-	// cloud/k8s/postpopulate_services.go, postpopulate_ingress.go, and
-	// postpopulate_gateway.go via the shared index helpers in
-	// postpopulate_cloud_lb_index.go.
-	//
-	// Distinct from EdgeExposedVia (service → PrivateLink VPC endpoint) — that
-	// edge models AWS PrivateLink consumer-side exposure and is unrelated.
-	EdgeExposedBy EdgeType = "EXPOSED_BY" // K8s Service/Ingress/Gateway → cloud LB resource (cross-graph proxy)
-
-	// Singleton-subcollector edges.
-	//
-	// These constants land unused in this phase — downstream phases (AWS SES /
-	// CloudWatch / ACM / DynamoDB, GCP disk / artifact registry / firestore,
-	// Azure Key Vault / App Service) wire real emitters that reference them.
-	EdgeNotifiesVia  EdgeType = "NOTIFIES_VIA"  // alarm/metric → notification target (CloudWatch→SNS/Lambda/SQS/ASG; GCP alert policy→channel; SES identity→SNS bounce/complaint/delivery topic)
-	EdgeValidatedBy  EdgeType = "VALIDATED_BY"  // certificate → domain-validation target (ACM cert→Route53 zone)
-	EdgeAccessedBy   EdgeType = "ACCESSED_BY"   // scope → principal granted access (Azure Key Vault→AD principal via access policy OR RBAC role assignment)
-	EdgeStoredIn     EdgeType = "STORED_IN"     // consumer → secret/cert container (Azure App Service cert→Key Vault resource)
-	EdgeFromSnapshot EdgeType = "FROM_SNAPSHOT" // disk → source snapshot lineage (GCP disk→snapshot)
-	EdgeFromImage    EdgeType = "FROM_IMAGE"    // disk → source image lineage (GCP disk→image)
-	EdgeProxiesFrom  EdgeType = "PROXIES_FROM"  // registry virtual repo → upstream remote (GCP Artifact Registry pull-through)
-	EdgeBackedUpBy   EdgeType = "BACKED_UP_BY"  // resource → backup/recovery target (DynamoDB table→PITR proxy or on-demand backup ARN; GCP Firestore DB→backup schedule)
-	EdgeReplicatesTo EdgeType = "REPLICATES_TO" // primary → replica (S3 CRR/SRR destination bucket; RDS read replica; cross-region DR pairs)
-
-	// CI/CD edge types (uppercase, from workflow/pipeline analysis).
-	EdgeDeploysTo        EdgeType = "DEPLOYS_TO"        // workflow/pipeline → deploy target (environment, cluster, server)
-	EdgeRunsIn           EdgeType = "RUNS_IN"           // workflow run → runner (self-hosted, GitHub-hosted, shared)
-	EdgeRequiresApproval EdgeType = "REQUIRES_APPROVAL" // environment → reviewer/protection rule
-	EdgeUsesSecret       EdgeType = "USES_SECRET"       // workflow → secret (name-only reference, no values)
-	EdgeFederates        EdgeType = "FEDERATES"         // OIDC trust from CI/CD workflow → cloud IAM role
-	EdgeBelongsTo        EdgeType = "BELONGS_TO"        // child resource → parent (project → group, environment → project, repo → org)
-	EdgeHasLabel         EdgeType = "HAS_LABEL"         // resource → label/tag (runner → tag; unified name across providers)
-	EdgeTriggeredBy      EdgeType = "TRIGGERED_BY"      // workflow run → trigger event (push, pull_request, schedule)
-
-	// Cross-domain edge types (uppercase, for linkage graph relationships).
-	EdgeBuilds     EdgeType = "BUILDS"     // Dockerfile/CI pipeline → container image → Deployment (code artifact produces cloud resource)
-	EdgeDeploys    EdgeType = "DEPLOYS"    // Helm chart/deploy script → K8s resources (deployment tool creates cloud resources)
-	EdgeManages    EdgeType = "MANAGES"    // IaC/SDK wrapper code → cloud resources (code manages cloud lifecycle)
-	EdgeConfigures EdgeType = "CONFIGURES" // Config files in code → ConfigMaps/Secrets in cloud (code configures cloud resources)
-	EdgeServes     EdgeType = "SERVES"     // Service/Ingress cloud resource → code endpoint (cloud routes traffic to code)
-
-	// Log graph edge types (uppercase, emitted by the logs pipeline — see
-	// GraphLogs in db.go and SkipsLLMProcessing for the exclusion rules).
-	//
-	// EdgeCorrelatesWith links two LogTemplate nodes whose error bursts
-	// co-occurred in time AND whose owning services have a confirmed cloud
-	// graph dependency (EdgeCalls, EdgeRoutesTo, etc.). Temporal-only
-	// correlations without structural confirmation are surfaced in the
-	// pipeline summary text instead of becoming an edge — per the
-	// correlation design decision, edges are reserved for high-confidence
-	// (temporal AND structural) pairs only.
-	//
-	// EdgeEmittedBy links a shared label node (service=..., namespace=...,
-	// k8s_pod=...) to a cloud graph proxy resource that produced the logs.
-	// This gives the log graph its only outbound reference into the wider
-	// knowledge universe: the summary generator and future log tools
-	// traverse EMITTED_BY to surface cloud topology alongside log patterns.
-	EdgeCorrelatesWith EdgeType = "CORRELATES_WITH" // log-template → log-template (temporal + structural)
-	EdgeEmittedBy      EdgeType = "EMITTED_BY"      // log label node → cloud graph proxy resource
 )

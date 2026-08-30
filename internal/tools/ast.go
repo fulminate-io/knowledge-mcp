@@ -47,7 +47,7 @@ func InterceptAst(ctx context.Context, deps ClientDeps, params kgtools.CallToolP
 	}
 	var a astArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
-		return true, errorResult("invalid arguments: " + err.Error())
+		return true, errorResult("invalid arguments: " + decodeArgsError(params.Arguments, err))
 	}
 	switch a.Operation {
 	case "match":
@@ -149,6 +149,13 @@ func handleAstMatch(ctx context.Context, deps ClientDeps, a astArgs) kgtools.Too
 		return errorResult(kerr.Error())
 	}
 
+	// Same reasoning one leaf over: a flows_to leaf on a language with no flow
+	// arm, or one missing a required field, can never match — so a zero from it
+	// would be indistinguishable from a correct search that found nothing.
+	if ferr := ast.ValidateWhereFlowArms(where, lang); ferr != nil {
+		return errorResult(ferr.Error())
+	}
+
 	if perr := validateContextPin(a.Context, lang); perr != nil {
 		return errorResult(perr.Error())
 	}
@@ -157,7 +164,7 @@ func handleAstMatch(ctx context.Context, deps ClientDeps, a astArgs) kgtools.Too
 		return errorResult(terr.Error())
 	}
 
-	repoDir, derr := resolveRepoDir(ctx, deps, a.Repo)
+	repoDir, derr := resolveRepoDir(ctx, deps, "ast", a.Repo)
 	if derr != nil {
 		return errorResult(derr.Error())
 	}
@@ -256,6 +263,13 @@ func handleAstCount(ctx context.Context, deps ClientDeps, a astArgs) kgtools.Too
 		return errorResult(kerr.Error())
 	}
 
+	// Same reasoning one leaf over: a flows_to leaf on a language with no flow
+	// arm, or one missing a required field, can never match — so a zero from it
+	// would be indistinguishable from a correct search that found nothing.
+	if ferr := ast.ValidateWhereFlowArms(where, lang); ferr != nil {
+		return errorResult(ferr.Error())
+	}
+
 	if perr := validateContextPin(a.Context, lang); perr != nil {
 		return errorResult(perr.Error())
 	}
@@ -264,7 +278,7 @@ func handleAstCount(ctx context.Context, deps ClientDeps, a astArgs) kgtools.Too
 		return errorResult(terr.Error())
 	}
 
-	repoDir, derr := resolveRepoDir(ctx, deps, a.Repo)
+	repoDir, derr := resolveRepoDir(ctx, deps, "ast", a.Repo)
 	if derr != nil {
 		return errorResult(derr.Error())
 	}

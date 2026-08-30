@@ -66,6 +66,7 @@ func TestParseWhere_AcceptsValidShapes(t *testing.T) {
 		`{"same_text": {"captures": ["A", "$outer.B"]}}`,
 		`{"inside_pattern": {"of": "X", "pattern": "func $_($_) {$$$_}"}}`,
 		`{"contains_pattern": {"of": "X", "pattern": "defer $_.Close()", "as": "DEF"}}`,
+		`{"flows_to": {"from": "P", "to": "ARG", "within": "$match"}}`,
 	}
 	for _, payload := range cases {
 		t.Run(payload, func(t *testing.T) {
@@ -74,4 +75,52 @@ func TestParseWhere_AcceptsValidShapes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestParseWhere_FlowsToLeafVocabulary pins the flows_to leaf's decode contract
+// BY BEHAVIOUR rather than by grepping source, because a source grep is
+// satisfied by a doc comment while a caller's actual experience is decided by
+// what the decoders do.
+//
+// The third assertion is the one that earns its place: it is the only check
+// that the ParseWhere error's valid-key list was actually updated. That string
+// is where a caller learns the key exists when they get it wrong, and nothing
+// else in the package would notice if it went stale.
+func TestParseWhere_FlowsToLeafVocabulary(t *testing.T) {
+	t.Run("well-formed payload parses", func(t *testing.T) {
+		w, err := ParseWhere([]byte(`{"flows_to": {"from": "P", "to": "ARG", "within": "FN"}}`))
+		if err != nil {
+			t.Fatalf("a well-formed flows_to payload must parse: %v", err)
+		}
+		if w == nil || w.FlowsTo == nil {
+			t.Fatal("the flows_to leaf must be populated on the parsed node")
+		}
+		if w.FlowsTo.From != "P" || w.FlowsTo.To != "ARG" || w.FlowsTo.Within != "FN" {
+			t.Fatalf("all three fields must round-trip, got %+v", *w.FlowsTo)
+		}
+	})
+
+	t.Run("typo'd inner field is rejected and named", func(t *testing.T) {
+		// The inner decoder runs DisallowUnknownFields, so a near-miss like
+		// "wthin" must not be silently dropped — a dropped `within` would turn a
+		// scope-less leaf into one the evaluator has to guess at.
+		_, err := ParseWhere([]byte(`{"flows_to": {"from": "P", "to": "ARG", "wthin": "FN"}}`))
+		if err == nil {
+			t.Fatal("a typo'd inner field must be rejected, not silently dropped")
+		}
+		if !strings.Contains(err.Error(), "wthin") {
+			t.Fatalf("the error must NAME the offending field so the typo is findable; got: %v", err)
+		}
+	})
+
+	t.Run("unknown top-level key error advertises flows_to", func(t *testing.T) {
+		_, err := ParseWhere([]byte(`{"no_such_leaf": {"of": "X"}}`))
+		if err == nil {
+			t.Fatal("an unknown top-level key must be rejected")
+		}
+		if !strings.Contains(err.Error(), "flows_to") {
+			t.Fatalf("the valid-key list must advertise flows_to, or a caller who "+
+				"typo'd it can never discover the real spelling; got: %v", err)
+		}
+	})
 }

@@ -29,7 +29,6 @@ import (
 type countingEngine struct {
 	execute         atomic.Int32
 	index           atomic.Int32
-	hive            atomic.Int32
 	metadataStats   atomic.Int32
 	exportGraph     atomic.Int32
 	stats           atomic.Int32
@@ -67,14 +66,6 @@ func (e *countingEngine) Index(
 ) (*connect.Response[knowledgev1.IndexResponse], error) {
 	e.index.Add(1)
 	return connect.NewResponse(&knowledgev1.IndexResponse{}), nil
-}
-
-func (e *countingEngine) Hive(
-	_ context.Context,
-	_ *connect.Request[knowledgev1.HiveRequest],
-) (*connect.Response[knowledgev1.HiveResponse], error) {
-	e.hive.Add(1)
-	return connect.NewResponse(&knowledgev1.HiveResponse{}), nil
 }
 
 func (e *countingEngine) PipelineScan(
@@ -119,7 +110,7 @@ func startCountingEngine(t *testing.T) (string, *countingEngine) {
 	path, hdlr := knowledgev1connect.NewEngineServiceHandler(eng)
 	mux.Handle(path, hdlr)
 	srv := httptest.NewServer(h2c.NewHandler(mux, &http2.Server{}))
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 	return srv.URL, eng
 }
 

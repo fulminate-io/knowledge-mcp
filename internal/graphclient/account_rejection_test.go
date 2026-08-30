@@ -45,9 +45,9 @@ func TestAccountRejection_ConnectChainClassifiesAndLatches(t *testing.T) {
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"error":"account_forbidden","error_description":"caller is not a member of the requested account"}`))
 	}))
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 
-	gc := NewCloudGraphClient(srv.URL, auth.StaticTokenSource{AccessToken: "tok-reject"})
+	gc := closeIdleOnCleanup(t, NewCloudGraphClient(srv.URL, auth.StaticTokenSource{AccessToken: "tok-reject"}))
 	req := &knowledgev1.ExecuteRequest{
 		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{ById: "x"}},
 	}

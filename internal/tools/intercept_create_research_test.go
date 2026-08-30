@@ -13,33 +13,6 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
 
-// TestInterceptCreateResearch_DerivedQuestionOverflow asserts that a question
-// with NO author summary whose DERIVED summary (question + context) overflows
-// 500 runes fails create_research FAST client-side with the questions
-// fieldPath, the derivation explanation, the overflow amount, and a quoted
-// prefix. Fails-when-absent: before this loop change the derived fallback was
-// never validated and the over-long node died on the server's context-free
-// exceeds-500 backstop.
-func TestInterceptCreateResearch_DerivedQuestionOverflow(t *testing.T) {
-	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
-	// "Question: " (10 runes) + 495-char question = 505 runes > 500.
-	longQ := strings.Repeat("q", 495)
-	handled, res := InterceptCreateResearch(opCtx(), deps, kgtools.CallToolParams{
-		Name: "create_research",
-		Arguments: json.RawMessage(`{
-			"name":"r","goal":"g","summary":"s",
-			"questions":[{"question":"` + longQ + `"}]
-		}`),
-	})
-	require.True(t, handled)
-	require.True(t, res.IsError)
-	msg := toolResultText(res)
-	assert.Contains(t, msg, "questions[0].summary")
-	assert.Contains(t, msg, "derived from question + context")
-	assert.Contains(t, msg, "over by")
-	assert.Contains(t, msg, "Derived prefix:")
-}
-
 // TestInterceptCreateResearch_AuthorSummaryClampsAndWarns asserts the
 // author-supplied summary path is FORGIVING: an over-cap AUTHOR question summary
 // is clamped at a word boundary (with a non-fatal warning naming the field), and
@@ -82,19 +55,50 @@ func TestInterceptCreateResearch_ValidAuthorSummaryCreates(t *testing.T) {
 	require.False(t, res.IsError, "valid author summary must create: %s", toolResultText(res))
 }
 
-// TestInterceptCreateResearch_ValidDerivedQuestionCreates asserts a question
-// with no author summary but a short question/context (derived summary under
-// cap) still creates successfully.
-func TestInterceptCreateResearch_ValidDerivedQuestionCreates(t *testing.T) {
-	fc := &fakeGraphCaller{mutateIDs: []string{"research-1", "question-1"}}
-	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptCreateResearch(opCtx(), deps, kgtools.CallToolParams{
-		Name: "create_research",
-		Arguments: json.RawMessage(`{
-			"name":"r","goal":"g","summary":"s","format":"json",
-			"questions":[{"question":"why is it slow?","context":"hot path"}]
-		}`),
+// TestCreateResearch_QuestionSummaryRequired asserts BOTH directions of the
+// question-summary requirement in one test: a question omitting `summary` is
+// REFUSED naming the indexed field path, and a question supplying one is created
+// with that text stored verbatim on the question node.
+//
+// The second arm is what stops the first from being satisfied by a handler that
+// refuses everything, and the verbatim comparison is what stops it being
+// satisfied by one that accepts the field and then composes over it.
+func TestCreateResearch_QuestionSummaryRequired(t *testing.T) {
+	t.Run("a question with no summary is refused", func(t *testing.T) {
+		fc := &fakeGraphCaller{}
+		handled, res := InterceptCreateResearch(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
+			Name: "create_research",
+			Arguments: json.RawMessage(`{
+				"name":"r","goal":"g","summary":"a searchable research summary",
+				"questions":[{"question":"why is it slow?","context":"hot path"}]
+			}`),
+		})
+		require.True(t, handled)
+		require.True(t, res.IsError, "a question with no summary must be refused, never derived")
+		assert.Contains(t, toolResultText(res), "questions[0].summary is required and must be non-empty")
+		assert.Empty(t, fc.execMutations, "the refusal must precede any write")
 	})
-	require.True(t, handled)
-	require.False(t, res.IsError, "valid derived question must create: %s", toolResultText(res))
+
+	t.Run("a supplied question summary is stored verbatim", func(t *testing.T) {
+		const authored = "the hot path re-reads the manifest on every request"
+		fc := &fakeGraphCaller{mutateIDs: []string{"research-1", "question-1"}}
+		handled, res := InterceptCreateResearch(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
+			Name: "create_research",
+			Arguments: json.RawMessage(`{
+				"name":"r","goal":"g","summary":"a searchable research summary","format":"json",
+				"questions":[{"question":"why is it slow?","context":"hot path","summary":"` + authored + `"}]
+			}`),
+		})
+		require.True(t, handled)
+		require.False(t, res.IsError, "an authored question summary must be accepted: %s", toolResultText(res))
+
+		require.Len(t, fc.execMutations, 1)
+		bodies := fc.execMutations[0].GetNodeBodies()
+		require.Len(t, bodies, 2, "the research node plus its one question")
+		assert.Equal(t, authored, bodies[1].GetSummary(),
+			"the author's summary must reach the question node untouched")
+		// "Question: " was the retired derivation's prefix — its absence is what
+		// tells a stored author summary from a composed one.
+		assert.NotContains(t, bodies[1].GetSummary(), "Question: ")
+	})
 }

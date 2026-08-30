@@ -111,6 +111,24 @@ func (s *UploadSink) applyCollectDiff(
 	present map[string][32]byte, resp *knowledgev1.CollectManifestResponse,
 	outcome *collectDiffOutcome,
 ) (diffMode, uploadDecision, error) {
+	// THE SEED RUNS FIRST, BEFORE ANY COMPARISON READS THE STORE. A branch that has
+	// never been collected on this machine holds none of the three baselines, and
+	// absence reads as "changed" for both trigger rows — so that branch's FIRST
+	// touch degrades to a whole-repo upload for a delta of a few lines. Resolving
+	// the absent keys from the same graph's unanimous siblings has to happen ahead
+	// of the changed() calls below, because it is those reads whose answer it
+	// changes. It resolves NOTHING when the siblings are absent or disagree, so
+	// every fail-closed arm keeps today's meaning.
+	//
+	// ITS FAILURE ABORTS THE COLLECT for the same reason the comparisons' does: it
+	// reads and writes through the store's own primitives, so a corrupt or
+	// unwritable store surfaces here rather than being read as an empty one.
+	if err := defaultDiscoveryStore.seedBranchBaselinesFromSiblings(
+		result.CurrentBranch,
+		discoveryKey(result), collectorVersionKey(result), filelessKey(result),
+	); err != nil {
+		return "", uploadDecision{}, err
+	}
 	// THE STORE'S FAILURE IS NOT A DEGRADE. Defaulting the boolean here — reading a
 	// store error as "changed" and taking the rebuild lane — is exactly the lane the
 	// error exists to replace: the store stays broken, so it would fire on every

@@ -10,10 +10,11 @@ import (
 	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/corpus"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
-	"github.com/fulminate-io/knowledge-mcp/internal/projects"
+	"github.com/fulminate-io/knowledge-mcp/internal/projects/render"
 	"github.com/fulminate-io/knowledge-mcp/internal/validate"
 )
 
@@ -23,6 +24,15 @@ import (
 // nodes/edges, all in one PersistBatch.
 func handleClientMutateCreateFinding(ctx context.Context, deps ClientDeps, a mutateArgs) kgtools.ToolResult {
 	gc := deps.GraphCaller()
+	// A check belongs in a per-language CHECKS graph, alongside the fixture
+	// example nodes that validate it, so this path refuses one outright rather
+	// than admitting it: there are no fixtures to resolve in the knowledge graph,
+	// and the correct answer is a refusal rather than a validation.
+	if c, isCheck, cerr := corpus.ParseCheck(&knowledgev1.Node{Metadata: a.Metadata}); cerr != nil {
+		return errorResult("mutate(create, type=finding): " + cerr.Error())
+	} else if isCheck {
+		return errorResult(fmt.Sprintf("mutate(create, type=finding): %s=%q makes this node a check, and a check lives in the checks graph with the fixtures that validate it — re-issue with graph:%q (no language: it is a single graph, and the check's own language metadata scopes it)", corpus.MetaCheckType, c.Type, checksGraphSelector))
+	}
 	if err := validate.Name("mutate(create, type=finding)", a.Name); err != nil {
 		return errorResult(err.Error())
 	}
@@ -31,6 +41,10 @@ func handleClientMutateCreateFinding(ctx context.Context, deps ClientDeps, a mut
 		return errorResult(serr.Error())
 	}
 	a.Summary = clamped
+	refWarnings, rerr := clampFindingReferenceSummaries(a.References)
+	if rerr != nil {
+		return errorResult(rerr.Error())
+	}
 	node := buildFindingNode(a)
 	nodes := []*knowledgev1.Node{node}
 	edges := buildFindingFixedEdges(a)
@@ -57,9 +71,10 @@ func handleClientMutateCreateFinding(ctx context.Context, deps ClientDeps, a mut
 	if clampWarn != "" {
 		warnings = append(warnings, clampWarn)
 	}
+	warnings = append(warnings, refWarnings...)
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Finding recorded: %s → ID: %s (%d references) [graph: knowledge/default]", a.Name, ids[0], len(a.References))
-	writeClientWarningsSection(&sb, warnings, "\n\n")
+	writeClientWarningsSection(&sb, warnings)
 	return textResult(sb.String())
 }
 
@@ -82,16 +97,12 @@ func copyCallerMetadata(in map[string]string) map[string]string {
 // metadata is seeded FIRST so the derived evidence/source keys below win on a
 // key collision.
 func buildFindingNode(a mutateArgs) *knowledgev1.Node {
-	summary := a.Summary
-	if summary == "" {
-		summary = projects.DeriveFindingSummary(a.Description, a.Evidence)
-	}
 	node := &knowledgev1.Node{
 		Type:        string(kgtypes.NodeFinding),
 		Source:      "llm:claude",
 		SymbolName:  a.Name,
 		Description: a.Description,
-		Summary:     summary,
+		Summary:     a.Summary,
 		Content:     a.Content,
 		Status:      a.Status,
 		Metadata:    copyCallerMetadata(a.Metadata),
@@ -119,9 +130,36 @@ func buildFindingFixedEdges(a mutateArgs) []kgwire.BatchEdge {
 	return edges
 }
 
+// clampFindingReferenceSummaries validates the author summary on every
+// NODE-CREATING reference in place, under the indexed path
+// references[i].summary. A node_id entry is SKIPPED: it creates no node, so it
+// needs no summary, and requiring one there would be a blanket rule rather than
+// the per-kind one the schema states.
+//
+// ITERATION IS BY INDEX so the clamped value is assigned back into the slice
+// element the node builder later reads — a range-value loop would clamp a copy
+// and ship the unclamped text onward.
+func clampFindingReferenceSummaries(refs []findingReference) (warnings []string, err error) {
+	for i := range refs {
+		if refs[i].URL == "" && refs[i].File == "" {
+			continue
+		}
+		clamped, w, cerr := validate.ClampSummary("mutate(create, type=finding)", fmt.Sprintf("references[%d].summary", i), refs[i].Summary)
+		if cerr != nil {
+			return nil, cerr
+		}
+		refs[i].Summary = clamped
+		if w != "" {
+			warnings = append(warnings, w)
+		}
+	}
+	return warnings, nil
+}
+
 // appendFindingReferenceEdges appends reference nodes + edges to the
 // in-flight nodes/edges slices. URL/File entries create a reference
-// node; NodeID entries link directly to an existing node.
+// node carrying the author's summary; NodeID entries link directly to an
+// existing node and create none.
 func appendFindingReferenceEdges(nodes []*knowledgev1.Node, edges []kgwire.BatchEdge, refs []findingReference) ([]*knowledgev1.Node, []kgwire.BatchEdge) {
 	refSlots := make([]int, 0, len(refs))
 	for _, ref := range refs {
@@ -132,7 +170,7 @@ func appendFindingReferenceEdges(nodes []*knowledgev1.Node, edges []kgwire.Batch
 				Source:      "llm:claude",
 				SymbolName:  ref.Title,
 				Description: ref.URL,
-				Summary:     ref.Title + " — " + ref.URL,
+				Summary:     ref.Summary,
 			}
 			kgtypes.SetValue(rn, "type", "url")
 			kgtypes.SetValue(rn, "url", ref.URL)
@@ -144,7 +182,7 @@ func appendFindingReferenceEdges(nodes []*knowledgev1.Node, edges []kgwire.Batch
 				Source:      "llm:claude",
 				SymbolName:  ref.Title,
 				Description: ref.File,
-				Summary:     ref.Title + " — " + ref.File,
+				Summary:     ref.Summary,
 			}
 			kgtypes.SetValue(rn, "type", "file")
 			kgtypes.SetValue(rn, "file", ref.File)
@@ -174,13 +212,6 @@ func handleClientMutateCreateResearch(ctx context.Context, deps ClientDeps, a mu
 	a.Summary = clamped
 	question := a.Name
 	bgContext := a.Content
-	summary := a.Summary
-	if summary == "" {
-		summary = "Research question: " + question
-		if bgContext != "" {
-			summary += ". Context: " + bgContext
-		}
-	}
 	// A caller-supplied description wins; absent one, the question text is the
 	// description (the long-standing default). SymbolName stays the question
 	// unconditionally — a research node's name IS its question.
@@ -197,7 +228,7 @@ func handleClientMutateCreateResearch(ctx context.Context, deps ClientDeps, a mu
 		Source:      "llm:claude",
 		SymbolName:  question,
 		Description: description,
-		Summary:     summary,
+		Summary:     a.Summary,
 		Content:     bgContext,
 		Status:      status,
 		Metadata:    copyCallerMetadata(a.Metadata),
@@ -219,7 +250,7 @@ func handleClientMutateCreateResearch(ctx context.Context, deps ClientDeps, a mu
 	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Research question recorded: %s → ID: %s [graph: knowledge/default]", question, ids[0])
-	writeClientWarningsSection(&sb, warnings, "\n\n")
+	writeClientWarningsSection(&sb, warnings)
 	return textResult(sb.String())
 }
 
@@ -234,10 +265,6 @@ func handleClientMutateCreateRule(ctx context.Context, deps ClientDeps, a mutate
 		return errorResult(serr.Error())
 	}
 	a.Summary = clamped
-	summary := a.Summary
-	if summary == "" {
-		summary = projects.DeriveRuleSummary(a.Name, a.Scope)
-	}
 	// Caller metadata is seeded FIRST so the derived scope/enforcement keys below
 	// win on a key collision.
 	node := knowledgev1.Node{
@@ -245,7 +272,7 @@ func handleClientMutateCreateRule(ctx context.Context, deps ClientDeps, a mutate
 		Source:      "llm:claude",
 		SymbolName:  a.Name,
 		Description: a.Description,
-		Summary:     summary,
+		Summary:     a.Summary,
 		Content:     a.Content,
 		Status:      a.Status,
 		Metadata:    copyCallerMetadata(a.Metadata),
@@ -273,77 +300,16 @@ func handleClientMutateCreateRule(ctx context.Context, deps ClientDeps, a mutate
 	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Rule added: %s → ID: %s [graph: knowledge/default]", a.Name, ids[0])
-	writeClientWarningsSection(&sb, warnings, "\n\n")
+	writeClientWarningsSection(&sb, warnings)
 	return textResult(sb.String())
 }
 
-// handleClientMutateAnswer handles mutate(answer): mark a research
-// question as answered with a conclusion + link findings.
-func handleClientMutateAnswer(ctx context.Context, deps ClientDeps, a mutateArgs) kgtools.ToolResult {
-	gc := deps.GraphCaller()
-	id := a.ID
-	if id == "" {
-		id = a.QuestionID
-	}
-	if strings.TrimSpace(id) == "" {
-		return errorResult("mutate(answer): id (or question_id) is required")
-	}
-	node, lerr := LookupNode(ctx, gc, id)
-	if lerr != nil || node == nil {
-		return errorResult(fmt.Sprintf("research not found: %s", id))
-	}
-	updatedSummary := "Research question: " + node.SymbolName + ". Conclusion: " + a.Conclusion
-	// Caller metadata is seeded FIRST so the derived conclusion key wins on a
-	// key collision. Copied, never aliased — see copyCallerMetadata.
-	metadata := copyCallerMetadata(a.Metadata)
-	if metadata == nil {
-		metadata = map[string]string{}
-	}
-	metadata["conclusion"] = a.Conclusion
-	updateArgs, merr := json.Marshal(struct {
-		Operation string            `json:"operation"`
-		ID        string            `json:"id"`
-		Status    string            `json:"status"`
-		Summary   string            `json:"summary"`
-		Metadata  map[string]string `json:"metadata"`
-	}{
-		Operation: "update",
-		ID:        id,
-		Status:    "answered",
-		Summary:   updatedSummary,
-		Metadata:  metadata,
-	})
-	if merr != nil {
-		return errorResult("mutate(answer): marshal: " + merr.Error())
-	}
-	if _, uerr := executeMutate(ctx, gc, updateArgs); uerr != nil {
-		return errorResult("mutate(answer): update: " + uerr.Error())
-	}
-	if a.Findings != "" {
-		for fid := range strings.SplitSeq(a.Findings, ",") {
-			fid = strings.TrimSpace(fid)
-			if fid == "" {
-				continue
-			}
-			_ = LinkOne(ctx, gc, fid, id, kgtypes.EdgeAnswers)
-		}
-	}
-	return textResult(fmt.Sprintf("Research answered: %s [graph: knowledge/default]", node.SymbolName))
-}
-
-// isClientRollupContainer returns true for node types that participate
-// in the closure rollup: project, ticket, plan, phase, step.
-// Mirrors projects.closure.go behavior — any container whose
-// descendants should be marked completed when the container is.
-func isClientRollupContainer(t kgtypes.NodeType) bool {
-	switch t {
-	case kgtypes.NodeProject, kgtypes.NodeTicket, kgtypes.NodePlan, kgtypes.NodePhase, kgtypes.NodeStep:
-		return true
-	}
-	return false
-}
-
-// isTerminalForClientRollup mirrors projects.isTerminalForRollup.
+// isTerminalForClientRollup reports whether a status means the node's own work is
+// over, so the cascade leaves it alone. It is the NARROW reading, and nothing on
+// the cascade path reads it directly: isSettledForCascade is the single settled
+// authority — the unevaluated-criterion hold, the partitioner's container branch
+// and its announce branch all test that one — and this predicate is its first
+// disjunct. Widenings land there, never here.
 func isTerminalForClientRollup(status string) bool {
 	switch status {
 	case kgtypes.StatusCompleted, kgtypes.StatusClosed, kgtypes.StatusArchived, kgtypes.StatusSkipped,
@@ -354,19 +320,34 @@ func isTerminalForClientRollup(status string) bool {
 }
 
 // handleClientUpdateStatusRollup walks the contains tree under a.ID, collects
-// the non-terminal descendants the cascade may move — only those whose own type
-// is one of the five container types, since partitionRollupTargets holds every
-// other type back — and issues ONE mutate(update_batch) with status=completed
-// for all of them PLUS the root. The traversal still enumerates the held nodes
-// so the success line can name them.
+// the unsettled descendants the cascade may move — only those whose own type
+// is one of the seven container types AND, when the cascade writes completed,
+// which own no criterion still waiting to be evaluated, since
+// partitionRollupTargets holds every other type back and holds those too — and
+// writes cascadeStatus to all of them plus the caller's own status to the root.
+// The traversal enumerates the held nodes, and carries the contains EDGES the
+// partition needs to attribute a criterion to the node that owns it, so the
+// success line can name them.
+//
+// cascadeStatus is the mapped descendant status the shared claim predicate
+// returned; it is NOT necessarily a.Status. When the two are equal the write is
+// a single batch over the root and its descendants together, which keeps a
+// status-only completed rollup at exactly 2 RPCs (one traverse + one
+// update_batch) regardless of descendant count. When they differ — a "Done"
+// container whose descendants take "completed" — it costs one more UPDATE.
 //
 // A caller may send body fields alongside the status. Those apply to the NAMED
 // node only — cascading a description down a contains tree would be nonsense —
 // so they ride their own by-id UPDATE carrying no status, issued BEFORE the
-// rollup so a failure there is a clean zero-write reject. A status-only rollup
-// skips that write entirely and stays exactly 2 RPCs (one traverse + one
-// update_batch) regardless of descendant count; a combined one costs 3.
-func handleClientUpdateStatusRollup(ctx context.Context, gc GraphCaller, a mutateArgs, _ *knowledgev1.Node) kgtools.ToolResult {
+// rollup so a failure there is a clean zero-write reject. A combined one costs
+// one RPC more again.
+func handleClientUpdateStatusRollup(
+	ctx context.Context,
+	gc GraphCaller,
+	a mutateArgs,
+	_ *knowledgev1.Node,
+	cascadeStatus string,
+) kgtools.ToolResult {
 	fields := rollupNamedNodeFields(a)
 	if len(fields) > 0 {
 		if ferr := applyRollupNamedNodeFields(ctx, gc, a); ferr != nil {
@@ -375,51 +356,29 @@ func handleClientUpdateStatusRollup(ctx context.Context, gc GraphCaller, a mutat
 		}
 	}
 
-	descs, terr := TraverseDescendants(ctx, gc, a.ID, kgtypes.EdgeKGContains, 16)
+	descs, structureEdges, truncated, terr := render.TraverseDescendantsWithEdges(ctx, gc, a.ID, kgtypes.EdgeKGContains, 16)
 	if terr != nil {
 		return rollupFailureResult(a.ID, fields, "rollup traverse", terr)
 	}
-	ids, heldCriteria, heldQuestions, heldOther := partitionRollupTargets(a.ID, descs)
-	bundleID := newBundleID()
-	if uerr := UpdateBatchStatus(ctx, gc, ids, kgtypes.StatusCompleted, bundleID); uerr != nil {
-		return rollupFailureResult(a.ID, fields, "", uerr)
+	// A clamped walk can drop a criterion out of the descendant set, which makes
+	// the node that owns it look criterion-free and cascades it. Refusing is the
+	// only correct disposition; cascading anyway would be a lane that fires
+	// forever on the same cause.
+	if truncated {
+		return rollupFailureResult(a.ID, fields, "rollup traverse", errRollupTraverseTruncated)
 	}
-	msg := rollupStatusMessage(a.ID, ids, heldCriteria, heldQuestions, heldOther)
+	ids, heldCriteria, heldQuestions, heldUnevaluated, heldOther := partitionRollupTargets(a.ID, descs, structureEdges, cascadeStatus)
+	rootWritten, uerr := writeCascadeStatuses(ctx, gc, ids, a.Status, cascadeStatus, newBundleID())
+	if uerr != nil {
+		return cascadeWriteFailureResult(a.ID, fields, rootWritten, uerr)
+	}
+	msg := rollupStatusMessage(a.ID, a.Status, cascadeStatus, ids, heldCriteria, heldQuestions, heldUnevaluated, heldOther)
 	if len(fields) > 0 {
 		// Silent success about the second write would be the same defect in
 		// miniature, so name what else landed.
 		msg += fmt.Sprintf(" — also applied %s to %s", strings.Join(fields, ", "), a.ID)
 	}
 	return textResult(msg)
-}
-
-// rollupNamedNodeFields returns, in a stable order, the names of the body fields
-// the caller supplied alongside the status. An empty result is the status-only
-// rollup, which must stay byte-for-byte the original two-RPC path.
-func rollupNamedNodeFields(a mutateArgs) []string {
-	var names []string
-	if a.Name != "" {
-		names = append(names, "name")
-	}
-	if a.Description != "" {
-		names = append(names, "description")
-	}
-	if a.Summary != "" {
-		names = append(names, "summary")
-	}
-	if a.Content != "" {
-		names = append(names, "content")
-	}
-	if a.Keywords != "" {
-		names = append(names, "keywords")
-	}
-	if a.Source != "" {
-		names = append(names, "source")
-	}
-	if len(a.Metadata) > 0 {
-		names = append(names, "metadata")
-	}
-	return names
 }
 
 // applyRollupNamedNodeFields writes the caller's body fields to the named
@@ -453,18 +412,22 @@ func applyRollupNamedNodeFields(ctx context.Context, gc GraphCaller, a mutateArg
 	return nil
 }
 
-// rollupFailureResult builds the rollup's failure result for the two paths that
-// run AFTER the named-node field write. When no field write was issued there is
-// nothing partial to report and the original messages stand verbatim; once the
-// fields HAVE landed, a bare "traverse failed" would itself be a silent-partial
-// report, so both paths name the id, exactly which fields persisted, and that
-// status reached neither the node nor its descendants.
+// rollupFailureResult builds the rollup's failure result for the paths that run
+// AFTER the named-node field write. BOTH branches name the id and say that status
+// reached neither it nor its descendants: a refusal the caller cannot attribute
+// to a node is not actionable, and the truncation refusal is issued before any
+// status write and, when body fields were supplied, after they landed — which is
+// why it takes the same fields-aware branch as the other two failure paths. Once
+// the fields HAVE landed the message additionally names exactly which of them
+// persisted, because a bare "traverse failed" there would itself be a
+// silent-partial report.
 func rollupFailureResult(id string, fields []string, stage string, err error) kgtools.ToolResult {
 	if len(fields) == 0 {
+		msg := fmt.Sprintf("mutate(update): %v; status reached neither %s nor its descendants", err, id)
 		if stage != "" {
-			return errorResult("mutate(update): " + stage + ": " + err.Error())
+			msg = fmt.Sprintf("mutate(update): %s: %v; status reached neither %s nor its descendants", stage, err, id)
 		}
-		return errorResult("mutate(update): " + err.Error())
+		return errorResult(msg)
 	}
 	return errorResult(fmt.Sprintf(
 		"mutate(update): %s applied to %s, but the status rollup failed: %v; "+

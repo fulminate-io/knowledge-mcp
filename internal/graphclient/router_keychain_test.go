@@ -22,7 +22,7 @@ import (
 func TestRouter_LoggedIn_KeychainOnly(t *testing.T) {
 	localURL, localEng := startCountingEngine(t)
 	cloudURL, cloudEng := startCountingEngine(t)
-	localGC := NewGraphClientForURL(localURL)
+	localGC := closeIdleOnCleanup(t, NewGraphClientForURL(localURL))
 	store := newFakeAuthStore() // empty initially → not logged in
 	as := auth.NewAuthState(store, time.Millisecond)
 	r := NewRouter(localGC, cloudURL, staticTokenSource{tok: "tok"}, as)

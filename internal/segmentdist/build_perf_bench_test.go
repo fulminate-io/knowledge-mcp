@@ -27,11 +27,21 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
-const perfCorpusDocs = 1024 // == MinSegmentDocs: one corpus is one sealed segment.
+// perfCorpusDocs sizes one corpus so the write path derives MORE THAN ONE PARTITION
+// from it, which is what makes this benchmark able to see the per-seal fixed cost at
+// all. BucketCountFor(1024) is 1 — at the previous size the write path's
+// bucketCount<=1 early return fired and the benchmark measured the single-seal path
+// whatever the seal did, producing a confident zero delta. 5000 derives
+// ceil(5000/DefaultMinSegmentDocs)=5, so the count is 8.
+//
+// IT IS A NAMED CONSTANT SO THE DERIVED COUNT STAYS RE-DERIVABLE. Anyone resizing it
+// gets a different partition count from BucketCountFor rather than a stale pinned 8.
+const perfCorpusDocs = 5000
 
 var perfK = []int{8, 32, 64, 128}
 
-// perfCorpus builds one distinct 1024-doc vector corpus for graph index i.
+// perfCorpus builds one distinct perfCorpusDocs-document vector corpus for graph
+// index i.
 func perfCorpus(i int) []searchengine.Document {
 	rng := rand.New(rand.NewPCG(uint64(0x9000+i), uint64(0xA000+i)))
 	docs := make([]searchengine.Document, perfCorpusDocs)
@@ -53,8 +63,8 @@ func makePerfCorpora(k int) [][]searchengine.Document {
 	return corpora
 }
 
-// perfFieldCorpus builds one distinct 1024-doc BM25 field corpus for graph index
-// i — the text-side analog of perfCorpus. Each doc carries a unique symbol-name
+// perfFieldCorpus builds one distinct perfCorpusDocs-document BM25 field corpus for
+// graph index i — the text-side analog of perfCorpus. Each doc carries a unique symbol-name
 // term plus a shared-vocabulary summary body, so postings/docFreq churn during
 // build reflects the production embed-writeback shape (mirrors bm25FieldDocs).
 func perfFieldCorpus(i int) []searchengine.Document {
@@ -88,9 +98,10 @@ func makePerfFieldCorpora(k int) [][]searchengine.Document {
 	return corpora
 }
 
-// BenchmarkDeterministicMarkDirtyAndReEmit writes and re-emits K distinct 1024-doc
-// corpora CONCURRENTLY (one goroutine per corpus, each a distinct graph), each built
-// by the deterministic serial builder. This is the production cross-segment shape.
+// BenchmarkDeterministicMarkDirtyAndReEmit writes and re-emits K distinct
+// perfCorpusDocs-document corpora CONCURRENTLY (one goroutine per corpus, each a
+// distinct graph), each built by the deterministic serial builder. This is the
+// production cross-segment shape.
 //
 // The errors are collected rather than asserted with require, because a require
 // failure calls FailNow, which is only valid on the goroutine running the benchmark.
@@ -102,8 +113,8 @@ func BenchmarkDeterministicMarkDirtyAndReEmit(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for range b.N {
-				_, gc := newSegmentHarness(b)
-				mgr := NewManager(loginStateStub{loggedIn: true}, b.TempDir(), 0, withSegmentSource(gc))
+
+				mgr := NewManager(b.TempDir(), 0)
 				var wg sync.WaitGroup
 				wg.Add(len(corpora))
 				var mu sync.Mutex
@@ -141,8 +152,8 @@ func BenchmarkDeterministicMarkDirtyAndReEmit(b *testing.B) {
 
 // BenchmarkDeterministicMarkDirtyAndReEmitFields is the BM25 analog of
 // BenchmarkDeterministicMarkDirtyAndReEmit: it writes and re-emits K distinct
-// 1024-doc field corpora CONCURRENTLY (one goroutine per corpus, each a distinct
-// graph), driving the REAL write path — AddAndMarkDirtyFields (engine.Add +
+// perfCorpusDocs-document field corpora CONCURRENTLY (one goroutine per corpus, each
+// a distinct graph), driving the REAL write path — AddAndMarkDirtyFields (engine.Add +
 // force-seal) then ReEmitDirtyBuckets (bm25.Build → Encode → content-hash → ship).
 // The reported allocs/op + alloc/op reflect the BM25 build+Encode cost on the
 // production embed-writeback path. Single-arm absolute numbers (BM25 has one engine
@@ -160,8 +171,8 @@ func BenchmarkDeterministicMarkDirtyAndReEmitFields(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for range b.N {
-				_, gc := newSegmentHarness(b)
-				mgr := NewManager(loginStateStub{loggedIn: true}, b.TempDir(), 0, withSegmentSource(gc))
+
+				mgr := NewManager(b.TempDir(), 0)
 				var wg sync.WaitGroup
 				wg.Add(len(corpora))
 				var mu sync.Mutex

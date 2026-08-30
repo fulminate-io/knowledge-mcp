@@ -75,21 +75,27 @@ type RebuildOutcome struct {
 	// was the only number reported.
 	HNSWPruned []searchengine.SegmentID
 	BM25Pruned []searchengine.SegmentID
-	// Published reports whether the manifest swap LANDED — for BOTH formats, since
-	// they carry separate manifests over the same nodes. False with a nil error means
-	// the blobs shipped but the live set was never swapped: the corpus is NOT restored.
+	// Published reports whether the layer swap LANDED — for BOTH formats, since they
+	// index the same nodes independently. False with a nil error means the segments
+	// were written but the live set was never swapped: the corpus is NOT restored.
 	Published bool
-	// PublishedManifest is how many entries the HNSW manifest holds, READ BACK FROM
-	// THE SOURCE after a FULL/RESET rebuild's swap landed. It is -1 when not measured:
-	// an incremental run (where the invariant does not apply), a run whose publish did
-	// not swap, or a read-back that failed. A non-negative value BELOW Built is the
-	// short-manifest condition, and the driver WARNs on it.
+	// ResidentSegmentCount is how many sealed HNSW segments the engine HOLDS after a
+	// FULL/RESET rebuild's swap landed. It is -1 when not measured: an incremental run
+	// (where the invariant does not apply) or a run whose swap did not land. A
+	// non-negative value BELOW Built is the short-set condition, and the driver WARNs
+	// on it.
 	//
-	// THE HNSW ARM IS THE ONE READ. The deterministic rebuild publishes the HNSW
-	// manifest as its own resident Export — exactly the buckets it built — while the
-	// BM25 engine is SHARED with the embed path and legitimately carries extra sealed
-	// tails, so comparing that arm to a build count would fail correct work.
-	PublishedManifest int
+	// IT REPLACED A PUBLISHED-MANIFEST CARDINALITY, read back from the server. The
+	// operand changed but the QUESTION did not: is the live set short of what this
+	// run's corpus derives? Built is that derivation (BucketCountFor over the scanned
+	// corpus), so the pair remains two independent numbers rather than one number
+	// compared against itself.
+	//
+	// THE HNSW ARM IS THE ONE READ. The reset builds the HNSW layer as exactly the
+	// buckets it derived, while the BM25 engine is SHARED with the embed path and
+	// legitimately carries extra sealed tails, so comparing that arm to a build count
+	// would fail correct work.
+	ResidentSegmentCount int
 }
 
 // RebuildSegments is the REUSABLE driver core both the manual manage(rebuild_segments)
@@ -200,7 +206,7 @@ func RebuildSegments(
 		// Published stays false for the same reason: no manifest swap happened.
 		// The ids reported this pass are re-reported by the next scan for the same
 		// reason.
-		return RebuildOutcome{Ran: true, PublishedManifest: manifestCardinalityUnmeasured}, nil
+		return RebuildOutcome{Ran: true, ResidentSegmentCount: derivedBucketCardinalityUnmeasured}, nil
 	}
 
 	// WHICH FINALIZE THIS RUN GETS, and the question is whether the items in hand ARE
@@ -211,12 +217,16 @@ func RebuildSegments(
 	corpusComplete := reset || watermark == 0
 
 	if !corpusComplete {
-		out, applicable, derr := runDeltaRebuild(ctx, shipper, gt, name, items)
+		out, emittedBucketCount, applicable, derr := runDeltaRebuild(ctx, shipper, gt, name, items)
 		if derr != nil {
 			return RebuildOutcome{}, derr
 		}
 		if applicable {
-			return finishRebuild(shipper, gt, name, out, false, watermark, servedHorizon, carried, items)
+			// The count the re-emit ran at, reported by the delta itself: it is derived
+			// from the RESIDENT corpus, not from this window, and the trim is wrong
+			// under any other.
+			return finishRebuild(
+				shipper, gt, name, out, false, watermark, servedHorizon, carried, items, emittedBucketCount)
 		}
 		// NOT APPLICABLE — and the recovery must RE-SCAN, not reuse what is in hand.
 		// These items are the watermark-scoped delta; driving the from-scratch path with
@@ -236,15 +246,28 @@ func RebuildSegments(
 		carried = unionTombstones(retained, tombstoned)
 		shipper.SetGraphTombstones(gt, name, carried)
 		if len(items) == 0 {
-			return RebuildOutcome{Ran: true, PublishedManifest: manifestCardinalityUnmeasured}, nil
+			return RebuildOutcome{Ran: true, ResidentSegmentCount: derivedBucketCardinalityUnmeasured}, nil
 		}
+		// The re-scan above went from a ZERO watermark, so the items now in hand ARE the
+		// corpus even though this run did not start out corpus-complete. Nothing
+		// downstream is told that any more — the finalize decides from the resident set
+		// it can see — but the fact is what makes the fallback safe, and
+		// TestFullReScanPutsAZeroOnTheWire is where it is asserted, on the watermark this
+		// re-scan puts on the wire.
 	}
 
 	out, err := runCorpusCompleteRebuild(ctx, shipper, gt, name, items)
 	if err != nil {
 		return RebuildOutcome{}, err
 	}
-	return finishRebuild(shipper, gt, name, out, reset, watermark, servedHorizon, carried, items)
+	// count-provenance: corpus-derived — this arm is reached only when corpusComplete
+	// holds (or after the fallback re-scan from a zero watermark), so items IS the
+	// corpus, and this is the same expression buildAndAddRebuildSegments grouped the
+	// partitions under. Computing it at the call site is what makes that agreement
+	// visible rather than assumed.
+	return finishRebuild(
+		shipper, gt, name, out, reset, watermark, servedHorizon, carried, items,
+		searchengine.BucketCountFor(len(items)))
 }
 
 // runCorpusCompleteRebuild is the FROM-SCRATCH finalize: stage this run's partitions,
@@ -257,12 +280,57 @@ func RebuildSegments(
 // where the two-engine shape needed a reset step to pin the outgoing layer and drop a
 // staging engine before the first write, and published the union of both layers whenever
 // a write beat it.
+//
+// IT TAKES NO CORPUS-COMPLETE CLAIM ANY MORE, and the removal is the point rather than
+// an omission. The claim used to travel from the one place that chose the scan's
+// watermark down to the finalize, which decided from it whether the built layer outranked
+// the PRIOR MANIFEST's summed doc count. There is no prior manifest and no such
+// comparison — FinalizeRebuild takes (ctx, gt, name) and nothing else — so the argument
+// arrived here and went nowhere. A parameter that is threaded, documented and never read
+// is worse than no parameter: every reader spends the same effort on it, and the doc
+// keeps asserting a gate that no longer exists.
+//
+// WHAT REPLACED THE GATE IS LOCAL. The finalize builds each format's layer aside and
+// refuses a prospective layer that would retire a populated one in favour of nothing,
+// which it decides from the resident set it can see — no second authority, and so no
+// claim to be told.
 func runCorpusCompleteRebuild(
-	ctx context.Context, shipper SegmentShipper, gt kgtypes.GraphType, name string, items []rebuildSegItem,
+	ctx context.Context, shipper SegmentShipper, gt kgtypes.GraphType, name string,
+	items []rebuildSegItem,
 ) (RebuildOutcome, error) {
-	built, partial, err := buildAndAddRebuildSegments(ctx, shipper, gt, name, items)
+	built, partial, stagedBM25, err := buildAndAddRebuildSegments(ctx, shipper, gt, name, items)
 	if err != nil {
 		return RebuildOutcome{}, fmt.Errorf("build failed (no segments shipped — re-run to retry): %w", err)
+	}
+
+	// RESET THE BM25 ARM'S FEED CURSOR BEFORE THE SWAP, whenever this run stages BM25
+	// work. The layer about to be swapped in was built from a VECTOR-GATED scan, so it
+	// holds nothing for a node that is embed-eligible but not yet embedded — while the
+	// arm's cursor is already past those nodes. Their later embed writeback does not
+	// move updated_at and the embed axis no longer ships BM25, so without this reset
+	// their keyword documents are gone until their TEXT changes, which on a stable
+	// corpus is never.
+	//
+	// BEFORE, NOT AFTER, and every window is safe under that order: crash after the
+	// reset and before the swap leaves a zero cursor against the OLD layer (next tick
+	// re-drains — redundant, correct); crash after the swap leaves a zero cursor
+	// against the NEW layer (next tick re-drains and re-establishes exactly what the
+	// swap dropped). The after-ordering has a window where the cursor is ahead of the
+	// engine's documents and the loss is permanent.
+	//
+	// A FAILED RESET ABORTS THE RUN rather than warning and continuing. Swapping the
+	// layer with a stale cursor still standing is the precise state this reset exists
+	// to prevent, and it is not self-healing: no later pass re-derives the position.
+	// Aborting before the finalize leaves the OLD layer serving and the OLD cursor
+	// consistent with it, which is a re-runnable state rather than a lossy one.
+	//
+	// stagedBM25 IS THE TRIGGER, NOT RebuildFinalizeResult.Swapped — see
+	// buildAndAddRebuildSegments for why that flag can be true with no layer swap.
+	if stagedBM25 {
+		if rerr := shipper.ResetBM25Cursors(gt, name); rerr != nil {
+			return RebuildOutcome{}, fmt.Errorf(
+				"bm25 cursor reset failed before the layer swap (no segments swapped — re-run to retry): %w", rerr)
+		}
 	}
 
 	// FINALIZE: the ONE serial build-aside + ship + gate + swap + publish, per format.
@@ -280,7 +348,7 @@ func runCorpusCompleteRebuild(
 	out := RebuildOutcome{
 		Ran: true, Scanned: len(items), Built: built, Partial: partial,
 		HNSWPruned: res.HNSWSuperseded, BM25Pruned: res.BM25Superseded, Published: res.Swapped,
-		PublishedManifest: manifestCardinalityUnmeasured,
+		ResidentSegmentCount: derivedBucketCardinalityUnmeasured,
 	}
 
 	// CARDINALITY READ-BACK, CORPUS-COMPLETE RUNS ONLY. A DELTA rebuild legitimately
@@ -289,9 +357,11 @@ func runCorpusCompleteRebuild(
 	// buckets ARE the whole corpus — which a zero-watermark run is just as much as an
 	// explicit reset.
 	//
-	// IT READS THE MANIFEST BACK FROM THE SOURCE. Comparing `built` against anything
-	// derived in this process is an identity — it cannot fail for the reason the check
-	// exists. Only what the server actually published can disagree.
+	// IT COMPARES THE DERIVATION AGAINST THE PRESENT SET. `built` is BucketCountFor
+	// over the scanned corpus — how many partitions that corpus should occupy — and
+	// the engine reports how many it holds. Comparing `built` against a number the
+	// same run reported ABOUT ITSELF would be an identity that cannot fail for the
+	// reason the check exists; these two are not that.
 	//
 	// WHAT IT IS AND IS NOT FOR. The 32-of-128 event was NOT a short manifest: the
 	// client's partial L2 cache was the truncation, and that claim is an INFERENCE
@@ -300,7 +370,7 @@ func runCorpusCompleteRebuild(
 	// UNVERIFIABLE, not because it was wrong, and it prospectively closes the earlier
 	// unexplained 8-blob rebuild that nothing on this path could check at all.
 	if res.Swapped {
-		out.PublishedManifest = readBackManifestCardinality(ctx, shipper, gt, name, built)
+		out.ResidentSegmentCount = readResidentSegmentCardinality(shipper, gt, name, built)
 	}
 	return out, nil
 }
@@ -319,10 +389,13 @@ func runCorpusCompleteRebuild(
 // The horizon is SERVER-SERVED for the same class of reason: a client clock can read
 // the same instant as the writes it is meant to exclude, and the server's strict
 // after-comparison would then drop exactly those rows.
+// emittedBucketCount is named for WHICH count it is, because the trim below is only
+// correct under the count this run's re-emit actually ran at — each arm supplies its
+// own, and neither can be re-derived here from the items in hand.
 func finishRebuild(
 	shipper SegmentShipper, gt kgtypes.GraphType, name string,
 	out RebuildOutcome, reset bool, watermark, servedHorizon int64,
-	carried []searchengine.ExternalID, items []rebuildSegItem,
+	carried []searchengine.ExternalID, items []rebuildSegItem, emittedBucketCount int,
 ) (RebuildOutcome, error) {
 	// OPERATOR-VISIBLE COMPLETION LINE. The rebuild runs inside the MCP client
 	// intercept chain, which emitted exactly three lines for a 78-second run that
@@ -336,7 +409,7 @@ func finishRebuild(
 		"scanned", out.Scanned, "built", out.Built, "partial", out.Partial,
 		"published", out.Published,
 		"hnsw_pruned", len(out.HNSWPruned), "bm25_pruned", len(out.BM25Pruned),
-		"published_manifest", out.PublishedManifest)
+		"resident_segments", out.ResidentSegmentCount)
 
 	if !out.Published {
 		slog.Warn("rebuild_segments: publish did not swap the manifest — watermark held (the window is re-scanned next pass)",
@@ -345,7 +418,8 @@ func finishRebuild(
 	}
 	// The swap landed, so the partitions this run emitted no longer carry the ids it
 	// dropped: retain only the tombstones whose partition was NOT re-emitted.
-	if serr := shipper.SaveRebuildState(gt, name, servedHorizon, retainTombstones(carried, items)); serr != nil {
+	if serr := shipper.SaveRebuildState(
+		gt, name, servedHorizon, retainTombstones(carried, items, emittedBucketCount)); serr != nil {
 		// The corpus IS published; only the record failed. Report it and keep the old
 		// watermark, which costs a re-scan of the same window and loses nothing.
 		slog.Warn("rebuild_segments: publish landed but the rebuild state could not be persisted — the window will be re-scanned",
@@ -355,39 +429,46 @@ func finishRebuild(
 	return out, nil
 }
 
-// manifestCardinalityUnmeasured is RebuildOutcome.PublishedManifest's "no reading"
-// value. It is negative rather than zero because ZERO IS A REAL AND ALARMING
-// READING — a manifest holding no entries at all — and collapsing "we did not look"
-// into it would hide the worst case behind the commonest one.
-const manifestCardinalityUnmeasured = -1
+// derivedBucketCardinalityUnmeasured is RebuildOutcome.ResidentSegmentCount's "no
+// reading" value. It is negative rather than zero because ZERO IS A REAL AND ALARMING
+// READING — an engine holding no sealed segments at all — and collapsing "we did not
+// look" into it would hide the worst case behind the commonest one.
+const derivedBucketCardinalityUnmeasured = -1
 
-// readBackManifestCardinality reads the published HNSW manifest back from the
-// source and reports its entry count, WARNing when it holds fewer entries than the
-// run reported building.
+// readResidentSegmentCardinality reads how many sealed HNSW segments the engine HOLDS
+// after the swap and reports it, WARNing when it holds fewer than the corpus DERIVES.
 //
-// SHORTER IS THE FAULT; LONGER IS NOT. A manifest with MORE entries than this run
-// built is ordinary — the embed path publishes the union of its own resident set
-// with the deterministic engine's, so an embed ship landing between the swap and
-// this read legitimately grows it. Only a SHORT manifest means content this run
-// built is not referenced by the live set.
+// THE TWO OPERANDS COME FROM DIFFERENT PLACES, which is the whole reason this is a
+// gate rather than a formality. `built` is searchengine.BucketCountFor over the
+// scanned corpus — a DERIVATION saying how many partitions that corpus should occupy.
+// `present` is what the engine actually holds. They diverge when a bucket failed to
+// build or a swap landed short.
 //
-// A FAILED READ-BACK IS NOT A FAILED REBUILD. The corpus is already published at
-// this point; refusing the run because a verification read failed would discard
-// work that landed. The failure is logged and the cardinality reported unmeasured.
-func readBackManifestCardinality(
-	ctx context.Context, shipper SegmentShipper, gt kgtypes.GraphType, name string, built int,
+// ITS PREDECESSOR READ A SERVER MANIFEST, and the swap had to be made carefully. That
+// version's own doc said comparing `built` against anything derived in-process "is an
+// identity — it cannot fail for the reason the check exists". A naive local
+// substitution — comparing the build count against a number the same run reported
+// about itself — would have created exactly that identity and left a check that reads
+// as coverage while being incapable of failing. Derived-versus-present is not that:
+// neither side is the other's restatement.
+//
+// SHORTER IS THE FAULT; LONGER IS NOT. An engine holding MORE segments than the
+// derivation predicts is ordinary — an embed drain sealing a tail between the swap
+// and this read legitimately grows it. Only a SHORT set means content this run built
+// is not in the live set.
+//
+// IT CANNOT FAIL, so unlike its predecessor it has no unmeasured path of its own: the
+// read is one atomic snapshot load. The unmeasured sentinel survives for the caller's
+// "did not look" case only.
+func readResidentSegmentCardinality(
+	shipper SegmentShipper, gt kgtypes.GraphType, name string, built int,
 ) int {
-	published, err := shipper.PublishedManifestCount(ctx, gt, name, hnsw.New().Name())
-	if err != nil {
-		slog.Debug("rebuild_segments: manifest cardinality read-back unavailable (rebuild unaffected)",
-			"graph_type", gt, "name", name, "built", built, "err", err)
-		return manifestCardinalityUnmeasured
-	}
-	if published < built {
-		slog.Warn("rebuild_segments: the PUBLISHED manifest holds FEWER entries than this full rebuild built — "+
-			"content that was built is not referenced by the live set",
+	present := shipper.ResidentSegmentCount(gt, name, hnsw.New().Name())
+	if present < built {
+		slog.Warn("rebuild_segments: the engine holds FEWER sealed segments than this full rebuild's corpus derives — "+
+			"content that was built is not in the live set",
 			"graph_type", gt, "name", name, "format", hnsw.New().Name(),
-			"built", built, "published_manifest", published)
+			"derived", built, "resident_segments", present)
 	}
-	return published
+	return present
 }

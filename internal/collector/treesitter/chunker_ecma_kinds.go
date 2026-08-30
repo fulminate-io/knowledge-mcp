@@ -45,6 +45,10 @@ const (
 	ecmaKindFunctionDeclaration
 	ecmaKindFunctionExpression
 	ecmaKindArrowFunction
+	ecmaKindFormalParameters
+	ecmaKindAssignmentExpression
+	ecmaKindArguments
+	ecmaKindReturnStatement
 )
 
 // tsKindNames maps every typescript node-kind spelling the ECMAScript arms name
@@ -101,6 +105,10 @@ var tsKindNames = map[string]uint8{
 	"function_declaration":       ecmaKindFunctionDeclaration,
 	"function_expression":        ecmaKindFunctionExpression,
 	"arrow_function":             ecmaKindArrowFunction,
+	"formal_parameters":          ecmaKindFormalParameters,
+	"assignment_expression":      ecmaKindAssignmentExpression,
+	"arguments":                  ecmaKindArguments,
+	"return_statement":           ecmaKindReturnStatement,
 }
 
 // tsxKindNames is the SAME MAP VALUE, not a copy: the tsx grammar declares every
@@ -128,21 +136,25 @@ var tsxKindNames = tsKindNames
 // javascript class's name is an `identifier` rather than a `type_identifier`.
 // Both differences are read by the arms rather than papered over.
 var jsKindNames = map[string]uint8{
-	"class_declaration":    ecmaKindClassDeclaration,
-	"class":                ecmaKindClassExpression,
-	"class_body":           ecmaKindClassBody,
-	"class_heritage":       ecmaKindClassHeritage,
-	"method_definition":    ecmaKindMethodDefinition,
-	"field_definition":     ecmaKindFieldDefinition,
-	"variable_declarator":  ecmaKindVariableDeclarator,
-	"new_expression":       ecmaKindNewExpression,
-	"call_expression":      ecmaKindCallExpression,
-	"member_expression":    ecmaKindMemberExpression,
-	"identifier":           ecmaKindIdentifier,
-	"property_identifier":  ecmaKindPropertyIdentifier,
-	"function_declaration": ecmaKindFunctionDeclaration,
-	"function_expression":  ecmaKindFunctionExpression,
-	"arrow_function":       ecmaKindArrowFunction,
+	"class_declaration":     ecmaKindClassDeclaration,
+	"class":                 ecmaKindClassExpression,
+	"class_body":            ecmaKindClassBody,
+	"class_heritage":        ecmaKindClassHeritage,
+	"method_definition":     ecmaKindMethodDefinition,
+	"field_definition":      ecmaKindFieldDefinition,
+	"variable_declarator":   ecmaKindVariableDeclarator,
+	"new_expression":        ecmaKindNewExpression,
+	"call_expression":       ecmaKindCallExpression,
+	"member_expression":     ecmaKindMemberExpression,
+	"identifier":            ecmaKindIdentifier,
+	"property_identifier":   ecmaKindPropertyIdentifier,
+	"function_declaration":  ecmaKindFunctionDeclaration,
+	"function_expression":   ecmaKindFunctionExpression,
+	"arrow_function":        ecmaKindArrowFunction,
+	"formal_parameters":     ecmaKindFormalParameters,
+	"assignment_expression": ecmaKindAssignmentExpression,
+	"arguments":             ecmaKindArguments,
+	"return_statement":      ecmaKindReturnStatement,
 }
 
 // The three memo instances, on the shared kindTable rather than a per-language

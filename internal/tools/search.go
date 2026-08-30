@@ -8,12 +8,9 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/config"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
-	"github.com/fulminate-io/knowledge-mcp/internal/rerank"
 )
 
 // InterceptSearch is the cmd/knowledge client's "search" interceptor.
@@ -38,11 +35,11 @@ import (
 //     the bytes are forwarded via the query_vector wire field. The server's
 //     compositor short-circuits its own embed call, so servers without a
 //     Voyage key still return vector-quality results.
-//  3. Client-side rerank. When [credentials] voyage_api_key
-//     is configured AND the resolved mode is not BM25-only, this interceptor
-//     widens limit + coerces format=json on the wire, calls the server,
-//     hydrates the JSON response, invokes the moved
-//     cmd/knowledge/internal/rerank package's Voyage reranker locally, and
+//  3. Client-side rerank. When the resolved [reranker] axis has a
+//     credential (or a keyless base_url) AND the resolved mode is not
+//     BM25-only, this interceptor widens limit + coerces format=json on the
+//     wire, calls the server, hydrates the JSON response, invokes the
+//     configured reranker locally through the rerank registry, and
 //     re-renders for the caller.
 //  4. Mode honoring. The declared `mode` selects which retrieval arms run.
 //     mode:text suppresses BOTH pre-steps above and refuses a payload that
@@ -117,11 +114,14 @@ func interceptSearchArms(ctx context.Context, deps ClientDeps, params kgtools.Ca
 	}
 	// For completeness: the SEARCH tool is a SEPARATE client
 	// compile path from the query tool. engine.compileSearch is reducible for
-	// practice/cloud/cicd/linkage/web/pdf and would dispatch RETURN_MODE_SEARCH to
-	// the server. Claim each of those reducible graphs here — practice/cloud/cicd
-	// served by the client engine, linkage/web/pdf ranked search retired — so the
-	// SEARCH tool emits no RETURN_MODE_SEARCH for ANY reducible graph. Only the
-	// knowledge/default arm (and graph=logs/code above) flows past this point.
+	// practice/cloud/cicd/linkage/web/pdf/transformers/checks and would dispatch
+	// RETURN_MODE_SEARCH to the server. Claim each of those reducible graphs there
+	// (intercept_search_reducible_graph.go) — practice/cloud/cicd served by the
+	// client segment engine, web/pdf by the client-computed BM25 read over the
+	// drained raw graph, and linkage/transformers/checks refused by name because
+	// they carry no ranked index — so the SEARCH tool emits no RETURN_MODE_SEARCH
+	// for ANY reducible graph. Only the knowledge/default arm (and graph=logs/code
+	// above) flows past this point.
 	if handled, res := interceptSearchReducibleGraph(ctx, deps, sniff.Graph, params.Arguments); handled {
 		return true, res
 	}
@@ -145,17 +145,20 @@ func interceptSearchArms(ctx context.Context, deps ClientDeps, params kgtools.Ca
 		}
 	}
 
-	voyageKey := config.VoyageAPIKey()
 	// The rerank decision, including the caller's explicit rerank:false opt-out
-	// and the mode suppression. Extracted as a pure predicate so the key is an
-	// argument a test can choose rather than an ambient value it inherits.
-	hasReranker := searchRerankActive(voyageKey != "", searchRerankParam(params.Arguments), bm25Only)
+	// and the mode suppression. Extracted as a pure predicate so the credential
+	// presence is an argument a test can choose rather than an ambient value it
+	// inherits. The credential is resolved from the [reranker] axis's OWN
+	// provider, so an operator reranking on a different provider than they
+	// embed with is read correctly.
+	rerankReady := rerankCredentialPresent()
+	hasReranker := searchRerankActive(rerankReady, searchRerankParam(params.Arguments), bm25Only)
 	expanded, saved, hasRewrite, err := rewriteSearchArgs(params.Arguments, hasReranker)
 	if err != nil {
 		return true, errorResult("rewrite search args: " + err.Error())
 	}
 	slog.Debug("rerank-trace: InterceptSearch gate",
-		"graph", sniff.Graph, "voyage_key_len", len(voyageKey),
+		"graph", sniff.Graph, "rerank_credential", rerankReady,
 		"has_reranker", hasReranker, "has_rewrite", hasRewrite)
 
 	// Embed query text client-side when an embedder is wired and the
@@ -168,9 +171,9 @@ func interceptSearchArms(ctx context.Context, deps ClientDeps, params kgtools.Ca
 	}
 	// Suppressed entirely under a BM25-only mode: not called, rather than called
 	// and discarded. On a metered embedder the difference is billed.
-	embedded, didEmbed := args, false
-	if !bm25Only {
-		embedded, didEmbed = maybeEmbedQuery(ctx, deps.Embedder(), args)
+	embedded, didEmbed, embedErr := embedKnowledgeQuery(ctx, deps, args, bm25Only)
+	if embedErr != nil {
+		return true, errorResult(embedErr.Error())
 	}
 	slog.Debug("rerank-trace: post-embed",
 		"did_embed", didEmbed, "bm25_only", bm25Only, "embedder_nil", deps.Embedder() == nil)
@@ -220,7 +223,7 @@ func interceptSearchArms(ctx context.Context, deps ClientDeps, params kgtools.Ca
 	}
 	slog.Debug("rerank-trace: invoking applyClientRerank",
 		"pool_size", widePoolSize, "top_k", widePoolTopK)
-	reranker := rerank.NewVoyage(voyageKey, widePoolSize, widePoolTopK)
+	reranker := buildReranker(ctx, widePoolSize, widePoolTopK)
 	return true, applyClientRerank(ctx, resp, saved, reranker)
 }
 
@@ -336,93 +339,6 @@ func interceptSearchSimilar(ctx context.Context, deps ClientDeps, sniff searchAr
 		k = knowledgeSearchDefaultLimit
 	}
 	return true, composeSimilarNodeSearch(ctx, gc, mgr, res, sniff.NodeID, k, sniff.Format, sniff.Fields)
-}
-
-// searchReducibleArgs is the slice of the search payload the completeness arms
-// read: the graph instance key (account) + the query text. Mirrors the
-// engine.searchArgs fields compileSearch consumes for these graphs.
-type searchReducibleArgs struct {
-	Query   string   `json:"query"`
-	Queries []string `json:"queries"`
-	Account string   `json:"account"`
-	// Format is threaded into the practice/resource composers so the SEARCH-tool
-	// reducible arms honor format:"json" (engine.RenderForCaller) like the
-	// query-tool arms do.
-	Format string `json:"format"`
-}
-
-// searchReducibleQueryText picks the search text from the query/queries fields.
-func searchReducibleQueryText(a searchReducibleArgs) string {
-	if a.Query != "" {
-		return a.Query
-	}
-	if len(a.Queries) > 0 {
-		return strings.Join(a.Queries, " ")
-	}
-	return ""
-}
-
-// interceptSearchReducibleGraph claims the SEARCH-tool arms for the reducible
-// graphs OTHER than knowledge/code/logs: practice/cloud/cicd are served by the
-// CLIENT engine; linkage/web/pdf ranked search is RETIRED. Returns (false,_) for
-// any other graph (knowledge/default flows past to the embed/rerank tail). NO
-// server RETURN_MODE_SEARCH is emitted for any claimed graph.
-func interceptSearchReducibleGraph(ctx context.Context, deps ClientDeps, graph string, raw json.RawMessage) (bool, kgtools.ToolResult) {
-	switch graph {
-	case "practice", "cloud", "cicd", "linkage", "web", "pdf":
-	default:
-		// A registered CUSTOM graph (non-empty, non-builtin) is claimed here and
-		// served by the CLIENT segment engine — its shipped segments ARE the index
-		// (the server RETURN_MODE_SEARCH path is retired and returns 0 hits for these
-		// graphs). knowledge/code/logs are handled upstream in InterceptSearch, so a
-		// non-builtin graph reaching this default is a registered custom type. Decode
-		// searchArgs (NOT searchReducibleArgs — the custom-graph instance key is the
-		// Name field, which searchReducibleArgs lacks) for the (name, query) pair.
-		// Anything still empty/builtin falls through to the knowledge/default tail.
-		if graph == "" || kgtypes.IsBuiltinGraphType(graph) {
-			return false, kgtools.ToolResult{}
-		}
-		var ca searchArgs
-		if err := json.Unmarshal(raw, &ca); err != nil {
-			return true, errorResult(graph + " search: decode args: " + err.Error())
-		}
-		// Decode the SAME raw payload a second time into segmentSearchArgs — what
-		// composeKnowledgeSearch does for the knowledge arm — so both tools' segment
-		// arms read the same wire fields (types, limit, fields, format, mode)
-		// through the same struct and cannot disagree about which params exist.
-		// searchArgs is NOT widened for this: it is the client-side mirror of the
-		// server search struct, and bending it to one arm's needs breaks the mirror.
-		var sa segmentSearchArgs
-		if err := json.Unmarshal(raw, &sa); err != nil {
-			return true, errorResult(graph + " search: decode args: " + err.Error())
-		}
-		// The queries[] merge differs from the decoded query field whenever the
-		// caller sent `queries`, so it overrides Query rather than riding along.
-		sa.Query = searchReducibleQueryText(searchReducibleArgs{Query: ca.Query, Queries: ca.Queries})
-		return true, composeRegisteredGraphSearch(ctx, deps, deps.SegmentManager(),
-			kgtypes.GraphType(graph), ca.Name, sa)
-	}
-
-	var a searchReducibleArgs
-	if err := json.Unmarshal(raw, &a); err != nil {
-		return true, errorResult(graph + " search: decode args: " + err.Error())
-	}
-	query := searchReducibleQueryText(a)
-
-	switch graph {
-	case "practice":
-		// The search tool ALWAYS fans across every loaded practice graph: a
-		// scatter-gather over all languages (kills the silent-0 that
-		// mgr.Search(GraphPractice,"all",…) would otherwise return). Any passed
-		// language is ignored on the SEARCH path — there is no single-graph branch.
-		return true, composePracticeSearchFanOut(ctx, deps, deps.SegmentManager(), query, a.Format)
-	case "cloud":
-		return true, composeResourceSearchClient(ctx, deps, deps.SegmentManager(), cloudGraphKind, a.Account, query, a.Format)
-	case "cicd":
-		return true, composeResourceSearchClient(ctx, deps, deps.SegmentManager(), cicdGraphKind, a.Account, query, a.Format)
-	default: // linkage / web / pdf — ranked search retired.
-		return true, rankedSearchRetiredResult(graph)
-	}
 }
 
 // maybeEmbedQuery decodes args into a generic map, embeds the "query"

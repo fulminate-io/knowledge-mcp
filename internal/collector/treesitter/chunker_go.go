@@ -13,7 +13,7 @@ import (
 // extractGoReceiver returns the receiver type name from a method declaration.
 // Handles pointer receivers: *Type → Type.
 func extractGoReceiver(node *sitter.Node, src []byte) string {
-	if node.Type() != "method_declaration" {
+	if goKinds().class(node.Symbol()) != goKindMethodDeclaration {
 		return ""
 	}
 
@@ -44,15 +44,15 @@ func extractGoReceiver(node *sitter.Node, src []byte) string {
 // type_parameter_list beside the name, but the `name:` FIELD still binds the
 // type_identifier, so the field read is unaffected by the sibling.
 func goInterfaceParentName(declNode *sitter.Node, src []byte) string {
-	if declNode == nil || declNode.Type() != "method_elem" {
+	if declNode == nil || goKinds().class(declNode.Symbol()) != goKindMethodElem {
 		return ""
 	}
 	ifaceNode := declNode.Parent()
-	if ifaceNode == nil || ifaceNode.Type() != "interface_type" {
+	if ifaceNode == nil || goKinds().class(ifaceNode.Symbol()) != goKindInterfaceType {
 		return ""
 	}
 	specNode := ifaceNode.Parent()
-	if specNode == nil || specNode.Type() != "type_spec" {
+	if specNode == nil || goKinds().class(specNode.Symbol()) != goKindTypeSpec {
 		return ""
 	}
 	nameNode := specNode.ChildByFieldName("name")
@@ -63,8 +63,11 @@ func goInterfaceParentName(declNode *sitter.Node, src []byte) string {
 }
 
 // findTypeIdentifier recursively finds the first type_identifier in a subtree.
+//
+// It classifies by symbol for the reason findNodeByKind records: this is a
+// whole-subtree descent, so a string comparison allocates once per node visited.
 func findTypeIdentifier(node *sitter.Node, src []byte) string {
-	if node.Type() == "type_identifier" {
+	if goKinds().class(node.Symbol()) == goKindTypeIdentifier {
 		return node.Content(src)
 	}
 	for i := range int(node.ChildCount()) {
@@ -90,17 +93,17 @@ func qualifiedTypeName(node *sitter.Node, src []byte) string {
 	if node == nil {
 		return ""
 	}
-	switch node.Type() {
-	case "qualified_type":
+	switch goKinds().class(node.Symbol()) {
+	case goKindQualifiedType:
 		return node.Content(src)
-	case "pointer_type":
+	case goKindPointerType:
 		// `*pkg.Base` — the star is not part of the target name. The grammar
 		// attaches no field name to the pointee, so it is the first named
 		// child.
 		if node.NamedChildCount() > 0 {
 			return qualifiedTypeName(node.NamedChild(0), src)
 		}
-	case "generic_type":
+	case goKindGenericType:
 		// `pkg.Base[T]` embeds pkg.Base; the type arguments are references of
 		// their own and are captured separately as type references.
 		if base := node.ChildByFieldName("type"); base != nil {
@@ -132,12 +135,13 @@ func extractGoEmbeds(node *sitter.Node, src []byte) []string {
 	if spec == nil {
 		return nil
 	}
+	classes := goKinds()
 	structNode := spec.ChildByFieldName("type")
-	if structNode == nil || structNode.Type() != "struct_type" {
+	if structNode == nil || classes.class(structNode.Symbol()) != goKindStructType {
 		return nil
 	}
 
-	fieldListNode := findNodeByType(structNode, "field_declaration_list")
+	fieldListNode := findNodeByKind(structNode, goKindFieldDeclarationList)
 	if fieldListNode == nil {
 		return nil
 	}
@@ -145,7 +149,7 @@ func extractGoEmbeds(node *sitter.Node, src []byte) []string {
 	var embeds []string
 	for i := range int(fieldListNode.NamedChildCount()) {
 		field := fieldListNode.NamedChild(i)
-		if field.Type() != "field_declaration" {
+		if classes.class(field.Symbol()) != goKindFieldDeclaration {
 			continue
 		}
 
@@ -190,13 +194,22 @@ func extractGoSignature(node *sitter.Node, src []byte) string {
 	return ""
 }
 
-// findNodeByType finds the first descendant node with the given type.
-func findNodeByType(node *sitter.Node, nodeType string) *sitter.Node {
-	if node.Type() == nodeType {
+// findNodeByKind finds the first descendant node of the given kind class.
+//
+// IT CLASSIFIES BY SYMBOL BECAUSE IT IS A WHOLE-SUBTREE DESCENT. The string
+// form it replaced asked node.Type() once per node visited, and Type() is
+// C.GoString(C.ts_node_type) in the vendored binding — one freshly allocated Go
+// string per node, to answer a question a scalar comparison answers. It walks
+// Child rather than NamedChild, so it also visits anonymous token nodes; those
+// carry no regular symbol and therefore classify as goKindOther, which matches
+// no caller's kind and preserves the string form's behavior exactly.
+func findNodeByKind(node *sitter.Node, kind uint8) *sitter.Node {
+	classes := goKinds()
+	if classes.class(node.Symbol()) == kind {
 		return node
 	}
 	for i := range int(node.ChildCount()) {
-		if result := findNodeByType(node.Child(i), nodeType); result != nil {
+		if result := findNodeByKind(node.Child(i), kind); result != nil {
 			return result
 		}
 	}

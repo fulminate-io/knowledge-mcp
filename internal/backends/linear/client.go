@@ -18,7 +18,7 @@
 // # Activation
 //
 // Enabled() returns true iff config.LinearAPIKey() != "". The closed-switch
-// provider in domains/backends/provider.go consults Enabled() before
+// provider in internal/backends/provider/provider.go consults Enabled() before
 // instantiating.
 package linear
 
@@ -39,8 +39,11 @@ import (
 // DefaultEndpoint is api.linear.app's GraphQL endpoint.
 const DefaultEndpoint = "https://api.linear.app"
 
-// httpClient is shared at package level (mirrors domains/fulminate/client.go:40).
-// 30 s timeout is the same convention as the fulminate REST client.
+// httpClient is shared at package level so every Client built without an
+// explicit *http.Client reuses one connection pool rather than one per Client.
+// The 30 s timeout was adopted from a fulminate REST client that has since been
+// removed from this repo, so this declaration is now the convention's only home
+// here — it is not kept in step with anything else in the tree.
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 // Enabled reports whether a Linear key is configured — either via

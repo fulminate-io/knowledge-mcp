@@ -7,13 +7,13 @@
 //
 // Non-knowledge graphs fall through (return false). Non-project-domain
 // types (e.g. NodeFile, NodeCloudResource, NodeThought) also fall
-// through to the server's existing handleInspectNode path which
-// renders the generic header/ancestry/edges view (or delegates to
-// handleExamine for thoughts).
+// through to InterceptQueryExamine, the general client arm that renders
+// the generic header/ancestry/edges view. Nothing falls through to the
+// server: examine is a specialized mode with no server-side handler.
 //
-// Must be wired BEFORE the phase that introduces the
-// project-domain type-switch in handleInspectNode that returns
-// the relocated client-side intercepts.
+// Must therefore be wired BEFORE InterceptQueryExamine in
+// runQueryRenderingIntercepts, so project-domain types get the richer
+// project-tree variant rather than the generic view.
 
 package tools
 
@@ -61,12 +61,16 @@ func InterceptQueryExamineProjects(ctx context.Context, deps ClientDeps, params 
 	if a.Mode != "examine" || a.ID == "" {
 		return false, kgtools.ToolResult{}
 	}
-	// Graph gate: handleInspectNode is hard-coded to store.Store()
-	// (knowledge graph). For non-knowledge graphs, the server's
-	// routeQueryByMode at tools_query.go:172-174 falls through to
-	// handleGenericGraphQuery which reads from the correct per-source
-	// DB via resolveGraphDB. This intercept only claims when graph is
-	// unset or "knowledge" to preserve that fall-through path.
+	// Graph gate: this arm renders project-domain nodes out of the knowledge
+	// graph, so it claims only graph unset / "knowledge" and declines the rest.
+	//
+	// The decline no longer preserves a server fall-through — there is no
+	// routeQueryByMode and no handleGenericGraphQuery left to fall through to.
+	// Nor does it decide much: cloud, cicd, linkage, code and logs are claimed
+	// EARLIER in the chain than this cluster, so an examine naming one of those
+	// never reaches this line. The values that do reach it and are declined here
+	// (practice, web, pdf, a registered custom graph, an unrecognized one) go on
+	// to InterceptQueryExamine's named refusal, examineGraphRefusal.
 	if a.Graph != "" && a.Graph != "knowledge" {
 		return false, kgtools.ToolResult{}
 	}
@@ -82,8 +86,9 @@ func InterceptQueryExamineProjects(ctx context.Context, deps ClientDeps, params 
 		return false, kgtools.ToolResult{}
 	}
 	if _, ok := projectDomainTypes[kgtypes.NodeType(node.Type)]; !ok {
-		// Non-project-domain types (NodeFile, NodeThought, etc.) stay
-		// on the server-side handleInspectNode path.
+		// Non-project-domain types (NodeFile, NodeThought, etc.) fall
+		// through to the general client examine arm, InterceptQueryExamine,
+		// which runs next in the rendering cluster.
 		return false, kgtools.ToolResult{}
 	}
 

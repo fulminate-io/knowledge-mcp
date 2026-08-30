@@ -3,8 +3,9 @@
 // graphtype.go — client-side intercept for the `custom_collector` MCP tool's
 // register/update/delete/list operations. The record is a graph-resident
 // config node owned by the server; every op is CRUD over it via a
-// wire-loopback client (deps.GraphTypeCRUD()), mirroring the worker tool's
-// list/create/update/delete handlers.
+// wire-loopback client (deps.GraphTypeCRUD()), following the shape the worker
+// tool's list/create/update/delete handlers used before the worker system was
+// removed.
 //
 // The custom_collector tool schema lives client-side at
 // cmd/knowledge/internal/tools/graphtype_schema.go (GraphTypeToolDef);
@@ -23,8 +24,8 @@ import (
 
 // GraphTypeCRUDAPI is the narrow surface the custom_collector handlers call on the
 // client-side wire-loopback CRUD client. *graphtypecrud.Client satisfies this
-// interface structurally; tests inject a fake. Mirrors WorkerCRUDAPI but over
-// the gen *knowledgev1.GraphTypeDef record type.
+// interface structurally; tests inject a fake. It is the narrow-CRUD-surface
+// convention applied to the gen *knowledgev1.GraphTypeDef record type.
 type GraphTypeCRUDAPI interface {
 	List(ctx context.Context) ([]*knowledgev1.GraphTypeDef, error)
 	ByName(ctx context.Context, name string) (*knowledgev1.GraphTypeDef, bool, error)
@@ -35,7 +36,8 @@ type GraphTypeCRUDAPI interface {
 
 // InterceptGraphType is the entry point invoked by the intercept chain. Returns
 // (true, result) when the call was handled; (false, zero) when the call is not a
-// custom_collector call and should fall through. Mirrors InterceptWorker.
+// custom_collector call and should fall through — the same name-filtering and
+// fall-through convention every intercept in the chain follows.
 func InterceptGraphType(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "custom_collector" {
 		return false, kgtools.ToolResult{}
@@ -45,7 +47,7 @@ func InterceptGraphType(ctx context.Context, deps ClientDeps, params kgtools.Cal
 	}
 	var a graphTypeArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
-		return true, errorResult("custom_collector: invalid arguments: " + err.Error())
+		return true, errorResult("custom_collector: invalid arguments: " + decodeArgsError(params.Arguments, err))
 	}
 
 	switch a.Operation {

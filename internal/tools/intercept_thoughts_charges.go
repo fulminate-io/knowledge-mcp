@@ -40,7 +40,7 @@ type chargesForClientArgs struct {
 func handleChargesForClient(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) kgtools.ToolResult {
 	var a chargesForClientArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
-		return errorResult("invalid arguments: " + err.Error())
+		return errorResult("invalid arguments: " + decodeArgsError(params.Arguments, err))
 	}
 	if len(a.ThoughtIDs) == 0 {
 		return errorResult("charges_for: thought_ids is required (one or more thought node IDs)")

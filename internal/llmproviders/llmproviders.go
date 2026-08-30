@@ -3,7 +3,7 @@
 // Package llmproviders constructs the client-side LLM provider stack used
 // by the client pipeline (summarize + embed). Mirrors the pre-split
 // server-side buildSummarizer / buildEmbedder logic in
-// domains/store/singleton.go, but runs in the client process (cmd/knowledge) so
+// cmd/knowledge-server/internal/store/singleton.go, but runs in the client process (cmd/knowledge) so
 // the server stays LLM-key-free.
 //
 // Resolution order matches the server-side path:
@@ -11,9 +11,12 @@
 //   - Summarizer: config.Active().Resolve(config.ConsumerSummarizer) → llm.NewClient.
 //     Empty config returns (nil, nil) and the caller leaves the pipeline
 //     unsummarized — same degrade-not-die semantics the server used.
-//   - Embedder: config.VoyageAPIKey() → embed.NewVoyageBinaryEmbedder.
-//     Empty key returns nil with a WARN log; vector search falls back to
-//     BM25 only.
+//   - Embedder: config.Active().ResolveEmbedder() → embed.NewEmbedder,
+//     with the axis's key resolved from its own provider via
+//     config.APIKeyForEmbedProvider. A missing credential on an API
+//     provider returns (nil, nil) with a WARN log and vector search falls
+//     back to BM25 only; a malformed section or an unregistered arm
+//     returns an error.
 package llmproviders
 
 import (
@@ -21,6 +24,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/config"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/llm"
@@ -166,15 +170,147 @@ func promptForConsumer(consumer config.Consumer) string {
 	return defaultCodeSummarizePrompt
 }
 
-// BuildEmbedder constructs the client-side binary embedder from the
-// configured Voyage key. Returns nil when no key is configured — vector
-// search degrades to BM25-only, matching the prior server-side behavior.
-func BuildEmbedder() embed.BinaryEmbedder {
-	key := config.VoyageAPIKey()
-	if key == "" {
-		slog.Warn("llmproviders: no voyage_api_key — vector search disabled, BM25 only")
-		return nil
+// BuildEmbedder constructs the client-side binary embedder for one role by
+// resolving the [embedder] section and dispatching through the embed
+// registry.
+//
+// role is a CONSTRUCTION parameter, not a per-call one: the index pipeline
+// embeds corpus text and the search-time embedder embeds query text, and
+// each is a separate construction site, so the role never varies within
+// one instance.
+//
+// THE ONE DEGRADE, AND WHY IT IS NOT A NEW FALLBACK: when the resolved
+// provider is an API provider and BOTH its key and its base_url are empty,
+// this returns (nil, nil) with a WARN. That is the PRE-EXISTING documented
+// contract — "Empty means BM25-only search (no binary-vector embeddings,
+// no cross-encoder rerank) — a documented, non-error degrade" (see
+// config/keys.go). It is not introduced here and its scope does not
+// widen. Every OTHER failure — a malformed [embedder] section, an unknown
+// provider, a refused dtype or dimension, an unregistered arm — now
+// returns an ERROR, where before this change there was nothing to be
+// wrong about.
+func BuildEmbedder(ctx context.Context, role embed.InputRole) (embed.BinaryEmbedder, error) {
+	cfg, sec, err := embedConfigFor(role)
+	if err != nil {
+		return nil, err
 	}
-	slog.Info("llmproviders: voyage binary embedder ready")
-	return embed.NewVoyageBinaryEmbedder(key)
+	if cfg == nil {
+		return nil, nil // the documented BM25-only degrade; embedConfigFor logged why.
+	}
+	e, err := embed.NewEmbedder(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("build embedder: %w", err)
+	}
+	warnNonDefaultEmbedModel(sec)
+	slog.Info("llmproviders: binary embedder ready", "provider", sec.Provider, "role", role)
+	return e, nil
+}
+
+// embedConfigFor builds the embed.Config for one role — the SINGLE construction
+// of that config, so everything derived from "what this client embeds with" is
+// derived from the same object the embedder is built from.
+//
+// THAT IS THE WHOLE REASON IT EXISTS AS A FUNCTION. ResolvedEmbedIdentity below
+// states, on the wire, the identity a graph will RECORD at its first embed. Had
+// it re-derived its own embed.Config beside this one, the two derivations could
+// disagree and the graph would be permanently recorded under an identity nothing
+// actually embedded with. One construction, two readers.
+//
+// A NIL CONFIG WITH A NIL ERROR IS THE PRE-EXISTING BM25-ONLY DEGRADE, not a new
+// one: config unloaded, or an API provider with neither a key nor a base_url.
+// See BuildEmbedder's contract note above — its scope is unchanged, it is only
+// evaluated here now.
+func embedConfigFor(role embed.InputRole) (*embed.Config, config.EmbedSection, error) {
+	if !config.Loaded() {
+		slog.Warn("llmproviders: config not loaded; vector search disabled, BM25 only", "role", role)
+		return nil, config.EmbedSection{}, nil
+	}
+	sec, err := config.Active().ResolveEmbedder()
+	if err != nil {
+		return nil, config.EmbedSection{}, fmt.Errorf("resolve embedder config: %w", err)
+	}
+	key := sec.ResolveEmbedKey()
+	if sec.Provider.IsAPI() && key == "" && sec.BaseURL == "" {
+		slog.Warn("llmproviders: no embed credential — vector search disabled, BM25 only", "provider", sec.Provider, "role", role)
+		return nil, sec, nil
+	}
+	return &embed.Config{
+		Provider:  sec.Provider,
+		Model:     sec.Model,
+		APIKey:    key,
+		BaseURL:   sec.BaseURL,
+		Dimension: sec.Dimension,
+		Dtype:     sec.Dtype,
+		InputRole: role,
+	}, sec, nil
+}
+
+// ResolvedEmbedIdentity returns the wire identity the embedder this client
+// builds for role will produce vectors under, or nil when no embedder can be
+// built (the BM25-only degrade — nothing is embedded, so nothing is claimed).
+//
+// IT IS RESOLVED FROM THE CONSTRUCTED CONFIG, NOT FROM THE SECTION. The section
+// leaves Model empty in the ordinary no-config case and the ARM fills its own
+// default, so a section-derived identity would state an empty model for vectors
+// produced by voyage-code-3 — and a graph records the first identity offered to
+// it and is authoritative afterwards, so that wrong answer would be permanent
+// short of an explicit migration. embed.ResolveIdentity fills the model through
+// the same function every arm's factory fills from.
+//
+// THE CREDENTIAL DOES NOT TRAVEL. An identity names provider, model, dimension
+// and dtype — what the vectors ARE — and deliberately carries neither the key
+// nor the base_url, which are facts about how THIS machine reaches the provider.
+func ResolvedEmbedIdentity(role embed.InputRole) (*knowledgev1.EmbedIdentity, error) {
+	cfg, _, err := embedConfigFor(role)
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		return nil, nil
+	}
+	id, err := embed.ResolveIdentity(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("resolve embed identity: %w", err)
+	}
+	return &knowledgev1.EmbedIdentity{
+		Provider: id.Provider.String(),
+		Model:    id.Model,
+		//nolint:gosec // a width from config.AcceptedEmbedDimensions, max 2048
+		Dimension: int32(id.Dimension),
+		Dtype:     id.Dtype,
+	}, nil
+}
+
+// warnNonDefaultEmbedModel warns when the resolved embed model is not the
+// arm's own default, because changing the model on a graph that already
+// has vectors does NOT re-embed it: unchanged content hits the embed cache
+// and the gap is suppressed, so the corpus keeps the OLD model's vectors
+// while every new query vector comes from the new one, and the two are
+// compared by hamming distance with no length guard to notice.
+//
+// WHAT THIS CANNOT CHECK, stated so the message does not imply otherwise:
+// this warning fires at BUILD time, from config alone, with no graph in
+// hand — so it claims only "this is not the arm's default model" and does
+// NOT compare against any corpus. An empty model is the ordinary no-config
+// case and is not warned about.
+//
+// THE UNDERLYING GAP IT WAS WRITTEN FOR IS CLOSED, and the wording above
+// used to say so in stronger terms — that no stored record of a graph's
+// embedder existed at all. One does now: a graph records its embed
+// identity at first embed, the write path REFUSES a vector offered under a
+// different one, and the query path resolves its embedder FROM that record
+// (BuildEmbedderForIdentity). So the silent mixed-corpus this warning was a
+// partial substitute for is prevented rather than warned about. The warning
+// stays because it still catches the config-time mistake earlier than the
+// refusal does.
+//
+// Only the voyage arm exposes a default model constant today; other arms
+// carry their own unexported ones, so the check is scoped to the provider
+// whose default is visible from here rather than guessing for the rest.
+func warnNonDefaultEmbedModel(sec config.EmbedSection) {
+	if sec.Model == "" || sec.Provider != config.EmbedProviderVoyage || sec.Model == embed.DefaultModel {
+		return
+	}
+	slog.Warn("llmproviders: [embedder].model is not this arm's default — changing the model does NOT re-embed an existing graph; the stored vectors keep whatever model produced them and search quality degrades until the corpus is rebuilt. This build cannot tell which model produced the existing vectors, so this is not a comparison against your corpus, only a note that the configured model differs from the default",
+		"configured_model", sec.Model, "arm_default_model", embed.DefaultModel, "provider", sec.Provider)
 }

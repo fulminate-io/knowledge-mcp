@@ -211,18 +211,24 @@ var queryModeArmSpecs = map[armID]armSpec{
 	// query(mode:file_symbols), mapping path_prefix(es) onto file_path(s). It
 	// pins the code graph rather than reading the selector — see the
 	// graph-is-always-consumed note in the core file's header.
+	//
+	// `limit` caps the RENDERED symbol rows on both entry points, so it is
+	// declared on FileSymbolsToolDef as well as QueryToolDef — the one sweep is
+	// against the QUERY schema. offset stays REJECTED as a LOOSE key rather than
+	// riding qgPaging, because dropping the group here would leave offset in no
+	// cell and fail the partition assertion.
 	armFileSymbols: {
 		operation: "query",
 		handler:   "InterceptFileSymbols composeFileSymbols",
 		consumed: qparams(qkeys(
-			"graph", "mode", "repo", "branch", "format",
+			"graph", "mode", "repo", "branch", "format", "limit",
 			"file_path", "file_paths", "path_prefix", "path_prefixes",
 			"include_source", "include_tombstones",
 		)),
 		rejected: qparams(
-			qgPaging, qgThought, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
+			qgThought, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys(
-				"name", "account", "language",
+				"name", "account", "language", "offset",
 				"id", "ids", "type", "types", "status", "meta", "since",
 				"include_edges", "include_cross_links",
 				"text", "queries", "query_vector",
@@ -253,18 +259,42 @@ var queryModeArmSpecs = map[armID]armSpec{
 
 	// InterceptTopology runs every analyzer client-side. topologyInstanceName
 	// reads Name/Repo/Account in that precedence, and the analyzer Request takes
-	// Language, TopK and the Extra knob map. Its empty-graph and
-	// empty-algorithm refusals read params only to refuse and issue zero reads,
-	// so they are this arm's precondition rather than arms of their own.
+	// Language, PathPrefix, TopK and the Extra knob map. `branch` is REJECTED:
+	// foundation.Request carries no Branch field, so no analyzer read is ever
+	// branch-scoped. `path_prefix` is CONSUMED — it rides Request.PathPrefix,
+	// and the dispatcher refuses it for any analyzer not on its declared
+	// honoring list rather than routing a control that analyzer ignores. Its
+	// empty-graph and empty-algorithm refusals read params only to refuse and
+	// issue zero reads, so they are this arm's precondition rather than arms of
+	// their own.
 	armTopology: {
 		operation: "query",
 		handler:   "InterceptTopology",
 		consumed: qparams(qgTopology,
-			qkeys("graph", "mode", "name", "repo", "account", "language", "branch")),
+			qkeys("graph", "mode", "name", "repo", "account", "language", "path_prefix")),
 		rejected: qparams(
-			qgIdentity, qgPaging, qgCode, qgThought, qgSimulate, qgPivot, qgStats, qgCloud, qgRules,
-			qkeys("text", "queries", "query_vector"),
+			qgIdentity, qgPaging, qgThought, qgSimulate, qgPivot, qgStats, qgCloud, qgRules,
+			// qgCode cannot be named as a whole set here: it is a frozen
+			// twelve-member group and path_prefix is now CONSUMED, so the
+			// eleven remaining members are spelled out — the same arrangement
+			// armCodeSearch already uses when it consumes path_prefix while
+			// rejecting its siblings. Do NOT remove path_prefix from qgCode
+			// itself: roughly twenty arms name that group and every one of them
+			// would silently stop rejecting the param.
+			qkeys(
+				"path_prefixes", "file_path", "file_paths", "repos",
+				"include_source", "include_comments", "include_tests", "test_kinds",
+				"group_by_file", "caller_depth", "callee_depth",
+			),
+			qkeys("branch", "text", "queries", "query_vector"),
 		),
+		rejectionReasons: map[string]string{"branch": justifyTopologyBranchUnrouted},
+		// FIELD ORDER IS LOCKED — operation, handler, consumed, rejected,
+		// rejectionReasons, deliberatelyIgnored. Go permits any order in a keyed
+		// literal, but the registry gates on this file region-extract the cell
+		// with awk ranges keyed on those field names, so a rejectionReasons
+		// written below deliberatelyIgnored falls outside the extracted region
+		// and turns a correct edit red.
 		deliberatelyIgnored: queryRenderIgnored(),
 	},
 
@@ -293,10 +323,18 @@ var queryModeArmSpecs = map[armID]armSpec{
 	// plan_tree walks the contains hierarchy. It reads `limit` as the DEPTH
 	// (mirroring the server shortcut) and the singular edge_type list as the
 	// structure edge override.
+	//
+	// `fields` is CONSUMED, not ignored. The shared justification for ignoring it —
+	// "the fields projection applies to the json render path this arm does not
+	// take" — was FALSE here: format is consumed on this very cell and format:json
+	// returns a json tree, so the arm does take that path. It now validates the
+	// projection through engine.ValidateNodeProjection and projects every row,
+	// which leaves this cell with an EMPTY deliberatelyIgnored map — a legal shape
+	// armEngineDispatch already carries.
 	armPlanTree: {
 		operation: "query",
 		handler:   "InterceptQueryPlanTree",
-		consumed:  qparams(qkeys("graph", "mode", "id", "limit", "edge_type", "format")),
+		consumed:  qparams(qkeys("graph", "mode", "id", "limit", "edge_type", "format", "fields")),
 		rejected: qparams(
 			qgCode, qgThought, qgSimulate, qgTopology, qgStats, qgCloud, qgRules,
 			qkeys(
@@ -307,7 +345,7 @@ var queryModeArmSpecs = map[armID]armSpec{
 				"rows", "cols", "time_field",
 			),
 		),
-		deliberatelyIgnored: queryFieldsIgnored(),
+		deliberatelyIgnored: map[string]string{},
 	},
 
 	// evidence follows informed-by → references from one decision id.

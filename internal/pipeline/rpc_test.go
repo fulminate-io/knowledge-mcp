@@ -190,3 +190,26 @@ func TestWriteBatchUpdates_RidesEngineUpdateItemsArm(t *testing.T) {
 	// The decoded write capture still reflects all items (helpers preserved).
 	require.Equal(t, 3, f.totalWriteItems())
 }
+
+// TestPipelineDrainsType_ChecksIsDrainedDeliberately pins the checks graph INTO
+// the client drain filter, with the non-drained builtins as controls so this is
+// a partition pin rather than a single happy assertion.
+//
+// WHY THIS EXISTS: the checks-graph ranked-search cutover made check nodes
+// embed-eligible on the server (see the server's eligibleForEmbed checks-graph
+// arms), but the client filter here is an independent list the server cannot
+// see across the module boundary — the same deliberate-duplicate shape as
+// kgtypes.SyncEligible, and the same silent-drift risk. Measured consequence of
+// the miss this test retires: 18 checks nodes sat summarized/embedded=0 through
+// a full pipeline drain, embed_queued 0, because the catalog pass dropped the
+// graph before ever asking the server for its gaps.
+func TestPipelineDrainsType_ChecksIsDrainedDeliberately(t *testing.T) {
+	require.True(t, pipelineDrainsType(kgtypes.GraphChecks),
+		"the checks graph is embed-eligible on the server; a client filter that drops it strands every check node at embedded=0 with nothing reporting the gap")
+
+	// Controls: the raw/ingest-only builtins stay out — a fix that widens the
+	// filter to every builtin would erase the distinction the list encodes.
+	for _, gt := range []kgtypes.GraphType{kgtypes.GraphLogs, kgtypes.GraphWebRaw, kgtypes.GraphPDFRaw, kgtypes.GraphLinkage} {
+		require.False(t, pipelineDrainsType(gt), "builtin %q must stay un-drained", gt)
+	}
+}

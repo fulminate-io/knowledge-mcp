@@ -93,7 +93,7 @@ func newFakeSyncBackend(t *testing.T) *fakeSyncBackend {
 	mux.HandleFunc("/v1/sync/pull", b.handlePull)
 	mux.HandleFunc("/gcs/", b.handleGCS)
 	b.srv = httptest.NewServer(mux)
-	t.Cleanup(b.srv.Close)
+	t.Cleanup(func() { b.srv.CloseClientConnections(); b.srv.Close() })
 	return b
 }
 

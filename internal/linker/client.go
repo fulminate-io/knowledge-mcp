@@ -4,9 +4,9 @@
 // indexed graphs via gc.Call (read), discovers Tier-1 cross-graph
 // relationships (container images → code repos, Helm charts → cloud
 // workloads, Dockerfile COPY → source files, workload identity →
-// service-account IAM), and emits derived edges through mutate(link,
-// link_graph:"linkage") so the server's handleLink auto-creates proxies
-// and writes the linkage-graph edge with metadata.
+// service-account IAM), and emits derived edges into the linkage graph
+// through emitLink, whose crossgraph.ResolveAndLink materializes the
+// proxies client-side and writes the linkage-graph edge with metadata.
 //
 // Relocated from pkg/linker/ during the client/server separation. The package operates
 // only through GraphCaller — it holds no in-process store engine —

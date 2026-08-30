@@ -15,11 +15,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/transcriptsync"
 )
@@ -39,17 +39,14 @@ type cloudStatusDeps struct {
 	host     string
 }
 
-func (d *cloudStatusDeps) LocalLiveness() LocalLiveness                 { return d.local }
-func (d *cloudStatusDeps) Sink() collector.Sink                         { return nil }
-func (d *cloudStatusDeps) RootDir() string                              { return "" }
-func (d *cloudStatusDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
-func (d *cloudStatusDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
-func (d *cloudStatusDeps) WorkerReady() bool                            { return true }
-func (d *cloudStatusDeps) PropReady() bool                              { return true }
-func (d *cloudStatusDeps) PipelineReady() bool                          { return true }
-func (d *cloudStatusDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
-func (d *cloudStatusDeps) BanSet() *hivemonitor.BanSet                  { return nil }
-func (d *cloudStatusDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d *cloudStatusDeps) LocalLiveness() LocalLiveness    { return d.local }
+func (d *cloudStatusDeps) Sink() collector.Sink            { return nil }
+func (d *cloudStatusDeps) RootDir() string                 { return "" }
+func (d *cloudStatusDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+
+func (d *cloudStatusDeps) PropReady() bool     { return true }
+func (d *cloudStatusDeps) PipelineReady() bool { return true }
+
 func (d *cloudStatusDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
 func (d *cloudStatusDeps) Embedder() embed.BinaryEmbedder               { return nil }
 func (d *cloudStatusDeps) BackendResolver() BackendResolver             { return nil }
@@ -100,7 +97,9 @@ func closedGraphClient(t *testing.T) *graphclient.GraphClient {
 	t.Helper()
 	srv := httptest.NewServer(http.NewServeMux())
 	srv.Close()
-	return graphclient.NewGraphClientForURL(srv.URL)
+	gc := graphclient.NewGraphClientForURL(srv.URL)
+	t.Cleanup(gc.CloseIdleConnections)
+	return gc
 }
 
 // TestHandleServerStatus_LoggedIn drives the logged-in cloud branch: it routes

@@ -137,6 +137,7 @@ func defaultChecks(port int, configFile string) []checkResult {
 		checkServer(gc, port, healthy),
 		checkCodeStaleness(gc, healthy),
 		checkConfig(configFile),
+		checkEmbedIdentities(gc, configFile, healthy),
 	}
 	checks = append(checks, checkConsumerCLIs(configFile)...)
 	checks = append(checks,

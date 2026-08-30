@@ -258,3 +258,125 @@ func TestCompileMutate_TypedInstanceFieldsStillRide(t *testing.T) {
 		assert.Empty(t, targetNameOf(req))
 	})
 }
+
+// TestCompileMutate_ChecksSelectorCarriesNoInstanceField is the CLIENT half of
+// the round-trip pin for the checks singleton, and it is a regression test for a
+// defect that reached production: every WRITE to the checks graph was refused
+// while reads worked.
+//
+// WHY READS WORKED AND WRITES DID NOT. The read paths build their selector with
+// an explicitly empty instance name, so they were correct by construction and
+// the scanner's own tests passed. Writes go through mutateTargetName, and checks
+// was missing from nameBlindGraphFamilies — so the mutate tool's `name` param,
+// which is the NODE name ("Node name or title"), rode into GraphSelector.Name.
+// The server then refused the write: "graph=checks holds ONE graph: it does not
+// accept name=".
+//
+// This is the same defect the sibling test above pins for the knowledge family.
+// It recurred because checks is a THIRD copy of one partition — the server's
+// selectorFieldPolicies, this file's nameBlindGraphFamilies, and
+// graphsel.InstanceField all encode "which field addresses an instance of this
+// family", and adding a family to one does not add it to the others.
+//
+// THE SERVER HALF is TestValidateGraphSelector_ChecksWriteShapeAccepted, which
+// feeds this exact shape to validateGraphSelector. The two cannot be one test:
+// no shared hand-written package spans the client and server modules, so the
+// round trip is pinned as a matched pair that must be changed together.
+func TestCompileMutate_ChecksSelectorCarriesNoInstanceField(t *testing.T) {
+	cases := []struct {
+		name string
+		args string
+	}{
+		{
+			// THE LIVE REPRO. A check create carries the node name at top level,
+			// exactly as the calibration lane's first seeding attempt did.
+			name: "create carries the node name",
+			args: `{"operation":"create","graph":"checks","type":"finding","name":"no naked defer Close",` +
+				`"summary":"close errors must be handled","metadata":{"check_type":"ast_pattern"}}`,
+		},
+		{
+			name: "create_batch carries a top-level node name",
+			args: `{"operation":"create_batch","graph":"checks","name":"a node name",` +
+				`"nodes":[{"type":"finding","name":"n","summary":"s"}]}`,
+		},
+		{
+			// The shape a language-qualified id is authored through.
+			name: "upsert carries an id and a node name",
+			args: `{"operation":"upsert","graph":"checks","type":"finding","id":"go:no-naked-defer",` +
+				`"name":"no naked defer Close","summary":"s"}`,
+		},
+		{
+			name: "by-id update carries the node name",
+			args: `{"operation":"update","graph":"checks","id":"go:chk-1","name":"renamed","description":"d"}`,
+		},
+		{
+			name: "fixture example create carries the node name",
+			args: `{"operation":"create","graph":"checks","type":"example","name":"fx-bad","summary":"s",` +
+				`"content":"package p","metadata":{"language":"go"}}`,
+		},
+		// THE ROWS THAT SUPPLY A TOP-LEVEL language. Everything above carries
+		// language only INSIDE a metadata payload, which never reaches the
+		// selector — so the language assertion below, though correctly worded,
+		// could not fail against any of them. A field assertion is only as strong
+		// as the input space its fixtures span: to assert a field stays empty,
+		// some case must supply the input that would populate it.
+		//
+		// A caller passes a top-level language here for the obvious reason: it is
+		// how practice writes are addressed, and checks is the sibling family.
+		{
+			name: "create carries a top-level language",
+			args: `{"operation":"create","graph":"checks","language":"go","type":"finding",` +
+				`"name":"no naked defer Close","summary":"s"}`,
+		},
+		{
+			name: "upsert carries a top-level language",
+			args: `{"operation":"upsert","graph":"checks","language":"go","type":"finding",` +
+				`"id":"go:no-naked-defer","name":"n","summary":"s"}`,
+		},
+		{
+			name: "by-id update carries a top-level language",
+			args: `{"operation":"update","graph":"checks","language":"go","id":"go:chk-1","status":"active"}`,
+		},
+		{
+			name: "update_batch carries a top-level language",
+			args: `{"operation":"update_batch","graph":"checks","language":"go",` +
+				`"items":[{"id":"go:chk-1","summary":"s"}]}`,
+		},
+		{
+			name: "bulk_update_metadata carries a top-level language",
+			args: `{"operation":"bulk_update_metadata","graph":"checks","language":"go",` +
+				`"updates":[{"id":"go:chk-1","metadata":{"severity":"warning"}}]}`,
+		},
+		{
+			name: "delete carries a top-level language",
+			args: `{"operation":"delete","graph":"checks","language":"go","ids":["go:chk-1"]}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := compileMutateForTest(t, tc.args)
+			target := req.GetTarget()
+			assert.Equal(t, "checks", target.GetGraph(),
+				"the family must still be routed to checks")
+			assert.Emptyf(t, targetNameOf(req),
+				"the node name rode into GraphSelector.Name; checks is a singleton and the server refuses a name (args: %s)", tc.args)
+			assert.Emptyf(t, target.GetLanguage(),
+				"checks addresses no per-language instance; a language on the selector is a field its resolver cannot honor (args: %s)", tc.args)
+		})
+	}
+
+	// KNOWN-POSITIVE CONTROL, same run: a family that DOES address an instance by
+	// name must still carry it. Without this, blanking every name everywhere —
+	// or a compile that silently produced a nil Target — would satisfy every
+	// assertion above while breaking the families that need the field.
+	//
+	// It must run through mutationRequest, the SAME Target builder the cases
+	// above use. deleteRequest is not usable here: it passes an empty name
+	// unconditionally, so a delete-based control asserts nothing about the
+	// name-blind partition and fails for its own unrelated reason.
+	logs := compileMutateForTest(t,
+		`{"operation":"update","graph":"logs","name":"query-123","id":"n1","status":"archived"}`)
+	assert.Equal(t, "query-123", targetNameOf(logs),
+		"control: logs is name-addressed and must keep its instance name, or the assertions above prove nothing")
+}

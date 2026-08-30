@@ -1,0 +1,30 @@
+# Plan: multilevel-plan
+
+multilevel-plan (plan) [active]
+  ID: <ID>
+  phase-one (phase) [completed]
+    phase-one desc
+    ID: <ID>
+  phase-two (phase) [active]
+    phase-two desc
+    ID: <ID>
+    step-alpha (step) [pending]
+      step-alpha desc
+      ID: <ID>
+      shared-criterion (criterion) [pending]
+        shared-criterion desc
+        ID: <ID>
+    step-beta (step) [pending]
+      step-beta desc
+      ID: <ID>
+  phase-three (phase) [pending]
+    phase-three desc
+    ID: <ID>
+    step-gamma (step) [pending]
+      step-gamma desc
+      ID: <ID>
+
+## Language patterns
+
+*No language patterns attached.*
+636 rendered bytes.

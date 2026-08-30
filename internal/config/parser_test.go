@@ -18,10 +18,6 @@ model = "claude-haiku-5"
 
 [summarizer]
 model = "claude-opus-4-7"
-
-[dream]
-provider = "openai"
-model = "gpt-5-mini"
 `
 	cfg, err := Parse([]byte(body))
 	if err != nil {
@@ -41,12 +37,6 @@ model = "gpt-5-mini"
 	}
 	if cfg.Summarizer.Model != "claude-opus-4-7" {
 		t.Errorf("Summarizer.Model = %q", cfg.Summarizer.Model)
-	}
-	if cfg.Dream == nil {
-		t.Fatal("Dream is nil; expected populated")
-	}
-	if cfg.Dream.Provider != ProviderOpenAI {
-		t.Errorf("Dream.Provider = %q", cfg.Dream.Provider)
 	}
 }
 

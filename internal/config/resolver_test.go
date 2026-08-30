@@ -128,26 +128,12 @@ func TestResolve_NeitherModel(t *testing.T) {
 	}
 }
 
-func TestResolve_DreamSection(t *testing.T) {
-	cfg := &Config{
-		Default: Section{Provider: ProviderAnthropic, Model: "claude-haiku-5"},
-		Dream:   &Section{Provider: ProviderOpenAI, Model: "gpt-5-mini"},
-	}
-	got, err := cfg.Resolve(ConsumerDream)
-	if err != nil {
-		t.Fatalf("Resolve(dream): %v", err)
-	}
-	if got.Provider != ProviderOpenAI || got.Model != "gpt-5-mini" {
-		t.Errorf("dream resolve = %+v; want override", got)
-	}
-}
-
 func TestResolve_SupervisorSection(t *testing.T) {
 	cfg := &Config{
 		Default:    Section{Provider: ProviderAnthropic, Model: "claude-haiku-5"},
 		Supervisor: &Section{Model: "claude-opus-4-7"},
 	}
-	got, err := cfg.Resolve(ConsumerHiveSupervisor)
+	got, err := cfg.Resolve(ConsumerSupervisor)
 	if err != nil {
 		t.Fatalf("Resolve(supervisor): %v", err)
 	}
@@ -163,7 +149,7 @@ func TestResolve_NilSupervisorInheritsDefault(t *testing.T) {
 	cfg := &Config{
 		Default: Section{Provider: ProviderAnthropic, Model: "claude-haiku-5"},
 	}
-	got, err := cfg.Resolve(ConsumerHiveSupervisor)
+	got, err := cfg.Resolve(ConsumerSupervisor)
 	if err != nil {
 		t.Fatalf("Resolve(supervisor): %v", err)
 	}

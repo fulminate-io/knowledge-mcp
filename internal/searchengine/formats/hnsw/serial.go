@@ -6,112 +6,122 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
-	"math"
+	"io"
 	"slices"
 	"strings"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
-// serialVersionOffsets is the v3 binary HNSW format: an OFFSET-ADDRESSED layout
-// in which every section is located by an absolute u32 offset from the blob
-// start, so a reader resolves the node directory, neighbor runs and vectors as
-// views into the bytes rather than hydrating them into Go structures.
+// serial.go carries the serialVersion-3 EMITTER: the sizing pass, the one fill,
+// the footer checksum and the small offset-addressed writer they go through. The
+// layout those bytes conform to — the version integers, the header field offsets
+// and the dtype tags — is in serial_layout.go.
+
+// serial_encode.go carries the serialVersion-3 EMITTER: the sizing pass, the one
+// fill, the footer checksum and the small offset-addressed writer they go
+// through. The layout those bytes conform to — the version integers, the header
+// field offsets and the dtype tags — is in serial.go.
+
+// v3Layout is every section offset a serialVersion-3 blob's emission depends on,
+// derived once by sizeGraphV3 and consumed by encodeGraphV3To.
 //
-// It is the ONLY version encodeGraphV3 writes and the only version openGraphV3
-// accepts. The v2 layout it replaces was a cursor-walked variable-length stream
-// with NO directory — node i was reachable only by walking every prior node —
-// which is precisely why it could not be read in place. There is no converter: a
-// v2 blob is rejected with a rebuild-from-source remedy, exactly as bm25 did at
-// its own v1-to-v2 bump.
-const serialVersionOffsets byte = 3
+// Every offset here is ABSOLUTE FROM BLOB START, which is what lets the fill
+// address a WriterAt exactly as it addressed a slice.
+type v3Layout struct {
+	nodeCount       int
+	totalRuns       int
+	nodeDirOff      int
+	idBytesOff      int
+	layerOffsetsOff int
+	neighborsOff    int
+	idDirOff        int
+	vectorsOff      int
+	crcOff          int
+	blobLen         int
+}
 
-// Fixed layout sizes.
-const (
-	// v3HeaderSize is the fixed header at offset 0.
-	v3HeaderSize = 64
-	// v3NodeEntrySize is one fixed-stride row of the node directory. The stride
-	// is what makes node i addressable by arithmetic instead of by walking.
-	v3NodeEntrySize = 16
-)
-
-// Header field offsets. Every offset field holds an ABSOLUTE position from the
-// blob start — including the layerOffsets entries, which are absolute rather
-// than arena-relative so no reader re-derives them.
-const (
-	v3HdrVersion        = 0
-	v3HdrReserved1      = 1
-	v3HdrReserved2      = 2
-	v3HdrVecBytes       = 4
-	v3HdrM              = 8
-	v3HdrMMax0          = 12
-	v3HdrEfConstruction = 16
-	v3HdrMaxLevel       = 20
-	v3HdrEntryPoint     = 24
-	v3HdrNodeCount      = 28
-	v3HdrNodeDir        = 32
-	v3HdrIDBytes        = 36
-	v3HdrLayerOffsets   = 40
-	v3HdrNeighbors      = 44
-	v3HdrIDDir          = 48
-	v3HdrVectors        = 52
-	v3HdrBlobLen        = 56
-	v3HdrCRC            = 60
-)
-
-// Node-directory entry offsets, relative to the entry's start.
-const (
-	v3EntIDOff    = 0
-	v3EntIDLen    = 4
-	v3EntMaxLevel = 6
-	v3EntLayerIdx = 8
-	v3EntReserved = 12
-)
-
-// maxBlobBytes is the largest blob a u32 offset can address. It is a VARIABLE
-// rather than a constant for ONE reason, stated plainly because it is a test
-// seam: a blob that actually crosses this ceiling is not constructible in a test
-// — at roughly 367 bytes per node it needs on the order of 11 million nodes —
-// and a guard no fixture can drive is a guard nobody knows is wired. Lowering it
-// in a test drives the real check through the real encoder. The shipped value is
-// asserted by that same test BEFORE it lowers it, so a permanently-lowered
-// ceiling cannot hide. bm25's v2MaxBlobBytes is the same seam for the same
-// reason.
-var maxBlobBytes = int64(math.MaxUint32)
-
-// align rounds off up to the next multiple of a (a must be a power of two).
+// sizeGraphV3 derives the blob's section layout from the graph, and carries
+// GUARD (b) with it.
 //
-// THE PARAMETER IS UNIFORM HERE AND NOT DEAD IN THE IDIOM. This is a deliberate
-// shape mirror of formats/bm25's align, which is genuinely polymorphic — 8, 4,
-// and a variable across its 21 call sites. hnsw's v3 layout happens to align
-// every section to 4, so `a` receives one value in THIS package only; the mirror
-// is what keeps the two formats' layout arithmetic readable as the same idiom.
+// IT IS A SEPARATE FUNCTION BECAUSE TWO CALLERS NEED THE SAME ARITHMETIC.
+// encodeGraphV3 must know blobLen to allocate the slice it hands the sink before
+// encodeGraphV3To can write a byte, and encodeGraphV3To needs every offset to
+// place its stores. Deriving it twice in two places is the failure this shape
+// exists to prevent: the two copies must agree byte-for-byte, in a function
+// whose output is content-hashed into every segment id.
 //
-// WHAT RETIRES THE DIRECTIVE BELOW: a v3 section that aligns to anything other
-// than 4. At that point the parameter is genuinely exercised here too, and the
-// nolint must be DELETED rather than kept.
-//
-//nolint:unparam // uniform here, load-bearing as the bm25 mirror — see above
-func align(off, a int) int { return (off + a - 1) &^ (a - 1) }
+// THE GUARD TRAVELS WITH THE ARITHMETIC and must not be hoisted into one caller,
+// or the other loses it.
+func sizeGraphV3(h *binaryGraph) (v3Layout, error) {
+	var l v3Layout
+	l.nodeCount = len(h.nodes)
 
-// crcTable is the Castagnoli polynomial table backing the footer checksum. It is
-// FIXED BY THE FORMAT — the checksum on disk is computed with it, so changing it
-// changes what a written blob means and is a version bump.
-var crcTable = crc32.MakeTable(crc32.Castagnoli)
+	idBytesTotal, arenaBytes := 0, 0
+	for i := range h.nodes {
+		idBytesTotal += len(h.nodes[i].externalID)
+		l.totalRuns += len(h.nodes[i].neighbors)
+		for lv := range h.nodes[i].neighbors {
+			arenaBytes += len(h.nodes[i].neighbors[lv]) * 4
+		}
+	}
 
-// encodeGraphV3 serializes the binary HNSW graph to a serialVersion-3 blob:
-// header, fixed-stride node directory, id bytes, layer-offset array, neighbor
-// arena, sorted id directory, flat vector block, footer CRC.
+	l.nodeDirOff = align(v3HeaderSize, 4)
+	l.idBytesOff = l.nodeDirOff + l.nodeCount*v3NodeEntrySize
+	l.layerOffsetsOff = align(l.idBytesOff+idBytesTotal, 4)
+	l.neighborsOff = align(l.layerOffsetsOff+(l.totalRuns+1)*4, 4)
+	l.idDirOff = align(l.neighborsOff+arenaBytes, 4)
+	l.vectorsOff = l.idDirOff + l.nodeCount*4
+	l.crcOff = l.vectorsOff + l.nodeCount*h.vecBytes
+	l.blobLen = l.crcOff + 4
+
+	// GUARD (b): a u32 offset cannot address past this ceiling. Erroring is the
+	// only correct move — a silently wrapped offset yields a corrupt blob that
+	// still passes its own self-check.
+	if int64(l.blobLen) > maxBlobBytes {
+		return v3Layout{}, fmt.Errorf(
+			"hnsw encode: blob would be %d bytes, past the %d-byte ceiling a u32 offset can address",
+			l.blobLen, maxBlobBytes)
+	}
+	return l, nil
+}
+
+// v3CRCChunk is the fixed window encodeGraphV3To reads back through to checksum
+// the finished blob. It is a NAMED CONSTANT and never derived from blobLen: a
+// buffer sized from the output would reintroduce precisely the output-sized
+// allocation this emitter exists to remove.
+const v3CRCChunk = 64 << 10
+
+// encodeGraphV3 serializes the binary HNSW graph to a serialVersion-3 blob and
+// returns it as heap bytes.
 //
-// It is a FREE FUNCTION rather than a method because it now returns an error and
-// its reader counterpart lives elsewhere — bm25's encodeSegmentV2 for the same
-// reasons.
+// It is a thin wrapper over the one emitter. The Build path has no file behind
+// it — publishGraph reopens these bytes as the segment's payload — so it sizes a
+// slice, wraps it as a sink, and delegates.
+func encodeGraphV3(h *binaryGraph) ([]byte, error) {
+	layout, err := sizeGraphV3(h)
+	if err != nil {
+		return nil, err
+	}
+	buf := make([]byte, layout.blobLen)
+	if _, err := encodeGraphV3To(sliceSink(buf), h); err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
+// encodeGraphV3To is THE serialVersion-3 emitter: header, fixed-stride node
+// directory, id bytes, layer-offset array, neighbor arena, sorted id directory,
+// flat vector block, footer CRC. It writes into dst and returns the blob's
+// length. It does not truncate, close or otherwise own dst.
 //
-// ONE SIZING PASS, THEN FILL, THEN BACKPATCH, THEN CRC LAST. Every section
-// offset is computed before a byte is written, so the header can be filled in
-// place and every offset it carries is ABSOLUTE FROM BLOB START — the layer
-// offsets included. Because the arena begins 4-aligned and every run is a whole
-// number of uint32s, EVERY run offset is 4-aligned by construction; that is what
-// makes the reader's typed view legal, and it is a property of this emission
-// order rather than an accident.
+// SIZE, THEN FILL, THEN BACKPATCH, THEN CRC LAST. Every section offset is
+// computed before a byte is written, so the header is filled in place and every
+// offset it carries is ABSOLUTE FROM BLOB START — the layer offsets included.
+// Because the arena begins 4-aligned and every run is a whole number of uint32s,
+// EVERY run offset is 4-aligned by construction; that is what makes the reader's
+// typed view legal, and it is a property of this emission order rather than an
+// accident.
 //
 // DETERMINISM IS NON-NEGOTIABLE. Segment ids are the sha256 of these bytes, so a
 // writer that varied on identical input would break content-addressed dedup.
@@ -121,93 +131,96 @@ var crcTable = crc32.MakeTable(crc32.Castagnoli)
 // the ordinal as tie-break, so even an impossible duplicate sorts stably rather
 // than landing in an unstable sort's input-dependent order.
 //
-// IT IS ONE FUNCTION ON PURPOSE, past the statement limit. The sizing pass, the
-// fill, the header backpatch and the footer CRC are a single unit: every offset
-// the fill writes is computed by the sizing pass immediately above it, and the
-// CRC must cover the finished bytes. Splitting them would separate the
-// arithmetic from its only use and open a window for a backpatch to land
-// between the checksum and what it covers.
+// THE SIZING PASS IS SPLIT OUT AND THE REST IS NOT, and the asymmetry is the
+// point. sizeGraphV3 is separated deliberately so this function and its
+// slice-allocating wrapper share ONE copy of the arithmetic. The fill, the
+// header backpatch and the footer CRC stay a single unit here for the reason the
+// original one-function form gave: the CRC must cover the finished bytes, and
+// splitting it out would open a window for a backpatch to land between the
+// checksum and what it covers. The CRC is still computed LAST.
 //
-//nolint:funlen // see the paragraph above: the four passes are one unit by construction
-func encodeGraphV3(h *binaryGraph) ([]byte, error) {
-	nodeCount := len(h.nodes)
-
-	// --- sizing pass -------------------------------------------------------
-	idBytesTotal, totalRuns, arenaBytes := 0, 0, 0
-	for i := range h.nodes {
-		idBytesTotal += len(h.nodes[i].externalID)
-		runs := len(h.nodes[i].neighbors)
-		totalRuns += runs
-		for l := range h.nodes[i].neighbors {
-			arenaBytes += len(h.nodes[i].neighbors[l]) * 4
-		}
+// THE CHECKSUM RE-READS RATHER THAN ACCUMULATES, and that is forced by the
+// format. The fill advances idCursor, runCursor, arenaCursor and the node
+// directory's entry offset in four independently-ascending but jointly
+// out-of-order streams, so there is no point at which a running checksum could
+// be fed the bytes in file order. It is computed instead by reading the written
+// range back through a FIXED v3CRCChunk buffer. The Build path pays for this
+// too: it now checksums by reading its just-written slice back in bounded chunks
+// rather than by one crc32.Checksum over memory it already holds — copies within
+// this process, no syscall, and no allocation beyond the fixed buffer.
+//
+// THE SIZING PASS RUNS TWICE ON THE BUILD PATH, stated rather than hidden: the
+// wrapper runs it to size its slice and this function runs it again, because the
+// signature takes only (dst, h) and carries no layout parameter. That pass is
+// pure arithmetic over h.nodes and their neighbor slices, O(nodes + runs), and
+// allocates nothing. It is a small constant on an operation dominated by the
+// fill and the vector block, and it buys one emitter with a signature neither
+// caller has to special-case.
+//
+// WHAT THIS FUNCTION DOES NOT BUY. It removes the encoder's output-sized buffer;
+// it does not make an hnsw MERGE allocate nothing output-sized. hnsw's merge
+// re-inserts every survivor into a fresh binaryGraph, and that graph's vector
+// block alone is output-sized and must be fully resident before a byte can be
+// emitted. The zero-heap merge property is bm25's.
+//
+//nolint:funlen // the fill, the backpatch and the CRC are one unit by construction; see above
+func encodeGraphV3To(dst searchengine.MergeSink, h *binaryGraph) (int64, error) {
+	layout, err := sizeGraphV3(h)
+	if err != nil {
+		return 0, err
 	}
-
-	nodeDirOff := align(v3HeaderSize, 4)
-	idBytesOff := nodeDirOff + nodeCount*v3NodeEntrySize
-	layerOffsetsOff := align(idBytesOff+idBytesTotal, 4)
-	neighborsOff := align(layerOffsetsOff+(totalRuns+1)*4, 4)
-	idDirOff := align(neighborsOff+arenaBytes, 4)
-	vectorsOff := idDirOff + nodeCount*4
-	crcOff := vectorsOff + nodeCount*h.vecBytes
-	blobLen := crcOff + 4
-
-	// GUARD (b): a u32 offset cannot address past this ceiling. Erroring is the
-	// only correct move — a silently wrapped offset yields a corrupt blob that
-	// still passes its own self-check.
-	if int64(blobLen) > maxBlobBytes {
-		return nil, fmt.Errorf(
-			"hnsw encode: blob would be %d bytes, past the %d-byte ceiling a u32 offset can address",
-			blobLen, maxBlobBytes)
-	}
-
-	buf := make([]byte, blobLen)
+	w := &v3Writer{dst: dst}
 
 	// --- header ------------------------------------------------------------
-	buf[v3HdrVersion] = serialVersionOffsets
-	binary.LittleEndian.PutUint32(buf[v3HdrVecBytes:], uint32(h.vecBytes))
-	binary.LittleEndian.PutUint32(buf[v3HdrM:], uint32(h.m))
-	binary.LittleEndian.PutUint32(buf[v3HdrMMax0:], uint32(h.mMax0))
-	binary.LittleEndian.PutUint32(buf[v3HdrEfConstruction:], uint32(h.efConstruction))
-	binary.LittleEndian.PutUint32(buf[v3HdrMaxLevel:], uint32(int32(h.maxLevel)))
-	binary.LittleEndian.PutUint32(buf[v3HdrEntryPoint:], h.entryPoint)
-	binary.LittleEndian.PutUint32(buf[v3HdrNodeCount:], uint32(nodeCount))
-	binary.LittleEndian.PutUint32(buf[v3HdrNodeDir:], uint32(nodeDirOff))
-	binary.LittleEndian.PutUint32(buf[v3HdrIDBytes:], uint32(idBytesOff))
-	binary.LittleEndian.PutUint32(buf[v3HdrLayerOffsets:], uint32(layerOffsetsOff))
-	binary.LittleEndian.PutUint32(buf[v3HdrNeighbors:], uint32(neighborsOff))
-	binary.LittleEndian.PutUint32(buf[v3HdrIDDir:], uint32(idDirOff))
-	binary.LittleEndian.PutUint32(buf[v3HdrVectors:], uint32(vectorsOff))
-	binary.LittleEndian.PutUint32(buf[v3HdrBlobLen:], uint32(blobLen))
-	binary.LittleEndian.PutUint32(buf[v3HdrCRC:], uint32(crcOff))
+	// THE VERSION IS SELECTED FROM THE DTYPE, never written as a constant: a
+	// float32 blob must announce a version already-released readers refuse
+	// outright, rather than one they accept and then misread. See
+	// serialVersionFloat32.
+	w.putByte(v3HdrVersion, versionForDtype(h.dtype))
+	w.putByte(v3HdrDtype, h.dtype)
+	w.putU32(v3HdrVecBytes, uint32(h.vecBytes))
+	w.putU32(v3HdrM, uint32(h.m))
+	w.putU32(v3HdrMMax0, uint32(h.mMax0))
+	w.putU32(v3HdrEfConstruction, uint32(h.efConstruction))
+	w.putU32(v3HdrMaxLevel, uint32(int32(h.maxLevel)))
+	w.putU32(v3HdrEntryPoint, h.entryPoint)
+	w.putU32(v3HdrNodeCount, uint32(layout.nodeCount))
+	w.putU32(v3HdrNodeDir, uint32(layout.nodeDirOff))
+	w.putU32(v3HdrIDBytes, uint32(layout.idBytesOff))
+	w.putU32(v3HdrLayerOffsets, uint32(layout.layerOffsetsOff))
+	w.putU32(v3HdrNeighbors, uint32(layout.neighborsOff))
+	w.putU32(v3HdrIDDir, uint32(layout.idDirOff))
+	w.putU32(v3HdrVectors, uint32(layout.vectorsOff))
+	w.putU32(v3HdrBlobLen, uint32(layout.blobLen))
+	w.putU32(v3HdrCRC, uint32(layout.crcOff))
 
 	// --- node directory, id bytes, layer offsets, neighbor arena ----------
-	idCursor, runCursor, arenaCursor := idBytesOff, 0, neighborsOff
+	idCursor, runCursor, arenaCursor := layout.idBytesOff, 0, layout.neighborsOff
 	for ord := range h.nodes {
 		node := &h.nodes[ord]
-		ent := nodeDirOff + ord*v3NodeEntrySize
-		binary.LittleEndian.PutUint32(buf[ent+v3EntIDOff:], uint32(idCursor))
-		binary.LittleEndian.PutUint16(buf[ent+v3EntIDLen:], uint16(len(node.externalID)))
-		binary.LittleEndian.PutUint16(buf[ent+v3EntMaxLevel:], uint16(node.maxLevel))
-		binary.LittleEndian.PutUint32(buf[ent+v3EntLayerIdx:], uint32(runCursor))
+		ent := layout.nodeDirOff + ord*v3NodeEntrySize
+		w.putU32(ent+v3EntIDOff, uint32(idCursor))
+		w.putU16(ent+v3EntIDLen, uint16(len(node.externalID)))
+		w.putU16(ent+v3EntMaxLevel, uint16(node.maxLevel))
+		w.putU32(ent+v3EntLayerIdx, uint32(runCursor))
 
-		copy(buf[idCursor:], node.externalID)
+		w.putString(idCursor, node.externalID)
 		idCursor += len(node.externalID)
 
 		for l := range node.neighbors {
-			binary.LittleEndian.PutUint32(buf[layerOffsetsOff+runCursor*4:], uint32(arenaCursor))
+			w.putU32(layout.layerOffsetsOff+runCursor*4, uint32(arenaCursor))
 			runCursor++
 			for _, nb := range node.neighbors[l] {
-				binary.LittleEndian.PutUint32(buf[arenaCursor:], nb)
+				w.putU32(arenaCursor, nb)
 				arenaCursor += 4
 			}
 		}
 	}
 	// The single global sentinel that closes the last run.
-	binary.LittleEndian.PutUint32(buf[layerOffsetsOff+totalRuns*4:], uint32(arenaCursor))
+	w.putU32(layout.layerOffsetsOff+layout.totalRuns*4, uint32(arenaCursor))
 
 	// --- id directory ------------------------------------------------------
-	dir := make([]uint32, nodeCount)
+	dir := make([]uint32, layout.nodeCount)
 	for i := range dir {
 		dir[i] = uint32(i)
 	}
@@ -225,21 +238,128 @@ func encodeGraphV3(h *binaryGraph) ([]byte, error) {
 	for i := 1; i < len(dir); i++ {
 		prev, cur := h.nodes[dir[i-1]].externalID, h.nodes[dir[i]].externalID
 		if prev >= cur {
-			return nil, fmt.Errorf(
+			return 0, fmt.Errorf(
 				"hnsw encode: id directory is not strictly ascending at ordinals %d and %d (%q >= %q)",
 				dir[i-1], dir[i], prev, cur)
 		}
 	}
 	for i, ord := range dir {
-		binary.LittleEndian.PutUint32(buf[idDirOff+i*4:], ord)
+		w.putU32(layout.idDirOff+i*4, ord)
 	}
 
 	// --- vectors -----------------------------------------------------------
-	if nodeCount > 0 && h.vecBytes > 0 {
-		copy(buf[vectorsOff:crcOff], h.vectors)
+	//
+	// The length is min'd against the block the layout reserved, mirroring what
+	// the slice form did implicitly: `copy(buf[vectorsOff:crcOff], h.vectors)`
+	// copied whichever was shorter. Slicing h.vectors to the block size directly
+	// would panic instead of truncating on a graph whose vector store is short.
+	if layout.nodeCount > 0 && h.vecBytes > 0 {
+		w.put(layout.vectorsOff, h.vectors[:min(len(h.vectors), layout.crcOff-layout.vectorsOff)])
+	}
+
+	// The held error is checked ONCE here, before the checksum reads anything
+	// back: a partial encode is discarded whole, so the first failure is the only
+	// one that carries information, and checksumming a half-written blob would
+	// turn a write failure into a corrupt-looking success.
+	if w.err != nil {
+		return 0, w.err
 	}
 
 	// --- footer CRC, computed LAST so it covers every backpatched byte ------
-	binary.LittleEndian.PutUint32(buf[crcOff:], crc32.Checksum(buf[:crcOff], crcTable))
-	return buf, nil
+	sum, err := checksumRange(dst, layout.crcOff)
+	if err != nil {
+		return 0, err
+	}
+	w.putU32(layout.crcOff, sum)
+	if w.err != nil {
+		return 0, w.err
+	}
+	return int64(layout.blobLen), nil
+}
+
+// checksumRange computes the Castagnoli CRC over dst's first n bytes, reading
+// them back through one fixed-size buffer.
+func checksumRange(dst searchengine.MergeSink, n int) (uint32, error) {
+	buf := make([]byte, v3CRCChunk)
+	var sum uint32
+	for off := 0; off < n; {
+		end := min(off+v3CRCChunk, n)
+		chunk := buf[:end-off]
+		if _, err := dst.ReadAt(chunk, int64(off)); err != nil {
+			return 0, fmt.Errorf("hnsw encode: reading back at %d to checksum: %w", off, err)
+		}
+		sum = crc32.Update(sum, crcTable, chunk)
+		off = end
+	}
+	return sum, nil
+}
+
+// v3Writer places fixed-width values at absolute blob offsets, holding the first
+// error rather than checking at every store. The discipline is bm25's
+// mergeWriter's: a partial blob is discarded whole, so only the first failure
+// carries information.
+type v3Writer struct {
+	dst searchengine.MergeSink
+	err error
+	// scratch backs the fixed-width stores so a putU32 in the per-neighbor inner
+	// loop does not allocate.
+	scratch [8]byte
+	// strBuf carries id bytes to WriteAt without a per-node conversion.
+	strBuf []byte
+}
+
+func (w *v3Writer) put(off int, b []byte) {
+	if w.err != nil {
+		return
+	}
+	if _, err := w.dst.WriteAt(b, int64(off)); err != nil {
+		w.err = fmt.Errorf("hnsw encode: writing %d bytes at %d: %w", len(b), off, err)
+	}
+}
+
+func (w *v3Writer) putString(off int, s string) {
+	// The id goes out through a reusable buffer, following bm25 mergeWriter's
+	// strBuf: ids are written one per node and in huge numbers, so a []byte(s) at
+	// each of them would allocate proportionally to the corpus — which is exactly
+	// the cost this emitter exists to avoid.
+	w.strBuf = append(w.strBuf[:0], s...)
+	w.put(off, w.strBuf)
+}
+
+func (w *v3Writer) putByte(off int, v byte) {
+	w.scratch[0] = v
+	w.put(off, w.scratch[:1])
+}
+
+func (w *v3Writer) putU16(off int, v uint16) {
+	binary.LittleEndian.PutUint16(w.scratch[:2], v)
+	w.put(off, w.scratch[:2])
+}
+
+func (w *v3Writer) putU32(off int, v uint32) {
+	binary.LittleEndian.PutUint32(w.scratch[:4], v)
+	w.put(off, w.scratch[:4])
+}
+
+// sliceSink adapts a byte slice to a MergeSink so the Build path shares the one
+// emitter without a file. It is bounds-checked at both edges and is deliberately
+// not exported: it is an adapter for this package's wrapper, not a utility.
+type sliceSink []byte
+
+func (s sliceSink) WriteAt(p []byte, off int64) (int, error) {
+	if off < 0 || off > int64(len(s)) || int64(len(p)) > int64(len(s))-off {
+		return 0, io.ErrShortWrite
+	}
+	return copy(s[off:], p), nil
+}
+
+func (s sliceSink) ReadAt(p []byte, off int64) (int, error) {
+	if off < 0 || off > int64(len(s)) {
+		return 0, io.EOF
+	}
+	n := copy(p, s[off:])
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
 }

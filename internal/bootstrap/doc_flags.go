@@ -75,14 +75,6 @@ func DocFlagSets() []DocFlagSet {
 	var instCodexFlags installCodexFlags
 	registerInstallCodexFlags(installCodexFS, &instCodexFlags)
 
-	triggerFS := flag.NewFlagSet("knowledge worker trigger", flag.ContinueOnError)
-	var trigOpts triggerOpts
-	registerTriggerFlags(triggerFS, &trigOpts)
-
-	workerStatusFS := flag.NewFlagSet("knowledge worker status", flag.ContinueOnError)
-	var statOpts statusOpts
-	registerStatusFlags(workerStatusFS, &statOpts)
-
 	// The bare-`knowledge` client config surface (no subcommand).
 	clientFS := flag.NewFlagSet("knowledge", flag.ContinueOnError)
 	var clientCfg Config
@@ -97,8 +89,6 @@ func DocFlagSets() []DocFlagSet {
 		{BlockName: "flags-doctor", FlagSet: doctorFS},
 		{BlockName: "flags-install-claude-assets", FlagSet: installClaudeFS},
 		{BlockName: "flags-install-codex-assets", FlagSet: installCodexFS},
-		{BlockName: "flags-worker-trigger", FlagSet: triggerFS},
-		{BlockName: "flags-worker-status", FlagSet: workerStatusFS},
 		{BlockName: "flags-client", FlagSet: clientFS},
 	}
 }

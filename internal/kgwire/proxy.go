@@ -8,7 +8,8 @@ import (
 )
 
 // IsProxy reports whether n is a proxy node (a lightweight reference to a node
-// in another graph). Mirrors store.IsProxy (pkg/store/proxy.go:20), retyped to
+// in another graph). Mirrors store.IsProxy
+// (cmd/knowledge-server/internal/store/proxy.go:20), retyped to
 // read the *knowledgev1.Node wire form via kgtypes instead of the server-side
 // *store.Node wrapper. Pure field read.
 func IsProxy(n *knowledgev1.Node) bool {
@@ -18,13 +19,14 @@ func IsProxy(n *knowledgev1.Node) bool {
 // IsBranchProxy reports whether n is a branch overlay proxy — a hollowed node
 // whose real content lives in the base (main) graph. Branch proxies carry
 // foreign_graph="main" metadata. Mirrors store.IsBranchProxy
-// (pkg/store/proxy.go:27).
+// (cmd/knowledge-server/internal/store/proxy.go:27).
 func IsBranchProxy(n *knowledgev1.Node) bool {
 	return IsProxy(n) && kgtypes.Value(n, "foreign_graph") == "main"
 }
 
 // ProxyInfo extracts the cross-graph target reference from a proxy node's
-// metadata. Mirrors store.ProxyInfo (pkg/store/proxy.go:44) byte-for-byte: the
+// metadata. Mirrors store.ProxyInfo
+// (cmd/knowledge-server/internal/store/proxy.go:44) byte-for-byte: the
 // same five-pattern switch (main/code/cloud/practice + repo / foreign_id
 // fallbacks), reading via kgtypes.Value over the *knowledgev1.Node wire type.
 // Returns the proto *knowledgev1.ProxyTarget data carrier (graph_type carries

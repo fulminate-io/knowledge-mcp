@@ -80,7 +80,7 @@ the full operation reference, run `help("thoughts")`.
 | `links[]` | string |  |  |  |
 | `magnitude_min` | number |  |  | (recall) Minimum magnitude (significance threshold). |
 | `merge_threshold` | number |  |  | (propagate, similarity:true) Per-call override for the topic-merge cascade threshold. Absent uses the package default. Accepts a number or its quoted-string form. |
-| `mode` | string |  | search, timeline, charges, graph, clusters | (recall) Output format. |
+| `mode` | string |  | search, timeline, charges, graph, clusters, context | (recall) Which recall view to run. search (default), timeline and charges are renders of the thought pipeline, and graph renders as search does; clusters and context are separate arms — clusters runs cluster detection, and context composes the five-section session-start context pack (cross-type seed search, bounded edge expansion, charge state, recency overlay, open tickets), so it is NOT thought-only. |
 | `operation` | string | yes | think, charge, recall, trace, propagate, adjacency, charges_for, similarity_report | Which thoughts op to run. |
 | `origin` | string |  |  | (think) Developer-origin role of the agent recording this thought — conventional values planner\|implementer\|reviewer\|researcher\|tester\|orchestrator\|main; absent => main. Open string (flex-parsed, NOT an enum gate): a custom value is stored as-is. Stamped as origin metadata, and when it resolves to a seeded agent node, an agent--produced-->thought hub edge is written. |
 | `polarity` | string |  | positive, negative | (charge) Whether the evidence SUPPORTS the thought's claim ("positive") or CONTRADICTS it ("negative"). NOT good-news/bad-news about the subject — sentiment about the subject belongs in reasoning/content text. |
@@ -90,7 +90,7 @@ the full operation reference, run `help("thoughts")`.
 | `session` | string |  |  | (think, recall filter) Session name to group related thoughts (e.g., 'backend-auth-design'). Creates session if new on think. |
 | `similarity` | boolean |  |  | (propagate) Trigger the topic-similarity lever ASYNCHRONOUSLY (drain → centroids → reconcile → merge cascade → summaries → drift → links). Returns immediately with a similarity_report fetch call and a duration estimate; only one pass runs at a time and a second trigger coalesces. |
 | `status` | string |  | hypothesized, validated, invalidated | (think initial status / recall filter) Default hypothesized for think. |
-| `summary` | string |  |  | (think, REQUIRED) Search-optimized one-line summary of the thought, max 500 chars. Authored deliberately — this is what makes the thought findable via recall. NOT auto-derived from content. (max length: 500) |
+| `summary` | string |  |  | (think and charge, REQUIRED on both) Search-optimized one-line summary, max 500 chars, authored deliberately — this is what makes the node findable via recall, and nothing composes one for you. On think it summarizes the THOUGHT'S CLAIM; on charge it summarizes the EVIDENCE the charge records, which is a different sentence from the thought it attaches to. (max length: 500) |
 | `thought` | string |  |  | (charge, trace) Thought node ID. Required for charge and trace. |
 | `thought_id` | string |  |  | (charge) Singular alias for `thought` — the charge arm accepts either spelling for the thought node ID. |
 | `thought_ids` | array of string |  |  | (adjacency, charges_for) Optional subset filter (adjacency) / required charge sources (charges_for). When set on adjacency, response is projected down to just these IDs. |

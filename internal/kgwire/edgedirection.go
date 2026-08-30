@@ -3,8 +3,9 @@
 package kgwire
 
 // EdgeDirection selects which adjacency a traversal walks for a pivot node.
-// This is the 3-value client enum mirroring pkg/store.EdgeDirection
-// (pkg/store/edge_iterator.go): it supersedes the existing 2-value client-local
+// This is the 3-value client enum mirroring store.EdgeDirection
+// (cmd/knowledge-server/internal/store/edge_iterator.go:56): it supersedes the
+// existing 2-value client-local
 // copy in the postpopulate package, which folds onto kgwire in a later fan-out
 // phase.
 type EdgeDirection int

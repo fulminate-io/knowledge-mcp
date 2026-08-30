@@ -73,13 +73,13 @@ func TestInterceptCreateTicket_TristateRejection(t *testing.T) {
 		wantErr  string
 	}{
 		{"none of three set", "", "exactly one of"},
-		{"all three set", `"pattern_ids":["x"],"no_patterns_reason":"x","proposed_patterns":[{"name":"X"}]`, "exactly one of"},
+		{"all three set", `"pattern_ids":["x"],"no_patterns_reason":"x","proposed_patterns":[{"name":"X","summary":"a proposed pattern summary"}]`, "exactly one of"},
 		{"pattern_ids + no_patterns_reason", `"pattern_ids":["x"],"no_patterns_reason":"x"`, "exactly one of"},
-		{"pattern_ids + proposed_patterns", `"pattern_ids":["x"],"proposed_patterns":[{"name":"X"}]`, "exactly one of"},
-		{"no_patterns_reason + proposed_patterns", `"no_patterns_reason":"x","proposed_patterns":[{"name":"X"}]`, "exactly one of"},
+		{"pattern_ids + proposed_patterns", `"pattern_ids":["x"],"proposed_patterns":[{"name":"X","summary":"a proposed pattern summary"}]`, "exactly one of"},
+		{"no_patterns_reason + proposed_patterns", `"no_patterns_reason":"x","proposed_patterns":[{"name":"X","summary":"a proposed pattern summary"}]`, "exactly one of"},
 		{"empty pattern_ids slice + no other signal", `"pattern_ids":[]`, "exactly one of"},
 		{"pattern_ids contains empty string", `"pattern_ids":["  "]`, "pattern_ids[0] is empty"},
-		{"proposed_pattern with empty Name", `"proposed_patterns":[{"name":"","sketch":"x"}]`, "proposed_patterns[0].name is empty"},
+		{"proposed_pattern with empty Name", `"proposed_patterns":[{"name":"","summary":"a proposed pattern summary","sketch":"x"}]`, "proposed_patterns[0].name is empty"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -107,7 +107,7 @@ func TestInterceptCreateTicket_NoPatternsReason_Accepted(t *testing.T) {
 // edge in the create_batch MutationPlan.
 func TestInterceptCreateTicket_ProposedPatterns_Accepted(t *testing.T) {
 	fc := seededTicketFake()
-	res := runCreateTicketLocal(t, fc, `"proposed_patterns":[{"name":"NewThing","sketch":"interface X { Y() }"}]`)
+	res := runCreateTicketLocal(t, fc, `"proposed_patterns":[{"name":"NewThing","summary":"a new thing worth cataloging","sketch":"interface X { Y() }"}]`)
 	require.False(t, res.IsError, "proposed_patterns should be accepted: %s", toolResultText(res))
 	m := firstCreateBatch(t, fc)
 

@@ -14,6 +14,11 @@ ID: <ID>
 
 - <ID> — lang-pattern-fixture
 
+```
+defer $DB.Close(); rows, err := $DB.QueryContext($CTX, $Q, $$$ARGS); if err != nil { return nil, err }
+```
+
 ### Warnings
 
 ⚠ **Unresolved language patterns:** <ID>
+348 rendered bytes.

@@ -101,7 +101,7 @@ func TestCollect_FullReplace_HappyPath(t *testing.T) {
 		},
 	})
 
-	err := Collect(context.Background(), "test", "/some/path", CollectOptions{})
+	_, err := Collect(context.Background(), "test", "/some/path", CollectOptions{})
 	require.NoError(t, err)
 
 	// The pipeline's job is the Collect → resolveSink → WriteResult dispatch;
@@ -121,7 +121,7 @@ func TestCollect_UnknownType(t *testing.T) {
 	installCaptureSink(t)
 	resetRegistry(t)
 
-	err := Collect(context.Background(), "nonexistent", "id", CollectOptions{})
+	_, err := Collect(context.Background(), "nonexistent", "id", CollectOptions{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown collector")
 }
@@ -135,7 +135,7 @@ func TestCollect_CollectorError(t *testing.T) {
 		err:  errors.New("collector failed"),
 	})
 
-	err := Collect(context.Background(), "broken", "id", CollectOptions{})
+	_, err := Collect(context.Background(), "broken", "id", CollectOptions{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "collector failed")
 }
@@ -160,7 +160,7 @@ func TestCollect_Overlay_HappyPath(t *testing.T) {
 		},
 	})
 
-	err := Collect(context.Background(), "overlay-test", "id", CollectOptions{})
+	_, err := Collect(context.Background(), "overlay-test", "id", CollectOptions{})
 	require.NoError(t, err)
 
 	require.Len(t, cap.calls, 1)
@@ -194,7 +194,7 @@ func TestCollect_Overlay_BranchPayloadReachesTheSink(t *testing.T) {
 		},
 	})
 
-	err := Collect(context.Background(), "overlay-nil-eq", "id", CollectOptions{})
+	_, err := Collect(context.Background(), "overlay-nil-eq", "id", CollectOptions{})
 	require.NoError(t, err)
 }
 
@@ -214,6 +214,6 @@ func TestCollect_PostPopulateNil_NoPanic(t *testing.T) {
 	})
 
 	// Should not panic even though no PostPopulate is registered for "no-hook".
-	err := Collect(context.Background(), "no-hook", "id", CollectOptions{})
+	_, err := Collect(context.Background(), "no-hook", "id", CollectOptions{})
 	require.NoError(t, err)
 }

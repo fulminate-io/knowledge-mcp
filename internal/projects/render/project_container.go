@@ -11,7 +11,6 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
-	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 )
 
 // assembleProjectContainer renders a NodeProject: header + Progress
@@ -28,14 +27,14 @@ func assembleProjectContainer(ctx context.Context, gc GraphCaller, node *knowled
 	fmt.Fprintf(&sb, "# Project: %s\n\n", node.SymbolName)
 	renderProjectHeader(node, &sb)
 
-	// Walk contains edges to find child tickets.
-	childEdges, _ := IterEdges(ctx, gc, node.Id, kgwire.OutgoingEdges, kgtypes.EdgeKGContains)
+	// Depth 2: the child tickets are depth 1 and the plans and research the
+	// Tickets section counts are depth 2. Nothing this arm renders lives
+	// deeper, and a larger depth would pull rows the render discards while
+	// bringing the server's row ceiling closer.
+	childIndex, byID, _, truncated := AssembleSubtree(ctx, gc, node.Id, 2)
+
 	var tickets []*knowledgev1.Node
-	for _, e := range childEdges {
-		cn, err := FetchNode(ctx, gc, e.ToId)
-		if err != nil || cn == nil {
-			continue
-		}
+	for _, cn := range childIndex[node.Id] {
 		if kgtypes.NodeType(cn.Type) == kgtypes.NodeTicket {
 			tickets = append(tickets, cn)
 		}
@@ -53,7 +52,9 @@ func assembleProjectContainer(ctx context.Context, gc GraphCaller, node *knowled
 		fmt.Fprintf(&sb, "\n**Progress:** %d/%d tickets done\n", done, total)
 	}
 
-	sb.WriteString(renderProjectTickets(ctx, gc, tickets))
+	sb.WriteString(renderProjectTickets(tickets, childIndex))
 
-	return kgtools.TextResult(sb.String())
+	// A clamped traversal silently shortens the rendered ticket list — which
+	// looks exactly like a small project. Disclose it.
+	return AppendTruncationNotice(kgtools.TextResult(sb.String()), truncated, len(byID))
 }

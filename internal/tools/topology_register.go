@@ -2,7 +2,7 @@
 
 package tools
 
-// topology_register.go blank-imports the four topology analyzer family
+// topology_register.go blank-imports the five topology analyzer family
 // packages so their init() self-registration (foundation.Register) fires when
 // this package is loaded. Without these imports foundation.All() / foundation.Get
 // would see an empty registry and the manage(topology) sweep + the single-analyzer
@@ -18,6 +18,7 @@ package tools
 import (
 	_ "github.com/fulminate-io/knowledge-mcp/internal/topology/cloud"
 	_ "github.com/fulminate-io/knowledge-mcp/internal/topology/content"
+	_ "github.com/fulminate-io/knowledge-mcp/internal/topology/corpusscan"
 	_ "github.com/fulminate-io/knowledge-mcp/internal/topology/exposure"
 	_ "github.com/fulminate-io/knowledge-mcp/internal/topology/graph"
 )

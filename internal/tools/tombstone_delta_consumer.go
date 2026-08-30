@@ -18,6 +18,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
@@ -25,9 +26,30 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
+// ErrRetentionFloorUnreadable is what the delta arm returns instead of pulling a
+// window it cannot report a retention floor for.
+//
+// ITS DOC STATES THE CONSEQUENCE, because the condition alone reads like a minor
+// bookkeeping failure and the consequence is permanent data loss. A pass sent with a
+// zero floor is classified by the server as a full rebuild rather than a delta, and
+// a full rebuild carries NO erase rows at all. The client then merges the live
+// corpus, learns no deletion, and advances its horizon past the window — so every
+// deletion inside that window becomes unlearnable for that graph, forever. The
+// alternative to declining is not a slower pass; it is silent permanent deletion
+// loss.
+var ErrRetentionFloorUnreadable = errors.New(
+	"retention floor unreadable: a delta pass sent with a zero floor is served as a full rebuild and carries no erases")
+
 // SegmentDelta is one merge pass's result. Horizon is the server-served timestamp
 // the pass read up to; the caller carries it forward so the NEXT pass reads only
 // what changed after it.
+//
+// RetentionFloorNanos and ScanFromNanos ARE THE VALUES THIS PASS SENT, assigned from
+// the very operands handed to the scan rather than re-read afterwards. A caller that
+// recomputed them would print a second, later reading of the same inputs — which is
+// the instrument defect that made this pass's behaviour unreadable for two
+// investigations, when the only value logged was an operand that did not scope the
+// scan at all.
 type SegmentDelta struct {
 	// Learned is how many ids this pass saw deleted for the FIRST time — the ones it
 	// removed from their routed buckets. Ids the persisted record already carried are
@@ -41,6 +63,12 @@ type SegmentDelta struct {
 	// Horizon is the server-served scan horizon. Zero means the scan reported none,
 	// in which case the caller must keep its previous value rather than resetting.
 	Horizon int64
+	// RetentionFloorNanos is the retention floor this pass PUT ON THE WIRE in
+	// after_stamped_at_nanos — the minimum across the consumers holding a position.
+	RetentionFloorNanos int64
+	// ScanFromNanos is the scan bound this pass PUT ON THE WIRE in
+	// scan_from_stamped_at_nanos — this consumer's own horizon.
+	ScanFromNanos int64
 }
 
 // MergeSegmentDelta reads one graph's BOUNDED segment delta and lands BOTH halves in
@@ -86,20 +114,31 @@ func MergeSegmentDelta(
 	// ONE scan carries both halves. This is the only server axis that carries the
 	// delete flag, and reading both through the existing seam keeps a single
 	// definition of what "changed since" means.
-	// Sends the FLOOR across the consumers that hold a position, for the reason
+	// THE TWO WATERMARKS ARE SENT SEPARATELY, and which one carries which meaning is
+	// the whole correctness of this call. after_stamped_at_nanos carries the FLOOR
+	// across the consumers that hold a position, for the reason
 	// rebuild_segments_driver.go states at its own call: the ahead consumer must not
-	// raise the server's retention watermark past what the lagging one has read.
-	// The one field carries both meanings, so where the floor sits below this
-	// merge's own position the window widens and re-serves rows already merged —
-	// idempotent, and the direction that costs work rather than losing a deletion.
+	// raise the server's retention watermark past what the lagging one has read, and
+	// it is what the server's erasure-completeness refusal is measured against.
+	// scan_from_stamped_at_nanos carries THIS consumer's own position, which is what
+	// the scan reads from. The window therefore no longer widens down to the floor:
+	// a graph whose rebuild watermark is pinned stops re-serving rows this consumer
+	// has already merged, which is what lets a repeated pass converge.
+	floor := retentionFloorFor(shipper, gt, name, sinceNanos)
+	// THE PASS DECLINES RATHER THAN SENDING A ZERO. `<= 0` and not `== 0`: a zero from
+	// ANY cause is a floor this client cannot vouch for across both of its consumers,
+	// and the caller reaches this code only with a resolved horizon, so a legitimate
+	// zero does not arrive here.
+	if floor <= 0 {
+		return SegmentDelta{}, fmt.Errorf("segment delta %s/%s: %w", gt, name, ErrRetentionFloorUnreadable)
+	}
 	items, tombstoned, horizon, err := scanRebuildSegmentsAs(
-		ctx, graphclient.OpSegmentDeltaMerge, scanner, gt, name,
-		retentionFloorFor(shipper, gt, name, sinceNanos))
+		ctx, graphclient.OpSegmentDeltaMerge, scanner, gt, name, floor, sinceNanos)
 	if err != nil {
 		return SegmentDelta{}, fmt.Errorf("segment delta scan failed: %w", err)
 	}
 
-	out := SegmentDelta{Horizon: horizon}
+	out := SegmentDelta{Horizon: horizon, RetentionFloorNanos: floor, ScanFromNanos: sinceNanos}
 	if len(tombstoned) > 0 {
 		if terr := landDeltaTombstones(ctx, shipper, deleter, gt, name, tombstoned, &out); terr != nil {
 			return out, terr
@@ -167,7 +206,10 @@ func mergeDeltaItems(
 		return nil // degraded client — nothing to merge into.
 	}
 	ids := allIDsOf(items)
-	hnswDocs, fieldDocs := buildRepairDocuments(items, ids, ids)
+	hnswDocs, fieldDocs, err := buildRepairDocuments(items, ids, ids)
+	if err != nil {
+		return fmt.Errorf("segment delta merge %s/%s: %w", gt, name, err)
+	}
 	if len(hnswDocs) > 0 {
 		if err := merger.AddAndMarkDirty(ctx, gt, name, hnswDocs); err != nil {
 			return fmt.Errorf("segment delta HNSW merge failed: %w", err)

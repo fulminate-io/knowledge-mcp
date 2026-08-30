@@ -58,11 +58,17 @@ func TestAccountHeader_SyncPushTransport(t *testing.T) {
 	}
 }
 
-// TestAccountHeader_SegmentsControlTransport asserts the SECOND wire surface
-// independently of push: a /v1/segments/* control POST stamps the same header
-// under the same conditions. Missing either surface silently splits a user's
-// data across two accounts, so each is asserted on its own.
-func TestAccountHeader_SegmentsControlTransport(t *testing.T) {
+// TestAccountHeader_SyncControlJSON asserts the control-JSON entry point
+// independently of push: a /v1/sync/* control POST stamps the same header under
+// the same conditions. PushGraph and SyncControlJSON are separate Transport
+// methods, and missing the header on either silently splits a user's data across
+// two accounts, so each is asserted on its own.
+//
+// RENAMED WITH THE CHANNEL IT USED TO NAME. Its predecessor was named for the
+// segment control channel, which is deleted; the property is account-header
+// stamping, which is channel-independent, so the test survives under a name that
+// does not claim a route the transport no longer has.
+func TestAccountHeader_SyncControlJSON(t *testing.T) {
 	const id = "acct_01SEGSEGSEGSEGSEGSEGSEG"
 
 	var gotHeader, gotPath string
@@ -77,23 +83,23 @@ func TestAccountHeader_SegmentsControlTransport(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	tr := accountTestTransport(t, srv, id)
-	if _, err := tr.SegmentControlJSON(context.Background(), "presign", []byte(`{}`)); err != nil {
-		t.Fatalf("SegmentControlJSON(with selection): %v", err)
+	if _, err := tr.SyncControlJSON(context.Background(), "presign", []byte(`{}`)); err != nil {
+		t.Fatalf("SyncControlJSON(with selection): %v", err)
 	}
-	if gotPath != "/v1/segments/presign" {
-		t.Errorf("path = %q, want /v1/segments/presign", gotPath)
+	if gotPath != "/v1/sync/presign" {
+		t.Errorf("path = %q, want /v1/sync/presign", gotPath)
 	}
 	if gotHeader != id {
-		t.Errorf("segments: %s = %q, want %q", AccountHeaderName, gotHeader, id)
+		t.Errorf("control JSON: %s = %q, want %q", AccountHeaderName, gotHeader, id)
 	}
 
 	gotHeader, headerPresent = "", false
 	trNone := accountTestTransport(t, srv, "")
-	if _, err := trNone.SegmentControlJSON(context.Background(), "presign", []byte(`{}`)); err != nil {
-		t.Fatalf("SegmentControlJSON(no selection): %v", err)
+	if _, err := trNone.SyncControlJSON(context.Background(), "presign", []byte(`{}`)); err != nil {
+		t.Fatalf("SyncControlJSON(no selection): %v", err)
 	}
 	if headerPresent {
-		t.Errorf("segments call without a selection sent %s = %q; the header must be absent", AccountHeaderName, gotHeader)
+		t.Errorf("control-JSON call without a selection sent %s = %q; the header must be absent", AccountHeaderName, gotHeader)
 	}
 }
 
@@ -138,12 +144,12 @@ func TestAccountSelection_RefusesBeforeDispatch(t *testing.T) {
 		t.Errorf("after rejection: server saw %d requests, want the refusal to stop at 1", got)
 	}
 
-	// The same refusal governs the segments surface.
-	if _, err := tr.SegmentControlJSON(context.Background(), "presign", []byte(`{}`)); !errors.Is(err, ErrAccountSelectionRejected) {
-		t.Errorf("segments after rejection: err = %v, want ErrAccountSelectionRejected", err)
+	// The same refusal governs the control-JSON surface.
+	if _, err := tr.SyncControlJSON(context.Background(), "presign", []byte(`{}`)); !errors.Is(err, ErrAccountSelectionRejected) {
+		t.Errorf("control JSON after rejection: err = %v, want ErrAccountSelectionRejected", err)
 	}
 	if got := hits.Load(); got != 1 {
-		t.Errorf("after segments refusal: server saw %d requests, want 1", got)
+		t.Errorf("after control-JSON refusal: server saw %d requests, want 1", got)
 	}
 	if err != nil && !strings.Contains(err.Error(), id) {
 		t.Errorf("refusal error %q does not name the rejected account", err)

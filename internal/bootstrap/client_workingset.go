@@ -59,38 +59,26 @@ func (c *client) InWorkingSet(gt kgtypes.GraphType, name string) bool {
 }
 
 // SegmentStalledSince reports when (gt, name) stopped being able to recover its
-// segment coverage, and 0 when it still can. It is the ASSEMBLY POINT for a fact that
-// spans two owners: the heal breaker latch lives on *client and the publish
-// coverage-gate suppression lives on the segment manager, so neither can answer alone
-// and *client is the one place holding both.
+// segment coverage, and 0 when it still can. It is the heal breaker's latch stamp.
 //
-// It takes the EARLIER of the two. They are different mechanisms with different reset
-// policies — the breaker latches until a manual rebuild_segments or a restart, the
-// publish gate re-arms on a resident rise — so either alone is a real stall, and the
-// honest answer to "since when" is whichever started first.
+// IT USED TO ASSEMBLE TWO STAMPS AND TAKE THE EARLIER. The second was the segment
+// manager's publish coverage-gate suppression, and it is gone with the manifest
+// publish, so there is no coverage gate left to become unsatisfiable and nothing to
+// re-arm on a resident rise. What survives is the breaker latch, which latches until
+// a manual rebuild_segments or a restart.
 //
-// Both stamps come from THIS process's wall clock and are cleared by a restart, so
-// the age a caller derives is scoped to this process. The coverage table's caption
-// says so rather than letting a reader assume otherwise.
+// THE STALLED BAND IS CORRESPONDINGLY NARROWER, and that is a real reduction rather
+// than a simplification: a graph whose publishes were being suppressed used to render
+// stalled without the breaker having latched, and no such state exists now.
+//
+// The stamp comes from THIS process's wall clock and is cleared by a restart, so the
+// age a caller derives is scoped to this process. The coverage table's caption says
+// so rather than letting a reader assume otherwise.
 func (c *client) SegmentStalledSince(gt kgtypes.GraphType, name string) int64 {
 	if c == nil {
 		return 0
 	}
-	latched := c.healBreaker.LatchedSince(gt, name)
-	suppressed := int64(0)
-	if c.segmentMgr != nil {
-		suppressed = c.segmentMgr.CoverageSuppressedSince(gt, name)
-	}
-	switch {
-	case latched == 0:
-		return suppressed
-	case suppressed == 0:
-		return latched
-	case suppressed < latched:
-		return suppressed
-	default:
-		return latched
-	}
+	return c.healBreaker.LatchedSince(gt, name)
 }
 
 // deferInstructionBootstrapUntilAdmitted runs the one-shot instruction bootstrap

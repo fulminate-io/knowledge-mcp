@@ -34,7 +34,15 @@ var rustLangConfig = LangConfig{
 		{Name: "expr", Context: contextExpr, Prefix: "fn __meta_wrapper__() {\n    let _ = ", Suffix: ";\n}\n"},
 	},
 	CommentKinds: []string{"block_comment", "line_comment"},
-	IdentRule:    isRustIdent,
+	// Rust's comment kinds carry their `//` and `/* */` markers as children and
+	// leave the comment TEXT in a span gap, so a comment written into a pattern
+	// matched any comment at all. Go's `comment` is childless and has always
+	// constrained its text; declaring these two makes Rust agree. Rust's string
+	// literals are NOT here: raw_string_literal gaps only on its `r"` / `"#`
+	// delimiters and covers its value with a string_content child, which both
+	// compares correctly today and can host a placeholder.
+	OpaqueTextKinds: []string{"block_comment", "line_comment"},
+	IdentRule:       isRustIdent,
 	// IsTestFile is NIL for Rust, and that is a decision rather than an
 	// omission. Rust marks unit tests with an in-FILE `#[cfg(test)] mod tests`
 	// block, so the test code sits inside ordinary source files and no filename

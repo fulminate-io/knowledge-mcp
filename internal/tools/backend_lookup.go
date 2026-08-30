@@ -181,14 +181,25 @@ func guardBatchUpdateShape(ctx context.Context, gc GraphCaller, a mutateArgs) er
 		}
 	}
 	// ARM 3 — container-status (any status value).
+	//
+	// EVERY OFFENDING ID IS NAMED, not just the first. The loop used to return on
+	// the first container it found, so a caller who split that one id off and
+	// re-sent the rest hit the identical refusal on the next container, and could
+	// hit it repeatedly. The single lookup pass above already holds every id's
+	// type, so collecting them costs no extra read. Only the OFFENDERS are named:
+	// listing the whole batch would stop the message being actionable.
 	if a.Status != "" {
+		var offenders []string
 		for _, r := range rs {
 			if isClientRollupContainer(r.nodeType) {
-				return fmt.Errorf(
-					"mutate(update, ids): status updates on container nodes (project/ticket/plan/phase/step) must be issued per-id so the rollup cascade runs — split this batch and issue a per-id update for %s",
-					r.id,
-				)
+				offenders = append(offenders, fmt.Sprintf("%s (%s)", r.id, r.nodeType))
 			}
+		}
+		if len(offenders) > 0 {
+			return fmt.Errorf(
+				"mutate(update, ids): status updates on container nodes (project/ticket/plan/phase/step/test_plan/test_step) must be issued per-id so the terminal-status rollup cascade can reach descendants — split this batch and issue a per-id update for each of: %s",
+				strings.Join(offenders, ", "),
+			)
 		}
 	}
 	return nil

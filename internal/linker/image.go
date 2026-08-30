@@ -19,9 +19,9 @@ var workloadTypes = []string{
 
 // LinkImageTargets scans cloud workload nodes for container images, extracts
 // image names, and matches them against code repository names. For each match
-// it emits a mutate(link, link_graph:"linkage") call with the BUILDS edge so
-// the server's handleLink path auto-creates the cross-graph proxies and
-// writes the edge with metadata.
+// it emits a linkage link with the BUILDS edge through emitLink, which routes
+// crossgraph.ResolveAndLink over the client Execute seam: the proxies are
+// materialized client-side and the edge is written with metadata.
 //
 // Client-side port of pkg/linker.LinkImageTargets. The parsing helpers
 // (extractImageName, extractContainerImages) are ported verbatim — they're
@@ -80,9 +80,9 @@ func linkImagesInCloudGraph(ctx context.Context, gc GraphCaller, opts LinkOption
 				continue
 			}
 			evidence := fmt.Sprintf("image %s matches repo %s", img, imageName)
-			// Issue the link with foreign IDs; the server's handleLink
-			// auto-creates the cross-graph proxies via ResolveOrProxy and
-			// writes the edge in the linkage graph.
+			// Issue the link with foreign IDs; emitLink's
+			// crossgraph.ResolveAndLink materializes the cross-graph proxies
+			// client-side and writes the edge in the linkage graph.
 			if err := emitLink(ctx, gc, opts, node.Id, imageName, "BUILDS", "tier1-image", evidence, 0.9); err != nil {
 				continue
 			}

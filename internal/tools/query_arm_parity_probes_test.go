@@ -53,6 +53,12 @@ var querySelectionOnlyParams = func() map[string]bool {
 const (
 	queryParityNumber     = 4271
 	queryParityNumberText = "4271"
+
+	// metadataProjectionProbeKey is the `fields` probe: a per-metadata-key
+	// projection, the one form the projection vocabulary leaves unvalidated,
+	// carrying the same "probe-fields" distinctive the generic array probe
+	// used to carry.
+	metadataProjectionProbeKey = "metadata.probe-fields"
 )
 
 // queryParityContains folds case before comparing: renderers title-case labels
@@ -87,6 +93,18 @@ func queryParityProbe(param string, prop kgtools.Property, fx queryParityFixture
 	case "extra", "meta":
 		// map[string]string on queryArgs — a map[string]any probe fails that decode.
 		return map[string]any{"probe-" + param + "-key": "probe-" + param}, "probe-" + param
+	case "fields":
+		// TYPE-VALID IS NO LONGER ENOUGH FOR THIS PARAM. A projection key is
+		// now validated against a closed vocabulary and an unsupported one is
+		// REFUSED, so the generic array probe
+		// ["probe-fields"] makes the ranked-search arms error instead of
+		// reaching the arm — measuring nothing, exactly as the governing rule
+		// above warns. The per-metadata-key "metadata.<key>" form is
+		// deliberately NOT validated (it is an open vocabulary), so it is the
+		// one projection value that is both vocabulary-valid and freely
+		// distinctive. The distinctive string is unchanged, so every arm's
+		// declared consumed/ignored class is asserted exactly as before.
+		return []any{metadataProjectionProbeKey}, "probe-" + param
 	case "query_vector":
 		// Decoded as a base64 string; a non-decodable probe is dropped before the
 		// plan is built, which would make a consumed row fail against correct work.

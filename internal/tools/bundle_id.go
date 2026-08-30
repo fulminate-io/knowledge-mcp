@@ -14,7 +14,8 @@ import (
 // wire envelope so every node + edge created by the batch shares a single
 // bundle_anchor in the server's version overlay.
 //
-// Client-local port of the former pkg/store.NewBundleID — the generator is
+// Client-local port of store.NewBundleID, which no longer exists server-side
+// (verified absent repo-wide by symbol) — the generator is
 // pure client-side (crypto/rand); only the resulting bundle_id STRING crosses
 // the wire on MutationPlan.bundle_id.
 //

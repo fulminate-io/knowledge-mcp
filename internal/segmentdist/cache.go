@@ -14,9 +14,18 @@ import (
 
 // diskSegmentCache is the CLIENT-side L2 disk cache: a content-addressed
 // on-disk store of segment blobs under <root>/<id>.seg, where id IS the sha256
-// content hash — a self-verifying filename, so a restart re-loads from disk not
+// content hash of the segment PAYLOAD, so a restart re-loads from disk not
 // the network (the contract's "persist pulled segment blobs locally so a restart
 // re-loads from disk"). A cache HIT skips the network on the next Source.Fetch.
+//
+// THE FILENAME NAMES THE PAYLOAD, NOT THE WHOLE FILE, and the distinction became
+// real when the engine started prefixing a consolidated blob with the supersession
+// record it carries (searchengine/supersession.go). Nothing in this cache
+// recomputes the hash — it never did — so this is a statement about what the id
+// MEANS rather than a check anything performs: a reader verifying a file would
+// strip that envelope and hash what is left. Two encodings of one index are
+// therefore the same segment, which is what keeps a re-emit that changed nothing
+// from re-keying its partition.
 //
 // Eviction: bounded TOTAL on-disk bytes with LRU eviction. On Put, if the total
 // cached bytes exceed the cap, evict the least-recently-used .seg files until
@@ -51,11 +60,15 @@ type cacheEntry struct {
 	bytes int64
 }
 
-var _ searchengine.SegmentCache = (*diskSegmentCache)(nil)
-
-// *diskSegmentCache also satisfies the wider segmentL2Cache seam (Get/Put/Remove)
-// distManager writes through — the Remove method is what segmentL2Cache adds over
-// searchengine.SegmentCache.
+// *diskSegmentCache satisfies the segmentL2Cache seam distManager writes through,
+// and this assertion is the ONE compile-time pin on that contract.
+//
+// A SECOND ASSERTION SAT HERE, against a searchengine.SegmentCache interface that
+// was declared and consumed by nothing — no parameter, no field, no return, no
+// second implementation. It is deleted with the interface. Nothing is lost: that
+// contract was Get/GetMapped/Put, and segmentL2Cache is a strict SUPERSET of it,
+// adding the Remove/Keys/sizeOf the reclaim, prune and eviction paths require. The
+// pin below therefore covers every method the deleted one did.
 var _ segmentL2Cache = (*diskSegmentCache)(nil)
 
 // newDiskSegmentCache constructs a content-addressed L2 cache rooted at root
@@ -155,32 +168,61 @@ func (c *diskSegmentCache) GetMapped(id searchengine.SegmentID) ([]byte, func(),
 	return m.data, func() { _ = m.release() }, true, nil
 }
 
-// Put writes b under id (content-addressed) with an atomic temp+rename, updates
-// recency, and evicts LRU entries until total bytes are under the cap. A repeated
-// Put of the same id refreshes recency without double-counting bytes. Errors are
-// swallowed (the cache is a best-effort backstop; a failed Put just means the
-// next Get is a miss and re-Fetches).
-func (c *diskSegmentCache) Put(id searchengine.SegmentID, b []byte) {
+// Put writes parts under id (content-addressed) with an atomic temp+rename,
+// updates recency, and evicts LRU entries until total bytes are under the cap. A
+// repeated Put of the same id refreshes recency without double-counting bytes.
+//
+// IT TAKES PARTS RATHER THAN ONE SLICE so a caller can write a segment's
+// supersession envelope and its payload in sequence without concatenating them
+// into one output-sized buffer first. Variadic rather than two fixed arguments
+// because not every caller has two: a cache-to-cache copy of a whole stored file
+// has one part and stays a one-argument call.
+//
+// THE ARITY IS NOT COMPILER-CHECKED, and that is the hazard this shape carries. A
+// caller that passes only the payload and forgets the envelope compiles fine and
+// writes a file that records nothing about what it superseded — a segment a cold
+// load will publish beside the very constituents it replaced. No grep over the
+// call sites can see that; TestMergedL2FileCarriesTheEnvelope reads the stored
+// file back and is what catches it.
+//
+// IT RETURNS ITS WRITE ERRORS AND THE CALLER MUST ACT ON THEM. They used to be
+// swallowed, on the reasoning that the cache was a best-effort backstop and a failed
+// Put merely meant the next Get would miss and re-Fetch from the server. Both halves
+// of that reasoning are gone: this cache IS the segment store, and there is nothing
+// to re-Fetch from. A swallowed error here is a segment that the engine reports as
+// resident and that no later process can load — silent data loss on the only
+// remaining persistence path.
+func (c *diskSegmentCache) Put(id searchengine.SegmentID, parts ...[]byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if el, ok := c.index[id]; ok {
 		// Already cached (immutable content) — just refresh recency.
 		c.ll.MoveToFront(el)
-		return
+		return nil
 	}
 
 	if err := os.MkdirAll(c.root, 0o750); err != nil {
-		return
+		return fmt.Errorf("segmentdist: create L2 cache dir for segment %s: %w", id, err)
 	}
-	if err := atomicWriteFile(c.path(id), b); err != nil {
-		return
+	if err := atomicWriteFile(c.path(id), parts...); err != nil {
+		return fmt.Errorf("segmentdist: write cached segment %s: %w", id, err)
 	}
 
-	el := c.ll.PushFront(&cacheEntry{id: id, bytes: int64(len(b))})
+	// THE ACCOUNTING SUMS EVERY PART, not the first or the last. curByt is what
+	// evictLocked compares against the operator's configured cap, and nothing else
+	// reads it — so counting one part of an enveloped blob would let this cache
+	// exceed that cap indefinitely and silently.
+	var written int64
+	for _, p := range parts {
+		written += int64(len(p))
+	}
+
+	el := c.ll.PushFront(&cacheEntry{id: id, bytes: written})
 	c.index[id] = el
-	c.curByt += int64(len(b))
+	c.curByt += written
 	c.evictLocked()
+	return nil
 }
 
 // evictLocked drops least-recently-used entries until total bytes are under the
@@ -217,7 +259,7 @@ func (c *diskSegmentCache) removeElement(el *list.Element) {
 // drops the index entry, the LRU node, the byte count, AND the on-disk .seg file
 // for a SPECIFIC id (a no-op when the id is absent). The deterministic rebuild's
 // Manager.InvalidateLocal calls it per superseded id so a .seg file the server
-// pruned (reconcilePrune) is evicted locally rather than orphaning until LRU —
+// superseded by a layer swap is evicted locally rather than orphaning until LRU —
 // which never fires on an unbounded cache. Reuses removeElement verbatim.
 func (c *diskSegmentCache) Remove(id searchengine.SegmentID) {
 	c.mu.Lock()
@@ -269,21 +311,39 @@ func (c *diskSegmentCache) sizeOf(id searchengine.SegmentID) (int64, bool) {
 	return entry.bytes, true
 }
 
-// atomicWriteFile writes b to path via a temp file + rename. This rolls its OWN
+// atomicWriteFile writes parts, in order, to path via a temp file + rename. This rolls its OWN
 // temp+rename because the server's store.atomicWriteFile helper lives in a
 // SEPARATE module and cannot be imported (the (path, bytes) shape also differs
-// from the server's callback shape). Best-effort fsync of the temp before rename
-// for crash durability.
-func atomicWriteFile(path string, b []byte) error {
+// from the server's callback shape).
+//
+// The sequence is the one the practice pattern prescribes explicitly: tmp -> fsync ->
+// rename -> fsync(dir). THE LAST STEP WAS MISSING and its absence was a real loss
+// window, not a lost cache entry — the temp file's fsync makes the PAYLOAD durable,
+// while the rename that names it is a directory metadata change that survives a crash
+// only once the parent directory is itself flushed. Post-merge this file is the only
+// durable copy of the constituents the reclaim removed, so an entry lost in that window
+// takes a corpus segment with it.
+//
+// EVERY STEP'S FAILURE IS RETURNED, the directory sync included, for the reason Put's
+// own contract gives: there is nothing to re-Fetch behind this cache, so a durability
+// step that failed silently is data loss with no error anywhere. See fsyncDir
+// (dirsync_unix.go / dirsync_windows.go) for the per-platform arm.
+func atomicWriteFile(path string, parts ...[]byte) error {
 	tmp := path + ".tmp"
 	f, err := os.Create(tmp) //nolint:gosec // path derives from a content-hash id under a fixed cache root
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(b); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
-		return err
+	// ONE Write PER PART, in the order given. A part is written whole rather than
+	// chunked: the kernel iterates a large slice better than a loop here would, and
+	// the payload part is typically a MAPPING, so its bytes go from page cache to
+	// the file with no heap staging at all.
+	for _, p := range parts {
+		if _, err := f.Write(p); err != nil {
+			_ = f.Close()
+			_ = os.Remove(tmp)
+			return err
+		}
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
@@ -297,6 +357,14 @@ func atomicWriteFile(path string, b []byte) error {
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return err
+	}
+	// The rename succeeded, so path now holds the payload; what is not yet durable is
+	// the directory entry naming it. Nothing is removed on this failure: the temp file
+	// is gone (it IS path now), and deleting path would destroy the very blob whose
+	// durability is in question. The caller is told instead, and treats the write as
+	// failed — which for the reclaim means it does not go on to remove the constituents.
+	if err := fsyncDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("sync cache dir after publishing %s: %w", path, err)
 	}
 	return nil
 }

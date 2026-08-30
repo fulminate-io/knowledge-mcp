@@ -36,9 +36,9 @@ func detStressDocs(n int) []searchengine.Document {
 // Manager write → engine seal → Format.Build → Encode path, not a bare builder.
 func shipDeterministicAndExport(t *testing.T, docs []searchengine.Document) searchengine.SegmentBlob {
 	t.Helper()
-	_, gc := newSegmentHarness(t)
+
 	// The embed ship path builds deterministically by default now — no seam to set.
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	require.NoError(t, mgr.AddAndMarkDirty(context.Background(), kgtypes.GraphKnowledge, "kg", docs))
 
@@ -99,8 +99,7 @@ func TestDeterministicExactTop1Recovery500(t *testing.T) {
 	docs := detStressDocs(n)
 	ctx := context.Background()
 
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 
 	// n < MinSegmentDocs(1024). The write force-seals the batch and the tick ships
 	// it; the trailing Flush is a no-op on the now-empty buffer and is kept as the

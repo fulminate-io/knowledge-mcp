@@ -2,14 +2,15 @@
 
 // The conformance suite is IN-PACKAGE (package llmproviders) so it can call the
 // unexported parseSummariesContent directly for the negative-fixture pre-verify.
-// It does NOT blank-import the provider sub-packages here — claude-cli / codex-cli
-// transitively import llmproviders (via graphclient → hivemonitor → the
-// supervisor handler), so an in-package import would be a cycle. The provider
-// factory registrations instead run from conformance_register_test.go, an
-// EXTERNAL (package llmproviders_test) file in this same directory whose blank
-// imports populate the process-global llm registry at test-binary init — visible
-// to this in-package suite through llm.NewClient / llm.ListProviders without any
-// in-package import of the providers.
+// It does NOT blank-import the provider sub-packages here: llmproviders is
+// provider-neutral by construction — it names no concrete provider package, in
+// test files or otherwise, and reaches every provider through the llm registry.
+// The provider factory registrations instead run from
+// conformance_register_test.go, an EXTERNAL (package llmproviders_test) file in
+// this same directory whose blank imports populate the process-global llm
+// registry at test-binary init — visible to this in-package suite through
+// llm.NewClient / llm.ListProviders without any in-package import of the
+// providers.
 package llmproviders
 
 import (

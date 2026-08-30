@@ -4,7 +4,6 @@ package tools
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -47,9 +46,14 @@ import (
 //     yet therefore reads live 0 legitimately. This is PRESERVED behavior, not
 //     introduced — the previous reading was equally no-load, so boot-time live-0
 //     already happens today.
-//   - live can legitimately sit BELOW seg_covered without anything being wrong,
-//     because seg_covered counts the shipped manifest while live counts distinct
-//     searchable membership.
+//   - live can legitimately sit BELOW seg_covered without anything being wrong.
+//     BOTH ARE NOW LOCAL READS OF THE SAME ENGINE, and the pair has become a
+//     DUPLICATION METER rather than a coverage one: seg_covered sums the per-segment
+//     doc counts WITH DUPLICATES, while live counts DISTINCT searchable membership.
+//     A document resident in two segments across an un-reclaimed merge window is
+//     counted twice by the first and once by the second, so seg_covered above live
+//     is the duplication the pair exists to expose. It used to be a shipped-manifest
+//     count read from the server; that manifest is deleted.
 //   - So a live-0 WARN must be QUALIFIED — by daemon uptime, or by has_segments
 //     together with a nonzero seg_covered — rather than fired on the bare zero.
 //     Without that qualification the card alarms on every cold start.
@@ -92,9 +96,13 @@ type CoverageRow struct {
 	RebuildPosAgeNanos int64 `json:"-"`
 	MergePosAgeNanos   int64 `json:"-"`
 	// StalledSinceNanos is 0 when this graph's coverage can still recover on its own,
-	// and otherwise the wall-clock nanos at which it stopped being able to: the
-	// earlier of the heal breaker's latch and the publish coverage gate's suppression.
-	// It is what the stuck band renders an age from.
+	// and otherwise the wall-clock nanos at which it stopped being able to: the heal
+	// breaker's latch. It is what the stuck band renders an age from.
+	//
+	// IT USED TO BE THE EARLIER OF TWO STAMPS. The second was the publish coverage
+	// gate's suppression, and it is gone with the publish — so the stuck band is
+	// correspondingly narrower, and a graph that would once have rendered stuck on
+	// suppression alone no longer has a state to render.
 	//
 	// InWorkingSet reports whether this client maintains the graph at all — a graph
 	// no direct interaction has admitted is serviced by no background arm, which is
@@ -108,6 +116,37 @@ type CoverageRow struct {
 	StalledSinceNanos int64 `json:"-"`
 	InWorkingSet      bool  `json:"-"`
 	Evicted           bool  `json:"-"`
+	// SegProbed reports whether the SEGMENT-COVERAGE probe ran for this row. It is a
+	// separate question from CountsRead below, and the two now genuinely differ: a
+	// row outside the working set has its counts READ (one Stats RPC, which resolves
+	// no resident graph on either backend) and its segment pool NOT PROBED, because
+	// the probe imports the graph's L2 pool and constructs its engine in THIS
+	// process. When it is false SegCovered and LiveResident are at their zero values
+	// and neither is a measurement — segmentCoverageCell renders "not read" rather
+	// than "shipped 0 · live 0", which is the same discrimination HasSegments exists
+	// to give a non-segment graph.
+	SegProbed bool `json:"-"`
+	// CountsRead reports whether this row's counts were READ AT ALL. False means the
+	// walk asked and could not be answered without materializing the graph — the
+	// local OSS server holds no durable counts for it (see
+	// manage_status_coverage_unmanaged.go). When it is false EVERY count field on
+	// this row is at its zero value and NONE of them is a measurement: Total,
+	// Summarized, Embedded, SegCovered, LiveResident, SummaryFail, EmbedFail,
+	// RetainedErasures and both consumer ages are absent, not zero.
+	//
+	// IT CARRIES json:"-" LIKE ITS NEIGHBORS, which leaves the JSON consumer reading
+	// those zeros with only SegDisposition == DispositionUnmanaged to tell it they
+	// are not measurements. That is the same discrimination has_segments was added to
+	// give the web for the "shipped 0 · live 0" case, and it is why the band is in
+	// the pinned ten rather than derived: widening a pinned wire shape is a separate
+	// decision from adding a column to the table.
+	CountsRead bool `json:"-"`
+	// ImageBytes is the graph image's SIZE ON DISK as the catalog enumeration
+	// reported it — Registry.listGraphs takes it off os.ReadDir's DirEntry.Info and
+	// loads nothing to get it. It is the only durable per-graph fact a declined row
+	// can render, so it is carried for exactly that use; a row whose counts WERE read
+	// renders the counts and ignores this. Zero means the catalog reported no size.
+	ImageBytes int64 `json:"-"`
 }
 
 // repairVerifiedFrom is the three-clause formula behind CoverageRow.RepairVerified.
@@ -127,109 +166,6 @@ func repairVerifiedFrom(st RepairVerification, ok bool, nowNanos int64) bool {
 		nowNanos-st.VerifiedAtNanos < int64(SegmentRepairBackstopInterval)
 }
 
-// Coverage dispositions — the locked vocabulary segCoverageDisposition returns.
-// They exist so an operator can tell a TRANSIENT drain lag from a PERMANENT hole:
-// the two are visually identical without them, because a row covering far less
-// than it has embedded renders exactly like a healthy one.
-const (
-	DispositionNoSegments   = "—"
-	DispositionResidue      = "residue"
-	DispositionConverged    = "converged"
-	DispositionBelowFloor   = "below-floor"
-	DispositionSelfHealing  = "self-healing"
-	DispositionGapRepairing = "gap-repairing"
-	// DispositionCacheAged is the honest answer for a row whose band the coverage
-	// BACKSTOP has not verified. Under the merge architecture the backstop runs on a
-	// slow interval rather than every boot, so "gap-repairing" would assert an
-	// examination that may not have happened this process at all.
-	DispositionCacheAged = "cache-aged"
-	// DispositionStuck is the band for a graph this client maintains whose coverage
-	// can no longer recover on its own: the heal breaker has latched it disarmed
-	// (only a manual rebuild_segments or a restart re-arms) or the publish coverage
-	// gate has suspended its republish. Both states can persist indefinitely, so the
-	// row renders an age rather than a promise.
-	DispositionStuck = "stuck"
-	// DispositionUnmanaged is the band for a graph OUTSIDE the working set: no
-	// background arm services it, so no arm will move it. It is not a fault and not a
-	// stall — it is the intended state for a graph this client has not been asked to
-	// work on — which is why it is a band of its own rather than either neighbor.
-	DispositionUnmanaged = "unmanaged"
-)
-
-// segCoverageDisposition classifies one coverage row into the band it sits in.
-//
-// IT CLASSIFIES ON LiveResident, NOT SegCovered, and that is load-bearing rather
-// than cosmetic. SegCovered is the SHIPPED count (the server manifest on cloud,
-// the summed resident count on OSS); the repair arm triggers on the LIVE
-// searchable count. Classifying on the shipped number would let this column read
-// "converged" for a graph the arm is actively repairing, and "gap-repairing" for
-// one it skips — the column would narrate a different graph than the system is
-// acting on.
-//
-// BRANCH ORDER IS THE DESIGN, and three orderings are load-bearing rather than
-// incidental:
-//
-//   - The residue arm must precede the ratio arms: when live exceeds embedded the
-//     ratio test is ALSO true, so a classifier checking the band first would label
-//     the hard-delete residue class as this gate's under-coverage hole.
-//   - The unmanaged arm must FOLLOW the no-segments arm. A graph with no segment
-//     pool has no coverage to manage, and its disposition IS the bare dash
-//     (formatCoverageRow), so labeling it unmanaged would replace a correct answer
-//     with a redundant one for every non-segment graph in the account.
-//   - The stuck arm must PRECEDE the ratio arm. A latched or suppressed graph sits
-//     in exactly the resident-below-ratio shape, so the two arms collide by
-//     construction; whichever runs first wins. Placing stuck second would leave the
-//     ratio arm calling the row self-healing — the claim this band exists to stop,
-//     because nothing is healing it.
-//
-// The band arms delegate to SegmentCoverageFloor and CoverageRatioThreshold so the
-// column and the auto-heal cannot disagree about which graphs self-heal.
-//
-// The honesty of the residue, converged, below-floor and ratio arms is exactly the
-// honesty of LiveResident, which is the DISTINCT live-searchable count rather than
-// the summed residency figure.
-func segCoverageDisposition(r CoverageRow) string {
-	switch {
-	case !r.HasSegments:
-		return DispositionNoSegments
-	case !r.InWorkingSet:
-		// No arm services a graph outside the working set, so no band describing what
-		// an arm is doing about it can be true.
-		return DispositionUnmanaged
-	case r.Evicted:
-		return DispositionEvicted
-	case r.LiveResident > r.Embedded:
-		// Live exceeds embedded: the hard-delete residue class, a different gate's
-		// territory than this column's under-coverage band.
-		return DispositionResidue
-	case r.LiveResident == r.Embedded:
-		return DispositionConverged
-	case r.Embedded < SegmentCoverageFloor:
-		// Below the floor the ratio arm is disarmed entirely; only the
-		// zero-presence probe heals there.
-		return DispositionBelowFloor
-	case r.StalledSinceNanos > 0:
-		// The graph is in the working set and below coverage, but the arm that would
-		// heal it has given up — a latched breaker or a suspended republish. Reporting
-		// the ratio band here would promise a recovery no arm is attempting.
-		return DispositionStuck
-	case float64(r.LiveResident) < CoverageRatioThreshold*float64(r.Embedded):
-		return DispositionSelfHealing
-	default:
-		// ONLY THIS ARM CONSULTS THE BACKSTOP, and the restriction is the honesty
-		// argument rather than caution. Every arm above is computed from LiveResident
-		// and Embedded, which are LIVE readings taken this call — nothing about them is
-		// cache-aged. What is unverified is specifically the claim THIS arm makes: that
-		// the row's shortfall is a gap the repair arm is servicing. When the backstop
-		// has not looked, that claim is unsupported, and this is the one cell that
-		// should say so.
-		if !r.RepairVerified {
-			return DispositionCacheAged
-		}
-		return DispositionGapRepairing
-	}
-}
-
 // renderLLMCoverage renders the per-graph durable LLM-coverage MARKDOWN table
 // surfaced by the manage(status) TEXT body, delegating the per-graph facts to
 // collectCoverageRows. Returns "" when there are no rows (stats seam unavailable
@@ -246,11 +182,11 @@ func renderLLMCoverage(ctx context.Context, deps ClientDeps) string {
 	// auto-summaries — so it is most meaningful as a coverage signal for code
 	// graphs, where Summary is populated only by the summarizer.
 	sb.WriteString("_summarized = node has a non-empty Summary, which INCLUDES deterministic auto-summaries for structured nodes (decisions, findings, thoughts, etc.) — most meaningful as an LLM-coverage signal for code graphs, where Summary is populated only by the summarizer._\n\n")
-	sb.WriteString("_the segment-coverage cell names INDEPENDENT counts and none of them bounds another, so they are labeled rather than joined with \"of\": `shipped N` sums the shipped manifest's doc counts (superseded generations included), `live M` is the distinct live-searchable count, and the embedded count has its own column. The bracketed term is that graph's coverage BAND, derived from the LIVE count, NOT the shipped one, and it names which arm owns the row: `self-healing` resolves within one reconcile interval, `gap-repairing` is the band the repair arm services, `cache-aged` is that same band on a graph the coverage backstop has not verified within its interval, `stuck` is a graph this client maintains whose heal breaker has latched or whose publish coverage gate has suspended its republish — no arm is servicing it, and the age is how long that has been true IN THIS PROCESS (a restart clears it), `unmanaged` is a graph this client has never searched, collected into or written to, so no background arm maintains it at all — the intended state for a graph you are not working on rather than a fault, and `evicted` is a graph whose segment pool this client's residency budget dropped from RAM to stay inside its byte ceiling — the segments are intact on local disk and the next search reloads them, so it is a memory-management state that needs NO operator action._\n\n")
-	// The segment cell reads "shipped N · live M [band]". Shipped sums doc_counts
-	// across the shipped manifest, in which superseded and hard-deleted generations
-	// survive; live is the DISTINCT LIVE-SEARCHABLE doc count. Neither bounds the
-	// other, so the cell labels the two rather than joining them with "of" — the
+	sb.WriteString("_the segment-coverage cell names INDEPENDENT counts and none of them bounds another, so they are labeled rather than joined with \"of\": `shipped N` sums the resident segments' doc counts WITH DUPLICATES (a document resident in more than one segment across an un-reclaimed merge window is counted once per segment), `live M` is the DISTINCT live-searchable count — so the pair is a duplication meter, and `shipped` above `live` is that duplication — and the embedded count has its own column. The bracketed term is that graph's coverage BAND, derived from the LIVE count, NOT the shipped one, and it names which arm owns the row: `self-healing` resolves within one reconcile interval, `gap-repairing` is the band the repair arm services, `cache-aged` is that same band on a graph the coverage backstop has not verified within its interval, `stuck` is a graph this client maintains whose heal breaker has latched — no arm is servicing it, and the age is how long that has been true IN THIS PROCESS (a restart clears it), `unmanaged` is a graph this client has never searched, collected into or written to, so no background arm maintains it at all — the intended state for a graph you are not working on rather than a fault. ITS COUNTS ARE REAL, and its SEGMENT CELL IS NOT: counting is a read the backend answers from durable state it already maintains, while probing the segment pool imports that pool into this process and constructs the graph's engine here, so the counts render and the segment cell says `not read`. When even the counts cannot be produced without materializing the graph — a local server whose image predates the durable count record — the count cells say `not read` too and the row carries only the on-disk image size the catalog already reported. Search, collect into or write to the graph and the next status reports its segment coverage as well. And `evicted` is a graph whose segment pool this client's residency budget dropped from RAM to stay inside its byte ceiling — the segments are intact on local disk and the next search reloads them, so it is a memory-management state that needs NO operator action._\n\n")
+	// The segment cell reads "shipped N · live M [band]". Shipped sums the resident
+	// segments' doc_counts WITH DUPLICATES; live is the DISTINCT LIVE-SEARCHABLE doc
+	// count. Neither bounds the other, so the cell labels the two rather than joining
+	// them with "of" — the
 	// residue band is defined as live exceeding embedded, which makes the unordered
 	// case a routine state rather than an anomaly. When live reads 0 the live
 	// searchable pool has collapsed even though the server-shipped corpus is intact,
@@ -277,20 +213,31 @@ func renderLLMCoverage(ctx context.Context, deps ClientDeps) string {
 	//     "gap-repairing" is the band the repair arm services. These two are the
 	//     easily-confused pair.
 	//   - "stuck" is the same shortfall on a graph whose heal arm has GIVEN UP: the
-	//     heal breaker latched (only a manual rebuild_segments or a restart re-arms)
-	//     or the publish coverage gate suspended its republish. It renders an age,
-	//     and that age is PROCESS-SCOPED — both stamps are per-process and a restart
-	//     clears them, so it measures how long the graph has been stuck in THIS
-	//     daemon, not since the condition first arose.
+	//     heal breaker latched (only a manual rebuild_segments or a restart re-arms).
+	//     It renders an age, and that age is PROCESS-SCOPED — the stamp is per-process
+	//     and a restart clears it, so it measures how long the graph has been stuck in
+	//     THIS daemon, not since the condition first arose.
 	//   - "unmanaged" is a graph outside the working set. Nothing services it because
 	//     nothing is supposed to, so it gets its own band rather than borrowing one
-	//     that would report a fault.
+	//     that would report a fault. NOTHING LOADS IT EITHER, which is the other half
+	//     of the same rule — but loading and counting are different reads: the row
+	//     takes its counts from one Stats RPC, which both backends answer from durable
+	//     state without making the graph resident, and declines the segment probe,
+	//     which would import the pool and construct the engine here. So the counts are
+	//     real and the segment cell reads "not read". A local server holding no durable
+	//     counts for the graph reports that too, and the row falls back to the on-disk
+	//     image size the catalog enumeration already returned without loading anything.
+	//     See manage_status_coverage_unmanaged.go.
 	sb.WriteString("| graph | total | summarized | embedded | segment coverage | summary-fail | embed-fail | erasure backlog |\n")
 	sb.WriteString("| --- | --- | --- | --- | --- | --- | --- | --- |\n")
 	for _, r := range rows {
 		sb.WriteString(formatCoverageRow(r))
 		sb.WriteString("\n")
 	}
+	// The boot-time balance verdicts, appended as their own section. They answer
+	// "what did this pool look like at startup", which the live table above cannot —
+	// see renderStartupBalance.
+	sb.WriteString(renderStartupBalance(deps))
 	return sb.String()
 }
 
@@ -313,6 +260,23 @@ func renderLLMCoverage(ctx context.Context, deps ClientDeps) string {
 // definition, two consumers" fact: the manage(status) coverage disposition
 // classifies against these same two numbers, so the column and the heal cannot
 // disagree about which graphs self-heal.
+//
+// SIBLING LITERAL: segmentdist.residentBackstopFloor
+// (segmentdist/manager_reconcile_arms.go) holds the SAME value, 64, and the two are
+// kept in step by a criterion so a future edit to either is caught rather than
+// discovered.
+//
+// THEY ARE NOT THE SAME THRESHOLD, and the distinction is worth the sentence.
+// SegmentCoverageFloor gates on the EMBEDDED node count — the size of the corpus that
+// OUGHT to be indexed — so it answers "is this graph big enough for a ratio over it
+// to mean anything". residentBackstopFloor gates on a RESIDENT doc count — what an
+// engine actually holds — so it answers "is this engine holding enough to re-emit
+// against" (manager_rebuild_delta.go:88). Same number, different operands, and a
+// future change to one does NOT automatically justify the same change to the other.
+// The criterion pins the literals precisely because nothing else ties them together.
+//
+// They also cannot share a home: this repo forbids a hand-written shared package, and
+// segmentdist must not import tools (that would invert the layering).
 const (
 	SegmentCoverageFloor   = 64
 	CoverageRatioThreshold = 0.5
@@ -341,6 +305,10 @@ const (
 // renders as a placeholder. The DEFAULT knowledge graph (empty instance name) uses
 // the empty-name GraphSelector{Graph:""}, mirroring renderLLMCoverage's
 // knowledge-row handling.
+//
+// The selector-addressed graphEmbeddedCountFor it delegates to, and the
+// both-counts helper THAT now projects from, live in
+// manage_status_coverage_counts.go.
 func GraphEmbeddedCount(ctx context.Context, gc GraphCaller, gt kgtypes.GraphType, name string) (int, error) {
 	target := graphsel.GraphSelectorFor(gt, name, false)
 	if gt == kgtypes.GraphKnowledge && name == "" {
@@ -349,37 +317,31 @@ func GraphEmbeddedCount(ctx context.Context, gc GraphCaller, gt kgtypes.GraphTyp
 	return graphEmbeddedCountFor(ctx, gc, target)
 }
 
-// graphEmbeddedCountFor is the SELECTOR-ADDRESSED form of GraphEmbeddedCount,
-// carrying the one number both share. It exists for the caller whose graph cannot
-// be named by (gt, name) alone: a code BRANCH, which the server resolves from Repo
-// AND Branch together (resolveCode → Scope), so a composed "repo@branch" in the
-// repo field addresses a graph that does not exist rather than the branch.
+// GraphCoverageCounts returns the FULL on-demand LLM-coverage set for one graph,
+// off the SAME single Stats RPC GraphEmbeddedCount uses.
 //
-// THE SPLIT IS ADDITIVE, and that is what keeps the single definition intact.
-// GraphEmbeddedCount above still builds its own (gt, name) selector and delegates
-// here, so every consumer — the coverage-ratio auto-heal, the manage(status)
-// column, and the unified-search completeness gate — reads the SAME field off the
-// SAME one RPC. A second helper that issued its own Stats call with its own field
-// choice is exactly the fork the single-definition rule forbids.
-func graphEmbeddedCountFor(ctx context.Context, gc GraphCaller, target *knowledgev1.GraphSelector) (int, error) {
-	sc, ok := gc.(statsRPC)
-	if !ok {
-		return 0, nil
+// IT IS THE WIDER PROJECTION OF ONE READ, NOT A SECOND READ. GraphEmbeddedCount
+// takes one field off a response that already carries six; a caller needing the
+// failure counts alongside the embedded count therefore had to issue a second
+// Stats call, and two calls mean two snapshots that can disagree about the same
+// graph. This returns all of them from one, so a consumer comparing them is
+// comparing numbers taken at the same instant.
+//
+// It carries the same (gt, name) special case as GraphEmbeddedCount above: the
+// unnamed knowledge graph addresses as an empty selector rather than by name.
+func GraphCoverageCounts(ctx context.Context, gc GraphCaller, gt kgtypes.GraphType, name string) (GraphCoverage, error) {
+	target := graphsel.GraphSelectorFor(gt, name, false)
+	if gt == kgtypes.GraphKnowledge && name == "" {
+		target = &knowledgev1.GraphSelector{Graph: ""}
 	}
-	resp, err := sc.Stats(ctx, &knowledgev1.StatsRequest{
-		Target:          target,
-		IncludeCoverage: true,
-	})
-	if err != nil {
-		return 0, err
-	}
-	return int(resp.GetGraphStats().GetBinaryVectorCount()), nil
+	return graphCoverageFor(ctx, gc, target)
 }
 
 // segCoveredFor reads the SERVER-shipped HNSW-segment-covered doc count AND the
 // LIVE in-memory engine resident doc count for a row's graph via the nil-safe
 // SegmentCoverage seam. Segments exist for every graph kgtypes.HasRebuildableSegments
-// admits — the embeddable builtins (knowledge, code, cloud, cicd, practice) — the
+// admits — the embeddable builtins (knowledge, code, cloud, cicd, practice,
+// checks) — the
 // SAME gate buildHealFactory and the manual rebuild_segments op use, so the status
 // column reports coverage for exactly the graph set the auto-heal arm services. A
 // graph with no rebuildable segments (linkage, transformers, and the raw graphs)
@@ -389,6 +351,16 @@ func graphEmbeddedCountFor(ctx context.Context, gc GraphCaller, target *knowledg
 // a single snapshot walk (no RPC and no load); it is surfaced so a live-pool
 // collapse (live 0 while covered is N) is detectable instead of masked behind the
 // shipped figure.
+//
+// IT IS ONLY EVER CALLED FOR A GRAPH IN THE WORKING SET, and that fence is the
+// CALLER'S (collectSegProbes). It has to be, because BOTH reads below interact:
+// ShippedSegmentDocCount routes to Manager.LoadResidentDocCount and imports the
+// graph's whole L2 pool, and LiveResidentDocCount reaches Manager.managerFor, which
+// lazily constructs the per-graph engine and its cache directory. Neither is
+// permitted for a graph no direct interaction has admitted, so the gate cannot live
+// inside this function's existing fences — poolEvictedFor and the type/wiring
+// checks are about whether a probe would be MEANINGFUL, not about whether it is
+// ALLOWED.
 func segCoveredFor(ctx context.Context, deps ClientDeps, gt kgtypes.GraphType, name string) (covered, liveResident int, hasSeg bool) {
 	if !kgtypes.HasRebuildableSegments(gt) {
 		return 0, 0, false
@@ -400,7 +372,7 @@ func segCoveredFor(ctx context.Context, deps ClientDeps, gt kgtypes.GraphType, n
 	if poolEvictedFor(deps, gt, name) {
 		return segCoveredForEvicted()
 	}
-	c, _, err := sr.ShippedSegmentDocCount(ctx, gt, name)
+	c, err := sr.ShippedSegmentDocCount(ctx, gt, name)
 	if err != nil {
 		return 0, 0, false
 	}
@@ -411,6 +383,12 @@ func segCoveredFor(ctx context.Context, deps ClientDeps, gt kgtypes.GraphType, n
 // the shared CoverageRow. The embedded count is GraphStats.BinaryVectorCount —
 // the SAME denominator the coverage-ratio auto-heal compares against (T3-2 single
 // definition; do not fork it) and the segment-coverage cell's denominator.
+//
+// IT IS THE READ-COUNTS CONSTRUCTOR, and it is the only one: reaching it means a
+// Stats RPC was issued and answered for this graph, so it stamps CountsRead. The
+// declined rows are built by newUnmanagedCoverageRow instead
+// (manage_status_coverage_unmanaged.go), which never touches a GraphStats because
+// none was fetched.
 func newCoverageRow(
 	label string, st *knowledgev1.GraphStats, segCovered, liveResident int,
 	hasSeg, repairVerified, inWorkingSet, evicted bool, stalledSinceNanos int64,
@@ -428,12 +406,19 @@ func newCoverageRow(
 		SegCovered:            segCovered,
 		LiveResident:          liveResident,
 		HasSegments:           hasSeg,
-		SummaryFail:           int(st.GetSummaryFailureCount()),
-		EmbedFail:             int(st.GetEmbedFailureCount()),
-		RepairVerified:        repairVerified,
-		InWorkingSet:          inWorkingSet,
-		Evicted:               evicted,
-		StalledSinceNanos:     stalledSinceNanos,
+		// SEG-PROBED COINCIDES WITH hasSeg ON THIS CONSTRUCTOR AND ONLY ON THIS ONE.
+		// Here HasSegments comes from segCoveredFor, which returns true only after the
+		// probe actually ran and answered — so "this row has a pool" and "we looked" are
+		// the same fact. newUnmanagedCountedCoverageRow sets HasSegments from the graph
+		// TYPE with no probe at all, which is precisely why the two are separate fields.
+		SegProbed:         hasSeg,
+		SummaryFail:       int(st.GetSummaryFailureCount()),
+		EmbedFail:         int(st.GetEmbedFailureCount()),
+		RepairVerified:    repairVerified,
+		InWorkingSet:      inWorkingSet,
+		Evicted:           evicted,
+		StalledSinceNanos: stalledSinceNanos,
+		CountsRead:        true,
 	}
 	// Assemble first, then classify, so the disposition reads exactly the values
 	// that render.
@@ -441,56 +426,11 @@ func newCoverageRow(
 	return row
 }
 
-// formatCoverageRow renders one Markdown table row from a CoverageRow. An empty
-// (zero-denominator) graph renders "(empty graph)" so a never-populated graph is
-// visibly distinct from a covered one; otherwise summarized/embedded render as
-// "X of N" so "0 of N summarized" is unambiguous against "N of N summarized".
-//
-// THE SEGMENT CELL CARRIES INDEPENDENT MEASUREMENTS AND NONE OF THEM BOUNDS
-// ANOTHER, which is why it renders them as separately labeled terms —
-// "shipped N · live M [band]" — rather than joining any two with "of":
-//
-//   - shipped (SegCovered) sums HNSW doc_counts across the SHIPPED manifest, in
-//     which superseded and hard-deleted generations survive. On a churned graph it
-//     routinely exceeds the embedded count by multiples.
-//   - live (LiveResident) is the distinct live-searchable doc count. A collapsed
-//     live pool reads "live 0" against an intact shipped figure instead of being
-//     masked behind it.
-//   - embedded (Embedded) counts live graph nodes holding a binary vector. It is
-//     deliberately NOT repeated here — the table gives it its own column — and it
-//     is the denominator the band arms classify against, never a bound on either
-//     figure above.
-//
-// The bracketed term is the band, and it names which arm OWNS the row. That is
-// also the proof the counts are unordered: the residue band is DEFINED as
-// live > embedded, so the very containment an "of" would assert is a state the
-// bands treat as ordinary. An earlier revision rendered shipped-of-embedded, which
-// printed readings like "4695 of 781" for a perfectly converged graph.
-//
-// A graph with no segment pool renders the bare "—": its disposition IS the dash,
-// so appending would print "— [—]".
-//
-// The stuck band is the ONE band that renders more than its name: an age, because a
-// state nothing is working to clear is only actionable once a reader can see how long
-// it has persisted. Every other band names an arm that is running, so its name is the
-// whole story.
-func formatCoverageRow(r CoverageRow) string {
-	if r.Total == 0 {
-		return fmt.Sprintf("| %s | (empty graph) | | | | | | |", r.Graph)
-	}
-	segCell := "—"
-	if r.HasSegments {
-		segCell = fmt.Sprintf("shipped %d · live %d [%s]",
-			r.SegCovered, r.LiveResident, coverageBandTerm(r))
-	}
-	return fmt.Sprintf("| %s | %d | %d of %d | %d of %d | %s | %d | %d | %s |",
-		r.Graph, r.Total,
-		r.Summarized, r.Total,
-		r.Embedded, r.Total,
-		segCell,
-		r.SummaryFail, r.EmbedFail,
-		erasureBacklogCell(r))
-}
+// formatCoverageRow and segmentCoverageCell — the per-row RENDERERS — live in
+// manage_status_coverage_render.go. They were moved there unchanged when this file
+// reached the repo's hard 500-line cap; what stays here is the row's SHAPE (the
+// pinned wire contract), the table's own preamble, and the constants the band arms
+// classify against.
 
 // coverageBandTerm lives in manage_status_coverage_evicted.go, beside the band
 // vocabulary's newest member — this file is against its 500-line cap.

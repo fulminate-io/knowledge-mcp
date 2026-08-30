@@ -29,8 +29,14 @@ const (
 //
 // Determinism is a PER-SEGMENT property; cross-segment build concurrency is the
 // engine/Manager layer's job (each goroutine builds one segment via this fn).
-func buildBinaryHNSWSerialDeterministic(items []binaryBuildItem, vecBytes, m, efConstruction int) *binaryGraph {
+func buildBinaryHNSWSerialDeterministic(items []binaryBuildItem, vecBytes int, dtype byte, m, efConstruction int) *binaryGraph {
 	g := newBinaryGraph(vecBytes, m, efConstruction)
+	// THE DTYPE IS SET BEFORE THE FIRST INSERT, not after the build. Insert runs
+	// the traversal to pick neighbours, so it consults the block's metric — a
+	// graph tagged only after construction would have selected every neighbour
+	// list under the wrong metric while still reporting the right tag, which
+	// degrades recall silently rather than failing.
+	g.setDtype(dtype)
 	// Override the crypto-seeded rng with a fixed PCG seed — the only delta vs
 	// the default newBinaryGraph construction (newRand at internals.go).
 	g.rng = mathrand.New(mathrand.NewPCG(detSeedHi, detSeedLo))

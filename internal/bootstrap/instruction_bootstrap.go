@@ -2,7 +2,7 @@
 
 // Package bootstrap — runInstructionBootstrap seeds the knowledge graph
 // with agent + skill nodes parsed from `.claude/agents/*.md` and
-// `.claude/skills/*.md` under rootDir. This was relocated
+// `.claude/skills/*/SKILL.md` under rootDir. This was relocated
 // from the server (cmd/knowledge-server/bootstrap/server.go::buildServer
 // previously called projects.Bootstrap) to the client because the
 // server is now filesystem-blind for source paths and the
@@ -46,7 +46,7 @@ type instructionBootstrapGC interface {
 	Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error)
 }
 
-// runInstructionBootstrap reads .claude/agents/*.md + .claude/skills/*.md
+// runInstructionBootstrap reads .claude/agents/*.md + .claude/skills/*/SKILL.md
 // under rootDir and posts the parsed nodes via a single
 // mutate(create_batch) RPC with a shared bundle_id. Idempotent: a
 // pre-flight query(type:agent, limit:1) returns early when any agent
@@ -76,14 +76,21 @@ func runInstructionBootstrap(ctx context.Context, gc instructionBootstrapGC, roo
 
 	agentFiles, _ := filepath.Glob(filepath.Join(rootDir, ".claude", "agents", "*.md"))
 	for _, path := range agentFiles {
-		if item, ok := readInstructionNodeItem(path, string(kgtypes.NodeAgent)); ok {
+		if item, ok := readInstructionNodeItem(path, string(kgtypes.NodeAgent), strings.TrimSuffix(filepath.Base(path), ".md")); ok {
 			nodes = append(nodes, item)
 		}
 	}
 
-	skillFiles, _ := filepath.Glob(filepath.Join(rootDir, ".claude", "skills", "*.md"))
+	// NESTED layout: .claude/skills/<name>/SKILL.md. A flat
+	// .claude/skills/*.md glob matched ZERO files in the shipped tree, so
+	// no skill node was ever seeded — skill recall found nothing and the
+	// agent->skill edge could never resolve. The name comes from the
+	// DIRECTORY because every file is called SKILL.md; deriving it from
+	// the filename stem would name every skill "SKILL".
+	skillFiles, _ := filepath.Glob(filepath.Join(rootDir, ".claude", "skills", "*", "SKILL.md"))
 	for _, path := range skillFiles {
-		if item, ok := readInstructionNodeItem(path, string(kgtypes.NodeSkill)); ok {
+		name := filepath.Base(filepath.Dir(path))
+		if item, ok := readInstructionNodeItem(path, string(kgtypes.NodeSkill), name); ok {
 			nodes = append(nodes, item)
 		}
 	}
@@ -166,35 +173,52 @@ func hasAgentNodes(ctx context.Context, gc instructionBootstrapGC) bool {
 // nodeCreateItem suitable for the create_batch wire envelope. Mirrors
 // projects.readInstructionNode body byte-for-byte except for the
 // wire-shape (string Type) instead of kgtypes.NodeType.
-func readInstructionNodeItem(path, nodeType string) (nodeCreateItem, bool) {
+// readInstructionNodeItem reads one instruction file into a create item.
+// The NAME is supplied by the caller rather than derived here, because the
+// two layouts name a node differently: an agent is named after its file
+// stem, a skill after its containing DIRECTORY (every skill file is
+// called SKILL.md).
+func readInstructionNodeItem(path, nodeType, name string) (nodeCreateItem, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		slog.Warn("bootstrap: failed to read file", "path", path, "error", err)
 		return nodeCreateItem{}, false
 	}
 	content := string(data)
-	stem := strings.TrimSuffix(filepath.Base(path), ".md")
 
+	// THREE FILE SHAPES, and two of them are skipped rather than repaired. agent
+	// and skill are embed-only-knowledge types, so a node with no summary is
+	// refused by the server — and because every file rides ONE create_batch, that
+	// refusal rolls back EVERY agent and skill node. One malformed file must cost
+	// itself, not the whole seed, and nothing here composes a summary on the
+	// file's behalf: the description is the author's to supply.
+	//
+	// parseInstructionFrontmatter reports ok for any well-formed delimited block
+	// that unmarshals, and never inspects whether a description: key is present,
+	// so the descriptionless-frontmatter shape needs its own gate below — it
+	// reaches this point with ok true and an empty fm.Description.
 	fm, body, ok := parseInstructionFrontmatter(content)
-	if ok {
-		return nodeCreateItem{
-			Type:        nodeType,
-			Name:        stem,
-			Summary:     fm.Description,
-			Description: instructionFirstParagraph(body, 200),
-			Content:     content,
-		}, true
+	if !ok {
+		slog.Warn("bootstrap: skipping file with no frontmatter block — add a `---` delimited block with a `description:` key",
+			"path", path)
+		return nodeCreateItem{}, false
+	}
+	if strings.TrimSpace(fm.Description) == "" {
+		slog.Warn("bootstrap: skipping file whose frontmatter has no `description:` key — it is the node's summary and nothing composes one for it",
+			"path", path)
+		return nodeCreateItem{}, false
 	}
 	return nodeCreateItem{
 		Type:        nodeType,
-		Name:        stem,
-		Description: instructionFirstParagraph(content, 200),
+		Name:        name,
+		Summary:     fm.Description,
+		Description: instructionFirstParagraph(body, 200),
 		Content:     content,
 	}, true
 }
 
 // instructionFrontmatter is the YAML frontmatter block at the top of
-// .claude/agents/*.md and .claude/skills/*.md files.
+// .claude/agents/*.md and .claude/skills/*/SKILL.md files.
 type instructionFrontmatter struct {
 	Name        string `yaml:"name"`
 	Description string `yaml:"description"`

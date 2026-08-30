@@ -106,18 +106,18 @@ func TestSetup_Headless_NoProviderDegrades(t *testing.T) {
 }
 
 // TestSetup_HeadlessReconfigure_CustomizationLoss:
-// an active [dream] fires the warning and PROCEEDS with no prompt (no
+// an active [summarizer] fires the warning and PROCEEDS with no prompt (no
 // hang); a default/credentials-only config prints no warning.
 func TestSetup_HeadlessReconfigure_CustomizationLoss(t *testing.T) {
-	dreamCfg := "schema_version = 1\n[default]\nprovider = \"anthropic\"\nmodel = \"claude-haiku-4-5-20251001\"\n[dream]\nprovider = \"anthropic\"\nmodel = \"claude-opus-4-7\"\n"
+	customCfg := "schema_version = 1\n[default]\nprovider = \"anthropic\"\nmodel = \"claude-haiku-4-5-20251001\"\n[summarizer]\nprovider = \"anthropic\"\nmodel = \"claude-opus-4-7\"\n"
 
-	t.Run("dream section warns and proceeds", func(t *testing.T) {
+	t.Run("custom section warns and proceeds", func(t *testing.T) {
 		cfgPath := setupHome(t)
 		clearCredEnv(t)
 		t.Setenv("ANTHROPIC_API_KEY", "ant-env")
 		emptyPATH(t)
 		_ = spySelfUpdate(t, "")
-		seedConfig(t, cfgPath, dreamCfg)
+		seedConfig(t, cfgPath, customCfg)
 		before, _ := os.ReadFile(cfgPath) //nolint:gosec // temp
 		out := captureStdout(t, func() {
 			if err := runSetup([]string{"--headless", "--reconfigure", "--no-self-update", "--no-service"}); err != nil {

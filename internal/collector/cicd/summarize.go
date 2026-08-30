@@ -37,8 +37,7 @@ func registryKey(provider, resourceType string) string {
 
 // Register associates a (provider, resourceType) pair with a deterministic
 // summarizer. Called from each provider package's init(). Panics on duplicate
-// keys to match the in-tree convention at collector/logs/registry.go:22 and
-// domains/transformer/registry.go:27.
+// keys to match the in-tree convention at internal/logwire/registry.go.
 func Register(provider, resourceType string, fn SummarizeFunc) {
 	summarizersMu.Lock()
 	defer summarizersMu.Unlock()

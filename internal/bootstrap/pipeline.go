@@ -2,9 +2,9 @@
 
 // Client-side LLM pipeline construction.
 //
-// wirePipelineRuntime mirrors wireWorkerRuntime: build runtime AFTER
-// the client is constructed and BEFORE the serve daemon's MCP transport
-// starts, then spawn a graph-list refresh goroutine. The refresh polls the loaded-graph
+// wirePipelineRuntime follows the shared background-runtime wiring shape: build
+// the runtime AFTER the client is constructed and BEFORE the serve daemon's MCP
+// transport starts, then spawn a graph-list refresh goroutine. The refresh polls the loaded-graph
 // catalog every Tick (per-type RETURN_MODE_GRAPH_NAMES reads), diffs against the
 // local collectorCancels map, and calls Register/Unregister for the delta
 // — worst-case lag for new-graph pickup is one collector tick.
@@ -136,6 +136,13 @@ func attachCollectGate(p *pipeline.Pipeline, c *client) {
 	p.AttachCollectGateFactory(func(gt kgtypes.GraphType, name string) func() bool {
 		return func() bool { return rt.CollectInFlightForGraph(gt, name) }
 	})
+	// The EPOCH source rides the same wiring and the same runtime, so the gate and
+	// the epoch are installed together or not at all. That pairing is what lets a
+	// consumer treat a nil epoch as "no source" rather than having to distinguish a
+	// half-wired client — there is no such state.
+	p.AttachCollectEpochFactory(func(gt kgtypes.GraphType, name string) func() uint64 {
+		return func() uint64 { return rt.CompletedCollectsForGraph(gt, name) }
+	})
 }
 
 // attachLocalPresence wires the machine-local presence predicate into the
@@ -211,21 +218,15 @@ func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 		return nil
 	}
 	sum, chained := selectSummarizer(fc)
-	emb := llmproviders.BuildEmbedder()
+	// The embedder and the three facts this Config carries about it, built and
+	// resolved as one decision — see buildEmbedAxis.
+	emb, embedProvider, embedDtype, embedIdentity := buildEmbedAxis(bootCtx)
+
 	if sum == nil && emb == nil {
 		slog.Info("client pipeline: no summarizer or embedder configured; skipping pipeline wire")
 		return nil
 	}
 
-	// Per-axis provider identity for the shared-cause escalation: the summary
-	// provider is resolved from the SAME config consumer BuildSummarizer uses; the
-	// embed provider is the constant 'voyage' (BuildEmbedder always constructs the
-	// Voyage embedder) but only when an embedder is actually wired. Distinct
-	// providers (the anthropic-summaries + voyage-embeddings case) never cross-trip.
-	embedProvider := ""
-	if emb != nil {
-		embedProvider = "voyage"
-	}
 	pcfg := pipeline.Config{
 		SummaryChannelSize: f.SummaryChannelSize,
 		SummaryBatchSize:   f.SummaryBatchSize,
@@ -237,6 +238,8 @@ func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 		Tick:               f.PipelineTick,
 		SummaryProvider:    resolveSummaryProvider(),
 		EmbedProvider:      embedProvider,
+		EmbedDtype:         embedDtype,
+		EmbedIdentity:      embedIdentity,
 	}
 
 	// Login-aware routing: the pipeline scans + writes back through the Router
@@ -247,15 +250,10 @@ func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 	p := pipeline.New(pcfg, routedWireClient{router: c.router}, adaptSummarizer(sum), adaptEmbedder(emb))
 
 	// Wire the optional client-side HNSW segment owner: at embed writeback the
-	// pipeline ALSO builds + ships HNSW segments from the binary vectors it just
-	// embedded. The Router satisfies segmentdist's loginState seam
-	// (LoggedIn reports cloud-vs-local, selecting the GCS source when logged in and
-	// the L2-local source otherwise). Best-effort: a ship failure only WARNs and
-	// never fails embed writeback (server vector path authoritative — fusion
-	// finding). The L2 segment cache roots under <graph-storage>/segments — off the
-	// CLIENT's --graph-storage data root (segmentCacheDirFor, daemon.go), which equals
-	// the auto-spawned local server's --graph-storage, so client L2 and server store
-	// co-locate rather than leaking to a HOME-fixed path.
+	// pipeline ALSO builds HNSW segments from the binary vectors it just embedded
+	// and writes them to the L2 cache. The L2 segment cache roots under
+	// <graph-storage>/segments — off the CLIENT's --graph-storage data root
+	// (segmentCacheDirFor, daemon.go). It is the client's only segment store.
 	// ONE Manager instance, shared between the PRODUCER (this pipeline ships
 	// segments into it at embed writeback) and the CONSUMER (the search
 	// intercepts query it via deps.SegmentManager()). The Manager is CONSTRUCTED
@@ -286,6 +284,17 @@ func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 	// no-ops (headless/degraded mode unaffected).
 	if c.segmentMgr != nil {
 		p.AttachHealFactory(c.buildHealFactory())
+		attachBalanceVerdict(p, c)
+		// Wire the segment cheap tick's consumer end: when the bulk gen
+		// poll reports a graph's segment stamp past the last stamp this client poked
+		// on, record a reconcile nudge so the segment loop pulls that graph's delta
+		// now instead of at its next periodic tick. Same guard as the heal factory —
+		// without a segment manager there is nothing to nudge, and the poll simply
+		// samples the axis without acting on it.
+		mgr := c.segmentMgr
+		p.SetSegmentNudger(func(gt kgtypes.GraphType, name string) {
+			mgr.NudgeSegmentDelta(gt, name)
+		})
 	}
 
 	attachCollectGate(p, c)
@@ -299,6 +308,10 @@ func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 	}
 
 	c.pipeline = p
+	// The per-graph SERVER change stamp reader is wired from the SAME pipeline, so
+	// the two are installed together or not at all and no half-wired state exists
+	// for fuseCaughtUp to have to distinguish.
+	c.serverSegmentStamp = p.SegmentStampFor
 	if err := p.Start(bootCtx); err != nil {
 		return err
 	}
@@ -312,24 +325,10 @@ func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 	// before the loops that depend on it.
 	p.RefreshOnceForBoot(bootCtx) //nolint:errcheck // best-effort initial seed
 
-	// Boot-delay segment-coverage reconcile (one-shot, OFF the critical path): a
-	// single reconcile pass fired ~segmentReconcileBootDelay after wiring, NOT
-	// synchronously here. The synchronous startup reconcile was removed because, with
-	// the L2-first load() (the resident set is now imported from the L2 disk cache
-	// server-independently before the MCP bind), boot no longer needs a server round
-	// trip to be searchable — running the all-graphs server reconcile on the bind path
-	// only coupled first-search readiness to a slow/down server.
-	//
-	// The one-shot is still REQUIRED, not a nicety: runSegmentReconcileLoop's first
-	// tick fires only at segmentReconcileInterval (5min) because it selects on
-	// ticker.C with no immediate first iteration. With the synchronous reconcile gone
-	// AND the per-search recoverIfDegenerate removed (Phase 3), a graph genuinely
-	// degenerate after the L2-first load — a cold/partial L2 on this machine while the
-	// server holds the full corpus — would otherwise sit degenerate for up to 5min
-	// post-restart. The ~30s delay closes that heal gap while staying off the bind /
-	// markPipelineReady path: it fires well after readiness latches, never blocking
-	// the MCP listener bind.
-	go c.bootDelayReconcile(ctx)
+	// The one-shot boot segment passes (heal, then report), both spawned OFF this
+	// critical path. See spawnBootSegmentPasses for what each one is for and why
+	// neither runs synchronously here.
+	c.spawnBootSegmentPasses(ctx)
 
 	// Catalog re-enumeration in background: wake-driven, so it costs nothing until
 	// the account's catalog watermark moves or a login flip rebinds the backend.
@@ -359,22 +358,6 @@ func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 	}
 
 	return nil
-}
-
-// resolveSummaryProvider returns the summary axis's LLM provider identity for the
-// shared-cause escalation gate, resolved from the SAME config consumer
-// BuildSummarizer uses (config.ConsumerSummarizer). Degrade-not-die: an unloaded
-// config or a resolve error yields "" (unknown) so that axis never participates
-// in a cross-trip — never an error that blocks pipeline wiring.
-func resolveSummaryProvider() string {
-	if !config.Loaded() {
-		return ""
-	}
-	sec, err := config.Active().Resolve(config.ConsumerSummarizer)
-	if err != nil {
-		return ""
-	}
-	return sec.Provider.String()
 }
 
 // adaptSummarizer converts an llmproviders.Summarizer to the pipeline

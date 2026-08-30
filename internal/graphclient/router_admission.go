@@ -6,7 +6,7 @@
 // It lives HERE, on Router.Execute, rather than in a decorator around the tools
 // GraphCaller. GraphCaller is a one-method interface (Execute only) that every
 // intercept type-asserts UP from to reach the carrier seams it needs — Stats,
-// Index, MetadataStats, Hive, ExportGraph. A struct EMBEDDING that interface
+// Index, MetadataStats, ExportGraph. A struct EMBEDDING that interface
 // promotes only Execute, so all sixteen of those upgrades would start returning
 // ok=false and degrade SILENTLY; the worst of them returns nil rows and kills the
 // whole manage(status) coverage table. Router carries those seams as explicit
@@ -56,13 +56,21 @@ func (r *Router) AttachWorkingSet(admit func(gt kgtypes.GraphType, name, reason 
 //     and no instance key, so it cannot admit what it enumerates — for every
 //     family whose instance key is repo / account / language.
 //
-// THE KNOWLEDGE FAMILY IS THE NAMED EXCEPTION to (2). Normalize collapses the
-// knowledge empty instance to "default", so a type-only knowledge target under
-// an admitting operation DOES admit knowledge/default. That is correct —
-// knowledge is single-instance, so a type-only knowledge target IS the default
-// instance, and a user query against the knowledge graph is a direct
-// interaction. It does mean the operation partition stays load-bearing for
-// knowledge instead of being backstopped by structure.
+// THE SINGLE-INSTANCE FAMILIES ARE THE NAMED EXCEPTIONS to (2), and there are
+// two: knowledge and checks. Normalize collapses their empty instance to
+// "default", so a type-only target for either, under an admitting operation, DOES
+// admit. That is correct — each has exactly one instance, so a type-only target
+// IS that instance and a user read of it is a direct interaction. The two arrive
+// at it from opposite directions: knowledge is written both as "" and as
+// "default" by existing code, while checks carries NO instance field at all, so
+// "" is the only spelling any reader can send. It does mean the operation
+// partition stays load-bearing for both instead of being backstopped by
+// structure.
+//
+// CHECKS WAS MISSING FROM THAT COLLAPSE AND THE COST WAS SILENT: every read of
+// the graph was structurally unable to admit it, so the catalog loop registered
+// no collector and its nodes stayed unembedded through every drain while this
+// gate's operation half passed cleanly.
 //
 // Reads admit as well as writes: the rule names "some kind of mcp query like
 // search, mutate, collect", so the recorder reads the request's Target and does

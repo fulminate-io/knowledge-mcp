@@ -17,7 +17,6 @@ const (
 	defaultUserAgent    = "knowledge-web-collector/0.1 (+github.com/fulminate-io/knowledge-mcp)"
 	defaultFetchTimeout = 30 * time.Second
 	maxRedirects        = 5
-	maxBodyBytes        = 10 * 1024 * 1024 // 10 MiB cap per page
 )
 
 // fetchedPage is the result of a single HTTP GET. It is returned even on
@@ -86,19 +85,22 @@ func (c *fetchClient) hostStateFor(host string) *hostState {
 	return hs
 }
 
-// waitForPoliteness sleeps until politenessMs has elapsed since the last
-// fetch to host. The per-host mutex is held for the duration of the wait so
-// concurrent fetches to the same host serialize cleanly.
-func (c *fetchClient) waitForPoliteness(ctx context.Context, state *hostState) error {
+// waitForPoliteness sleeps until delayMs has elapsed since the last fetch to
+// host. The per-host mutex is held for the duration of the wait so concurrent
+// fetches to the same host serialize cleanly.
+//
+// delayMs is the configured politeness floor. It is passed rather than read
+// from the client so the wait is testable without constructing one.
+func (c *fetchClient) waitForPoliteness(ctx context.Context, state *hostState, delayMs int) error {
 	state.mu.Lock()
 	defer func() {
 		state.lastFetch = time.Now()
 		state.mu.Unlock()
 	}()
-	if c.politenessMs <= 0 || state.lastFetch.IsZero() {
+	if delayMs <= 0 || state.lastFetch.IsZero() {
 		return nil
 	}
-	delay := time.Duration(c.politenessMs) * time.Millisecond
+	delay := time.Duration(delayMs) * time.Millisecond
 	elapsed := time.Since(state.lastFetch)
 	if elapsed >= delay {
 		return nil
@@ -112,10 +114,11 @@ func (c *fetchClient) waitForPoliteness(ctx context.Context, state *hostState) e
 	}
 }
 
-// fetch performs a GET request against rawURL and returns a *fetchedPage
-// carrying the URL, final URL after redirects, status code, body, headers,
-// and timestamp. Non-2xx responses are returned as *fetchedPage with the
-// status code preserved; transport errors return nil + error.
+// fetch performs a GET request against rawURL, waiting out the configured
+// per-host politeness floor first. It returns a *fetchedPage carrying the URL,
+// final URL after redirects, status code, body, headers, and timestamp. Non-2xx
+// responses are returned as *fetchedPage with the status code preserved;
+// transport errors return nil + error.
 func (c *fetchClient) fetch(ctx context.Context, rawURL string) (*fetchedPage, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -129,7 +132,7 @@ func (c *fetchClient) fetch(ctx context.Context, rawURL string) (*fetchedPage, e
 	}
 
 	state := c.hostStateFor(parsed.Host)
-	if err := c.waitForPoliteness(ctx, state); err != nil {
+	if err := c.waitForPoliteness(ctx, state, c.politenessMs); err != nil {
 		return nil, err
 	}
 
@@ -149,7 +152,7 @@ func (c *fetchClient) fetch(ctx context.Context, rawURL string) (*fetchedPage, e
 	}
 	defer resp.Body.Close()
 
-	body, err := readLimited(resp.Body, maxBodyBytes)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("read body %q: %w", rawURL, err)
 	}
@@ -167,16 +170,4 @@ func (c *fetchClient) fetch(ctx context.Context, rawURL string) (*fetchedPage, e
 		Header:    resp.Header.Clone(),
 		FetchedAt: time.Now().UTC(),
 	}, nil
-}
-
-// readLimited reads up to max bytes from r, returning an error only if the
-// underlying reader errors (EOF is not an error). Truncation at the cap is
-// silent by design — we want a page node even if the body is huge.
-func readLimited(r io.Reader, max int64) ([]byte, error) {
-	lr := io.LimitReader(r, max)
-	body, err := io.ReadAll(lr)
-	if err != nil {
-		return nil, err
-	}
-	return body, nil
 }

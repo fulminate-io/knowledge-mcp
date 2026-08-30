@@ -10,7 +10,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/bm25"
@@ -20,42 +19,62 @@ import (
 // manager_seed_branch_test.go — the branch segment seed: what it copies, what it
 // refuses to copy, and that it runs once per graph and format.
 
-// publishedOnlySource is a segmentSource whose List returns a FIXED published
-// set, independent of what any cache holds.
+// warmBaseLiveLayer builds a REAL base corpus through the ordinary write path and
+// returns the ids base's ENGINE exports.
 //
-// IT EXISTS TO SEPARATE TWO THINGS THE LOCAL SOURCE CONFLATES. On the L2-only
-// path the cache IS the manifest, so a test built on it cannot tell "copies the
-// published set" from "copies the whole directory" — the two are the same set
-// there, and the assertion would pass against an implementation that listed the
-// directory. Fixing List independently of the cache makes the difference
-// observable.
-type publishedOnlySource struct {
-	metas []searchengine.SegmentMeta
-	// onList fires inside List, which the seed calls BETWEEN capturing base's
-	// rebuild record and copying the partitions. It is the only hook that can
-	// reproduce that window, which is what the capture-first ordering exists to
-	// close.
-	onList func()
-}
-
-func (s *publishedOnlySource) List(context.Context, uint64) ([]searchengine.SegmentMeta, error) {
-	if s.onList != nil {
-		s.onList()
+// IT REPLACES A FIXED-LIST SOURCE DOUBLE, and the replacement is forced rather than
+// stylistic. The seed used to take its published set from a segment source's List, so
+// a double returning a fixed list defined "what base published" independently of
+// what base's cache held — which is what let a test tell "copies the published set"
+// apart from "copies the whole directory". The seed now reads base's ENGINE export,
+// and no source is consulted at all, so a fixed-list double defines nothing and the
+// seed copies nothing.
+//
+// THE DISTINCTION SURVIVES, on a different axis. The engine's export is the LIVE
+// layer while the cache directory can also hold superseded blobs no layer
+// references, so a test still separates the two by warming a real layer and then
+// planting an extra file on disk that the engine never imported. That is also the
+// production shape: retired blobs linger until a reclaim.
+//
+// The base engine is warmed by LOADING from L2, so this works on a manager that did
+// not itself write the corpus — which is what the budget fixture needs, since it has
+// to size its budget against blobs that already exist.
+func warmBaseLiveLayer(
+	t *testing.T, ctx context.Context, mgr *Manager, repo, format string,
+) []searchengine.SegmentID {
+	t.Helper()
+	var exported []searchengine.SegmentBlob
+	if format == bm25.New().Name() {
+		dm := mgr.bm25ManagerFor(kgtypes.GraphCode, repo)
+		require.NoError(t, dm.load(ctx))
+		exported = dm.engine.Export()
+	} else {
+		dm := mgr.managerFor(kgtypes.GraphCode, repo)
+		require.NoError(t, dm.load(ctx))
+		exported = dm.engine.Export()
 	}
-	return s.metas, nil
+	ids := make([]searchengine.SegmentID, 0, len(exported))
+	for _, b := range exported {
+		ids = append(ids, b.ID)
+	}
+	require.NotEmpty(t, ids,
+		"fixture control: base's ENGINE must hold a live layer — a cold engine exports nothing and the seed "+
+			"correctly copies nothing, which would make every assertion below pass for the wrong reason")
+	return ids
 }
 
-func (s *publishedOnlySource) Fetch(context.Context, []searchengine.SegmentID) ([]searchengine.SegmentBlob, error) {
-	return nil, nil
+// seedBaseCorpus writes a real base corpus for one format through a producer
+// Manager rooted at cacheDir, so the blobs on disk are ones an engine can decode.
+func seedBaseCorpus(t *testing.T, ctx context.Context, cacheDir, repo, format string, n int) {
+	t.Helper()
+	producer := closeOnCleanup(t, NewManager(cacheDir, 0))
+	if format == bm25.New().Name() {
+		require.NoError(t, producer.AddAndMarkDirtyFields(ctx, kgtypes.GraphCode, repo, bm25FieldDocs(n)))
+	} else {
+		require.NoError(t, producer.AddAndMarkDirty(ctx, kgtypes.GraphCode, repo, hnswVecDocs(n)))
+	}
+	require.NoError(t, producer.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, repo))
 }
-
-func (s *publishedOnlySource) Ship(context.Context, []*knowledgev1.SegmentBlobProto) ([]*knowledgev1.SegmentMetaProto, error) {
-	return nil, nil
-}
-
-func (s *publishedOnlySource) Prune([]searchengine.SegmentID) (int, error)          { return 0, nil }
-func (s *publishedOnlySource) PublishManifest(string, []segmentDigest) (int, error) { return 0, nil }
-func (s *publishedOnlySource) verifiesCompletenessServerSide() bool                 { return false }
 
 // plantBlob writes one .seg file into a graph+format cache dir. It writes the
 // file directly rather than through a cache handle because the seed constructs
@@ -100,39 +119,42 @@ func TestSeedBranchBucketFromBase_CopiesPublishedPartitions(t *testing.T) {
 	const repo = "seed-repo"
 	const branch = "seed-repo@feature"
 
-	// Base's cache holds THREE blobs; its manifest publishes only two of them.
-	plantBlob(t, cacheDir, repo, format, "pub-one", []byte("first published"))
-	plantBlob(t, cacheDir, repo, format, "pub-two", []byte("second published"))
+	// Base's LIVE layer is two real partitions; its cache then also holds a
+	// superseded blob that no layer references.
+	seedBaseCorpus(t, ctx, cacheDir, repo, format, 2048) // 2048 docs -> 2 partitions
+	mgr := closeOnCleanup(t, NewManager(cacheDir, 0))
+	live := warmBaseLiveLayer(t, ctx, mgr, repo, format)
+	require.Len(t, live, 2, "fixture control: base's live layer must be exactly two partitions")
+
+	// PLANTED AFTER THE LAYER IS WARM, so the engine never imported it: this is the
+	// retired-but-not-yet-reclaimed blob, and copying it would RESURRECT documents the
+	// base already retired into a branch that would serve them as live.
 	plantBlob(t, cacheDir, repo, format, "superseded", []byte("retired, still on disk"))
 
-	published := &publishedOnlySource{metas: []searchengine.SegmentMeta{
-		{ID: "pub-one", Format: format},
-		{ID: "pub-two", Format: format},
-	}}
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{}, cacheDir, 0, withSegmentSource(published)))
-
-	// FIXTURE CONTROL on both sides of the measurement: base really holds all
-	// three, and the branch bucket really starts empty. Without the first, the
+	// FIXTURE CONTROL on both sides of the measurement: base really holds the extra,
+	// and the branch bucket really starts empty. Without the first, the
 	// "superseded is absent" assertion could pass because it was never there.
 	require.Len(t, branchBucketIDs(cacheDir, repo, format), 3,
-		"fixture control: base's cache must hold all three blobs, published or not")
+		"fixture control: base's cache must hold the live layer PLUS the superseded blob")
 	require.Empty(t, branchBucketIDs(cacheDir, branch, format),
 		"fixture control: the branch bucket must start empty")
 
 	seeded, err := mgr.SeedBranchBucketFromBase(ctx, kgtypes.GraphCode, repo, branch, format,
 		branchEngineCache(cacheDir, branch, format, 0))
 	require.NoError(t, err)
-	require.Len(t, seeded, 2, "the seed must copy exactly the two published partitions")
+	require.Len(t, seeded, 2, "the seed must copy exactly the two live partitions")
 
 	got := branchBucketIDs(cacheDir, branch, format)
-	require.ElementsMatch(t, []searchengine.SegmentID{"pub-one", "pub-two"}, got,
-		"the branch bucket must hold the published partitions and NOT the superseded one — copying a blob the "+
+	require.ElementsMatch(t, live, got,
+		"the branch bucket must hold the live partitions and NOT the superseded one — copying a blob the "+
 			"base already retired resurrects its documents into the branch")
 
 	// The bytes are the base's, not empty placeholders.
-	body, ok := newDiskSegmentCache(graphCacheDirFor(cacheDir, kgtypes.GraphCode, branch, format), 0, adviceRandom).Get("pub-one")
+	baseBody, ok := newDiskSegmentCache(graphCacheDirFor(cacheDir, kgtypes.GraphCode, repo, format), 0, adviceRandom).Get(live[0])
 	require.True(t, ok)
-	require.Equal(t, "first published", string(body))
+	branchBody, ok := newDiskSegmentCache(graphCacheDirFor(cacheDir, kgtypes.GraphCode, branch, format), 0, adviceRandom).Get(live[0])
+	require.True(t, ok)
+	require.Equal(t, baseBody, branchBody, "the branch's copy is base's bytes, not an empty placeholder")
 }
 
 // TestSeedBranchBucketFromBase_RefusesToOverflowTheBudget asserts an over-budget
@@ -150,19 +172,30 @@ func TestSeedBranchBucketFromBase_RefusesToOverflowTheBudget(t *testing.T) {
 	const repo = "budget-repo"
 	const branch = "budget-repo@feature"
 
-	big := make([]byte, 4096)
-	plantBlob(t, cacheDir, repo, format, "blob-a", big)
-	plantBlob(t, cacheDir, repo, format, "blob-b", big)
+	seedBaseCorpus(t, ctx, cacheDir, repo, format, 2048) // 2048 docs -> 2 partitions
 
-	published := &publishedOnlySource{metas: []searchengine.SegmentMeta{
-		{ID: "blob-a", Format: format},
-		{ID: "blob-b", Format: format},
-	}}
-	// A budget that fits one blob but not both.
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{}, cacheDir, 5000, withSegmentSource(published)))
+	// THE BUDGET IS DERIVED FROM THE REAL BLOBS, not guessed. The partitions are
+	// whatever the format produces, so a hardcoded ceiling would either fit both or
+	// neither depending on an encoder detail this test has no opinion about. Sizing it
+	// at "the larger partition, and not both" is the condition the seed must refuse.
+	baseDir := graphCacheDirFor(cacheDir, kgtypes.GraphCode, repo, format)
+	baseCache := newDiskSegmentCache(baseDir, 0, adviceRandom)
+	var total, largest int64
+	for _, id := range baseCache.Keys() {
+		n, ok := baseCache.sizeOf(id)
+		require.True(t, ok)
+		total += n
+		largest = max(largest, n)
+	}
+	require.Greater(t, total, largest, "fixture control: base must hold more than one partition")
+	budget := total - 1
+
+	mgr := closeOnCleanup(t, NewManager(cacheDir, budget))
+	live := warmBaseLiveLayer(t, ctx, mgr, repo, format)
+	require.Len(t, live, 2, "fixture control: base's live layer must be exactly two partitions")
 
 	seeded, err := mgr.SeedBranchBucketFromBase(ctx, kgtypes.GraphCode, repo, branch, format,
-		branchEngineCache(cacheDir, branch, format, 5000))
+		branchEngineCache(cacheDir, branch, format, budget))
 	require.Error(t, err, "a seed that cannot fit must fail rather than copy a prefix")
 	require.ErrorContains(t, err, "refusing to copy a prefix")
 	require.Empty(t, seeded)
@@ -186,28 +219,30 @@ func TestManagerFor_BranchGraphSeedsFromBaseOnce(t *testing.T) {
 	const repo = "ctor-repo"
 	const branch = "ctor-repo@feature"
 
-	// Base holds one partition per FORMAT, so a seed wired into only one
+	// Base holds a real live layer per FORMAT, so a seed wired into only one
 	// constructor leaves the other bucket visibly empty.
-	plantBlob(t, cacheDir, repo, hnswFmt, "hnsw-one", []byte("hnsw payload"))
-	plantBlob(t, cacheDir, repo, bm25Fmt, "bm25-one", []byte("bm25 payload"))
+	ctx := context.Background()
+	seedBaseCorpus(t, ctx, cacheDir, repo, hnswFmt, 1024)
+	seedBaseCorpus(t, ctx, cacheDir, repo, bm25Fmt, 1024)
 
-	published := &publishedOnlySource{metas: []searchengine.SegmentMeta{
-		{ID: "hnsw-one", Format: hnswFmt},
-		{ID: "bm25-one", Format: bm25Fmt},
-	}}
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{}, cacheDir, 0, withSegmentSource(published)))
+	mgr := closeOnCleanup(t, NewManager(cacheDir, 0))
+	// Each format's base engine is warmed separately: the seed reads the export of
+	// the arm it is seeding, so warming only one would leave the other copying nothing
+	// and the per-format assertion below would fail for a reason of the fixture's own.
+	hnswLive := warmBaseLiveLayer(t, ctx, mgr, repo, hnswFmt)
+	bm25Live := warmBaseLiveLayer(t, ctx, mgr, repo, bm25Fmt)
 
 	t.Run("both_constructors_seed_their_own_format", func(t *testing.T) {
 		mgr.managerFor(kgtypes.GraphCode, branch)
 		mgr.bm25ManagerFor(kgtypes.GraphCode, branch)
 
-		require.Equal(t, []searchengine.SegmentID{"hnsw-one"},
+		require.ElementsMatch(t, hnswLive,
 			branchBucketIDs(cacheDir, branch, hnswFmt),
 			"the HNSW constructor must seed the HNSW bucket")
-		require.Equal(t, []searchengine.SegmentID{"bm25-one"},
+		require.ElementsMatch(t, bm25Live,
 			branchBucketIDs(cacheDir, branch, bm25Fmt),
-			"the BM25 constructor must seed its OWN bucket — the two formats carry separate manifests, so a "+
-				"seed wired into one leaves the other rebuilding from scratch")
+			"the BM25 constructor must seed its OWN bucket — the two formats index the same nodes "+
+				"independently, so a seed wired into one leaves the other rebuilding from scratch")
 	})
 
 	t.Run("second_construction_does_not_re_seed", func(t *testing.T) {

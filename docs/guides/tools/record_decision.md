@@ -47,5 +47,6 @@ are what later searches match. For the full parameter reference, run
 | `name` | string | yes |  | Decision name (e.g., 'Keep HNSW in blob, drop only BM25') |
 | `rationale` | string | yes |  | Why this was chosen |
 | `session` | string |  |  | Session name to group the decision under via session--contains-->decision. Creates the session if new. |
+| `summary` | string | yes |  | Required search-optimized one-line summary of the decision, max 500 chars. Over-cap values are clamped at a word boundary with a warning. (max length: 500) |
 | `ticket_id` | string |  |  | Active ticket/project ID — born-linked as ticket--contains-->decision so the decision is grouped under the work item that produced it. An unresolvable ticket_id is dropped with a warning, never blocking the write. |
 <!-- END GENERATED: params -->

@@ -328,14 +328,28 @@ func assetName(goos, goarch, binBase string) string {
 	return fmt.Sprintf("%s-%s-%s%s", binBase, goos, goarch, archiveExt(goos))
 }
 
+// devVersionSentinel marks a build corresponding to no published
+// release: the bare default declared in each package main (set when
+// built without `-ldflags "-X main.version=..."`), and the PREFIX the
+// Makefile's BUILD_VERSION carries so a local build stamped with its
+// git sha — `dev-v0.8.1-312-g214aaf97`, plus `-dirty` on an unclean
+// tree — still reads as a dev build here.
+const devVersionSentinel = "dev"
+
 // resolveReleaseTag maps the running knowledge binary's version to a
-// release-tag selector. The "dev" sentinel (set when the binary is
-// built without `-ldflags "-X main.version=..."`) resolves against
-// the GitHub "latest" release endpoint; any other version pins to
-// the exact tag so a `knowledge install` from a versioned client
-// pulls a matching server.
+// release-tag selector. A dev build — the bare sentinel, or any
+// "dev-"-prefixed local stamp — resolves against the GitHub "latest"
+// release endpoint; any other version pins to the exact tag so a
+// `knowledge install` from a versioned client pulls a matching server.
+//
+// The PREFIX is tested, not just the bare constant. A local build
+// carries a sha so daemon-vs-tree drift is expressible in the version
+// fields, and that sha names no published release: pinning it would
+// send `knowledge install` and `knowledge setup`'s self-update leg at a
+// tag the releases API answers 404 for, failing every locally-built
+// client. Prefixed stamps route to latest as an unstamped build always has.
 func resolveReleaseTag(v string) (tag string, isLatest bool) {
-	if v == "dev" {
+	if v == devVersionSentinel || strings.HasPrefix(v, devVersionSentinel+"-") {
 		return "", true
 	}
 	return v, false

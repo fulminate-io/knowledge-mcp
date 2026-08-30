@@ -253,8 +253,8 @@ func TestGKEGraphMatches(t *testing.T) {
 
 // TestCloudResolver_ProxyDoesNotShadowCloudResource is a T2-1 regression
 // guard: a NodeProxy with matching name + resource_type must NOT shadow
-// the underlying NodeCloudResource. CreateCrossGraphProxy at
-// domains/store/proxy.go:163-177 copies resource_type/region/provider
+// the underlying NodeCloudResource. CreateCrossGraphProxy's cloud branch at
+// internal/store/proxy.go buildCloudProxy copies resource_type/region/provider
 // onto cloud proxies, so a proxy can otherwise pass nameMatches +
 // prefixRank for the wrong account if the resolver doesn't type-filter
 // to NodeCloudResource only. Build the subgraph by hand (no store
@@ -270,8 +270,8 @@ func TestCloudResolver_ProxyDoesNotShadowCloudResource(t *testing.T) {
 		Name: account,
 		Nodes: []*knowledgev1.Node{
 			mkCloudResource("real-api", "api", "ecs:service"),
-			// Match the production CreateCrossGraphProxy GraphCloud branch
-			// (domains/store/proxy.go:163-177): foreign_graph + foreign_id
+			// Match the production CreateCrossGraphProxy cloud branch
+			// (internal/store/proxy.go buildCloudProxy): foreign_graph + foreign_id
 			// + account + foreign_type, plus the resource_type metadata
 			// copied from the source node.
 			{

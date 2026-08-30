@@ -33,15 +33,19 @@ import (
 type fanOutEngineHandler struct {
 	graphNames []string
 	nodesByID  map[string]*knowledgev1.Node
+	// stats, when set, is what Stats answers. Nil (the zero value) keeps the
+	// Unimplemented reply every pre-existing fixture relies on — the segment-gap
+	// tests are the only ones that need real node/vector counts behind the seam.
+	stats *knowledgev1.GraphStats
 
 	mu   sync.Mutex
 	reqs []*knowledgev1.ExecuteRequest
 }
 
 func (h *fanOutEngineHandler) Check(
-	_ context.Context, _ *connect.Request[knowledgev1.HealthCheckRequest],
-) (*connect.Response[knowledgev1.HealthCheckResponse], error) {
-	return connect.NewResponse(&knowledgev1.HealthCheckResponse{}), nil
+	_ context.Context, _ *connect.Request[knowledgev1.CheckRequest],
+) (*connect.Response[knowledgev1.CheckResponse], error) {
+	return connect.NewResponse(&knowledgev1.CheckResponse{}), nil
 }
 
 func (h *fanOutEngineHandler) Status(
@@ -80,7 +84,10 @@ func (h *fanOutEngineHandler) Execute(
 func (h *fanOutEngineHandler) Stats(
 	context.Context, *connect.Request[knowledgev1.StatsRequest],
 ) (*connect.Response[knowledgev1.StatsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, nil)
+	if h.stats == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented, nil)
+	}
+	return connect.NewResponse(&knowledgev1.StatsResponse{GraphStats: h.stats}), nil
 }
 
 func (h *fanOutEngineHandler) MetadataStats(
@@ -92,12 +99,6 @@ func (h *fanOutEngineHandler) MetadataStats(
 func (h *fanOutEngineHandler) Index(
 	context.Context, *connect.Request[knowledgev1.IndexRequest],
 ) (*connect.Response[knowledgev1.IndexResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, nil)
-}
-
-func (h *fanOutEngineHandler) Hive(
-	context.Context, *connect.Request[knowledgev1.HiveRequest],
-) (*connect.Response[knowledgev1.HiveResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, nil)
 }
 
@@ -169,8 +170,10 @@ func newFanOutHarnessWithHandler(t *testing.T, graphNames []string, nodes ...*kn
 
 	h2s := &http2.Server{}
 	srv := httptest.NewServer(h2c.NewHandler(mux, h2s))
-	t.Cleanup(srv.Close)
-	return graphclient.NewGraphClientForURL(srv.URL), h
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
+	gc := graphclient.NewGraphClientForURL(srv.URL)
+	t.Cleanup(gc.CloseIdleConnections)
+	return gc, h
 }
 
 // practiceNode builds a practice hit node with the importance/category metadata.
@@ -348,21 +351,27 @@ func TestPracticeFanOut_NoSilentZeroWhenMatchesExist(t *testing.T) {
 	})
 }
 
-// TestPracticeFanOut_SearchRefusesLanguage pins the SEARCH tool's contract for a
-// param it has no scope for.
+// TestPracticeFanOut_SearchLanguageScopes pins the SEARCH tool's contract for
+// `language`, which this file has now stated three different ways as the surface
+// changed. The history is worth keeping because each version was correct at the
+// time and the last one is the reason this test exists at all:
 //
-// The search tool ALWAYS fans across every loaded practice graph — there is no
-// single-language branch — so `language` selects nothing here. It used to be
-// ACCEPTED AND DROPPED: a caller asking for one language got results silently
-// spanning all of them, with no signal that the scoping had not applied. It is
-// now REFUSED, naming the valid set, so the caller can reach for
-// query(graph:"practice", language:...) which does honor it.
+//	(1) ACCEPTED AND DROPPED — a caller asking for one language got results
+//	    silently spanning all of them, with no signal the scoping had not applied.
+//	(2) REFUSED as an unknown parameter — honest, because the tool declared no
+//	    `language` and had no single-graph branch to route it to. That refusal
+//	    surface is GONE: the schema now declares the param
+//	    (firstclass_schema.go, SearchToolDef) and the practice arm now branches on
+//	    it (intercept_search_reducible_graph.go, `case "practice"`).
+//	(3) SCOPED — what this test now asserts.
 //
-// The tool declares no `language`, so nothing was under-declared and nothing was
-// added: the schema was already honest and the acceptance was the lie. The QUERY
-// tool's empty-language browse is unaffected and stays below.
-func TestPracticeFanOut_SearchRefusesLanguage(t *testing.T) {
-	t.Run("SEARCH tool language:go is refused", func(t *testing.T) {
+// The subtest below is the SAME fixture as before, re-pointed at the new
+// behaviour: two seeded graphs, so "scoped to one" is observable as "the other
+// was never searched" rather than merely "no error".
+//
+// The QUERY tool's empty-language browse is unaffected and stays below.
+func TestPracticeFanOut_SearchLanguageScopes(t *testing.T) {
+	t.Run("SEARCH tool language:go searches ONLY go", func(t *testing.T) {
 		gc := newFanOutHarness(t, []string{"go", "python"},
 			practiceNode("p:go", "GoWorkerPool", "bounded goroutines"),
 			practiceNode("p:py", "PyThreadPool", "thread pool executor"),
@@ -374,14 +383,14 @@ func TestPracticeFanOut_SearchRefusesLanguage(t *testing.T) {
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
 		handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"graph": "practice", "language": "go", "query": "pool"}))
 		require.True(t, handled)
-		require.True(t, out.IsError, "an unscopeable param must be refused, not silently dropped")
-		body := textBodyTools(out)
-		assert.Contains(t, body, `search: unknown parameter "language"`,
-			"the refusal names the offending param")
-		assert.Contains(t, body, "query", "the refusal enumerates the valid set so the caller can correct the call")
-		// AND NO SEARCH RAN. A refusal that still fanned out would have served
-		// the caller unscoped results behind an error — the worst of both.
-		assert.Empty(t, mgr.searchedNames(), "a refused call must issue no reads")
+		require.False(t, out.IsError, "language is declared and routed, no longer refused: %s", textBodyTools(out))
+		// THE DISCRIMINATING ASSERTION, and the reason the fixture seeds two
+		// graphs: a schema-only change would accept the param and still fan out,
+		// turning the old loud refusal into a SILENT DROP — strictly worse. The
+		// searched-name list is what tells those two apart.
+		assert.Equal(t, []string{"go"}, mgr.searchedNames(),
+			"a named language searches THAT graph and no other")
+		assert.NotContains(t, textBodyTools(out), "PyThreadPool", "and returns no hit from the graph it did not search")
 	})
 
 	t.Run("QUERY tool empty language stays browse", func(t *testing.T) {
@@ -420,4 +429,71 @@ func TestPracticeFanOut_NoLanguageSpansLanguageGraphs(t *testing.T) {
 	assert.Contains(t, body, "### 1. GoWorkerPool [high] (concurrency) — go")
 	assert.Contains(t, body, "### 2. PyThreadPool [high] (concurrency) — python")
 	assert.Less(t, strings.Index(body, "GoWorkerPool"), strings.Index(body, "PyThreadPool"))
+}
+
+// TestSearchPractice_LanguageScopesToOneGraph (FAILS-WHEN-ABSENT) asserts BOTH
+// halves of the gap, because either alone is a defect.
+//
+// A SCHEMA-ONLY change would turn a loud refusal into a SILENT DROP — the caller
+// asks for one language, the tool accepts the param and fans out anyway. A
+// ROUTING-ONLY change is unreachable: the undeclared-param sweep refuses the call
+// before the arm runs. Leg 2 is what catches the first; leg 1 the second.
+func TestSearchPractice_LanguageScopesToOneGraph(t *testing.T) {
+	newDeps := func(t *testing.T) (*interceptDeps, *fanOutSegmentSearcher) {
+		t.Helper()
+		gc := newFanOutHarness(t, []string{"go", "python"},
+			practiceNode("p:go", "GoWorkerPool", "bounded goroutines"),
+			practiceNode("p:py", "PyThreadPool", "thread pool executor"),
+		)
+		mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
+			"go":     {{ID: "p:go", Score: 0.90}},
+			"python": {{ID: "p:py", Score: 0.70}},
+		})
+		return &interceptDeps{gc: gc, segMgr: mgr}, mgr
+	}
+
+	t.Run("SCHEMA: language is no longer refused as unknown", func(t *testing.T) {
+		deps, _ := newDeps(t)
+		handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
+			"graph": "practice", "language": "go", "query": "pool",
+		}))
+		require.True(t, handled)
+		assert.False(t, out.IsError, "the param is declared on SearchToolDef: %s", textBodyTools(out))
+		assert.NotContains(t, textBodyTools(out), `unknown parameter "language"`)
+	})
+
+	t.Run("ROUTING: the supplied language scopes the search to that graph", func(t *testing.T) {
+		// The leg that catches a schema-only change. Asserted on WHICH GRAPHS WERE
+		// SEARCHED, not on the rendered hits: a fan-out would also surface the go
+		// hit, so a result-only assertion is green against the silent drop.
+		deps, mgr := newDeps(t)
+		_, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
+			"graph": "practice", "language": "go", "query": "pool",
+		}))
+		require.False(t, out.IsError, "%s", textBodyTools(out))
+		assert.Equal(t, []string{"go"}, mgr.searchedNames(), "exactly the named graph was searched")
+	})
+
+	t.Run("DEFAULT PRESERVED: no language still fans across every loaded graph", func(t *testing.T) {
+		// Both-directions cover, and it protects the documented silent-zero defense:
+		// the fan-out is what stops mgr.Search(GraphPractice,"all",…) returning a
+		// confident empty result.
+		deps, mgr := newDeps(t)
+		_, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
+			"graph": "practice", "query": "pool",
+		}))
+		require.False(t, out.IsError, "%s", textBodyTools(out))
+		assert.Equal(t, []string{"go", "python"}, mgr.searchedNames(), "an absent language fans out")
+	})
+
+	t.Run("VOCABULARY: language all behaves as the fan-out, matching query", func(t *testing.T) {
+		// The two tools must agree on what the word means, or a caller who learned
+		// the spelling on one gets a different operation on the other.
+		deps, mgr := newDeps(t)
+		_, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
+			"graph": "practice", "language": "all", "query": "pool",
+		}))
+		require.False(t, out.IsError, "%s", textBodyTools(out))
+		assert.Equal(t, []string{"go", "python"}, mgr.searchedNames(), `"all" IS the fan-out`)
+	})
 }

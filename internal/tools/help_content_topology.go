@@ -8,9 +8,9 @@ package tools
 const helpTopology = `# Topology Analyzers
 
 Topology analyzers compute structural signals — centrality, cycles, bridges,
-layering violations, hidden coupling, dead code, exposure paths — over any
-graph (code, cloud, cicd, knowledge, linkage) and emit ` + "`topology.Finding`" + `
-values. Pure functions over a ` + "`topology.Request`" + `; no domain imports.
+layering violations, hidden coupling, dead code, exposure paths — over a named
+graph (code, cloud, cicd, knowledge) and emit ` + "`foundation.Finding`" + `
+values. Pure functions over a ` + "`foundation.Request`" + `; no domain imports.
 
 Analyzers are invoked on demand (graph + algorithm both required) via` + "`query(mode=\"topology\")`" + `.
 
@@ -20,12 +20,12 @@ Analyzers are invoked on demand (graph + algorithm both required) via` + "`query
     "mode": "topology",
     "algorithm": "pagerank_weighted",
     "graph": "code",                  // required: code | cloud | cicd | knowledge
-    "repo": "knowledge",              // omit for active repo (code graph only)
+    "repo": "knowledge",              // required for the code graph — never inferred
     "top_k": 10,
     "extra": { "damping": "0.85" }    // per-analyzer knobs (string→string)
   })
 
-Output is a JSON array of ` + "`topology.Finding`" + ` objects.
+Output is a JSON array of ` + "`foundation.Finding`" + ` objects.
 
 ## Discover registered analyzers
 
@@ -77,19 +77,24 @@ Each analyzer supports ` + "`extra`" + ` for tuning knobs; see the file in
 
   graph         required  code | cloud | cicd | knowledge
   algorithm     required  registered analyzer name
-  repo          code only — defaults to active repo
-  account       cloud / cicd only — required (account or provider-org name)
+  repo          code only — REQUIRED, never inferred from cwd. It is the
+                per-graph instance key the analyzer receives; topology runs over
+                a NAMED code graph
+  account       cloud / cicd only (account or provider-org name) — the same
+                instance key for those families
   language      passed through to the analyzer's Request
   top_k         caps ranked findings
-  path_prefix   code only — restrict to nodes whose FilePath starts with prefix
+  path_prefix   honored ONLY by the corpus-scan analyzer. Supplying it for any
+                other algorithm is REFUSED naming the algorithm and the analyzers
+                that do honor it — it is never accepted and silently ignored
   resource_type cloud only — restrict to nodes whose 'resource_type' meta starts with prefix
   extra         map<string,string> — per-analyzer knobs
 
 ## Adding a new analyzer
 
-  1. Create topology/your_analyzer.go implementing topology.Analyzer
-     (Name() string, Run(ctx, req) ([]Finding, error)).
-  2. Self-register in init(): topology.Register(YourAnalyzer{}).
+  1. Create topology/your_analyzer.go implementing foundation.Analyzer
+     (Name() string, Run(ctx, req foundation.Request) ([]foundation.Finding, error)).
+  2. Self-register in init(): foundation.Register(YourAnalyzer{}).
   3. Add tests using the existing fixture helpers.
   4. It is then dispatchable via query(mode:"topology", algorithm:"your_analyzer").
 

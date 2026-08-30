@@ -15,6 +15,28 @@ type segmentEntry[Q, S any] struct {
 	live    *liveDocs
 	members idSet
 	meta    SegmentMeta
+	// record is what this entry's swap superseded, and what that swap published
+	// alongside it (supersession.go). It travels into the entry's STORED bytes, which
+	// is what lets a cold import decline a constituent with no external state. It is
+	// written by the consolidating producer BEFORE the entry is published and never
+	// afterwards — a published snapshot is immutable, liveDocs excepted.
+	record supersessionRecord
+	// pin keeps alive whatever owns the memory this entry's payload reads, when
+	// that owner is something OTHER than this entry.
+	//
+	// IT EXISTS BECAUSE A PAYLOAD CAN VIEW ANOTHER ENTRY'S MAPPING. Export hands
+	// out a blob whose Bytes ARE the exporting entry's mapping, and an Import of
+	// that blob decodes a new payload over those same bytes. The mapping's unmap is
+	// keyed on the EXPORTING entry's reachability, and holding the bytes does not
+	// make that entry reachable — so without this the imported entry reads memory
+	// that is unmapped the moment the exporter is dropped. Observed as a
+	// deterministic fault when a reset swap replaced a whole segment set while a
+	// merge was reading segments imported from it.
+	//
+	// It is NOT the same thing as the cleanup attachBlobCleanup installs. That one
+	// frees a mapping this entry OWNS; this one holds a reference to a mapping this
+	// entry BORROWS. An entry can have either, both, or neither.
+	pin any
 }
 
 // segmentSet is an IMMUTABLE snapshot of the whole index: the entries, an

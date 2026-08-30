@@ -158,8 +158,7 @@ func TestManagerMergeReclaim(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("hnsw", func(t *testing.T) {
-		_, gc := newSegmentHarness(t)
-		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+		mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 		gt, name := kgtypes.GraphCode, "mergereclaim-hnsw"
 
 		// The write force-seals the batch and the tick ships the re-emitted partition,
@@ -187,8 +186,7 @@ func TestManagerMergeReclaim(t *testing.T) {
 	})
 
 	t.Run("bm25", func(t *testing.T) {
-		_, gc := newSegmentHarness(t)
-		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+		mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 		gt, name := kgtypes.GraphCode, "mergereclaim-bm25"
 
 		require.NoError(t, mgr.AddAndMarkDirtyFields(ctx, gt, name, docs))

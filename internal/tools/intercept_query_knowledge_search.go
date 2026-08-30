@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
@@ -105,6 +106,28 @@ func InterceptQueryKnowledgeSearch(ctx context.Context, deps ClientDeps, params 
 // The read PAGES through the whole candidate set at BrowsePageSize per request,
 // so every recency-eligible node is still considered before the sort while no
 // single request is unbounded; the limit is honored only after ordering.
+// parseSinceCutoff resolves a `since` value to the absolute lower bound of the
+// window. The vocabulary is exactly the one QueryToolDef declares — "RFC3339 or
+// relative like '24h', '7d'" — and it is not widened here; the relative grammar is
+// engine.ParsePruneDuration, the same parser manage(prune)'s `before` reads, so the
+// two windows cannot drift apart.
+//
+// BAD INPUT ALWAYS ERRORS: an unparseable value is REFUSED naming the offending
+// value and both accepted forms. It is never silently treated as absent, and never
+// coerced to a default window — a silently-dropped window returns rows the caller
+// believes were filtered.
+func parseSinceCutoff(since string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, since); err == nil {
+		return t, nil
+	}
+	dur, err := engine.ParsePruneDuration(since)
+	if err != nil {
+		return time.Time{}, fmt.Errorf(
+			"unparseable since %q — use RFC3339 (2026-01-02T15:04:05Z) or a relative window (24h, 7d)", since)
+	}
+	return time.Now().Add(-dur), nil
+}
+
 func composeRecentBrowse(ctx context.Context, gc GraphCaller, a queryArgs) kgtools.ToolResult {
 	// Both type spellings map onto the fetch-level node-type set, with the SAME
 	// precedence the text-bearing route applies: the plural set wins and the
@@ -118,6 +141,21 @@ func composeRecentBrowse(ctx context.Context, gc GraphCaller, a queryArgs) kgtoo
 		selection.NodeTypes = a.Types
 	case a.Type != "":
 		selection.NodeTypes = []string{a.Type}
+	}
+	// `since` is an UpdatedAt LOWER BOUND, and this arm is its only reader on the
+	// query surface. It is pushed onto the fetch selection as a field predicate —
+	// evaluated server-side by nodeMatchesField, which allowlists updated_at — so
+	// the window narrows the drain rather than filtering a full drain in the render.
+	if a.Since != "" {
+		cutoff, err := parseSinceCutoff(a.Since)
+		if err != nil {
+			return errorResult(err.Error())
+		}
+		selection.FieldPredicates = append(selection.FieldPredicates, &knowledgev1.FieldPredicate{
+			Field: "updated_at",
+			Op:    knowledgev1.MetadataPredicate_OP_GTE,
+			Value: cutoff.UTC().Format(time.RFC3339),
+		})
 	}
 	nodes, err := paging.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
 		cursor := afterID

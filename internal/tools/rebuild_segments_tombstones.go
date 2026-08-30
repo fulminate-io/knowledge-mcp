@@ -69,17 +69,26 @@ func dropTombstones(retained, drop []searchengine.ExternalID) []searchengine.Ext
 //
 // An id may leave the record once the partition routing it has been rebuilt
 // without it, because from then on no durable blob holds the node and no import
-// can bring it back. The bucket count is derived from the items THIS run emitted,
-// which is the same count buildAndAddRebuildSegments grouped them under, so the
-// two agree on which partitions were rebuilt.
+// can bring it back.
 //
-// TRIMMING ON THE WATERMARK INSTEAD WOULD BE WRONG: the watermark advances on any
-// landed publish, including one that re-emitted no partition holding the id.
-func retainTombstones(ids []searchengine.ExternalID, items []rebuildSegItem) []searchengine.ExternalID {
+// THE BUCKET COUNT COMES FROM THE CALLER, and that provenance is the correctness
+// property rather than a parameter-passing convenience: bucketCount must be the count
+// the run's re-emit ACTUALLY RAN AT, which is the only count under which this
+// function's BucketOf agrees with the partitions that were rebuilt. Deriving it here
+// from the items in hand is wrong on any arm whose items are a WINDOW rather than the
+// corpus — BucketCountFor collapses a window of at most DefaultMinSegmentDocs onto a
+// single partition, every id then maps to bucket 0, the run's own items put bucket 0
+// in emitted, and the whole record is wiped.
+//
+// TRIMMING ON THE WATERMARK INSTEAD WOULD BE WRONG for the same family of reason: the
+// watermark advances on any landed publish, including one that re-emitted no partition
+// holding the id.
+func retainTombstones(
+	ids []searchengine.ExternalID, items []rebuildSegItem, bucketCount int,
+) []searchengine.ExternalID {
 	if len(ids) == 0 {
 		return nil
 	}
-	bucketCount := searchengine.BucketCountFor(len(items))
 	emitted := make(map[int]struct{}, bucketCount)
 	for _, it := range items {
 		emitted[searchengine.BucketOf(it.nodeID, bucketCount)] = struct{}{}

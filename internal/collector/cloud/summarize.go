@@ -25,8 +25,7 @@ var (
 
 // Register associates a ResourceType string with a deterministic summarizer.
 // Called from each provider package's init(). Panics on duplicate keys to
-// match the in-tree convention at collector/logs/registry.go:22 and
-// domains/transformer/registry.go:27.
+// match the in-tree convention at internal/logwire/registry.go.
 func Register(resourceType string, fn SummarizeFunc) {
 	summarizersMu.Lock()
 	defer summarizersMu.Unlock()

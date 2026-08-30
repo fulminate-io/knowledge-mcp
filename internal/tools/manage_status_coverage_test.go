@@ -4,7 +4,7 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -45,6 +45,19 @@ type coverageFake struct {
 	// execReqs records every ExecuteRequest the walk issued, so a test can assert
 	// WHICH graph each enumeration asked about rather than only what came back.
 	execReqs []*knowledgev1.ExecuteRequest
+	// fileSizeByName programs the catalog's DURABLE per-graph image size, keyed by
+	// bare instance name. It is the one cold fact the real enumeration already
+	// returns (Registry.listGraphs takes it off os.ReadDir's DirEntry.Info without
+	// loading anything), and it is what an unmanaged row renders in place of the
+	// counts it declines to read. An unprogrammed name reports 0, which the row
+	// treats as "unknown" and omits.
+	fileSizeByName map[string]int64
+	// statsErrByKey programs a Stats FAILURE for one row key, in the same spelling
+	// statsByKey uses. It exists because "the backend cannot produce these counts
+	// without materializing the graph" is a real answer the local server gives for an
+	// image predating the durable count record, and the row it produces — the
+	// not-read fallback — is otherwise unreachable from a fixture.
+	statsErrByKey map[string]bool
 }
 
 func (f *coverageFake) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
@@ -89,7 +102,7 @@ func (f *coverageFake) graphNames(names []string) *knowledgev1.ExecuteResponse {
 	var infos []*knowledgev1.GraphInfo
 	for _, n := range names {
 		if n != "" {
-			infos = append(infos, &knowledgev1.GraphInfo{Name: n})
+			infos = append(infos, &knowledgev1.GraphInfo{Name: n, FileSize: f.fileSizeByName[n]})
 		}
 	}
 	return &knowledgev1.ExecuteResponse{GraphNames: infos}
@@ -108,6 +121,9 @@ func (f *coverageFake) Stats(_ context.Context, req *knowledgev1.StatsRequest) (
 		key = "code/" + sel.GetRepo()
 	case "practice":
 		key = "practice/" + sel.GetLanguage()
+	}
+	if f.statsErrByKey[key] {
+		return nil, fmt.Errorf("stats unavailable for %s without materializing the graph", key)
 	}
 	st := f.statsByKey[key]
 	if st == nil {
@@ -195,10 +211,12 @@ type coverageSegReader struct {
 	liveByKey map[string]int
 	// probed records every (graphType, name) key the renderer asked about, so a
 	// test can assert WHICH instance key the probe used — not just what it got
-	// back. Appended without a lock because segCoveredFor runs on
-	// collectCoverageRows' serial assembly loop (it is a local read, not one of
-	// the concurrently fanned-out Stats RPCs).
-	probed []string
+	// back. It is APPENDED UNDER probedMu and read back through probedKeys(), both
+	// of which live in manage_status_coverage_probe_test.go beside the concurrency
+	// that forces them: collectCoverageRows runs the segment-coverage probes
+	// concurrently, so several rows are inside these methods at once.
+	probedMu sync.Mutex
+	probed   []string
 	// verificationByKey is the per-graph backstop record the coverage column's
 	// verified formula reads. An absent key reports ok=false — this process never
 	// loaded that graph's record — which the column renders as cache-aged.
@@ -222,21 +240,21 @@ func (r *coverageSegReader) RepairVerification(
 
 func (r *coverageSegReader) ShippedSegmentDocCount(
 	_ context.Context, gt kgtypes.GraphType, name string,
-) (int, bool, error) {
+) (int, error) {
 	key := r.segKey(gt, name)
-	r.probed = append(r.probed, key)
-	return r.coveredByKey[key], false, nil
+	r.recordProbe(key)
+	return r.coveredByKey[key], nil
 }
 
 func (r *coverageSegReader) ResidentDocCount(gt kgtypes.GraphType, name string) int {
 	key := r.segKey(gt, name)
-	r.probed = append(r.probed, key)
+	r.recordProbe(key)
 	return r.residentByKey[key]
 }
 
 func (r *coverageSegReader) LiveResidentDocCount(gt kgtypes.GraphType, name string) int {
 	key := r.segKey(gt, name)
-	r.probed = append(r.probed, key)
+	r.recordProbe(key)
 	// Fall back to the summed map when a fixture programs only that one, so the
 	// pre-existing tests keep their meaning.
 	if v, ok := r.liveByKey[key]; ok {
@@ -444,37 +462,8 @@ func TestCoverageRowLiveResidentUsesLiveCount(t *testing.T) {
 	require.NotEqual(t, 200, live, "reading the summed count is the defect this pins")
 }
 
-// TestCoverageRowJSONKeysUnchanged pins the WIRE CONTRACT the Daemon Status web
-// Coverage card types against: exactly ten snake_case keys, no eleventh.
-//
-// It asserts SET EQUALITY rather than a count, deliberately — a count of ten is
-// satisfied by dropping one key and adding another, which is precisely the shape a
-// careless rename produces. The row is populated with non-zero values throughout so
-// no key can be omitted by an accidental omitempty.
-func TestCoverageRowJSONKeysUnchanged(t *testing.T) {
-	row := CoverageRow{
-		Graph: "code/knowledge", Total: 10, Summarized: 9, Embedded: 8,
-		SegCovered: 7, LiveResident: 6, HasSegments: true,
-		SummaryFail: 1, EmbedFail: 2, SegDisposition: DispositionCacheAged,
-		// The new field must contribute NO key — it exists to feed the disposition,
-		// and a json tag on it would ship an eleventh key to a ten-key consumer.
-		RepairVerified: true,
-	}
-
-	raw, err := json.Marshal(row)
-	require.NoError(t, err)
-
-	var decoded map[string]any
-	require.NoError(t, json.Unmarshal(raw, &decoded))
-
-	got := make([]string, 0, len(decoded))
-	for k := range decoded {
-		got = append(got, k)
-	}
-	require.ElementsMatch(t, []string{
-		"graph", "total", "summarized", "embedded", "seg_covered",
-		"live_resident", "has_segments", "summary_fail", "embed_fail", "seg_disposition",
-	}, got, "the ten pinned keys, and no eleventh")
-	require.NotContains(t, decoded, "repair_verified",
-		"the verified input is json:\"-\" — it must never reach the wire")
-}
+// The two WIRE-CONTRACT tests — TestCoverageRowJSONKeysUnchanged and
+// TestUnmanagedRowJSONCarriesRealCountsAndUnprobedZeros — live in
+// manage_status_coverage_json_test.go. They were moved there unchanged when this
+// file reached the repo's hard 500-line cap, along the seam between what the TABLE
+// renders and what the format:json block ships.

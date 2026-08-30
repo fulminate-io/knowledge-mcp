@@ -32,7 +32,7 @@ func TestRenderNodeResponse_BodyFieldOrder(t *testing.T) {
 		Content:     "the content",
 		Metadata:    map[string]string{"zeta": "z", "alpha": "a", "empty": ""},
 	}
-	out, err := renderNodeResponse(nodeResp(t, n), "cloud:prod", "n1", false, nil)
+	out, err := renderNodeResponse(nodeResp(t, n), "cloud:prod", "n1", false, "", nil, false)
 	require.NoError(t, err)
 	require.False(t, out.IsError)
 	text := out.Content[0].Text
@@ -49,13 +49,13 @@ func TestRenderNodeResponse_BodyFieldOrder(t *testing.T) {
 
 func TestRenderNodeResponse_NameFallsBackToID(t *testing.T) {
 	n := &knowledgev1.Node{Id: "bare-id", Type: "document"}
-	out, err := renderNodeResponse(nodeResp(t, n), "cloud:prod", "bare-id", false, nil)
+	out, err := renderNodeResponse(nodeResp(t, n), "cloud:prod", "bare-id", false, "", nil, false)
 	require.NoError(t, err)
 	assert.Contains(t, out.Content[0].Text, "**bare-id**\nID: bare-id\n")
 }
 
 func TestRenderNodeResponse_NotFound(t *testing.T) {
-	out, err := renderNodeResponse(&knowledgev1.ExecuteResponse{}, "knowledge", "missing", true, nil)
+	out, err := renderNodeResponse(&knowledgev1.ExecuteResponse{}, "knowledge", "missing", true, "", nil, false)
 	require.NoError(t, err)
 	assert.True(t, out.IsError)
 	assert.Contains(t, out.Content[0].Text, "node missing not found in knowledge graph")
@@ -65,7 +65,7 @@ func TestRenderNodeResponse_NotFound(t *testing.T) {
 // dispatcher passes the target graph label — cloud/practice/cicd/etc).
 func TestRenderNodeResponse_GraphLabel(t *testing.T) {
 	n := &knowledgev1.Node{Id: "ec2-1", SymbolName: "i-abc", Type: "ec2:instance"}
-	out, err := renderNodeResponse(nodeResp(t, n), "cloud:prod", "ec2-1", false, nil)
+	out, err := renderNodeResponse(nodeResp(t, n), "cloud:prod", "ec2-1", false, "", nil, false)
 	require.NoError(t, err)
 	assert.Contains(t, out.Content[0].Text, "## cloud:prod node\n\n")
 }
@@ -74,7 +74,7 @@ func TestRenderNodeResponse_GraphLabel(t *testing.T) {
 // shape is JSON (handleGetNode → json.MarshalIndent(node)), NOT markdown.
 func TestRenderNodeResponse_KnowledgeJSON(t *testing.T) {
 	n := &knowledgev1.Node{Id: "n1", SymbolName: "Doc", Type: "document", Summary: "s"}
-	out, err := renderNodeResponse(nodeResp(t, n), "knowledge", "n1", true, nil)
+	out, err := renderNodeResponse(nodeResp(t, n), "knowledge", "n1", true, "", nil, false)
 	require.NoError(t, err)
 	text := out.Content[0].Text
 	assert.NotContains(t, text, "## knowledge node", "knowledge id renders JSON, not markdown")
@@ -161,4 +161,85 @@ func TestProxyTargetLabel(t *testing.T) {
 	assert.Empty(t, proxyTargetLabel(nil))
 	assert.Equal(t, "[code:knowledge]", proxyTargetLabel(&knowledgev1.ProxyTarget{GraphType: string(kgtypes.GraphCode), Name: "knowledge"}))
 	assert.Equal(t, "[main]", proxyTargetLabel(&knowledgev1.ProxyTarget{GraphType: "main"}))
+}
+
+// TestQueryByID_FormatSelectsTheRender (FAILS-WHEN-ABSENT) asserts that `format`
+// SELECTS the by-id render. It used to be threaded nowhere on this arm, so both
+// format values produced byte-identical markdown while the neighboring
+// ids-hydrate arm branched — a consumed registry cell that did not consume.
+//
+// Leg 3 is the one the observed defect requires: legs 1 and 2 could each pass
+// against a renderer emitting one shape that happened to contain both markers, so
+// the two renders are asserted to DIFFER directly.
+func TestQueryByID_FormatSelectsTheRender(t *testing.T) {
+	n := &knowledgev1.Node{Id: "n1", SymbolName: "Doc", Type: "document", Description: "d", Summary: "s"}
+
+	t.Run("json returns the envelope", func(t *testing.T) {
+		out, err := renderNodeResponse(nodeResp(t, n), "cloud:prod", "n1", false, "json", nil, false)
+		require.NoError(t, err)
+		require.False(t, out.IsError)
+		var env struct {
+			Node      *knowledgev1.Node `json:"node"`
+			Truncated bool              `json:"truncated"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(out.Content[0].Text), &env),
+			"format:json must emit a parseable envelope: %s", out.Content[0].Text)
+		require.NotNil(t, env.Node)
+		assert.Equal(t, "n1", env.Node.GetId())
+		assert.False(t, env.Truncated, "the key is emitted unconditionally, false being a positive claim")
+	})
+
+	t.Run("text and absent format return the markdown render", func(t *testing.T) {
+		for _, format := range []string{"text", ""} {
+			out, err := renderNodeResponse(nodeResp(t, n), "cloud:prod", "n1", false, format, nil, false)
+			require.NoError(t, err)
+			assert.Contains(t, out.Content[0].Text, "## cloud:prod node",
+				"format %q renders markdown", format)
+			assert.NotContains(t, out.Content[0].Text, `"truncated"`, "and not the json envelope")
+		}
+	})
+
+	t.Run("the two renders are not byte-identical", func(t *testing.T) {
+		// THE OBSERVED DEFECT, asserted directly: before the fix these two calls
+		// returned the same bytes.
+		jsonOut, err := renderNodeResponse(nodeResp(t, n), "cloud:prod", "n1", false, "json", nil, false)
+		require.NoError(t, err)
+		textOut, err := renderNodeResponse(nodeResp(t, n), "cloud:prod", "n1", false, "text", nil, false)
+		require.NoError(t, err)
+		assert.NotEqual(t, textOut.Content[0].Text, jsonOut.Content[0].Text,
+			"format must select the render — identical bytes IS the defect")
+	})
+
+	t.Run("a projection forces json on both format values", func(t *testing.T) {
+		// Pins the documented override so a future edit cannot quietly turn the
+		// projection into a text render.
+		var first string
+		for i, format := range []string{"json", "text"} {
+			out, err := renderNodeResponse(nodeResp(t, n), "cloud:prod", "n1", false, format, []string{"id", "name"}, false)
+			require.NoError(t, err)
+			row := map[string]any{}
+			require.NoError(t, json.Unmarshal([]byte(out.Content[0].Text), &row),
+				"a projection emits json under format %q: %s", format, out.Content[0].Text)
+			assert.Contains(t, row, "id")
+			assert.NotContains(t, row, "description", "the projection still drops unrequested keys")
+			if i == 0 {
+				first = out.Content[0].Text
+				continue
+			}
+			assert.Equal(t, first, out.Content[0].Text, "format does not change a projected render")
+		}
+	})
+
+	t.Run("the knowledge shape branches too", func(t *testing.T) {
+		// BOTH GRAPH SHAPES. The knowledge legacy body is already JSON-ish
+		// (MarshalIndent of the bare node), so without this leg an implementation
+		// that branched only for the generic shape would pass every leg above.
+		jsonOut, err := renderNodeResponse(nodeResp(t, n), "knowledge", "n1", true, "json", nil, false)
+		require.NoError(t, err)
+		textOut, err := renderNodeResponse(nodeResp(t, n), "knowledge", "n1", true, "", nil, false)
+		require.NoError(t, err)
+		assert.Contains(t, jsonOut.Content[0].Text, `"node"`, "json wraps the node in the envelope")
+		assert.NotContains(t, textOut.Content[0].Text, `"node"`, "the legacy body is the bare node")
+		assert.NotEqual(t, textOut.Content[0].Text, jsonOut.Content[0].Text)
+	})
 }

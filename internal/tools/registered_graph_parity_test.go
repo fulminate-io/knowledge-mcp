@@ -36,14 +36,24 @@ func registeredParityHits() []searchengine.Hit {
 // newRegisteredParityDeps wires the standard intercept fixture (recording
 // GraphClient for the ids[] hydrate read, fake segment engine, stub embedder)
 // and hands back the segment searcher so a sub-test can read lastK.
+//
+// The graph-type registry knows "hellograph" and the graph catalog reports
+// "demo" collected, which is what every sub-test below selects: these parity
+// assertions are about the render tail, so the selector has to RESOLVE before
+// the arm gets there (validateRegisteredGraphSelector refuses an unregistered
+// type or an uncollected instance ahead of the search).
 func newRegisteredParityDeps(
 	t *testing.T, nodes []*knowledgev1.Node, hits []searchengine.Hit,
 ) (*interceptDeps, *fakeSegmentSearcher) {
 	t.Helper()
 	var execHits, embedCalls atomic.Int64
-	gc := newInterceptHarness(t, &execHits, cannedNodesResp(nodes...))
+	gc, handler := newInterceptHarnessWithHandler(t, &execHits, cannedNodesResp(nodes...))
+	handler.graphNames = []string{"demo"}
 	mgr := &fakeSegmentSearcher{hits: hits}
-	return &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}, mgr
+	return &interceptDeps{
+		gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr,
+		gtCRUD: registeredGraphTypes("hellograph"),
+	}, mgr
 }
 
 // TestRegisteredGraphSearchTwin_ParityGaps drives the two registered

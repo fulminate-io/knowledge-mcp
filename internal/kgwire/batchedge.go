@@ -4,7 +4,8 @@
 // wire as themselves — they are the LLM-facing struct shapes the client
 // assembles before converting to the generated proto (gen/knowledge/v1) for
 // transport. It is a neutral low-level client leaf importing ONLY
-// gen/knowledge/v1, pkg/kgtypes, and stdlib — NEVER pkg/store — so the ~40
+// gen/knowledge/v1, cmd/knowledge/internal/kgtypes, and stdlib — NEVER the
+// server store package (cmd/knowledge-server/internal/store) — so the ~40
 // build sites across collector/projects/tools/postpopulate share one carrier
 // without dragging the storage engine into the client or risking an import
 // cycle through engine/ or the collector subtree.
@@ -23,7 +24,8 @@ import (
 // instead (for linking to nodes that already exist outside the batch).
 //
 // This is the client build-carrier mirroring the locked ABI of
-// pkg/store.BatchEdge (pkg/store/db_types.go) field-for-field. It carries no
+// store.BatchEdge (cmd/knowledge-server/internal/store/db_types.go:11)
+// field-for-field. It carries no
 // proto value (so it is copylocks-safe) and converts to the wire form via
 // ToProto before transport.
 type BatchEdge struct {

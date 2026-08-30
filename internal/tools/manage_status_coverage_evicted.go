@@ -12,6 +12,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -70,6 +71,37 @@ func poolEvictedFor(deps ClientDeps, gt kgtypes.GraphType, name string) bool {
 		return false
 	}
 	return r.PoolEvicted(gt, name)
+}
+
+// loadLiveResidentReader is the OPTIONAL deps capability the LOADING half of the
+// live-resident read goes through.
+//
+// TYPE-ASSERTED for the same reason poolEvictedReader is: SegmentCoverageReader
+// already carries the non-loading LiveResidentDocCount, and adding a loading twin to
+// it would force every fake implementing SegmentCoverage() to grow a method none of
+// them can meaningfully implement — they hold no engine to load.
+type loadLiveResidentReader interface {
+	LoadLiveResidentDocCount(ctx context.Context, gt kgtypes.GraphType, name string) (int, error)
+}
+
+// loadLiveResidentFor reads the live-resident count through the LOADING decider,
+// reporting whether the capability was present at all.
+//
+// THE THREE-VALUED RETURN IS THE POINT. A caller must be able to tell "the pool holds
+// nothing" from "this deps cannot load", because those demand opposite answers: the
+// first is a real measurement, the second is a truthful inability. Collapsing them
+// into a bare int would make an unwired fixture indistinguishable from a graph whose
+// ranked index is genuinely missing — which is exactly the false alarm this seam
+// exists to prevent.
+func loadLiveResidentFor(
+	ctx context.Context, deps ClientDeps, gt kgtypes.GraphType, name string,
+) (count int, ok bool, err error) {
+	r, isReader := deps.(loadLiveResidentReader)
+	if !isReader {
+		return 0, false, nil
+	}
+	n, rerr := r.LoadLiveResidentDocCount(ctx, gt, name)
+	return n, true, rerr
 }
 
 // segCoveredForEvicted is the reporter's half of the residency fence: the (covered,

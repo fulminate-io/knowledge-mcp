@@ -1,0 +1,43 @@
+lang=bash kind=heredoc_body verdict=opaque gap="ZZDOC "
+lang=bash span_gap_kinds=heredoc_body
+lang=c span_gap_kinds=none
+lang=cpp span_gap_kinds=none
+lang=csharp kind=interpolation_format_clause verdict=opaque gap="yyyyMM"
+lang=csharp span_gap_kinds=interpolation_format_clause
+lang=elixir kind=quoted_keyword verdict=delimiter-only gap=": "
+lang=elixir span_gap_kinds=quoted_keyword
+lang=elm kind=block_comment verdict=opaque gap=" ZZBLOCK "
+lang=elm span_gap_kinds=block_comment
+lang=go kind=interpreted_string_literal verdict=opaque gap="ZZALPHA"
+lang=go span_gap_kinds=interpreted_string_literal
+lang=groovy kind=comment verdict=opaque gap="\n * ZZBLOCK\n */"
+lang=groovy kind=groovy_doc verdict=delimiter-only gap="\n * "
+lang=groovy span_gap_kinds=comment,groovy_doc
+lang=java span_gap_kinds=none
+lang=javascript span_gap_kinds=none
+lang=kotlin kind=character_literal verdict=opaque gap="q"
+lang=kotlin kind=nullable_type verdict=operator-only gap="?"
+lang=kotlin kind=statements verdict=separator-only gap="; "
+lang=kotlin kind=string_literal verdict=delimiter-only gap="\""
+lang=kotlin span_gap_kinds=character_literal,nullable_type,statements,string_literal
+lang=lua kind=parameter_list verdict=separator-only gap=", "
+lang=lua span_gap_kinds=parameter_list
+lang=ocaml kind=quoted_string verdict=delimiter-only gap="|"
+lang=ocaml kind=quoted_string_content verdict=opaque gap="ZZPRE "
+lang=ocaml kind=string_content verdict=opaque gap="ZZESC"
+lang=ocaml span_gap_kinds=quoted_string,quoted_string_content,string_content
+lang=python kind=string_content verdict=opaque gap="ZZESC"
+lang=python span_gap_kinds=string_content
+lang=ruby span_gap_kinds=none
+lang=rust kind=block_comment verdict=opaque gap="\n * ZZBLOCK\n "
+lang=rust kind=line_comment verdict=opaque gap=" ZZLINE"
+lang=rust kind=raw_string_literal verdict=delimiter-only gap="r\""
+lang=rust span_gap_kinds=block_comment,line_comment,raw_string_literal
+lang=scala kind=block_comment verdict=opaque gap="\n * ZZBLOCK\n"
+lang=scala kind=comment verdict=opaque gap=" ZZLINE"
+lang=scala kind=interpolated_string verdict=opaque gap="pre"
+lang=scala span_gap_kinds=block_comment,comment,interpolated_string
+lang=swift kind=statements verdict=separator-only gap="; "
+lang=swift span_gap_kinds=statements
+lang=tsx span_gap_kinds=none
+lang=typescript span_gap_kinds=none

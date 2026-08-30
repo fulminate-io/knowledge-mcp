@@ -4,6 +4,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"sort"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
@@ -91,9 +92,25 @@ func EnrichCandidateGroups(
 			}
 		}
 	}
-	nodes, herr := bulkHydratePeers(ctx, exec, candidateIDs, target)
+	nodes, hydrateTruncated, herr := bulkHydratePeers(ctx, exec, candidateIDs, target)
 	if herr != nil {
 		return enriched, nil, herr
+	}
+	if hydrateTruncated {
+		// A CLAMPED CANDIDATE HYDRATE IS AN INCOMPLETE RECONSTRUCTION, and this
+		// function's contract already has the channel for it: the error return is
+		// the "visible rather than silent" path its caller turns into a flagged
+		// incompleteness rather than a failed read. There is exactly ONE production
+		// caller today, analyzeGroupSide — the doc above still names
+		// renderTraversalResponse as a second, which no longer calls this function.
+		// The candidates it could not hydrate would otherwise render nameless,
+		// indistinguishable from candidates that genuinely carry no symbol name.
+		//
+		// The enriched groups and the partial hydrate are returned ALONGSIDE the
+		// error on purpose: the caller keeps what did resolve.
+		return enriched, nodes, fmt.Errorf(
+			"candidate hydrate clamped: the server bounded a %d-id read at its row ceiling, so some "+
+				"candidates could not be named", len(candidateIDs))
 	}
 	return enriched, nodes, nil
 }

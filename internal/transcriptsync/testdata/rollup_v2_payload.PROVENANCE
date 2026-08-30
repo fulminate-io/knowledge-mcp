@@ -1,0 +1,7 @@
+repository: knowledge
+package: cmd/knowledge/internal/transcriptsync
+commit: 697aadcad20d87fa566d98db40cdfda1d9470dc3
+command: go test ./internal/transcriptsync/ -run '^TestCaptureRollupV2Payload$' -update-rollup-capture
+rollup_schema_version: 2
+fixture: one synthetic session holding an agent with three same-day instants, an agent straddling midnight, an agent split across two fact grains, an agent with a single record, and a main-lane row carrying no agent
+provenance: every KEY and VALUE below came from the producer's own marshaler via the recorded confirm-batch body; the test canonicalized only the ORDER of the four arrays materialized from map iteration — facts, latency_hist, slow_calls and duplicate_commands — and rewrote nothing else

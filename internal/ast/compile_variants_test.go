@@ -185,8 +185,12 @@ func TestCompileVariants_UnionAndHosting(t *testing.T) {
 		// elsewhere under these prefixes must not false-fail the gate.
 		require.GreaterOrEqual(t, files["internal/collector/cloud/gcp/collector_clients.go"], 1,
 			"the known real site in collector_clients.go stopped matching; rule 3 destroyed a working capability")
-		require.GreaterOrEqual(t, files["internal/pipeline/pipeline.go"], 1,
-			"the known real site in pipeline.go stopped matching; rule 3 destroyed a working capability")
+		// The pinned pair (PausePipeline/ResumePipeline's two adjacent circuit
+		// calls) moved to pipeline_control.go when the operator-control surface
+		// split out of pipeline.go for the 500-line ceiling; the SITE is the pin,
+		// not the filename.
+		require.GreaterOrEqual(t, files["internal/pipeline/pipeline_control.go"], 1,
+			"the known real site in pipeline_control.go stopped matching; rule 3 destroyed a working capability")
 
 		for _, rm := range raws {
 			require.NotEmpty(t, rm.Captures["A"].Text, "capture A must bind the first call")

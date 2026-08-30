@@ -34,6 +34,8 @@ import (
 	"os"
 	"testing"
 
+	"go.uber.org/goleak"
+
 	"github.com/fulminate-io/knowledge-mcp/internal/config"
 )
 
@@ -49,16 +51,29 @@ var providerKeyEnv = []string{
 	"GEMINI_API_KEY",
 }
 
-// TestMain clears the provider credentials before the suite runs. Unset rather
-// than set-empty: absent is the state a clean CI machine has, and no resolver
-// in config or bootstrap distinguishes the two (all of them read os.Getenv).
+// TestMain clears the provider credentials before the suite runs, then runs the
+// suite under a goroutine-leak gate. Unset rather than set-empty: absent is the
+// state a clean CI machine has, and no resolver in config or bootstrap
+// distinguishes the two (all of them read os.Getenv).
+//
+// THE LEAK GATE. This package detaches work in five places — collect_runtime's
+// Stop (collect_runtime.go:306), the code-search fan-out
+// (intercept_query_code_search.go:380), its multi-repo sibling
+// (intercept_query_code_search_multirepo.go:80) and the practice/linkage fan-out
+// (intercept_query_practice_linkage.go:288). A fan-out whose context is cancelled
+// mid-flight leaves its workers finishing searches against a graph client the test
+// has already torn down, and the per-test symptom is nothing at all.
+//
+// goleak.VerifyTestMain replaces the os.Exit(m.Run()) that used to end this
+// function: it runs the suite, checks for leaked goroutines and exits itself. The
+// allowlist is deliberately EMPTY.
 func TestMain(m *testing.M) {
 	for _, k := range providerKeyEnv {
 		if err := os.Unsetenv(k); err != nil {
 			panic("clearing " + k + " for the test suite: " + err.Error())
 		}
 	}
-	os.Exit(m.Run())
+	goleak.VerifyTestMain(m)
 }
 
 // TestProviderEnvCleared is the control for TestMain above. Asserting only that

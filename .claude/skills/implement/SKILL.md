@@ -33,79 +33,54 @@ Decisions surfacing during implementation = upstream artifacts inadequate; route
   </rule>
 
   <checks ordered="true">
-    <check id="find-plan">
-      query({ "text": "$ARGUMENTS", "type": "plan", "limit": 5 }) — if multiple match, ask user which.
-      (Architectural disambiguation = legitimate touch point, not workflow permission.)
-    </check>
-
-    <check id="walk-tree">
-      query({ "mode": "plan_tree", "id": "plan_id" }) — identify which steps touch disjoint files (parallelizable) vs shared files (sequential).
-    </check>
-
-    <check id="reviewer-audit" severity="gate">
-      Confirm plan has passed reviewer audit. traverse({ start: plan_id, edge_types: ["informed-by", "relates-to"], direction: "both" }) — look for audit thought/research.
-
-      If no audit: spawn plan-reviewer first per orchestrate constraint id="reviewer-gate". Do NOT proceed to implementation without it.
-
-      Locked user rule: "the planner making snowflake implementations instead of reusing code is UNACCEPTABLE." Reviewer gate exists to enforce; cannot bypass.
-    </check>
+    1. find-plan: query({"text":"$ARGUMENTS","type":"plan","limit":5}) — multiple
+       matches → ask the user which (architectural disambiguation = legitimate
+       touch point).
+    2. walk-tree: query({"mode":"plan_tree","id":"plan_id"}).
+    3. reviewer-audit (GATE): confirm the plan passed reviewer audit —
+       traverse({start:plan_id, edge_types:["informed-by","relates-to"],
+       direction:"both"}) for the audit thought/research. No audit → spawn
+       plan-reviewer first per orchestrate reviewer-gate; do NOT proceed
+       without it. Locked user rule: "the planner making snowflake
+       implementations instead of reusing code is UNACCEPTABLE" — the gate
+       enforces it and cannot be bypassed.
   </checks>
 
 </constraint>
 
-<constraint id="parallelization" severity="medium" phase="before-spawn">
+<constraint id="one-implementer-per-plan" severity="hard" phase="before-spawn">
 
   <rule>
-    Parallelize implementers where it's safe; serialize where it's not.
+    Default: ONE implementer executes the WHOLE plan, all phases sequentially,
+    in one worktree, producing one batched commit — see orchestrate constraint
+    id="dispatch" / one-implementer-per-plan for the full rule. Split the work
+    across implementers ONLY on an ABSOLUTE need: the user directed it;
+    genuinely parallel file-disjoint work where wall-clock matters (worktree
+    lanes); a hard external boundary between phases (a merge, a daemon restart,
+    live verification impossible from the worktree); or measured context
+    exhaustion (re-spawn with precise resumption state — recovery, not
+    planning). "Phases are conceptually separate", "verify each phase before
+    continuing", and "the plan is large" are manufactured needs — never
+    sufficient. When a sanctioned split does happen: shared-file lanes are
+    sequential; each lane marks only its own steps; each lane's brief carries
+    its linked files and any discoveries from prior lanes VERBATIM.
   </rule>
-
-  <decision-table>
-    <row condition="steps touch disjoint files">
-      Spawn implementers in parallel (one message, multiple Agent calls).
-    </row>
-    <row condition="steps touch shared files">
-      Sequential. Parallel edits to same file cost more than they save.
-    </row>
-    <row condition="steps have needs-dependencies">
-      Sequential, wait for dependency.
-    </row>
-    <row condition="parallel implementers spawned">
-      Each marks only its own step active/complete. Pass step's linked files in agent prompt so it doesn't hunt.
-    </row>
-  </decision-table>
 
 </constraint>
 
 <constraint id="verification-phases-inline" severity="medium" phase="before-spawn">
-
-  <rule>
-    Pure verification phases run inline by the orchestrator, NOT via spawn.
-  </rule>
-
-  <reason>
-    Verification phases (~10 tool calls, no novel code) get 3-5x overhead from spawn ceremony.
-    Spawned agents often go exploring (re-investigating settled things) instead of just running checks.
-    Verification ≠ implementation.
-  </reason>
-
-  <inline-cases>
-    - "Run full test suite + lint + build, record validation thought"
-    - One-line gofmt / typo / import fixes
-    - Final integration verification / docs pass with no real code changes
-    - Status closure (mark plan → ticket → project completed)
-  </inline-cases>
-
-  <spawn-cases>
-    - Phase requires actual code changes
-    - Multi-file edits
-    - Non-trivial investigation
-  </spawn-cases>
-
+  Pure verification phases run inline by the orchestrator, NOT via spawn —
+  ~10 tool calls with no novel code get 3-5x overhead from spawn ceremony, and
+  spawned agents go exploring instead of just running checks. Inline: full
+  suite + lint + build with a validation thought; one-line gofmt/typo/import
+  fixes; final integration/docs passes with no real code changes; status
+  closure (plan → ticket → project). Spawn: actual code changes, multi-file
+  edits, non-trivial investigation.
 </constraint>
 
 <spawn id="implementer" background="true">
 
-  <reference>See orchestrate constraint id="background-spawning".</reference>
+  <reference>See orchestrate constraint id="dispatch".</reference>
 
   <mandatory-prompt-block>
     Every implementer spawn prompt MUST open with this block VERBATIM:
@@ -150,7 +125,7 @@ Decisions surfacing during implementation = upstream artifacts inadequate; route
     as you go. Report at the END.
     ```
 
-    This block addresses recurring drift modes documented in orchestrate constraint id="non-negotiation":
+    This block addresses recurring drift modes documented in orchestrate constraint id="agent-returns":
     - Cherry-picking phases
     - Scope estimation pauses
     - Test deletion for green-suite
@@ -158,16 +133,7 @@ Decisions surfacing during implementation = upstream artifacts inadequate; route
     - Stale comments left behind after a behavioral edit
   </mandatory-prompt-block>
 
-  <single-phase-template>
-    Agent(
-      subagent_type: "implementer",
-      prompt: "&lt;EXECUTION DIRECTIVE block&gt;\n\nImplement Phase N of plan &lt;plan_id&gt;. Files to modify: &lt;file list&gt;. Stop at the phase boundary; report verification status.",
-      description: "Implement: Phase N &lt;name&gt;",
-      run_in_background: true
-    )
-  </single-phase-template>
-
-  <whole-plan-template>
+  <whole-plan-template note="the default — one implementer, whole plan">
     Agent(
       subagent_type: "implementer",
       prompt: "&lt;EXECUTION DIRECTIVE block&gt;\n\nImplement plan &lt;plan_id&gt; end-to-end. Use assemble / query(mode:plan_tree) to find the next step; follow each phase to completion. Stop only on blocking exceptions or completion of all phases.",
@@ -176,11 +142,14 @@ Decisions surfacing during implementation = upstream artifacts inadequate; route
     )
   </whole-plan-template>
 
-  <when-to-pick>
-    Per-phase spawning when phase contexts are large; fresh context per phase benefits the implementer.
-    Whole-plan spawning when phases are tight and context-sharing helps.
-    Either way, background.
-  </when-to-pick>
+  <scoped-lane-template note="ONLY under a sanctioned split per one-implementer-per-plan">
+    Agent(
+      subagent_type: "implementer",
+      prompt: "&lt;EXECUTION DIRECTIVE block&gt;\n\nImplement &lt;the scoped phases/steps&gt; of plan &lt;plan_id&gt;. Files to modify: &lt;file list&gt;. Prior-lane discoveries: &lt;verbatim, or 'none'&gt;. Stop at your brief's boundary; report verification status.",
+      description: "Implement: &lt;lane name&gt;",
+      run_in_background: true
+    )
+  </scoped-lane-template>
 
 </spawn>
 
@@ -203,8 +172,10 @@ Decisions surfacing during implementation = upstream artifacts inadequate; route
   </surface-only-on>
 
   <between-phases-action>
-    1. Read implementer's phase report; verify steps passed criteria + tests + lint.
-    2. If clean: one-line confirmation logged; spawn next phase's implementer immediately.
+    1. Read the implementer's phase report; verify steps passed criteria + tests + lint.
+    2. If clean: one-line confirmation logged; the SAME implementer continues into
+       the next phase (one implementer per plan — you verify at phase reports, you
+       do not re-spawn per phase).
     3. If off: pause and surface to user (legitimate touch point — drift detected, design judgment needed).
   </between-phases-action>
 
@@ -225,29 +196,14 @@ Decisions surfacing during implementation = upstream artifacts inadequate; route
     Do not negotiate. Do not let drift land.
   </rule>
 
-  <reference>See orchestrate constraint id="non-negotiation" for the universal principle.</reference>
+  <reference>See orchestrate constraint id="agent-returns" for the universal principle.</reference>
 
-  <implementer-specific-drift-patterns>
-    <pattern id="cherry-picked-phases">
-      Implementer did some phases, skipped others.
-      Re-spawn directive: "the prior implementer did phases X+Y but skipped phases A+B — you do A+B in order, then we're done."
-    </pattern>
-    <pattern id="scope-estimate-pause">
-      Implementer estimated "this is 8-12 hours" and refused to proceed.
-      Re-spawn directive: "implementer does not estimate. Execute every step."
-    </pattern>
-    <pattern id="test-deletion-green-suite">
-      Implementer deleted/skipped tests to make suite pass.
-      Re-spawn directive: "revert test deletions. Substantive completion is the criterion, not literal pass."
-    </pattern>
-    <pattern id="orphaned-stub">
-      Implementer left server stubs returning interceptRequired with no client claimant.
-      Re-spawn directive: "the construction half is missing — add the client intercepts that claim the calls before the stubs are reached."
-    </pattern>
-    <pattern id="stale-comments-left">
-      Implementer changed behavior but left comments/docstrings describing the old behavior (consumer lists, routing/fallback paths, return shapes, invariants).
-      Re-spawn directive: "the code is right but the comments now lie — sweep every touched file and update each comment the change falsified; a stale comment is as bad as wrong test logic."
-    </pattern>
+  <implementer-specific-drift-patterns note="pattern → re-spawn directive">
+    - cherry-picked-phases → "the prior implementer did phases X+Y but skipped A+B — you do A+B in order, then we're done."
+    - scope-estimate-pause ("this is 8-12 hours") → "implementer does not estimate. Execute every step."
+    - test-deletion-green-suite → "revert test deletions. Substantive completion is the criterion, not literal pass."
+    - orphaned-stub (server stubs returning interceptRequired with no client claimant) → "the construction half is missing — add the client intercepts that claim the calls before the stubs are reached."
+    - stale-comments-left (consumer lists, routing/fallback paths, return shapes, invariants describing old behavior) → "the code is right but the comments now lie — sweep every touched file and update each comment the change falsified."
   </implementer-specific-drift-patterns>
 
 </constraint>
@@ -316,52 +272,38 @@ storage-level evidence is the failure this result exists to prevent; declaring
 red without the confound elimination above is the mirror failure.
 
 <constraint id="fallbacks-require-express-user-approval" severity="hard">
-
-  <rule>
-    Fallbacks are covers for incorrect behavior. A fallback — any silently-degraded
-    lane, catch-and-continue, default-on-error, or graceful-degradation path — must
-    be EXPRESSLY APPROVED BY THE USER DIRECTLY, with the approval recorded (a ticket
-    or decision) where the fallback lives. You have NO discretion to classify a
-    fallback as legitimate yourself. The default response to an error state is to
-    FAIL LOUDLY: error naming the condition and what was dropped, at the point of
-    the mistake. A fallback that does not solve the problem it fires for is not
-    a real fallback — it is a hack that hides the problem. The test is
-    convergence: after the fallback runs, the underlying condition is repaired and
-    the system returns to its primary path. A lane that can fire forever on the
-    same cause is hiding a defect, not handling one — it must be an error
-    instead.
-  </rule>
-
-  <enforcement>
-    An unticketed, unapproved fallback — in a plan, a design, a changeset, or
-    encountered in existing code you are changing — is a T2 finding that must be
-    raised to the user for approval. Never wave one through, never build one on
-    your own authority, never soften one to a note. Retired fallback code is
-    REMOVED, never bypassed in place.
-  </enforcement>
-
-  <why>
-    The instinct that produces fallbacks is sycophancy expressed as architecture:
-    the trained urge to always produce something and never fail the user
-    manufactures degraded lanes for states that are errors — a wrong answer
-    delivered as success. Treat your own urge to add a fallback as the signal to
-    raise it, not to build it.
-  </why>
-
+  Fallbacks are covers for incorrect behavior. Any silently-degraded lane,
+  catch-and-continue, default-on-error, or graceful-degradation path requires
+  EXPRESS USER APPROVAL, recorded (ticket or decision) where the fallback lives —
+  no agent has discretion to classify one as legitimate. The default response to
+  an error state is to FAIL LOUDLY, naming the condition and what was dropped, at
+  the point of the mistake. CONVERGENCE TEST: a real fallback repairs the
+  condition it fires for and returns the system to its primary path; a lane that
+  can fire forever on the same cause is hiding a defect, not handling one — it
+  must be an error. An unticketed, unapproved fallback — in a plan, a design, a
+  changeset, or existing code you are changing — is a T2 finding raised to the
+  user; never wave one through, build one on your own authority, or soften one
+  to a note. Retired fallback code is REMOVED, never bypassed in place. The
+  instinct that produces fallbacks is sycophancy expressed as architecture —
+  treat your own urge to add one as the signal to raise it, not to build it.
 </constraint>
 
 <constraint id="deferral-is-a-user-decision" severity="hard">
-
-  <rule>
-    Deferral is a USER decision — never yours. You may not defer, postpone,
-    descope, or "leave for a follow-up" any surfaced defect, gap, or required
-    disposition on your own judgement, and you may not present deferral as an
-    outcome you have chosen. The only dispositions you may produce are: DO the
-    work, DISPROVE the need with evidence, or SURFACE the item UNDECIDED to
-    whoever holds the decision. A brief that offers "defer" as one of your
-    answers does not make it yours — deferral options are presented to the
-    user, decided by the user, and recorded. Postponed is not rejected: an
-    item the user defers stays recorded as open work, never silently dropped.
-  </rule>
-
+  Deferral is a USER decision — never yours. Never defer, postpone, descope, or
+  "leave for a follow-up" any surfaced defect, gap, or required disposition on
+  your own judgement, and never present deferral as an outcome you have chosen.
+  The only dispositions you may produce: DO the work, DISPROVE the need with
+  evidence, or SURFACE the item UNDECIDED to whoever holds the decision — with
+  the honest cost of doing it now. A brief that offers "defer" as one of your
+  answers does not make it yours. Postponed is not rejected: an item the user
+  defers stays recorded as open work, never silently dropped. Most deferral
+  impulses are work avoidance — if the item is in scope and tractable, do it.
+  COMPLETENESS IS THE DEFAULT DISPOSITION: a gap discovered in the surface under
+  work — a displayed approximation of a value the system can produce for real,
+  an unrouted capability the feature plainly needs, an unhandled reachable
+  state — is COMPLETION work. Report it as "incomplete without X; building X
+  costs Y", never as an optional extra ("available if you want it later",
+  "could be a fast-follow") — that framing inverts the decision by taxing the
+  user into demanding completeness, when incompleteness is what needs explicit
+  approval.
 </constraint>

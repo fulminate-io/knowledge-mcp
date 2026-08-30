@@ -16,6 +16,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/backends/dispatch"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/workingset"
 )
 
 func handleInterceptMutateDelete(
@@ -102,12 +103,45 @@ func handleInterceptMutateDelete(
 		}
 		return true, errorResult(fmt.Sprintf("mutate(delete): local delete failed: %v", err))
 	}
-	reEmitDeletedFromSegments(ctx, deps, a.Graph, a.Language, ids)
+	reEmitErr := reEmitDeletedFromSegments(ctx, deps, a.Graph, a.Language, ids)
+	return true, textResult(renderDeleteAck(len(archived), len(ids), reEmitErr))
+}
 
-	return true, textResult(fmt.Sprintf(
+// renderDeleteAck reports what landed: the archived + tombstoned counts, plus the
+// qualifier when the shipped-corpus re-emit failed.
+//
+// THE DELETE LANDED AND THE DURABILITY STEP DID NOT, so the result says both. The
+// caller does NOT get an error result: the tombstone is committed server-side, and
+// reporting the operation as failed would be a second false statement rather than a
+// fix for the first. What it must never be is an UNQUALIFIED success — that is the
+// report this arm used to produce, and it left a caller believing the removal was
+// durable in the shipped corpus when it was not.
+func renderDeleteAck(archived, tombstoned int, reEmitErr error) string {
+	ack := fmt.Sprintf(
 		"mutate(delete): archived %d node(s) in the external tracker + tombstoned %d node(s) in the knowledge graph",
-		len(archived), len(ids),
-	))
+		archived, tombstoned,
+	)
+	if reEmitErr != nil {
+		ack += "\n\n" + segmentReEmitFailureNotice(reEmitErr)
+	}
+	return ack
+}
+
+// segmentReEmitFailureNotice is the SINGLE wording of the qualifier both delete
+// paths append when the shipped-corpus re-emit failed. It names what did not
+// land and what the caller can expect, and it is one declaration so the two arms
+// cannot describe the same condition differently.
+//
+// It does NOT promise recovery. Which recovery applies depends on the path — the
+// tombstone path can re-learn the id from a later server-side scan, the hard
+// prune path cannot — and reEmitDeletedFromSegments' own doc states both with
+// their preconditions rather than asserting a repair here that may not run.
+func segmentReEmitFailureNotice(err error) string {
+	return fmt.Sprintf(
+		"WARNING: the local shipped segment corpus was NOT updated for this removal: %v. "+
+			"The rows are gone from the graph, but those documents stay resident in this "+
+			"client's shipped blobs — and keep taking top-k slots in local search — until a "+
+			"later pass or a rebuild removes them.", err)
 }
 
 // reEmitDeletedFromSegments carries a completed delete into this client's SHIPPED
@@ -117,19 +151,37 @@ func handleInterceptMutateDelete(
 // the ranked-but-tombstoned id after it has already taken a slot — and every ship,
 // cache file and load of that partition keeps carrying the document.
 //
-// BEST-EFFORT, ALWAYS. The delete has already been applied when this runs, so a
-// re-emit failure must never turn a successful delete into a reported one; it is
-// logged and swallowed, matching the embed write path's convention. A dropped
-// re-emit self-heals the next time anything touches the partition — on the
-// tombstone path. On the hard-delete (prune) path there is nothing left to
-// re-learn from, so recovery there is a rebuild, not self-healing.
+// NON-FATAL, BUT REPORTED. The delete has already been applied when this runs, so
+// a re-emit failure must never turn a successful delete into a reported failure —
+// it is logged and the call continues. It is NOT swallowed: the error is RETURNED,
+// and both callers append a qualifier to their result text naming what did not
+// land. Until they did, the failure had no path out of this function at all: it
+// returned nothing and the acks were fixed strings, so a caller was told the
+// removal was durable in the shipped corpus whether or not it was.
+//
+// WHAT ACTUALLY RECOVERS A DROPPED RE-EMIT, on the tombstone path, is the
+// segment-delta consumer and NOT anything touching the partition. MergeSegmentDelta
+// (tombstone_delta_consumer.go) learns the id from a SERVER-side tombstone scan on a
+// later reconcile pass, and landDeltaTombstones then stamps it, merges it into the
+// persisted tombstone record, and only then re-deletes it from the buckets. That
+// record write is what later partition emissions filter on — and this path performs
+// NONE of those three steps, unlike manage(prune), which seeds the record before it
+// calls here (intercept_manage_prune.go). So until that pass runs, nothing touching
+// the partition would drop the id, because locally nothing knows it is dead.
+//
+// ITS PRECONDITION IS WORKING-SET MEMBERSHIP. The reconcile visits only the graphs
+// segmentBearingGraphs yields (bootstrap/client_segment_reconcile.go): a member an
+// interaction earned, and — for a code graph — one whose checkout this machine
+// holds. A graph outside that set is never visited, so its dropped re-emit is never
+// re-learned. On the hard-delete (prune) path the server row is gone outright, so
+// there is nothing left to re-learn from and recovery there is a rebuild.
 //
 // instanceKey is the caller's single per-graph INSTANCE KEY: mutate(delete)
 // passes its `language`, manage(prune) passes its `name`.
-func reEmitDeletedFromSegments(ctx context.Context, deps ClientDeps, graph, instanceKey string, ids []string) {
+func reEmitDeletedFromSegments(ctx context.Context, deps ClientDeps, graph, instanceKey string, ids []string) error {
 	deleter := deps.SegmentDeleter()
 	if deleter == nil || len(ids) == 0 {
-		return
+		return nil
 	}
 	gt, name := deleteSegmentTarget(graph, instanceKey)
 	// searchengine.ExternalID is an alias for string, so the tombstoned ids cross the
@@ -137,7 +189,9 @@ func reEmitDeletedFromSegments(ctx context.Context, deps ClientDeps, graph, inst
 	if err := deleter.DeleteFromBuckets(ctx, gt, name, ids); err != nil {
 		slog.Warn("segment delete re-emit failed; the removal is applied but not yet durable in the shipped corpus",
 			"graph_type", gt, "name", name, "ids", len(ids), "error", err)
+		return err
 	}
+	return nil
 }
 
 // deleteSegmentTarget resolves the (graph type, instance name) the segment engine
@@ -164,5 +218,16 @@ func deleteSegmentTarget(graph, instanceKey string) (kgtypes.GraphType, string) 
 	if instanceKey != "" {
 		return gt, instanceKey
 	}
+	// A SINGLE-INSTANCE FAMILY RESOLVES TO ITS CANONICAL INSTANCE rather than
+	// falling through to the graph-type-name fallback below. Without this the
+	// checks graph keyed its segment tombstones under the literal "checks" — a
+	// THIRD spelling, neither the empty name a caller sends nor the "default" the
+	// collector seals under — so deleting a check removed the node while leaving
+	// its segment entry searchable.
+	if canonical := workingset.CanonicalInstanceName(gt, ""); canonical != "" {
+		return gt, canonical
+	}
+	// The fallback for a family that DOES carry an instance field but was given
+	// none: the graph-type name, unchanged.
 	return gt, string(gt)
 }

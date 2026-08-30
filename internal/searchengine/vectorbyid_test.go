@@ -78,7 +78,7 @@ func (vecFormat) Decode(blob []byte) (Segment[mockQuery, mockStats], error) {
 	return &vecSegment{rows: rows}, nil
 }
 
-func (vecFormat) Merge(segs []Segment[mockQuery, mockStats], accept []func(ExternalID) bool) (Segment[mockQuery, mockStats], error) {
+func (vecFormat) MergeTo(dst MergeSink, segs []Segment[mockQuery, mockStats], accept []func(ExternalID) bool) (int64, error) {
 	var merged []vecRow
 	for i, s := range segs {
 		vs := s.(*vecSegment)
@@ -89,7 +89,7 @@ func (vecFormat) Merge(segs []Segment[mockQuery, mockStats], accept []func(Exter
 			}
 		}
 	}
-	return &vecSegment{rows: merged}, nil
+	return writeMergedSegment(dst, &vecSegment{rows: merged})
 }
 
 func (vecFormat) AggregateStats([]Segment[mockQuery, mockStats]) mockStats { return mockStats{} }
@@ -135,6 +135,86 @@ func TestVectorByIDRoutesToOwningSegment(t *testing.T) {
 
 	if got, ok := e.VectorByID("missing"); ok || got != nil {
 		t.Fatalf("VectorByID(absent) = (%x, %v), want (nil, false)", got, ok)
+	}
+}
+
+// TestVectorByIDDeclinesADeletedMember pins that VectorByID answers for the LIVE
+// corpus, not the raw payload: an id whose live bit has been cleared resolves
+// (nil,false) even though the segment still physically holds its vector.
+//
+// THE PHYSICAL-RESIDENCE ASSERTION IS THE POINT, and it is what makes this test
+// measure liveness rather than eviction. A deleted id keeps its route and members
+// entries and only loses its live bit — no indexed data mutates — so the row is
+// still in the payload and the payload's own accessor still returns it. Without
+// that leg, a merge that reclaimed the dead doc (or any change that dropped the
+// row) would satisfy the (nil,false) assertion for a completely different reason
+// and this test would pass while proving nothing. The engine's options make that
+// unambiguous too: DeletesPctAllowed 2.0 is above the maximum possible dead ratio
+// and SegmentCountTarget is 1<<30, so no merge is ever eligible here.
+//
+// KNOWN POSITIVE, same run: the three ids that were NOT deleted keep resolving
+// byte-equal. A liveness consult that declined everything — or a lookup broken
+// outright — is caught by that leg rather than read as success.
+func TestVectorByIDDeclinesADeletedMember(t *testing.T) {
+	e := closeOnCleanup(t, New[mockQuery, mockStats](vecFormat{}, Options{
+		MinSegmentDocs:     1,
+		DeletesPctAllowed:  2.0, // above any achievable dead ratio — merge never eligible.
+		SegmentCountTarget: 1 << 30,
+	}))
+	defer e.Close()
+
+	want := map[string][]byte{
+		"a": {0x01, 0x02},
+		"b": {0x03, 0x04},
+		"c": {0x05, 0x06},
+		"d": {0x07, 0x08},
+	}
+	for _, id := range []string{"a", "b", "c", "d"} {
+		if err := e.Add([]Document{vecDoc(id, want[id])}); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+	}
+
+	// PRECONDITION: every id resolves before the delete, or the assertion below
+	// would be satisfied by a lookup that never worked.
+	for id := range want {
+		if _, ok := e.VectorByID(id); !ok {
+			t.Fatalf("PRECONDITION VectorByID(%s) ok=false — the id must resolve before the delete", id)
+		}
+	}
+
+	const deleted = "c"
+	e.Delete(deleted)
+
+	// The row is STILL in the payload: Delete clears a bit, it does not rewrite the
+	// segment. This is the control that makes the (nil,false) below mean "dead"
+	// rather than "gone".
+	set := e.set.Load()
+	sid, routed := set.route[deleted]
+	if !routed {
+		t.Fatalf("PRECONDITION: %s lost its route entry — Delete must keep routing and clear only the live bit", deleted)
+	}
+	entry := set.entryByID(sid)
+	if entry == nil {
+		t.Fatalf("PRECONDITION: %s routes to a segment that is not resident", deleted)
+	}
+	if _, held := entry.payload.(*vecSegment).VectorByID(deleted); !held {
+		t.Fatalf("PRECONDITION: the payload no longer holds %s — this test can no longer distinguish dead from reclaimed", deleted)
+	}
+
+	if got, ok := e.VectorByID(deleted); ok || got != nil {
+		t.Fatalf("VectorByID(%s) = (%x, %v) after Delete, want (nil, false) — a deleted member's vector must not resolve", deleted, got, ok)
+	}
+
+	// KNOWN POSITIVE: exactly the deleted id went; the others are untouched.
+	for _, id := range []string{"a", "b", "d"} {
+		got, ok := e.VectorByID(id)
+		if !ok {
+			t.Fatalf("VectorByID(%s) ok=false after deleting %s — the consult must decline exactly the deleted id", id, deleted)
+		}
+		if !bytes.Equal(got, want[id]) {
+			t.Fatalf("VectorByID(%s) = %x, want %x", id, got, want[id])
+		}
 	}
 }
 

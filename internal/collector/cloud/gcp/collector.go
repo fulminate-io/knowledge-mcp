@@ -67,7 +67,7 @@ func (c *GCPCollector) Collect(ctx context.Context, id string, opts collector.Co
 		if rm != nil {
 			rm.Record(t.ID, t.ResolutionID)
 		}
-		if cascadeErr := collector.Collect(ctx, t.Collector, t.ID, opts); cascadeErr != nil {
+		if _, cascadeErr := collector.Collect(ctx, t.Collector, t.ID, opts); cascadeErr != nil {
 			slog.Warn("gcp: cascade collection failed",
 				"collector", t.Collector, "id", t.ID, "error", cascadeErr)
 		}

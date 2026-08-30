@@ -37,8 +37,16 @@ var pythonLangConfig = LangConfig{
 		{Name: "expr", Context: contextExpr, Prefix: "__meta_ast_value__ = ", Suffix: "\n"},
 	},
 	CommentKinds: []string{"comment"},
-	IdentRule:    isPythonIdent,
-	IsTestFile:   isPythonTestFile,
+	// Python surfaces a string's content as its own string_content node, so a
+	// plain literal always compared correctly — but an ESCAPE inside one becomes a
+	// child of string_content, and the text either side of that child falls into a
+	// span gap. `"a\nb"` and `"c\nd"` were indistinguishable. Declaring
+	// string_content rather than `string` is what keeps f-string interpolation
+	// working: an `interpolation` node is a SIBLING of string_content under
+	// `string`, so it is still descended into and still binds placeholders.
+	OpaqueTextKinds: []string{"string_content"},
+	IdentRule:       isPythonIdent,
+	IsTestFile:      isPythonTestFile,
 }
 
 // isPythonTestFile reports whether a repo-relative path is Python test source.

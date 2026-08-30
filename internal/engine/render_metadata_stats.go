@@ -10,8 +10,8 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
-// render_metadata_stats.go ports the server metadata_stats row-builder + table
-// renderer + JSON payload (tools_query_metadata_stats.go). The composer
+// render_metadata_stats.go ports the server's since-removed metadata_stats
+// row-builder + table renderer + JSON payload. The composer
 // (cmd/knowledge/internal/tools) reads the
 // MetadataStats RPC's BOTH typed carriers — resp.GetMetadataStats() (the typed
 // proto stats blob) + resp.GetOverrideConfig() (the typed proto override) — and

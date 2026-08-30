@@ -86,52 +86,16 @@ func (s *scriptedGc) Execute(_ context.Context, req *knowledgev1.ExecuteRequest)
 	return &knowledgev1.ExecuteResponse{}, nil
 }
 
-// answerTraversal computes the contains-descendant set of the root over the
-// per-node edge fixtures (BFS up to MaxHops), returning the descendant nodes
-// (root excluded) and — when IncludeEdgeMetadata is set — the contains edges
-// among them, mirroring the server's traversal + CollectEdgesAlongWalk.
+// answerTraversal computes the descendant set of the root over the per-node
+// edge fixtures by delegating to the package's shared fixture BFS
+// (traversalResponseFor in testutil_test.go), which the graphFixture-backed
+// caller answers traversals with too. The closures are the only per-fixture
+// part: scriptedGc keys both edges and nodes by node id.
 func (s *scriptedGc) answerTraversal(q *knowledgev1.QueryPlan) *knowledgev1.ExecuteResponse {
-	root := q.GetSelection().GetFromId()[0]
-	maxHops := int(q.GetMaxHops())
-	if maxHops <= 0 {
-		maxHops = 1 << 30
-	}
-	var results []engine.TraversalResult
-	var containsEdges []knowledgev1.Edge
-	visited := map[string]bool{root: true}
-	type frontier struct {
-		id   string
-		dist int
-	}
-	queue := []frontier{{root, 0}}
-	for len(queue) > 0 {
-		cur := queue[0]
-		queue = queue[1:]
-		if cur.dist >= maxHops {
-			continue
-		}
-		curEdges := s.edges[cur.id]
-		for i := range curEdges {
-			e := &curEdges[i]
-			if e.FromId != cur.id || e.Type != string(kgtypes.EdgeKGContains) {
-				continue // outgoing contains edges only
-			}
-			containsEdges = append(containsEdges, knowledgev1.Edge{FromId: e.FromId, ToId: e.ToId, Type: e.Type})
-			if visited[e.ToId] {
-				continue
-			}
-			visited[e.ToId] = true
-			if n, ok := s.nodes[e.ToId]; ok {
-				results = append(results, engine.TraversalResult{Node: n, Distance: cur.dist + 1})
-			}
-			queue = append(queue, frontier{e.ToId, cur.dist + 1})
-		}
-	}
-	resp := &knowledgev1.ExecuteResponse{TraversalResults: traversalResultsToProtoForRenderTest(results)}
-	if q.GetIncludeEdgeMetadata() {
-		resp.TraversalEdges = edgesToProtoForTest(containsEdges)
-	}
-	return resp
+	return traversalResponseFor(q,
+		func(id string) []knowledgev1.Edge { return s.edges[id] },
+		func(id string) *knowledgev1.Node { return s.nodes[id] },
+	)
 }
 
 // nodeSetEdges unions every pivot's OUTGOING edges (Forward=&true semantics)

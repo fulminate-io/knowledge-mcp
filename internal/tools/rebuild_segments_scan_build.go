@@ -41,10 +41,13 @@ type rebuildSegItem struct {
 // stable (a shipped segment never clears a node's vector) so a full final page is
 // normal, and only a zero-item page signals exhaustion.
 //
-// afterStampedAtNanos is the CHANGE-SCOPING watermark. ZERO — what every caller
-// passes today — asks for the full vectored corpus, exactly as before. A non-zero
-// value asks the server for only what changed after it, which is what makes a
-// rebuild cost work proportional to the change rather than to the corpus.
+// afterStampedAtNanos rides the request's after_stamped_at_nanos, which the server
+// reads in TWO places: the erasure-completeness refusal, which compares it against
+// the reap floor, and — only for a caller that sends no scan bound of its own,
+// which this one does not — the scan's lower bound. ZERO therefore asks for the
+// full vectored corpus, exactly as before. A non-zero value asks the server for
+// only what changed after it, which is what makes a rebuild cost work proportional
+// to the change rather than to the corpus.
 //
 // The page is split by the per-item tombstone flag. A tombstoned item is an ERASE
 // instruction and carries NO payload (no vector, no BM25 fields) — feeding one to
@@ -64,7 +67,7 @@ func scanRebuildSegments(
 	// Re-stamp over the tool-level manage term: the segment-rebuild scan pages
 	// the whole vectored corpus, which is worth separating from every other
 	// manage op in the metrics.
-	return scanRebuildSegmentsAs(ctx, graphclient.OpRebuildSegments, scanner, gt, name, afterStampedAtNanos)
+	return scanRebuildSegmentsAs(ctx, graphclient.OpRebuildSegments, scanner, gt, name, afterStampedAtNanos, 0)
 }
 
 // scanRebuildSegmentsAs is scanRebuildSegments' body with the operation term the
@@ -73,21 +76,31 @@ func scanRebuildSegments(
 // full-corpus rebuild and the per-tick bounded tombstone delta — and collapsing
 // them into one bucket would hide a delta read that had degenerated into a full
 // scan inside the rebuild's traffic.
+//
+// THE TWO WATERMARK PARAMETERS REACH TWO DIFFERENT SERVER READERS, and conflating
+// them is the defect this seam was split to remove. afterStampedAtNanos rides
+// after_stamped_at_nanos and is the RETENTION FLOOR across this client's
+// consumers, which the server's erasure-completeness refusal compares against the
+// reap floor. scanFromNanos rides scan_from_stamped_at_nanos and is the bound the
+// SCAN reads from; when it is zero the server falls back to afterStampedAtNanos,
+// which is what the two full-corpus arms rely on.
 func scanRebuildSegmentsAs(
 	ctx context.Context, op graphclient.Operation,
-	scanner PipelineScanner, gt kgtypes.GraphType, name string, afterStampedAtNanos int64,
+	scanner PipelineScanner, gt kgtypes.GraphType, name string,
+	afterStampedAtNanos, scanFromNanos int64,
 ) (items []rebuildSegItem, tombstoned []string, servedHorizonNanos int64, err error) {
 	ctx = graphclient.WithOperation(ctx, op)
 	var out []rebuildSegItem
 	afterID := ""
 	for {
 		resp, err := scanner.PipelineScan(ctx, &knowledgev1.PipelineScanRequest{
-			GraphType:           string(gt),
-			GraphName:           name,
-			Axis:                "segment_rebuild",
-			Limit:               rebuildSegmentsScanPage,
-			AfterId:             afterID,
-			AfterStampedAtNanos: afterStampedAtNanos,
+			GraphType:              string(gt),
+			GraphName:              name,
+			Axis:                   "segment_rebuild",
+			Limit:                  rebuildSegmentsScanPage,
+			AfterId:                afterID,
+			AfterStampedAtNanos:    afterStampedAtNanos,
+			ScanFromStampedAtNanos: scanFromNanos,
 		})
 		if err != nil {
 			return nil, nil, 0, err
@@ -172,14 +185,28 @@ func ReadServedHorizon(
 // Under the retired Add+Seal shape that separation had to be enforced by force-sealing
 // each group; staging gives it by construction.
 //
-// Returns (built, partial): built = the number of buckets emitted; partial is
-// always 0, since every bucket is emitted as its own segment regardless of size
-// and there is no sub-threshold remainder concept. ERROR POLICY unchanged: the
-// first non-nil error is returned and the caller ABORTS before FinalizeRebuild,
+// Returns (built, partial, stagedBM25): built = the number of buckets emitted;
+// partial is always 0, since every bucket is emitted as its own segment regardless
+// of size and there is no sub-threshold remainder concept. ERROR POLICY unchanged:
+// the first non-nil error is returned and the caller ABORTS before FinalizeRebuild,
 // so an incomplete set is never shipped.
-func buildAndAddRebuildSegments(ctx context.Context, shipper SegmentShipper, gt kgtypes.GraphType, name string, items []rebuildSegItem) (built, partial int, err error) {
+//
+// stagedBM25 REPORTS WHETHER A BM25 LAYER IS ACTUALLY BEING REPLACED, and it exists
+// because the fact was visible only in here. The caller resets the BM25 arm's feed
+// cursor on it, and the alternative signal — RebuildFinalizeResult.Swapped — is the
+// WRONG one: finalizeResetLayer's zero-staged-work branch reports Swapped for new
+// DURABILITY rather than for a layer swap, so gating on it would fire a full cold
+// re-drain for a finalize that merely sealed a buffered tail. Zero staged BM25 work
+// means no BM25 layer changes hands and there is nothing to re-establish.
+//
+// IT IS SET FROM WHAT WAS ACTUALLY STAGED, inside the staging loop, rather than from
+// what was built: a partition whose staging call errors aborts the run before the
+// finalize, and counting its documents would claim a replacement that never happened.
+func buildAndAddRebuildSegments(ctx context.Context, shipper SegmentShipper, gt kgtypes.GraphType, name string, items []rebuildSegItem) (built, partial int, stagedBM25 bool, err error) {
 	// One bucket per ~DefaultMinSegmentDocs documents, derived from the corpus size
 	// and stable under small drift.
+	// count-provenance: corpus-derived — items is the whole corpus by caller
+	// contract; this arm runs only on a corpus-complete rebuild.
 	bucketCount := searchengine.BucketCountFor(len(items))
 	groups := make(map[int][]rebuildSegItem, bucketCount)
 	for _, it := range items {
@@ -196,7 +223,10 @@ func buildAndAddRebuildSegments(ctx context.Context, shipper SegmentShipper, gt 
 	sort.Ints(buckets)
 
 	// Build every group's Documents concurrently, indexed by emission order.
-	docs := make([]struct{ hnsw, bm25 []searchengine.Document }, len(buckets))
+	docs := make([]struct {
+		hnsw, bm25 []searchengine.Document
+		err        error
+	}, len(buckets))
 	var (
 		wg  sync.WaitGroup
 		sem = make(chan struct{}, runtime.NumCPU())
@@ -207,10 +237,23 @@ func buildAndAddRebuildSegments(ctx context.Context, shipper SegmentShipper, gt 
 		go func(i int, group []rebuildSegItem) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			docs[i].hnsw, docs[i].bm25 = buildRebuildDocs(group)
+			// A build failure is RECORDED PER GROUP and checked after the pool
+			// drains: returning early from a goroutine cannot abort the others,
+			// and staging a partially-built set would replace a live corpus with
+			// one missing whatever this group held.
+			docs[i].hnsw, docs[i].bm25, docs[i].err = buildRebuildDocs(group)
 		}(i, groups[b])
 	}
 	wg.Wait()
+
+	// EVERY GROUP MUST HAVE BUILT BEFORE ANYTHING IS STAGED. The finalize swaps
+	// a whole layer in, so staging the groups that succeeded would publish a
+	// corpus silently missing the ones that did not.
+	for i := range docs {
+		if docs[i].err != nil {
+			return 0, 0, false, fmt.Errorf("rebuild %s/%s: %w", gt, name, docs[i].err)
+		}
+	}
 
 	// STAGE serially, in ascending bucket order. One call carries BOTH formats' share
 	// of the partition, so the two corpora cannot diverge by a caller staging one and
@@ -218,10 +261,13 @@ func buildAndAddRebuildSegments(ctx context.Context, shipper SegmentShipper, gt 
 	// finalize builds each layer aside and swaps it in whole.
 	for i := range docs {
 		if serr := shipper.StageRebuildPartition(ctx, gt, name, docs[i].hnsw, docs[i].bm25); serr != nil {
-			return 0, 0, serr
+			return 0, 0, false, serr
+		}
+		if len(docs[i].bm25) > 0 {
+			stagedBM25 = true
 		}
 	}
-	return len(buckets), 0, nil
+	return len(buckets), 0, stagedBM25, nil
 }
 
 // buildRebuildDeltaDocs is buildAndAddRebuildSegments' sibling for the DELTA path: it
@@ -237,14 +283,32 @@ func buildAndAddRebuildSegments(ctx context.Context, shipper SegmentShipper, gt 
 //
 // It reuses buildRebuildDocs verbatim so both paths assemble Documents through the
 // same shared pipeline builders, and therefore byte-identically.
-func buildRebuildDeltaDocs(items []rebuildSegItem) (hnswDocs, bm25Docs []searchengine.Document) {
+func buildRebuildDeltaDocs(items []rebuildSegItem) (hnswDocs, bm25Docs []searchengine.Document, err error) {
 	return buildRebuildDocs(items)
 }
 
 // buildRebuildDocs maps one chunk to its HNSW + BM25 searchengine.Documents via
 // the SHARED builders (pipeline.BuildHNSWDocuments / BuildBM25Documents), so the
 // rebuild assembles Documents identically to the embed-writeback ship path.
-func buildRebuildDocs(chunk []rebuildSegItem) (hnsw, bm25 []searchengine.Document) {
+//
+// THE DTYPE COMES FROM THE SAME RESOLVED SECTION THE SHIP PATH USES, so a
+// rebuilt segment is tagged exactly as a freshly-embedded one — which is the
+// property this function exists to hold. Reading it here rather than taking it
+// as a parameter keeps the one source of truth for both paths [embedder], and
+// costs no round trip.
+//
+// AN UNRESOLVABLE REPRESENTATION ABORTS THE REBUILD RATHER THAN TAGGING. These
+// documents are built from vectors ALREADY STORED, so this path runs whether or
+// not an embedder is live and cannot re-derive what it is re-sealing. Defaulting
+// the tag would re-seal a float32 corpus as ubinary and rank IEEE bit patterns
+// by Hamming distance — the exact silent corruption the dtype-from-the-batch
+// work removed, reintroduced one layer up.
+func buildRebuildDocs(chunk []rebuildSegItem) (hnsw, bm25 []searchengine.Document, err error) {
+	dtype, err := resolvedEmbedDtype()
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"segment rebuild: cannot determine the representation of the stored vectors being re-sealed: %w", err)
+	}
 	ids := make([]string, 0, len(chunk))
 	vectors := make(map[string][]byte, len(chunk))
 	segDocs := make([]pipeline.SegmentDoc, 0, len(chunk))
@@ -253,5 +317,5 @@ func buildRebuildDocs(chunk []rebuildSegItem) (hnsw, bm25 []searchengine.Documen
 		vectors[it.nodeID] = it.vector
 		segDocs = append(segDocs, pipeline.SegmentDoc{NodeID: it.nodeID, Fields: it.bm25Fields})
 	}
-	return pipeline.BuildHNSWDocuments(vectors, ids), pipeline.BuildBM25Documents(segDocs)
+	return pipeline.BuildHNSWDocuments(vectors, ids, dtype), pipeline.BuildBM25Documents(segDocs), nil
 }

@@ -207,6 +207,12 @@ func handleReflectTensions(_ context.Context, deps ClientDeps, a queryReflectArg
 	if !computed {
 		return textResult(tensionsColdMessage)
 	}
+	// A positive caller limit caps the RENDERED report, sliced BEFORE the json
+	// branch so a json caller asking for N also gets N. The totals header below
+	// reads the SLICED length, keeping its clusterPairs == shown identity true.
+	if a.Limit > 0 && a.Limit < len(tensions) {
+		tensions = tensions[:a.Limit]
+	}
 	if a.Format == "json" {
 		return jsonResult(tensions)
 	}

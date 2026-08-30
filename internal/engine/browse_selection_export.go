@@ -2,9 +2,10 @@
 
 package engine
 
-// browse_selection_export.go exposes the two compile-local browse primitives a
-// CLIENT-SIDE browse arm needs when it builds its own read plan instead of going
-// through Compile: the meta-predicate lowering and the browse row cap.
+// browse_selection_export.go exposes the compile-local and render-local browse
+// primitives a CLIENT-SIDE browse arm needs when it builds its own read plan
+// instead of going through Compile: the meta-predicate lowering, the browse row
+// cap, and the browse renderer itself.
 //
 // WHY SHIMS RATHER THAN EXPORTS OF THE ORIGINALS. Both symbols live in
 // compile_query.go, which the rules-paging work is fenced OUT of: renaming
@@ -21,7 +22,10 @@ package engine
 // return nothing in production; a hardcoded 10 in the tools package would drift
 // away from the engine's cap the first time the cap moved.
 
-import knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+import (
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+)
 
 // BrowseDefaultLimit is the exported alias of the browse row cap
 // applyBrowseLimitOffset applies (compile_query.go). A client-side arm that
@@ -36,4 +40,29 @@ const BrowseDefaultLimit = browseDefaultLimit
 // for an empty map.
 func LowerMetaPredicates(meta map[string]string) []*knowledgev1.MetadataPredicate {
 	return lowerMetaPredicates(meta)
+}
+
+// BrowseCtx is the exported form of browseContext (render_misc.go), carrying the
+// render inputs a client-side browse arm derives from its query args.
+type BrowseCtx struct {
+	Label    string
+	NodeType string
+	Offset   int
+	Format   string
+	Fields   []string
+	MetaKeys []string // the meta filter keys, surfaced inline per node.
+	// IncludeTombstones mirrors browseContext's own field and must stay in step
+	// with it: RenderBrowse converts between the two structs, so a field present
+	// on one and absent from the other fails to compile.
+	IncludeTombstones bool
+}
+
+// RenderBrowse is the exported wrapper over renderBrowseResponse: the numbered
+// markdown list with status, ID, truncated description, inline meta values and
+// the pagination footer, or the {graph, type, results, total} JSON payload when
+// Format is "json". It DELEGATES rather than duplicating — a second copy of the
+// render would drift from the pagination footer and the fields projection the
+// original owns, both of which callers depend on.
+func RenderBrowse(resp *knowledgev1.ExecuteResponse, c BrowseCtx) (kgtools.ToolResult, error) {
+	return renderBrowseResponse(resp, browseContext(c))
 }

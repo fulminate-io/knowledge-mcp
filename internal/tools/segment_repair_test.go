@@ -26,6 +26,9 @@ type fakeRepairScanner struct {
 	pages        [][]*knowledgev1.PipelineScanItem
 	pageIter     int
 	afterStamped []int64
+	// scanFroms records scan_from_stamped_at_nanos beside it, appended in the SAME
+	// statement so the two slices stay index-aligned per request.
+	scanFroms []int64
 	// horizon is the safe horizon every page echoes, exactly as the server does. Zero
 	// by default, which is what an unset fixture legitimately means: this scan was
 	// served no horizon, and no caller may persist one from it.
@@ -35,7 +38,7 @@ type fakeRepairScanner struct {
 func (f *fakeRepairScanner) PipelineScan(_ context.Context, req *knowledgev1.PipelineScanRequest) (*knowledgev1.PipelineScanResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.afterStamped = append(f.afterStamped, req.GetAfterStampedAtNanos())
+	f.afterStamped, f.scanFroms = append(f.afterStamped, req.GetAfterStampedAtNanos()), append(f.scanFroms, req.GetScanFromStampedAtNanos())
 	if f.pageIter >= len(f.pages) {
 		// The horizon rides the terminating empty page too — that is what makes "the
 		// last page observed bounds the drain" true rather than an accident of paging.

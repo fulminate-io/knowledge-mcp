@@ -3,9 +3,11 @@
 package bootstrap
 
 import (
-	"crypto/rsa"
 	"fmt"
+	"io/fs"
 	"math/rand/v2"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -116,13 +118,13 @@ func reBucketBehindFixture(t *testing.T) (*client, *reconcileEngine, string, int
 
 	shared := reBucketSharedCorpus(t)
 
-	// A fresh client over a backend carrying the already-built corpus, then a cold
-	// load: the same steady state, reached by reading the segments rather than by
-	// re-deriving them.
-	c, eng, _, _ := buildReconcileClientOnBackend(t, shared.seedBackend(t), 0, reBucketRepo)
+	// A fresh client over a CACHE DIR carrying the already-built corpus, then a cold
+	// load: the same steady state, reached by reading the segments off disk rather
+	// than by re-deriving them.
+	c, eng, _ := buildReconcileClientOnDir(t, 0, shared.seedDir(t), reBucketRepo)
 	seedRebuildScanPage(eng, reBucketRepo, shared.corpus)
 	loaded, err := c.segmentMgr.LoadResidentDocCount(ctx, kgtypes.GraphCode, reBucketRepo)
-	require.NoError(t, err, "the fixture client must load the shared corpus from its backend")
+	require.NoError(t, err, "the fixture client must load the shared corpus from its cache dir")
 	require.Equal(t, reBucketCorpusN, loaded,
 		"FIXTURE PRECONDITION: the loaded corpus must be the whole %d documents — a short load would move every count derived below",
 		reBucketCorpusN)
@@ -131,44 +133,68 @@ func reBucketBehindFixture(t *testing.T) (*client, *reconcileEngine, string, int
 }
 
 // reBucketRepo is the graph the shared corpus is built against. It is FIXED because
-// the published manifest and every stored object are keyed by it; a caller using a
-// different name would find an empty backend.
+// the on-disk cache path is keyed by it; a caller using a
+// different name would find an empty cache.
 const reBucketRepo = "reBucketBehindRepo"
 
-// reBucketCorpusState is the built steady state, captured once: the backend's stored
-// objects and published manifests, the key their DEKs are wrapped to, and the
-// documents the rebuild scan page is derived from.
+// reBucketCorpusState is the built steady state, captured once: the CACHE DIRECTORY
+// the corpus was written to, replayed file-by-file into each caller's own dir.
+//
+// IT USED TO CAPTURE THE BACKEND. The corpus lived in a fake GCS control plane, so
+// the state carried its stored objects, its published manifests and the RSA key those
+// objects' data keys were wrapped to — a wrapped-key detail that mattered because a
+// backend with a fresh key would hold objects it could not decrypt. None of that
+// exists. The corpus lives in L2, so what is captured is the bytes on disk, and there
+// is no key to travel with them.
 type reBucketCorpusState struct {
-	objects   map[string][]byte
-	manifests map[string][]segManifestDigest
-	priv      *rsa.PrivateKey
-	corpus    []searchengine.Document
+	files  map[string][]byte // path RELATIVE to the cache root -> contents
+	corpus []searchengine.Document
 }
 
-// seedBackend returns a NEW backend preloaded with the captured corpus.
+// seedDir returns a NEW cache directory preloaded with the captured corpus.
 //
-// THE SIGNING KEY TRAVELS WITH THE BYTES, and it is not optional: every stored
-// object's data key is wrapped to the backend's public key, so a backend that
-// generated a fresh key would hold objects it cannot decrypt and the load would come
-// back empty — which the fixture's own loaded-corpus precondition would catch.
-//
-// The maps are COPIED per caller. Callers ship, publish and prune against their own
-// backend, and a shared map would let one caller's writes move another's manifest.
-func (s *reBucketCorpusState) seedBackend(t *testing.T) *fakeSegBackend {
+// The files are COPIED per caller. Callers write, re-bucket and prune against their
+// own cache, and a shared directory would let one caller's writes move another's
+// corpus — the order-dependence the shared-artifact design exists to avoid.
+func (s *reBucketCorpusState) seedDir(t *testing.T) string {
 	t.Helper()
-	b := newFakeSegBackend(t)
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.priv = s.priv
-	b.objects = make(map[string][]byte, len(s.objects))
-	for k, v := range s.objects {
-		b.objects[k] = append([]byte(nil), v...)
+	dir := t.TempDir()
+	for rel, body := range s.files {
+		full := filepath.Join(dir, rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
+		require.NoError(t, os.WriteFile(full, body, 0o600))
 	}
-	b.manifests = make(map[string][]segManifestDigest, len(s.manifests))
-	for k, v := range s.manifests {
-		b.manifests[k] = append([]segManifestDigest(nil), v...)
-	}
-	return b
+	return dir
+}
+
+// captureDir reads a cache root into the replayable file map.
+func captureDir(t *testing.T, dir string) map[string][]byte {
+	t.Helper()
+	files := map[string][]byte{}
+	require.NoError(t, filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, rerr := filepath.Rel(dir, path)
+		if rerr != nil {
+			return rerr
+		}
+		// G122 (symlink TOCTOU between the walk and the read) needs an actor able to
+		// swap an entry underneath the walk. There is none: dir is this test's own
+		// t.TempDir(), every file under it was written by seedDir a few statements
+		// earlier, and nothing outside this process knows the path. os.Root would buy
+		// no safety a private temp dir does not already give.
+		body, rerr := os.ReadFile(path) //nolint:gosec // a path this test composed under its own t.TempDir()
+		if rerr != nil {
+			return rerr
+		}
+		files[rel] = body
+		return nil
+	}))
+	require.NotEmpty(t, files,
+		"FIXTURE PRECONDITION: the built corpus must have left files on disk, or every caller "+
+			"below would replay an empty cache and load nothing")
+	return files
 }
 
 var (
@@ -197,7 +223,7 @@ func reBucketSharedCorpus(t *testing.T) *reBucketCorpusState {
 	t.Helper()
 	reBucketCorpusOnce.Do(func() {
 		ctx := opCtx()
-		c, eng, backend := buildReconcileClientWithSeg(t, 0, reBucketRepo)
+		c, eng, dir := buildReconcileClientWithDir(t, 0, reBucketRepo)
 
 		seed := fastloadVecDocs("rebucket-seed", reBucketSeedN)
 		window := docsInBucketFor(t, 0, reBucketSeedCount, reBucketWindowN, "rebucket-win-")
@@ -216,21 +242,10 @@ func reBucketSharedCorpus(t *testing.T) *reBucketCorpusState {
 		// between ticks rather than caught mid-write.
 		require.NoError(t, c.segmentMgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, reBucketRepo))
 
-		backend.mu.Lock()
-		defer backend.mu.Unlock()
-		state := &reBucketCorpusState{
-			priv:      backend.priv,
-			corpus:    corpus,
-			objects:   make(map[string][]byte, len(backend.objects)),
-			manifests: make(map[string][]segManifestDigest, len(backend.manifests)),
+		reBucketCorpusBuilt = &reBucketCorpusState{
+			corpus: corpus,
+			files:  captureDir(t, dir),
 		}
-		for k, v := range backend.objects {
-			state.objects[k] = append([]byte(nil), v...)
-		}
-		for k, v := range backend.manifests {
-			state.manifests[k] = append([]segManifestDigest(nil), v...)
-		}
-		reBucketCorpusBuilt = state
 	})
 	require.NotNil(t, reBucketCorpusBuilt, "the shared corpus builder must have run")
 	return reBucketCorpusBuilt
@@ -251,22 +266,21 @@ func TestQuietGraphReBucketsAfterCrossingTheBoundary(t *testing.T) {
 	ctx := opCtx()
 	c, _, repo, corpusN := reBucketBehindFixture(t)
 
-	degenerate, err := c.segmentMgr.ReconcileResidentDegenerate(ctx, kgtypes.GraphCode, repo)
-	require.NoError(t, err)
-	require.False(t, degenerate,
+	require.False(t, armIsDegenerate(t, c.segmentMgr, kgtypes.GraphCode, repo, corpusN),
 		"PRECONDITION: the fixture graph must be HEALTHY, so the cascade reaches its healthy-graph return and only a re-bucket trigger can rebuild it")
 
 	c.reconcileSegmentCoverage(ctx)
 
-	// Read the layout BACK FROM THE SOURCE rather than from an in-process number: the
-	// published manifest is the only value that can disagree with what this process
-	// believes it laid out.
-	published, err := c.segmentMgr.PublishedManifestCount(ctx, kgtypes.GraphCode, repo, hnsw.New().Name())
-	require.NoError(t, err)
-	require.Equal(t, searchengine.BucketCountFor(corpusN), published,
+	// Read the layout FROM THE ENGINE rather than from an in-process number this test
+	// computed: the resident segment count is what the engine actually holds, and it
+	// is the value that can disagree with what the reconcile pass believes it laid
+	// out. It replaces a published-manifest read-back, deleted with the rail; the
+	// COMPARISON is unchanged — derived partition count against present layout.
+	present := c.segmentMgr.ResidentSegmentCount(kgtypes.GraphCode, repo, hnsw.New().Name())
+	require.Equal(t, searchengine.BucketCountFor(corpusN), present,
 		"FUL1060-NO-REBUCKET: a quiet graph that crossed the boundary must re-bucket within one reconcile pass — "+
-			"the published layout stands at %d partitions against the %d its %d-document corpus now derives",
-		published, searchengine.BucketCountFor(corpusN), corpusN)
+			"the resident layout stands at %d partitions against the %d its %d-document corpus now derives",
+		present, searchengine.BucketCountFor(corpusN), corpusN)
 }
 
 // TestReconcileTickDrivesTheReBucketTrigger is the WIRING gate, asserted through the
@@ -291,15 +305,23 @@ func TestReconcileTickDrivesTheReBucketTrigger(t *testing.T) {
 
 	// The aligned graph: seeded and drained, so its layout equals the count its own
 	// corpus derives and the detector has nothing to find.
-	aligned := fastloadVecDocs("rebucket-aligned", reBucketSeedN)
+	//
+	// IT IS SEEDED AT THE FULL CORPUS SIZE, NOT THE SEED SIZE, and the reason is
+	// arithmetic rather than taste. The fake engine serves ONE embedded count for every
+	// graph — reBucketCorpusN — and the degeneracy predicate compares an arm's resident
+	// count against it. A graph holding only reBucketSeedN would therefore read as
+	// COLLAPSED (2049 against 8193 is below the ratio), the heal arm would page the
+	// scanner for it, and this test's whole point — that the ALIGNED graph is never
+	// scanned — would be credited to the trigger while the heal was doing the work.
+	// At the full corpus the layout still equals what its own corpus derives, so it is
+	// aligned AND healthy, which is the state the assertion below actually means.
+	aligned := fastloadVecDocs("rebucket-aligned", reBucketCorpusN)
 	seedRebuildScanPage(eng, alignedRepo, aligned)
 	require.NoError(t, c.segmentMgr.ReplaceBucket(ctx, kgtypes.GraphCode, alignedRepo, nil, aligned))
 	require.NoError(t, c.segmentMgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, alignedRepo))
 
 	for _, repo := range []string{behindRepo, alignedRepo} {
-		degenerate, err := c.segmentMgr.ReconcileResidentDegenerate(ctx, kgtypes.GraphCode, repo)
-		require.NoError(t, err)
-		require.False(t, degenerate,
+		require.False(t, armIsDegenerate(t, c.segmentMgr, kgtypes.GraphCode, repo, reBucketCorpusN),
 			"PRECONDITION: %s must be HEALTHY, or the heal arm could page the scanner and this test would credit the trigger for it", repo)
 		require.Equal(t, 0, eng.scanCallCount(repo),
 			"PRECONDITION: %s has not been scanned before the act", repo)
@@ -328,9 +350,7 @@ func TestReBucketTriggerLatchesAfterALandedReset(t *testing.T) {
 	ctx := opCtx()
 	c, eng, repo, corpusN := reBucketBehindFixture(t)
 
-	degenerate, err := c.segmentMgr.ReconcileResidentDegenerate(ctx, kgtypes.GraphCode, repo)
-	require.NoError(t, err)
-	require.False(t, degenerate,
+	require.False(t, armIsDegenerate(t, c.segmentMgr, kgtypes.GraphCode, repo, reBucketCorpusN),
 		"PRECONDITION: the fixture graph must be HEALTHY, so only a re-bucket trigger can rebuild it")
 
 	c.reconcileSegmentCoverage(ctx)
@@ -341,10 +361,9 @@ func TestReBucketTriggerLatchesAfterALandedReset(t *testing.T) {
 	require.GreaterOrEqual(t, afterFirstPass, 1,
 		"PASS ONE must have fired the trigger, or the silence asserted below proves nothing")
 
-	published, err := c.segmentMgr.PublishedManifestCount(ctx, kgtypes.GraphCode, repo, hnsw.New().Name())
-	require.NoError(t, err)
-	require.Equal(t, searchengine.BucketCountFor(corpusN), published,
-		"the landed reset must have CONVERGED the published layout — the latch rests on that and on no stored state")
+	present := c.segmentMgr.ResidentSegmentCount(kgtypes.GraphCode, repo, hnsw.New().Name())
+	require.Equal(t, searchengine.BucketCountFor(corpusN), present,
+		"the landed reset must have CONVERGED the resident layout — the latch rests on that and on no stored state")
 
 	c.reconcileSegmentCoverage(ctx)
 

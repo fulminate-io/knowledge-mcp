@@ -17,7 +17,6 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
-	"github.com/fulminate-io/knowledge-mcp/internal/segmentdist"
 )
 
 // reconcileEngine is an EngineServiceHandler for the segment-reconcile tests. It
@@ -35,13 +34,25 @@ type reconcileEngine struct {
 	// namesByType maps a graph-type string (e.g. "code", "cloud") to the instance
 	// names RETURN_MODE_GRAPH_NAMES serves for that type.
 	namesByType map[string][]string
-	// embedded is the BinaryVectorCount Stats serves — the embedded denominator
-	// segmentPoolDegenerate reads (via tools.GraphEmbeddedCount). It defaults to 0
-	// (the empty-Stats behavior the resident-vs-shipped reconcile tests rely on:
-	// they probe ReconcileResidentDegenerate, NOT segmentPoolDegenerate, so they
-	// never read BinaryVectorCount). A nonzero value arms segmentPoolDegenerate for
+	// embedded is the BinaryVectorCount Stats serves — the embedded denominator the
+	// degeneracy predicate reads (via tools.GraphEmbeddedCount). It defaults to 0
+	// (the empty-Stats behavior the per-format reconcile tests rely on: they probe
+	// ResidentObservationsByFormat, which reads the resident doc count off each arm
+	// and never touches BinaryVectorCount). A nonzero value ARMS the predicate for
 	// the heal-closure red-green, which gates on it.
 	embedded int32
+	// embedFailures is the EmbedFailureCount Stats serves, and
+	// embedFailuresHoldingVec is the optional subset of it still holding a vector.
+	// The subset is a POINTER because its ABSENCE is a distinct fact from a zero: a
+	// server that does not compute it omits the field, and the client must keep its
+	// approximation caveat rather than read the omission as "none of them".
+	embedFailures           int32
+	embedFailuresHoldingVec *int32
+	// statsCalls counts Stats invocations. It is the observable a "how many times was
+	// this graph evaluated" assertion operationalizes itself as: the balance verdict
+	// cannot form without reading the coverage operands, so a second evaluation is a
+	// second call and an evaluation that never ran is no call at all.
+	statsCalls int
 
 	mu        sync.Mutex
 	scanItems map[string][]*knowledgev1.PipelineScanItem // keyed by graph name
@@ -123,14 +134,6 @@ func (e *reconcileEngine) Execute(
 		return connect.NewResponse(&knowledgev1.ExecuteResponse{GraphNames: infos}), nil
 	}
 	return connect.NewResponse(&knowledgev1.ExecuteResponse{}), nil
-}
-
-func (e *reconcileEngine) Stats(
-	context.Context, *connect.Request[knowledgev1.StatsRequest],
-) (*connect.Response[knowledgev1.StatsResponse], error) {
-	return connect.NewResponse(&knowledgev1.StatsResponse{
-		GraphStats: &knowledgev1.GraphStats{BinaryVectorCount: e.embedded},
-	}), nil
 }
 
 func (e *reconcileEngine) PipelineScan(
@@ -238,11 +241,11 @@ func makeReconcileScanPage(graph string, n int) []*knowledgev1.PipelineScanItem 
 // HEALTHY (here: a sub-floor shipped corpus, which the resident-vs-shipped probe
 // disarms) triggers NO rebuild — PipelineScan is never paged for it.
 func TestReconcileSegmentCoverage_HealthyNoRebuild(t *testing.T) {
-	c, eng, backend := buildReconcileClientWithSeg(t, 0, "healthyRepo")
+	c, eng, dir := buildReconcileClientWithDir(t, 0, "healthyRepo")
 	ctx := context.Background()
 
 	// Sub-floor shipped corpus (4 < floor 64) → the probe disarms → not degenerate.
-	shipHNSW(t, backend, "healthyRepo", 4)
+	seedL2Corpus(t, dir, kgtypes.GraphCode, "healthyRepo", 4)
 	// Seed a scan page so that, IF a rebuild wrongly fired, it would page the scanner
 	// (making the no-rebuild assertion meaningful).
 	eng.scanItems["healthyRepo"] = makeReconcileScanPage("healthyRepo", 10)
@@ -253,38 +256,67 @@ func TestReconcileSegmentCoverage_HealthyNoRebuild(t *testing.T) {
 		"a healthy (disarmed) graph triggers NO RebuildSegments — PipelineScan never paged")
 }
 
-// TestReconcileSegmentCoverage_DegenerateRebuilds proves a graph whose SHIPPED corpus
-// is GENUINELY INCOMPLETE vs its embedded node count — and whose read engine cannot
-// restore it — triggers a RebuildSegments: PipelineScan is paged for it. Post shipped-completeness gate
-// the reconcile rebuilds only past the healNeedsRebuild shipped-completeness gate, so
-// embedded=300 arms segmentPoolDegenerate (covered 128 < 0.5*300) — a REAL regen, not
-// a merely lazily-loaded read engine (which the gate now correctly skips; see
-// TestReconcileSegmentCoverage_ShippedCompleteNoRebuild).
+// TestReconcileSegmentCoverage_DegenerateRebuilds proves a graph whose HNSW pool is LOST
+// — no resident corpus at all against a non-empty embedded count — triggers a
+// RebuildSegments through the periodic reconcile: PipelineScan is paged for it.
+//
+// THE ARMING CONDITION CHANGED WITH THE BAND FLIP, and the sibling below records the
+// other half. This used to seed 128 documents against 300 embedded nodes and rely on the
+// RATIO BAND (128 < 0.5 × 300) to call the graph degenerate. That band is retired for
+// the HNSW arm: this periodic sweep is not the pipeline quiescence edge, so away from
+// quiescence the arm asserts only a LOST POOL and the exact resident-versus-vectors
+// verdict is formed at the drain edge instead. Seeding no corpus is now what arms the
+// pass; a partial corpus arms nothing, which is asserted directly by
+// TestReconcileSegmentCoverage_PartialCorpusNoLongerRebuilds below.
 func TestReconcileSegmentCoverage_DegenerateRebuilds(t *testing.T) {
-	c, eng, backend := buildReconcileClientWithSeg(t, 300, "degenRepo")
+	c, eng, _ := buildReconcileClientWithDir(t, 300, "degenRepo")
 	ctx := context.Background()
 
-	// Shipped corpus 128 (>= floor so ReconcileResidentDegenerate arms) but genuinely
-	// incomplete vs the 300 embedded nodes, and the empty Fetch means load imports
-	// nothing → live resident stays 0 → degenerate AND healNeedsRebuild==true.
-	shipHNSW(t, backend, "degenRepo", 64, 64)
+	// NO corpus is seeded: the empty pool against 300 embedded nodes is the lost cache,
+	// which is exact under any denominator and is the one branch of the retired band
+	// that survived.
 	eng.scanItems["degenRepo"] = makeReconcileScanPage("degenRepo", 10)
 
 	c.reconcileSegmentCoverage(ctx)
 
 	require.GreaterOrEqual(t, eng.scanCallCount("degenRepo"), 1,
-		"a genuinely-incomplete shipped corpus triggers RebuildSegments — PipelineScan is paged")
+		"a LOST HNSW pool triggers RebuildSegments — PipelineScan is paged")
+}
+
+// TestReconcileSegmentCoverage_PartialCorpusNoLongerRebuilds is the band flip's other
+// half, and it is the KNOWN-NEGATIVE that gives the test above its meaning.
+//
+// WITHOUT IT the pair would not discriminate: a sweep that rebuilt every graph
+// unconditionally would satisfy the lost-pool test just as well. This asserts the sweep
+// stays SILENT on exactly the shape the retired ratio band used to rebuild — a graph
+// holding well under half its corpus — which is the behaviour change the flip is for.
+func TestReconcileSegmentCoverage_PartialCorpusNoLongerRebuilds(t *testing.T) {
+	c, eng, dir := buildReconcileClientWithDir(t, 300, "partialRepo")
+	ctx := context.Background()
+
+	// 128 resident against 300 embedded: 42% coverage, comfortably inside the retired
+	// band's firing range and above its floor.
+	seedL2Corpus(t, dir, kgtypes.GraphCode, "partialRepo", 128)
+	eng.scanItems["partialRepo"] = makeReconcileScanPage("partialRepo", 10)
+
+	c.reconcileSegmentCoverage(ctx)
+
+	require.Zero(t, eng.scanCallCount("partialRepo"),
+		"a partially-covered graph must NOT be rebuilt by the periodic sweep any more — "+
+			"the ratio band is retired for the HNSW arm, and a partial shortfall is now "+
+			"decided exactly at the pipeline quiescence edge instead of approximately here")
 }
 
 // TestReconcileSegmentCoverage_DegenerateNonCodeRebuilds proves the reconcile heals
-// NON-code embeddable builtins: a cloud graph (keyed by account) whose shipped corpus
-// is genuinely incomplete vs its embedded count (>= floor so the probe arms, live
-// resident empty after the empty Fetch, and past the healNeedsRebuild gate via
-// embedded=300) triggers exactly one RebuildSegments — PipelineScan is paged for it.
-// Under a code-only walk the cloud graph would never be visited, so no rebuild would
-// fire.
+// NON-code embeddable builtins: a cloud graph (keyed by account) whose HNSW pool is LOST
+// triggers exactly one RebuildSegments — PipelineScan is paged for it. Under a code-only
+// walk the cloud graph would never be visited, so no rebuild would fire.
+//
+// THE ARMING CONDITION IS A LOST POOL, not a partial shortfall — see
+// TestReconcileSegmentCoverage_DegenerateRebuilds for why the ratio band no longer arms
+// this sweep.
 func TestReconcileSegmentCoverage_DegenerateNonCodeRebuilds(t *testing.T) {
-	c, eng, backend := buildReconcileClientWithSeg(t, 300) // no code repos — exercise the non-code path alone; embedded=300 arms the shipped-completeness gate.
+	c, eng, _ := buildReconcileClientWithDir(t, 300) // no code repos — exercise the non-code path alone; embedded=300 makes the empty pool a lost cache.
 	ctx := context.Background()
 
 	// The cloud account is a graph THIS CLIENT INTERACTED WITH — that admission is
@@ -295,11 +327,8 @@ func TestReconcileSegmentCoverage_DegenerateNonCodeRebuilds(t *testing.T) {
 	c.AdmitGraph(kgtypes.GraphCloud, "acct", "search")
 	eng.namesByType[string(kgtypes.GraphCloud)] = []string{"acct"}
 
-	// Shipped corpus 128 (>= floor) under the cloud account selector but genuinely
-	// incomplete vs the 300 embedded nodes (covered 128 < 0.5*300 → healNeedsRebuild
-	// gate confirms a real regen), and the empty Fetch means load imports nothing →
-	// live resident stays 0 → degenerate. PipelineScan is keyed by the instance name.
-	shipHNSWFor(t, backend, kgtypes.GraphCloud, "acct", 64, 64)
+	// NO corpus under the cloud account selector: an empty pool against 300 embedded
+	// nodes is the lost cache. PipelineScan is keyed by the instance name.
 	eng.scanItems["acct"] = makeReconcileScanPage("acct", 10)
 
 	c.reconcileSegmentCoverage(ctx)
@@ -339,82 +368,19 @@ func TestReconcileSegmentCoverage_SkipsNonEmbeddableBuiltins(t *testing.T) {
 		"transformers has no rebuildable segments — never enumerated/probed/rebuilt")
 }
 
-// TestReconcileSegmentCoverage_TimeoutKeepsResidentNoRebuild is the Phase 2
-// red-green: with the L2-first load(), a server whose manifest List times out on the
-// reconcile's heal load (the down/524 shape) is a NO-OP that keeps the L2 resident,
-// NEVER a from-scratch rebuild.
+// TestReconcileSegmentCoverage_TimeoutKeepsResidentNoRebuild WAS DELETED HERE. It
+// warmed the on-disk cache, then made the SERVER'S List fail for every subsequent
+// call, and asserted the consumer still loaded: a reverted L3-first load() would List
+// first, error, and leave the resident set empty, while the L2-first load never Lists
+// at all and imports from disk.
 //
-// Restart shape: a prior run warmed the on-disk L2 cache with a REAL decodable
-// corpus; a FRESH consumer Manager rooted at the SAME dir then reconciles while the
-// server's List times out. The L2-first load enumerates the warm disk and imports
-// the corpus WITHOUT EVER calling List → resident stays >= the corpus → the probe
-// reads NOT degenerate → reconcileSegmentCoverage pages ZERO PipelineScan.
-//
-// RED on a Phase-1-reverted tree (load() Lists the server first): the fresh
-// consumer's load Lists, the List TIMES OUT → load returns the error → the resident
-// pool stays EMPTY (0). The discriminating assertion is therefore
-// ResidentDocCount>=corpusN, which FAILS on the revert (resident 0) and passes after
-// the L2-first flip. scanCallCount==0 holds on BOTH trees — the best-effort reconcile
-// arms never rebuild on a probe error (the Phase-2 no-op-on-timeout guarantee) — so
-// it is asserted as the no-rebuild invariant, while the resident assertion is the
-// L2-first discriminator.
-func TestReconcileSegmentCoverage_TimeoutKeepsResidentNoRebuild(t *testing.T) {
-	const (
-		repo = "timeoutRepo"
-		// >= the segmentdist resident backstop floor (64) so the shipped corpus arms
-		// the resident-vs-shipped ratio (a sub-floor corpus would disarm and mask the
-		// red-green). The floor constant is unexported in package segmentdist.
-		corpusN = 72
-	)
-	// realFetch=true during the warm so the warm Manager actually imports the corpus
-	// from the server into the shared on-disk L2 cache.
-	c, eng, backend, dir := buildReconcileClientWithSegDir(t, 0, repo)
-	ctx := context.Background()
+// The fault it injected no longer has anything to act on — there is no server List to
+// fail. SUCCESSOR NAMED, and it asserts the STRONGER form: TestLoadIssuesNoSourceList
+// InAnyBranch (segmentdist) drives a cold L2, a populated L2 and an evicted pool
+// against a counting source and asserts List was called ZERO times in all three, with
+// the counter proven non-zero-capable by a direct List in the same test. "Never Lists"
+// beats "survives a failing List".
 
-	// Ship a REAL decodable HNSW corpus through the router the consumer loads from.
-	producer := segmentdist.NewManager(c.router, t.TempDir(), 0, segmentdist.WithSegmentTransport(backend.transportBuilder()))
-	require.NoError(t, producer.AddAndMarkDirty(ctx, kgtypes.GraphCode, repo, fastloadVecDocs(repo, corpusN)))
-	require.NoError(t, producer.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, repo))
-
-	// WARM the shared on-disk L2 cache via a SEPARATE Manager rooted at the SAME dir:
-	// its cache-first load Lists + Fetches the real corpus and writes the .seg blobs
-	// to disk under dir. After this the disk cache holds the full decodable corpus.
-	warm := segmentdist.NewManager(c.router, dir, 0, segmentdist.WithSegmentTransport(backend.transportBuilder()))
-	degenerate, err := warm.ReconcileResidentDegenerate(ctx, kgtypes.GraphCode, repo)
-	require.NoError(t, err)
-	require.False(t, degenerate, "the warm load imports the full corpus from the server (resident >= floor)")
-	require.GreaterOrEqual(t, warm.ResidentDocCount(kgtypes.GraphCode, repo), corpusN,
-		"the warm Manager is coverage-passing — the on-disk L2 cache now holds the corpus")
-
-	// Now the server's manifest List times out: every ListDelta from here on returns a
-	// transport error (the down/524 shape). failListAfterN is set to the List count
-	// already spent on the warm so ALL subsequent Lists (the consumer's reconcile)
-	// fail. A reverted L3-first load() Lists first → errors → resident stays empty; the
-	// L2-first load() never Lists → imports from the warm disk.
-	backend.mu.Lock()
-	backend.failReadAfterN = backend.readCalls
-	backend.mu.Unlock()
-
-	// Seed a scan page so that, IF a rebuild wrongly fired, PipelineScan would be paged
-	// (making the scanCallCount==0 assertion meaningful, not vacuous).
-	eng.scanItems[repo] = makeReconcileScanPage(repo, 10)
-
-	// ACT: a FRESH consumer (c.segmentMgr — never loaded) reconciles over the warm L2
-	// dir while the server's List times out.
-	require.Equal(t, 0, c.segmentMgr.ResidentDocCount(kgtypes.GraphCode, repo),
-		"PRE: the fresh consumer has not loaded yet (resident 0)")
-	c.reconcileSegmentCoverage(ctx)
-
-	// GREEN: the L2-first load imported the corpus from the warm disk (never Listed) →
-	// not degenerate → no rebuild paged, and the resident pool is preserved.
-	require.Equal(t, 0, eng.scanCallCount(repo),
-		"a List-timeout reconcile is a NO-OP — RebuildSegments NEVER paged (scanCallCount==0)")
-	require.GreaterOrEqual(t, c.segmentMgr.ResidentDocCount(kgtypes.GraphCode, repo), corpusN,
-		"the L2 resident is preserved on the List timeout (imported from warm disk, not collapsed — the L2-first discriminator)")
-}
-
-// TestReconcileSegmentCoverage_NilManagerNoPanic proves the headless/degraded path:
-// a nil segment manager is a clean no-op (no panic, no rebuild).
 func TestReconcileSegmentCoverage_NilManagerNoPanic(t *testing.T) {
 	c := &client{} // segmentMgr nil — degraded headless mode.
 	require.NotPanics(t, func() {
@@ -424,12 +390,12 @@ func TestReconcileSegmentCoverage_NilManagerNoPanic(t *testing.T) {
 
 // TestRunSegmentReconcileLoop_TicksAndCancels proves the periodic loop fires the
 // reconcile (a graph needing a real rebuild gets rebuilt within a few ticks) and
-// returns promptly on ctx cancel (no goroutine leak). embedded=300 arms the shipped-completeness
-// healNeedsRebuild gate so the genuinely-incomplete shipped corpus (128 < 0.5*300)
-// still rebuilds.
+// returns promptly on ctx cancel (no goroutine leak). embedded=300 against a LOST pool
+// is what arms the rebuild — see TestReconcileSegmentCoverage_DegenerateRebuilds for
+// why a partial corpus no longer does.
 func TestRunSegmentReconcileLoop_TicksAndCancels(t *testing.T) {
-	c, eng, backend := buildReconcileClientWithSeg(t, 300, "loopRepo")
-	shipHNSW(t, backend, "loopRepo", 64, 64) // genuinely incomplete vs 300 embedded → rebuild
+	c, eng, _ := buildReconcileClientWithDir(t, 300, "loopRepo")
+	// No corpus seeded: the empty pool against 300 embedded nodes is the lost cache.
 	eng.scanItems["loopRepo"] = makeReconcileScanPage("loopRepo", 10)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -453,31 +419,41 @@ func TestRunSegmentReconcileLoop_TicksAndCancels(t *testing.T) {
 }
 
 // TestReconcileSegmentCoverage_EndToEndHealsWithoutSearchOrCollect is the
-// load-bearing failing-first proof (Phase 4): a graph whose shipped corpus is
-// genuinely incomplete vs its embedded node count (embedded=1024 via Stats, shipped
-// covered 128 << 0.5*1024 so the healNeedsRebuild gate confirms a real
-// regen), live resident empty, NO pending embed-drain and NO collect, is healed by
-// reconcileSegmentCoverage — RebuildSegments scans the embedded nodes and re-ships a
-// searchable corpus — WITHOUT any Manager.Search and WITHOUT a collect. It must fail
-// on a tree without the Phase 1-2 reconcile (no rebuild fires) and pass with it.
+// load-bearing proof that a graph whose HNSW pool is genuinely LOST — nothing in L2 to
+// load, against a non-empty embedded node count — is healed by reconcileSegmentCoverage,
+// with RebuildSegments scanning the embedded nodes and re-shipping a searchable corpus,
+// WITHOUT any Manager.Search and WITHOUT a collect.
+//
+// THE FIXTURE NOW SEEDS NOTHING, and that is a correction of its premise rather than a
+// weakening. It used to seed 128 documents and call the state a "masked collapse",
+// arming the retired ratio band against an embedded count of 1024. But the reconcile's
+// probe FORCE-LOADS the arm from L2 before measuring it, so those 128 documents were
+// restored by the load — the pool was never collapsed, only not-yet-resident, which is
+// the daemon-restart shape the arm deliberately heals WITHOUT a rebuild. With the ratio
+// retired, that fixture describes a graph the sweep correctly declines. An L2 with no
+// corpus at all is the state that genuinely cannot be loaded back, so it is the one that
+// must drive a rebuild.
 func TestReconcileSegmentCoverage_EndToEndHealsWithoutSearchOrCollect(t *testing.T) {
-	c, eng, backend := buildReconcileClientWithSeg(t, searchengine.DefaultMinSegmentDocs, "e2eRepo")
+	c, eng, _ := buildReconcileClientWithDir(t, searchengine.DefaultMinSegmentDocs, "e2eRepo")
 	ctx := context.Background()
 
-	// PRE-state: a real embedded corpus exists (the scan returns >= MinSegmentDocs
-	// items so the rebuild seals a full searchable segment), the server holds shipped
-	// HNSW metas (>= floor) that are genuinely incomplete vs the embedded count but the
-	// live engine resident is empty (empty Fetch).
-	shipHNSW(t, backend, "e2eRepo", 64, 64)
+	// PRE-state: a real embedded corpus exists server-side (the scan returns >=
+	// MinSegmentDocs items so the rebuild seals a full searchable segment), and this
+	// client's L2 holds NOTHING for the graph.
 	eng.scanItems["e2eRepo"] = makeReconcileScanPage("e2eRepo", searchengine.DefaultMinSegmentDocs)
 
-	// Assert the PRE-state: the probe reports degenerate AND the live resident pool is
-	// empty — with NO Search call having run.
-	degenerate, err := c.segmentMgr.ReconcileResidentDegenerate(ctx, kgtypes.GraphCode, "e2eRepo")
-	require.NoError(t, err)
-	require.True(t, degenerate, "PRE: the post-restart collapse reads as degenerate")
+	// Assert the PRE-state: the live resident pool is empty — with NO Search call
+	// having run — AND the probe reports the arm armed.
+	//
+	// THE ORDER OF THESE TWO IS LOAD-BEARING. The probe FORCE-LOADS the arm from L2
+	// before measuring it, so probing first would populate the resident pool and make
+	// the emptiness assertion below fail on its own side effect. Read the untouched
+	// engine first, then probe. Here the load finds nothing to import, so the arm stays
+	// empty across both reads and the pool is genuinely lost rather than merely cold.
 	require.Equal(t, 0, c.segmentMgr.ResidentDocCount(kgtypes.GraphCode, "e2eRepo"),
-		"PRE: the live searchable pool is empty (masked collapse)")
+		"PRE: the live searchable pool is empty — this client has neither searched nor loaded")
+	require.True(t, armIsDegenerate(t, c.segmentMgr, kgtypes.GraphCode, "e2eRepo", searchengine.DefaultMinSegmentDocs),
+		"PRE: a lost pool against a non-empty embedded corpus arms the HNSW arm")
 
 	// ACT: the startup-trigger path — no Search, no collect.
 	c.reconcileSegmentCoverage(ctx)
@@ -489,7 +465,7 @@ func TestReconcileSegmentCoverage_EndToEndHealsWithoutSearchOrCollect(t *testing
 	// engine loads from on its next load(), WITHOUT any Search or collect having run.
 	require.GreaterOrEqual(t, eng.scanCallCount("e2eRepo"), 1,
 		"POST: the rebuild scanned the embedded nodes (no collect needed)")
-	covered, _, err := c.segmentMgr.ShippedSegmentDocCount(ctx, kgtypes.GraphCode, "e2eRepo")
+	covered, err := c.segmentMgr.ShippedSegmentDocCount(ctx, kgtypes.GraphCode, "e2eRepo")
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, covered, searchengine.DefaultMinSegmentDocs,
 		"POST: the searchable pool is rebuilt to healthy (full corpus re-shipped) WITHOUT a search and WITHOUT a collect")

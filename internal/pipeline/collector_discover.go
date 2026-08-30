@@ -49,10 +49,38 @@ func debugLogGapItems(axis string, items []*knowledgev1.PipelineScanItem) {
 // short-circuit while the queue still has work, starving the workers. `cached_gen`
 // in the log line below stays at its floor value for the whole drain window — that
 // is by design, NOT a stuck pipeline. The items count is the real progress signal.
-func (c *collector) discover(ctx context.Context, axis string, last *atomic.Uint64) ([]*knowledgev1.PipelineScanItem, error) {
-	limit := c.cfg.SummaryBatchSizeOrDefault() * c.cfg.SummaryWorkersOrDefault()
+//
+// IT RETURNS THE SERVER'S gap_set_complete ALONGSIDE THE ITEMS, and it is NOT
+// stored on the collector here — the axis-drained state and its concurrency belong
+// to runLoop, which owns the cross-axis quiescence question this feeds.
+//
+// The 0-RPC no-change tick returns TRUE for it. That path fires only when the
+// shared snapshot's gen equals this axis's watermark, and the watermark advances
+// only on a COMPLETE EMPTY PAGE — so "nothing has changed since a scan that found
+// nothing AND reported it had seen the whole set" is exactly the claim, and
+// returning false there would make a quiet pipeline permanently indistinguishable
+// from a busy one.
+//
+// THE WORD "COMPLETE" IS LOAD-BEARING, not emphasis. While the advance fired on any
+// empty page, this line synthesized a completeness the server had explicitly denied:
+// an arm whose statement failed returns no rows and no error, the watermark moved,
+// and the next tick reported the axis drained without anyone measuring it. The
+// advance site enforces the condition this sentence asserts; the two must be read
+// together.
+func (c *collector) discover(ctx context.Context, axis string, last *atomic.Uint64) ([]*knowledgev1.PipelineScanItem, bool, error) {
+	// The ask is one LEASE for every worker on the axis — the unit a worker
+	// actually takes, so a full scan page fills the pool exactly once.
+	//
+	// NO CLIENT-SIDE CLAMP IS APPLIED. The server clamps every scan at its own
+	// per-request ceiling and reports the truncation, so clamping here would make
+	// this a second authority on the same bound. At the shipped defaults the embed
+	// ask is 500 x 20 = 10,000, which lands exactly ON that ceiling, so a fully
+	// backlogged graph WILL come back truncated. That is correct and already
+	// handled: the drain gate and idle backoff re-scan as leases complete, and the
+	// watermark is deliberately pinned to its floor for the whole drain window.
+	limit := c.cfg.SummaryLeaseSizeOrDefault() * c.cfg.SummaryWorkersOrDefault()
 	if axis == "embed" {
-		limit = c.cfg.EmbedBatchSizeOrDefault() * c.cfg.EmbedWorkersOrDefault()
+		limit = c.cfg.EmbedLeaseSizeOrDefault() * c.cfg.EmbedWorkersOrDefault()
 	}
 	cachedGen := last.Load()
 
@@ -70,23 +98,44 @@ func (c *collector) discover(ctx context.Context, axis string, last *atomic.Uint
 			snapGen = embedGen
 		}
 		if ok && snapGen == cachedGen {
-			return nil, nil
+			return nil, true, nil
 		}
 	}
 
 	// Phase-2 detail fetch: the gen advanced (or is unknown / mid-drain) — pull the
 	// gap items via the EXISTING PipelineScan. last_seen_gen is still passed so the
 	// server's own cheap-tick short-circuit stays a backstop.
-	items, gen, err := scanGaps(ctx, c.client, c.gt, c.name, axis, limit, cachedGen)
+	items, gen, gapSetComplete, err := scanGaps(ctx, c.client, c.gt, c.name, axis, limit, cachedGen, c.cfg.EmbedIdentity)
 	if err != nil {
 		// Surface the error to the caller so the loop can apply scan-error
-		// backoff (#3) rather than re-firing at the base cadence.
-		return nil, err
+		// backoff (#3) rather than re-firing at the base cadence. NOT complete: a
+		// failed scan measured nothing.
+		return nil, false, err
 	}
 	if gen != 0 && gen == cachedGen && len(items) == 0 {
-		return nil, nil
+		// The server's own cheap-tick backstop fired and served its empty page with
+		// gap_set_complete already set; pass it through rather than re-deriving it.
+		return nil, gapSetComplete, nil
 	}
-	if len(items) == 0 {
+	// THE WATERMARK ADVANCES ONLY ON A COMPLETE EMPTY PAGE, and the second conjunct
+	// is what makes every downstream claim about this watermark true.
+	//
+	// AN EMPTY PAGE IS NOT EVIDENCE OF A DRAINED AXIS. It is also what a scan
+	// returns when an arm's statement FAILED — the summary leaf arm logs and returns
+	// no rows with NO error reaching this client, so the failure is invisible here —
+	// and what a window filled entirely with rows the server's Go gate refused
+	// returns. Advancing on either latches this axis to a generation nothing has
+	// actually drained.
+	//
+	// AND THE LATCH IS THEN SELF-CONFIRMING ON BOTH SIDES OF THE WIRE. The zero-RPC
+	// cheap tick above returns complete when the snapshot gen equals this watermark,
+	// and the server's own short-circuit returns complete when last_seen_gen equals
+	// its dirty gen. Neither re-measures anything; both are reading back the claim
+	// this line made. So an advance on an incomplete page does not merely delay a
+	// scan — it manufactures a durable "this axis has no work left" out of a page
+	// that measured nothing, which is exactly the false quiescence the flag exists
+	// to prevent.
+	if len(items) == 0 && gapSetComplete {
 		last.Store(gen)
 	}
 	if len(items) > 0 {
@@ -97,5 +146,5 @@ func (c *collector) discover(ctx context.Context, axis string, last *atomic.Uint
 		// source layer can be compared against the writeback target.
 		debugLogGapItems(axis, items)
 	}
-	return items, nil
+	return items, gapSetComplete, nil
 }

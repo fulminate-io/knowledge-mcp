@@ -92,9 +92,37 @@ func executeQuery(ctx context.Context, caller GraphCaller, payload map[string]an
 // both backends), NOT in the backend's default order as before — consumers must
 // not depend on the previous ordering.
 func FetchNodesByType(ctx context.Context, caller GraphCaller, graphType kgtypes.GraphType, name string, nodeType kgtypes.NodeType) ([]*knowledgev1.Node, error) {
+	return FetchNodesByTypeMeta(ctx, caller, graphType, name, nodeType, nil)
+}
+
+// FetchNodesByTypeMeta is FetchNodesByType narrowed by a metadata filter, drained
+// through the identical bounded keyset walk.
+//
+// THE FILTER IS EVALUATED SERVER-SIDE, which is the whole reason this exists as a
+// fetch variant rather than a caller-side loop over FetchNodesByType's result. A
+// caller that drained everything and filtered in Go would read the entire graph on
+// every scoped scan, and the narrowing would silently stop bounding anything as
+// the corpus grew.
+//
+// meta lowers exactly as the query tool's `meta` param does: value "*" means the
+// key is present with any value, anything else is equality. An empty or nil map
+// adds no predicate at all, which is why FetchNodesByType can delegate here
+// without changing its own behavior.
+//
+// THE COMPILE ARM IS THE SAME ONE. compile_query.go's `a.Type != ""` case carries
+// node_type, the metadata predicates AND after_id together, so narrowing does not
+// cost the keyset cursor — a filter that forced a different arm would silently
+// drop the cursor and page in backend order.
+func FetchNodesByTypeMeta(
+	ctx context.Context, caller GraphCaller, graphType kgtypes.GraphType,
+	name string, nodeType kgtypes.NodeType, meta map[string]string,
+) ([]*knowledgev1.Node, error) {
 	return paging.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
 		payload := scopePayload(graphType, name)
 		payload["type"] = string(nodeType)
+		if len(meta) > 0 {
+			payload["meta"] = meta
+		}
 		payload["limit"] = paging.BrowsePageSize
 		// The key is present on EVERY page including the first, where the value is
 		// the empty string: presence, not emptiness, selects the keyset browse. An

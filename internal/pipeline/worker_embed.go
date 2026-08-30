@@ -68,7 +68,7 @@ func runEmbedWorkerBatch(ctx context.Context, p *Pipeline, batch []EmbedWork) {
 
 	groups := groupEmbedByGraph(batch)
 	for key, items := range groups {
-		processEmbedGroup(ctx, p, key, items)
+		processEmbedLeaseGroup(ctx, p, key, items)
 	}
 }
 
@@ -106,10 +106,23 @@ func groupEmbedByGraph(batch []EmbedWork) map[groupKey][]EmbedWork {
 	return groups
 }
 
-// processEmbedGroup handles one (gt, name) embed group: fetches nodes
-// via wire, composes EmbedText, calls the embedder, writes binary vectors
-// via ONE mutate(update_batch) RPC.
-func processEmbedGroup(ctx context.Context, p *Pipeline, key groupKey, items []EmbedWork) {
+// embedGroupOnce handles ONE embedder call's worth of a (gt, name) embed group:
+// it composes EmbedText, crosses the three provider gates, calls the embedder,
+// and RETURNS what succeeded — the per-id vectors and the ids that were sent —
+// for its caller to write back.
+//
+// IT DOES NOT WRITE. The writeback is the caller's, because one lease is several
+// of these calls and the whole point is that they share ONE writeback
+// transaction, hence ONE acquisition of the graph's advisory write mutex. Every
+// early-return path yields nils, which is how a failed call contributes nothing
+// to the merge without aborting its siblings.
+//
+// THE THREE GATES BELONG HERE AND NOT IN THE LEASE LOOP. The RPM pacer's
+// contract is one wait per EMBEDDER DISPATCH, and the circuit breaker's window
+// counts dispatch outcomes. One call through this function is one dispatch. A
+// lease loop that gated once and then made five calls would make the pacer
+// undercount fivefold and let the breaker see one event where five occurred.
+func embedGroupOnce(ctx context.Context, p *Pipeline, key groupKey, items []EmbedWork) (map[string][]byte, []string) {
 	gk := key.Key
 	be := backendOr(p, key.Backend)
 	slog.Debug("pipeline.embed: processing group", "graph_type", gk.GraphType, "graph_name", gk.GraphName, "items", len(items))
@@ -124,14 +137,14 @@ func processEmbedGroup(ctx context.Context, p *Pipeline, key groupKey, items []E
 	if p.embedder == nil {
 		slog.Debug("pipeline.embed: no embedder configured — group skipped (nodes stay embed-eligible)",
 			"graph_type", gk.GraphType, "graph_name", gk.GraphName, "items", len(items))
-		return
+		return nil, nil
 	}
 
 	embedItems, idsForMarker := composeEmbedItems(ctx, p, be, gk, items)
 	if len(embedItems) == 0 {
 		slog.Debug("pipeline.embed: no items produced — batch skipped",
 			"graph_type", gk.GraphType, "graph_name", gk.GraphName, "items", len(items))
-		return
+		return nil, nil
 	}
 
 	// Block here while the EMBED circuit breaker is latched paused (a prior
@@ -152,7 +165,7 @@ func processEmbedGroup(ctx context.Context, p *Pipeline, key groupKey, items []E
 		slog.Warn("pipeline.embed: embedder call failed",
 			"graph_type", gk.GraphType, "graph_name", gk.GraphName, "items", len(embedItems), "error", err)
 		handleEmbedderError(ctx, p, be, gk, idsForMarker, err)
-		return
+		return nil, nil
 	}
 	// A successful embed call zeroes the EMBED axis's zero-success-window counter
 	// (and clears its per-class tally) on its own breaker; the summary axis is
@@ -161,9 +174,7 @@ func processEmbedGroup(ctx context.Context, p *Pipeline, key groupKey, items []E
 	p.backoff.ok()
 	slog.Debug("pipeline.embed: embedder returned",
 		"items", len(embedItems), "vectors", len(vectors), "graph_type", gk.GraphType, "graph_name", gk.GraphName)
-	writeEmbedResults(ctx, p, be, gk, vectors, idsForMarker, items)
-	slog.Debug("pipeline.embed: writeEmbedResults done",
-		"items", len(embedItems), "graph_type", gk.GraphType, "graph_name", gk.GraphName)
+	return vectors, idsForMarker
 }
 
 // composeEmbedItems reads the SERVER-COMPOSED EmbedText from each EmbedWork
@@ -196,12 +207,25 @@ func composeEmbedItems(ctx context.Context, p *Pipeline, be WireClient, key grap
 
 // markStuckEmbedItems stamps MetaKeyEmbedFailureReason on every node whose
 // SERVER-COMPOSED EmbedText was whitespace-only — eligibility-loop circuit
-// breaker. The empty-text detection now reads the server-supplied EmbedText
+// breaker. The empty-text detection reads the server-supplied EmbedText
 // (EmbedWork.EmbedText) rather than composing locally; the durable marker +
 // embedFail metric behavior is unchanged. Issued as ONE mutate(update_batch)
 // RPC scoped to (graphType, graphName).
+//
+// THE REASON LITERAL NAMES HYDRATION, AND THE CHANGE OF WORDING IS LOAD-BEARING
+// RATHER THAN COSMETIC. A superseded build composed embed text from a node's raw
+// proto fields, so a node whose text had merely been EVICTED to the cold blob
+// arrived here empty and was stamped terminally though it had text all along.
+// The server now hydrates before composing, which makes whitespace-only text
+// mean the node genuinely has none — a different claim, so it gets a different
+// string. The server-side repair that retires the superseded markers matches the
+// OLD literal exactly (store.coldStarvedEmbedReason), and it is this rename that
+// makes the population it drains finite: nothing can write the old string again.
+// Restoring the previous wording would make that repair re-clear
+// genuinely-failed nodes on every process start.
 func markStuckEmbedItems(ctx context.Context, p *Pipeline, be WireClient, key graphKey, ids []string) {
-	const reason = "embed-text-empty: ShouldEmbed=true but EmbedText returned whitespace-only"
+	const reason = "embed-text-empty: ShouldEmbed=true but the server-composed embed text was " +
+		"whitespace-only after cold-text hydration"
 	markEmbedItemsWithReason(ctx, p, be, key, ids, reason)
 }
 
@@ -235,10 +259,16 @@ func markEmbedItemsWithReason(ctx context.Context, p *Pipeline, be WireClient, k
 
 // writeEmbedResults writes each id's binary vector + clears the embed
 // failure marker via ONE mutate(update_batch) RPC. ids carries the
-// per-position node-ID order matching the embedder's output map keys. work is the
-// originating EmbedWork slice — carried through so the ship seam can build BM25
-// Documents from each item's server-composed Bm25Fields.
-func writeEmbedResults(ctx context.Context, p *Pipeline, be WireClient, key graphKey, vectors map[string][]byte, ids []string, work []EmbedWork) {
+// per-position node-ID order matching the embedder's output map keys.
+//
+// EVERY ITEM STATES THE IDENTITY THE VECTORS WERE PRODUCED UNDER. This is the
+// only writeback in the client that carries vectors, so it is the only one that
+// states an identity — and stating it is what lets a graph with no record
+// acquire one: the server records a first-embed identity only when the batch
+// OFFERS one, and refuses a vector-bearing write into a graph whose shape it
+// cannot resolve. A batch is single-graph and single-embedder, so one identity
+// rides every item rather than a per-item resolution of the same fact.
+func writeEmbedResults(ctx context.Context, p *Pipeline, be WireClient, key graphKey, vectors map[string][]byte, ids []string) {
 	items := make([]updateBatchItem, 0, len(vectors))
 	for _, id := range ids {
 		v, ok := vectors[id]
@@ -251,6 +281,7 @@ func writeEmbedResults(ctx context.Context, p *Pipeline, be WireClient, key grap
 			Metadata: map[string]string{
 				kgtypes.MetaKeyEmbedFailureReason: "",
 			},
+			EmbedIdentity: p.cfg.EmbedIdentity,
 		})
 	}
 	if len(items) == 0 {
@@ -272,28 +303,47 @@ func writeEmbedResults(ctx context.Context, p *Pipeline, be WireClient, key grap
 		p.metrics.embedOK()
 	}
 
-	// BEST-EFFORT: also build + ship client-side segments from the freshly-embedded
-	// binary vectors (HNSW) AND the server-composed per-field text (BM25) — the
-	// client builds + ships. A failure here NEVER fails embed writeback: server-side
-	// search is retired, so these client segments ARE the search index, but a
-	// dropped ship only leaves those nodes briefly unsearchable until the next ship
-	// — writeback liveness wins. WARN only.
-	shipEmbedSegments(ctx, p, be, key, vectors, ids, work)
+	// BEST-EFFORT: also build + ship client-side HNSW segments from the
+	// freshly-embedded binary vectors. A failure here NEVER fails embed writeback:
+	// server-side search is retired, so these client segments ARE the vector index,
+	// but a dropped ship only leaves those nodes briefly unsearchable until the next
+	// ship — writeback liveness wins. WARN only.
+	shipEmbedSegments(ctx, p, be, key, vectors, ids)
 }
 
 // shipEmbedSegments feeds the just-written binary vectors into the per-graph HNSW
-// engine and the server-composed per-field BM25 text into the per-graph BM25 engine,
-// shipping any newly-sealed segments of BOTH formats through the ONE dual-format
-// Manager. No-op when no segment manager is wired (test fakes). Best-effort: any
-// error is logged at WARN and swallowed — but the ids it dropped are STAMPED with
-// a durable marker so the drop is attributable afterwards instead of surviving
-// only as a log line.
-func shipEmbedSegments(ctx context.Context, p *Pipeline, be WireClient, key graphKey, vectors map[string][]byte, ids []string, work []EmbedWork) {
+// engine, shipping any newly-sealed vector segments through the Manager. No-op when
+// no segment manager is wired (test fakes). Best-effort: any error is logged at WARN
+// and swallowed — but the ids it dropped are STAMPED with a durable marker so the
+// drop is attributable afterwards instead of surviving only as a log line.
+//
+// THE EMBED AXIS SHIPS VECTORS ONLY. BM25 documents are produced by the BM25 arm off
+// the CorpusDelta feed (collector_bm25.go), which is the decoupling this ticket
+// exists for: a node's BM25 document is no longer a side effect of embedding it.
+//
+// THE THIN-DOC SELF-HEAL PREMISE IS WHAT MAKES REMOVING THE BM25 LEG SAFE, and it is
+// cited here rather than left with the deleted code because it is the property a
+// future reader will want and no longer has a home. The retired leg indexed a
+// code-leaf that embedded via Content before its summary/keywords landed, carrying a
+// thin (possibly summary-less) field map; that was ACCEPTABLE only because the node
+// re-shipped once re-summarization bumped the embed dirty-gen, so a thin document
+// under-indexed one node for a brief window rather than forever.
+//
+// THAT PREMISE RE-DERIVES FOR FREE UNDER THE NEW PRODUCER, on a different mechanism:
+// the CorpusDelta feed is windowed on updated_at, and a summary/keywords writeback
+// moves updated_at because ContentChanged treats every non-metadata field as content
+// (graph_content_changed.go's derivedDataMetaKeys names only the three failure
+// markers). So the re-summarized node re-rides the feed and re-ships its full
+// document without the embed axis being involved at all. Executed, not reasoned:
+// store's TestUpdatedAtRuling_OSSContentWriteMoves pins that a Summary write advances
+// updated_at, and TestUpdatedAtRuling_OSSMarkerTransitionPreserved pins that a marker
+// clear does NOT — which is also what keeps this arm's own ship-failure stamp from
+// self-triggering an endless re-emit.
+func shipEmbedSegments(ctx context.Context, p *Pipeline, be WireClient, key graphKey, vectors map[string][]byte, ids []string) {
 	if p.segmentMgr == nil {
 		return
 	}
 	shipEmbedHNSW(ctx, p, be, key, vectors, ids)
-	shipEmbedBM25(ctx, p, be, key, vectors, work)
 }
 
 // stampShipFailure records, on every id a swallowed ship dropped, WHY it was
@@ -324,7 +374,10 @@ func stampShipFailure(ctx context.Context, be WireClient, key graphKey, docs []s
 
 // shipEmbedHNSW builds + ships the HNSW segment from the binary vectors.
 func shipEmbedHNSW(ctx context.Context, p *Pipeline, be WireClient, key graphKey, vectors map[string][]byte, ids []string) {
-	docs := BuildHNSWDocuments(vectors, ids)
+	// Tagged with the representation THIS pipeline's embedder produced these
+	// bytes in, so the sealed segment's dtype is the vectors' own rather than one
+	// the format assumed.
+	docs := BuildHNSWDocuments(vectors, ids, p.embedDtype)
 	if len(docs) == 0 {
 		return
 	}
@@ -334,35 +387,6 @@ func shipEmbedHNSW(ctx context.Context, p *Pipeline, be WireClient, key graphKey
 		// The reason names the FORMAT as well as the error, so the two ship sites
 		// are distinguishable from the marker alone.
 		stampShipFailure(ctx, be, key, docs, fmt.Sprintf("hnsw ship dropped: %v", err))
-	}
-}
-
-// shipEmbedBM25 builds + ships the BM25 segment from each item's server-composed
-// Bm25Fields. Only items that BOTH got embedded (a vector landed
-// — so the node is genuinely live) AND carry non-empty fields are indexed. A
-// code-leaf embedded via Content before its summary/keywords land carries a thin
-// (possibly summary-less) Bm25Fields — that is ACCEPTABLE: it self-heals when
-// re-summarization bumps the embed dirty-gen and re-ships, so a transient thin
-// segment only under-indexes that one node for the brief window until it re-ships.
-func shipEmbedBM25(ctx context.Context, p *Pipeline, be WireClient, key graphKey, vectors map[string][]byte, work []EmbedWork) {
-	// Map []EmbedWork → []SegmentDoc, preserving the "only index nodes that
-	// actually embedded this tick" vector-presence gate before delegating the
-	// doc assembly to the shared builder.
-	segDocs := make([]SegmentDoc, 0, len(work))
-	for _, w := range work {
-		if v, ok := vectors[w.NodeID]; !ok || len(v) == 0 {
-			continue // only index nodes that actually embedded this tick
-		}
-		segDocs = append(segDocs, SegmentDoc{NodeID: w.NodeID, Fields: w.Bm25Fields})
-	}
-	docs := BuildBM25Documents(segDocs)
-	if len(docs) == 0 {
-		return
-	}
-	if err := p.segmentMgr.AddAndMarkDirtyFields(ctx, key.GraphType, key.GraphName, docs); err != nil {
-		slog.Warn("pipeline.embed: client BM25 build+ship failed (additive/best-effort; server BM25 path authoritative)",
-			"error", err, "docs", len(docs), "graph_type", key.GraphType, "graph_name", key.GraphName)
-		stampShipFailure(ctx, be, key, docs, fmt.Sprintf("bm25 ship dropped: %v", err))
 	}
 }
 

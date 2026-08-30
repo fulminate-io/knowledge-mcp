@@ -65,8 +65,7 @@ func TestReEmitKeepsPartitionsPure(t *testing.T) {
 	)
 	require.Equal(t, buckets, searchengine.BucketCountFor(corpus), "layout count")
 
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	gt, name := kgtypes.GraphCode, "purity"
 
 	docs := bucketFixtureDocs(t, corpus, buckets)
@@ -117,8 +116,7 @@ func TestReEmitPreservesAliasedCorpus(t *testing.T) {
 	ctx := context.Background()
 	const corpus = 30 // FIXTURE CONSTANT — one partition's worth, so the rebuild aliases
 
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	gt, name := kgtypes.GraphCode, "alias"
 
 	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, vecContentDocs(corpus)))
@@ -144,8 +142,7 @@ func TestReEmitPreservesAliasedFieldCorpus(t *testing.T) {
 	ctx := context.Background()
 	const corpus = 30 // FIXTURE CONSTANT
 
-	_, gc := newSegmentHarness(t)
-	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
+	mgr := closeOnCleanup(t, NewManager(t.TempDir(), 0))
 	gt, name := kgtypes.GraphCode, "alias-fields"
 
 	require.NoError(t, mgr.AddAndMarkDirtyFields(ctx, gt, name, bm25FieldDocs(corpus)))
