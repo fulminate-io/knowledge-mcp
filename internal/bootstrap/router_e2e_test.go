@@ -195,13 +195,18 @@ func buildE2EClient(local *graphclient.GraphClient, cloudURL string, store auth.
 	}
 }
 
-// closeRouterOnCleanup drops the pooled connections of a router built by the two
+// closeRouterOnCleanup closes the connections of a router built by the two
 // helpers above, INCLUDING the cloud client the Router mints lazily and which no
 // caller can otherwise reach. Without it each router pins an HTTP/2 serve goroutine
 // on the fake cloud engine for the rest of the test binary.
+//
+// Router.Close rather than Router.CloseIdleConnections: a pool-level release
+// reaches only connections the transport already calls idle, so a harness that
+// asserted and returned without waiting for the transport to retire its last
+// stream leaves the connection — and that serve goroutine — behind.
 func closeRouterOnCleanup(t *testing.T, c *client) *client {
 	t.Helper()
-	t.Cleanup(c.router.CloseIdleConnections)
+	t.Cleanup(c.router.Close)
 	return c
 }
 
@@ -262,7 +267,7 @@ func TestRouterE2E_FourStates_PlusSwapAndSyncAndUnreachable(t *testing.T) {
 		localURL, localEng := startCountingEngine(t)
 		cloudURL, cloudEng := startCountingEngine(t)
 		localGC := graphclient.NewGraphClientForURL(localURL)
-		t.Cleanup(localGC.CloseIdleConnections)
+		t.Cleanup(localGC.Close)
 		store := newFakeAuthStore() // empty
 		c := closeRouterOnCleanup(t, buildE2EClient(localGC, cloudURL, store, time.Hour))
 
@@ -276,7 +281,7 @@ func TestRouterE2E_FourStates_PlusSwapAndSyncAndUnreachable(t *testing.T) {
 		localURL, localEng := startCountingEngine(t)
 		cloudURL, cloudEng := startCountingEngine(t)
 		localGC := graphclient.NewGraphClientForURL(localURL)
-		t.Cleanup(localGC.CloseIdleConnections)
+		t.Cleanup(localGC.Close)
 		store := newFakeAuthStore()
 		require.NoError(t, store.Set(ctx, auth.KeyRefreshToken, "frt-stub"))
 		c := closeRouterOnCleanup(t, buildE2EClient(localGC, cloudURL, store, time.Hour))
@@ -302,7 +307,7 @@ func TestRouterE2E_FourStates_PlusSwapAndSyncAndUnreachable(t *testing.T) {
 		localURL, localEng := startCountingEngine(t)
 		cloudURL, cloudEng := startCountingEngine(t)
 		localGC := graphclient.NewGraphClientForURL(localURL)
-		t.Cleanup(localGC.CloseIdleConnections)
+		t.Cleanup(localGC.Close)
 		store := newFakeAuthStore() // start logged out
 		c := closeRouterOnCleanup(t, buildE2EClient(localGC, cloudURL, store, time.Millisecond))
 
@@ -337,7 +342,7 @@ func TestRouterE2E_FourStates_PlusSwapAndSyncAndUnreachable(t *testing.T) {
 		localURL, localEng := startCountingEngine(t)
 		cloudURL, cloudEng := startCountingEngine(t)
 		localGC := graphclient.NewGraphClientForURL(localURL)
-		t.Cleanup(localGC.CloseIdleConnections)
+		t.Cleanup(localGC.Close)
 		store := newFakeAuthStore()
 		require.NoError(t, store.Set(ctx, auth.KeyRefreshToken, "frt-stub"))
 		c := closeRouterOnCleanup(t, buildE2EClient(localGC, cloudURL, store, time.Hour))
@@ -358,7 +363,7 @@ func TestRouterE2E_FourStates_PlusSwapAndSyncAndUnreachable(t *testing.T) {
 		// renders the actionable "local server unreachable" message via
 		// renderEngineError's Branch 2 (transport-unreachable).
 		localGC := graphclient.NewGraphClientForURL("http://127.0.0.1:1")
-		t.Cleanup(localGC.CloseIdleConnections)
+		t.Cleanup(localGC.Close)
 		store := newFakeAuthStore() // empty → not logged in
 		c := closeRouterOnCleanup(t, buildE2EClient(localGC, "http://cloud.invalid", store, time.Hour))
 
@@ -392,7 +397,7 @@ func TestConstructClient_Coexistence(t *testing.T) {
 		t.Helper()
 		cfg.LocalDialer = func(int) *graphclient.GraphClient {
 			gc := graphclient.NewGraphClientForURL("http://local.invalid")
-			t.Cleanup(gc.CloseIdleConnections)
+			t.Cleanup(gc.Close)
 			return gc
 		}
 		origStore := newAuthStoreFn
@@ -421,7 +426,7 @@ func TestConstructClient_Coexistence(t *testing.T) {
 		localURL, localEng := startCountingEngine(t)
 		cloudURL, cloudEng := startCountingEngine(t)
 		localGC := graphclient.NewGraphClientForURL(localURL)
-		t.Cleanup(localGC.CloseIdleConnections)
+		t.Cleanup(localGC.Close)
 		c := closeRouterOnCleanup(t, buildE2EClientMachineAuth(localGC, cloudURL, newFakeAuthStore())) // empty keychain
 
 		searchArgs := json.RawMessage(`{"query":"x","graph":"knowledge"}`)

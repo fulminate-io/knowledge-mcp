@@ -76,7 +76,11 @@ func codexAssetDrift(dest codexDest) (missing, drift int, ok bool) {
 		if err != nil {
 			return err
 		}
-		want, err := codexContent(p, raw)
+		// dest is THIS walk's own resolved destination, never a constant:
+		// codexContent renders dest.skills into each translated agent's
+		// preamble, so a different root here would compute a want that no
+		// install could ever produce and report permanent phantom drift.
+		want, err := codexContent(dest, p, raw)
 		if err != nil {
 			return err
 		}

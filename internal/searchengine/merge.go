@@ -1,6 +1,10 @@
 package searchengine
 
-import "time"
+import (
+	"errors"
+	"log/slog"
+	"time"
+)
 
 // Metrics is a point-in-time snapshot of engine health.
 type Metrics struct {
@@ -120,6 +124,28 @@ func (e *SegmentedIndex[Q, S]) doMerge(chosen []*segmentEntry[Q, S]) {
 
 	entry, err := e.mergeEntry(segs, accept)
 	if err != nil {
+		// A FAILED MERGE USED TO VANISH HERE, and a CONTAINED corruption vanishing
+		// is worse than one that crashed: the merge loop re-selects the same
+		// constituents on its next tick, re-reads the same bad bytes, and repeats
+		// forever with nothing in the log to say why the corpus never consolidates.
+		// Containment turned a loud crash into an invisible spin.
+		//
+		// The corruption arm is routed to the OWNER as well as to the log, because
+		// the owner is what quarantines the file; without that the loop keeps its
+		// perfect record of failure and no disposition is ever taken. A merge that
+		// failed for any other reason — a full disk, a mapping refusal — is logged
+		// and left alone, because it is not a segment defect and there is nothing
+		// to quarantine.
+		var corrupt *CorruptSegmentError
+		if errors.As(err, &corrupt) {
+			slog.Error("segment merge aborted by a corrupt constituent",
+				"error", err,
+				"constituents", len(segs),
+				"note", "these segments cannot consolidate until the corrupt one is quarantined and rebuilt")
+			e.reportCorrupt(corrupt)
+			return
+		}
+		slog.Warn("segment merge failed", "error", err, "constituents", len(segs))
 		return
 	}
 	// THE CONSOLIDATED SEGMENT REMEMBERS WHAT IT REPLACED, in its own STORED BYTES

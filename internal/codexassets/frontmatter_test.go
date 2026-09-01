@@ -68,7 +68,7 @@ func TestParseFrontmatter_PlannerAgent(t *testing.T) {
 }
 
 // a file with no leading --- returns ok=false and
-// body==full content (mirrors parseInstructionFrontmatter fallthrough).
+// body==full content (the parser's documented tolerant fallthrough).
 func TestParseFrontmatter_NoFrontmatter(t *testing.T) {
 	content := "# Just a heading\n\nSome body text with no frontmatter.\n"
 	fm, body, ok := parseFrontmatter(content)

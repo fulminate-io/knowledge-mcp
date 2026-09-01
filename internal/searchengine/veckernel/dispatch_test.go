@@ -357,8 +357,7 @@ func TestSelectArmVocabulary(t *testing.T) {
 			foreign = TierNEON
 		}
 		_, err := selectArm(foreign, tiers)
-		var ube *UnbuiltTierError
-		if !errors.As(err, &ube) {
+		if _, ok := errors.AsType[*UnbuiltTierError](err); !ok {
 			t.Fatalf("forcing %q on %s must be an *UnbuiltTierError, got %T: %v",
 				foreign, runtime.GOARCH, err, err)
 		}

@@ -117,15 +117,30 @@ func MapInternalPath(internal string) (mirror string, class PathClass, err error
 }
 
 // isClaudeAsset reports whether p is one of the agent or skill definitions the
-// sync script copies at identical paths. These are globs rather than fixed
-// names, so they are matched here instead of sitting in the rule table.
+// sync script copies at identical paths. The first two are globs rather than
+// fixed names, so they are matched here instead of sitting in the rule table;
+// the governance file is a single FLAT file at the root of the skills tree and
+// is matched by equality.
+//
+// The governance arm is not redundant with the skills glob: "*" in path.Match
+// does not span separators, so ".claude/skills/*/SKILL.md" matches only files
+// one directory down. Equality rather than a ".claude/skills/*.md" glob is
+// deliberate — the sync script ships exactly this one flat file, and a
+// directory-wide glob would classify an unshipped sibling as mapped.
 func isClaudeAsset(p string) bool {
+	if p == claudeGovernancePath {
+		return true
+	}
 	if ok, _ := path.Match(".claude/agents/*.md", p); ok {
 		return true
 	}
 	ok, _ := path.Match(".claude/skills/*/SKILL.md", p)
 	return ok
 }
+
+// claudeGovernancePath is the flat cross-agent governance file, shipped at an
+// identical path by the sync script's own named cp line.
+const claudeGovernancePath = ".claude/skills/GOVERNANCE.md"
 
 // checkRepoRelative enforces the repo-relative precondition. Both messages name
 // the offending value and say what the accepted vocabulary is, so a caller

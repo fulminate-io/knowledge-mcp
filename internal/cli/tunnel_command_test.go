@@ -127,8 +127,7 @@ func TestRunTunnel_CommandMode_ExitErrorPropagates(t *testing.T) {
 	// A real *exec.ExitError with a known non-zero code (mirrors ssh forwarding a
 	// remote command's status).
 	exitErr := exec.Command("sh", "-c", "exit 7").Run()
-	var want *exec.ExitError
-	if !errors.As(exitErr, &want) {
+	if _, ok := errors.AsType[*exec.ExitError](exitErr); !ok {
 		t.Fatalf("setup: expected an *exec.ExitError, got %T", exitErr)
 	}
 

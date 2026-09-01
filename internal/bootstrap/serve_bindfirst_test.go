@@ -35,7 +35,7 @@ import (
 func TestServeBindFirst_EngineOpWorks_RuntimeOpsGated(t *testing.T) {
 	localURL, eng := startCountingEngine(t)
 	local := graphclient.NewGraphClientForURL(localURL)
-	t.Cleanup(local.CloseIdleConnections)
+	t.Cleanup(local.Close)
 	// Logged-out client → router dispatches to the local fake engine. Readiness
 	// flags default false (zero value) — the bind-first wiring window.
 	c := closeRouterOnCleanup(t, buildE2EClient(local, "http://cloud.invalid", newFakeAuthStore(), 0))

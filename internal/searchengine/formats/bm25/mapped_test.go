@@ -192,12 +192,27 @@ func TestCorruptTermOffsetIsRefusedNotRead(t *testing.T) {
 
 			seg, err := openSegmentV2(bad)
 			require.NoError(t, err, "open is lazy by design and does not walk rows")
-			require.PanicsWithValue(t,
-				fmt.Sprintf("bm25: docFreq term spans [%d,%d) in a %d-byte blob",
-					int(binary.LittleEndian.Uint32(bad[rows:])),
-					int(binary.LittleEndian.Uint32(bad[rows:]))+len(bad)*4, len(bad)),
-				func() { seg.docFreqEach(func(string, int64) {}) },
-				"a row pointing outside the blob must be refused loudly, not read")
+			// THE REFUSAL IS NOW A TYPED VALUE, NOT A STRING, and the type is the
+			// load-bearing half. The message is unchanged, but it is carried by a
+			// *searchengine.CorruptSegmentError so the engine's per-segment
+			// boundary can contain it and quarantine the file instead of the
+			// process dying — a bare string panic is indistinguishable from a
+			// logic bug and cannot be recovered without swallowing real defects.
+			wantDetail := fmt.Sprintf("bm25: docFreq term spans [%d,%d) in a %d-byte blob",
+				int(binary.LittleEndian.Uint32(bad[rows:])),
+				int(binary.LittleEndian.Uint32(bad[rows:]))+len(bad)*4, len(bad))
+			raised := func() any {
+				var r any
+				func() {
+					defer func() { r = recover() }()
+					seg.docFreqEach(func(string, int64) {})
+				}()
+				return r
+			}()
+			require.NotNil(t, raised, "a row pointing outside the blob must be refused loudly, not read")
+			ce, ok := raised.(*searchengine.CorruptSegmentError)
+			require.Truef(t, ok, "refusal must be a *searchengine.CorruptSegmentError, got %T", raised)
+			require.Equal(t, wantDetail, ce.Detail)
 		})
 	}
 }

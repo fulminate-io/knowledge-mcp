@@ -210,100 +210,10 @@ Decisions surfacing during implementation = upstream artifacts inadequate; route
 
 ## Inline smoke protocol (mandatory for live-behavior claims)
 
-Catches the defect classes invisible in a green build — silent acceptance,
-proxy divergence, lifecycle windows — by exercising the running system the way
-a caller does. Runs after any rebuild or restart of a serving component, after
-a batch of changes lands, during lulls (waiting on a build, a lane, a review),
-and after ANY fix whose claim is about live behavior, regardless of unit-test
-color. The concrete operations are whatever the system under test serves; the
-protocol is the shape.
+MOVED: the full protocol is the action rulebook
+`.claude/skills/run-a-smoke-test/SKILL.md` — READ IT (and stamp the read)
+before any live-behavior claim. The section below is retired; kept headings
+route there.
 
-**Minimum battery (post-rebuild):**
-1. Read paths: exercise each primary read surface once against content whose
-   expected result is known in advance.
-2. Write round-trip: create a record through the public write path, then read
-   it back BY ITS IDENTIFIER through a separate read path and confirm the
-   specific field written — the write's success response is not the readback.
-3. Processing observation: confirm in the serving component's own output
-   (logs, metrics, traces) that the stages you expect actually fired for the
-   operation you just performed. An absent stage where sibling stages are
-   present is a finding; absence where NOTHING was recorded is a broken probe.
-4. Record what each step is a proxy FOR. A read returning your record proves
-   the serving state contains it — not that every processing stage ran;
-   retrieval and derivation are different layers.
+<law-pointer>Fallbacks-require-express-user-approval and deferral-is-a-user-decision are governance laws — full text in `.claude/skills/GOVERNANCE.md`, read at session start. They bind here exactly as written there.</law-pointer>
 
-**Deterministic-identifier lifecycle probes:** create → verify → delete →
-verify → recreate → verify, with a caller-supplied stable identifier so every
-phase is addressable. Each verify goes through BOTH the derived/indexed read
-path AND the direct by-identifier path — they can disagree, and their
-disagreement is the signal. The recreate phase is what finds lifecycle
-defects; skipping it reduces the probe to a happy-path smoke.
-
-**Probe eligibility comes first:** the probe record's type or category must be
-eligible for the derived surface being asserted against — an excluded category
-makes every phase vacuous while producing plausible output. Establish
-eligibility with a known-positive of the same category BEFORE the probe, and
-state the check in the result.
-
-**Adversarial controls:** for any check passing on a zero, an absence, or an
-equality — inject the failure, observe red, revert, observe green. A check
-never seen red has unknown discriminating power, including the battery itself.
-
-**Baseline-vs-treatment asymmetry is the signal:** run the same probe through
-two paths that SHOULD behave alike and compare. A fresh-create completing in
-seconds against a recreate that never completes localizes the defect to what
-differs; one number alone cannot distinguish slow from never. Record both.
-
-**Confound elimination before classification**, in order, one command each:
-is the running binary/build the one you think (inspect it for the change under
-test); does the record exist at all (fetch by identifier); has enough time
-passed for the mechanism you await (interval derived FROM SOURCE, not memory);
-are you observing the right instance, environment, or build flavor.
-
-**Preserved live fixtures:** when a probe reproduces a defect whose fix is
-queued, LEAVE THE FIXTURE IN PLACE and name it as that fix's acceptance
-criterion — the only artifact proving the fix works against the state that
-actually occurred.
-
-**AMBER is the third result:** verified at the storage level, NOT verified at
-the serving level. Neither green nor red; its only valid disposition is
-reporting the observed asymmetry for investigation. Declaring green on
-storage-level evidence is the failure this result exists to prevent; declaring
-red without the confound elimination above is the mirror failure.
-
-<constraint id="fallbacks-require-express-user-approval" severity="hard">
-  Fallbacks are covers for incorrect behavior. Any silently-degraded lane,
-  catch-and-continue, default-on-error, or graceful-degradation path requires
-  EXPRESS USER APPROVAL, recorded (ticket or decision) where the fallback lives —
-  no agent has discretion to classify one as legitimate. The default response to
-  an error state is to FAIL LOUDLY, naming the condition and what was dropped, at
-  the point of the mistake. CONVERGENCE TEST: a real fallback repairs the
-  condition it fires for and returns the system to its primary path; a lane that
-  can fire forever on the same cause is hiding a defect, not handling one — it
-  must be an error. An unticketed, unapproved fallback — in a plan, a design, a
-  changeset, or existing code you are changing — is a T2 finding raised to the
-  user; never wave one through, build one on your own authority, or soften one
-  to a note. Retired fallback code is REMOVED, never bypassed in place. The
-  instinct that produces fallbacks is sycophancy expressed as architecture —
-  treat your own urge to add one as the signal to raise it, not to build it.
-</constraint>
-
-<constraint id="deferral-is-a-user-decision" severity="hard">
-  Deferral is a USER decision — never yours. Never defer, postpone, descope, or
-  "leave for a follow-up" any surfaced defect, gap, or required disposition on
-  your own judgement, and never present deferral as an outcome you have chosen.
-  The only dispositions you may produce: DO the work, DISPROVE the need with
-  evidence, or SURFACE the item UNDECIDED to whoever holds the decision — with
-  the honest cost of doing it now. A brief that offers "defer" as one of your
-  answers does not make it yours. Postponed is not rejected: an item the user
-  defers stays recorded as open work, never silently dropped. Most deferral
-  impulses are work avoidance — if the item is in scope and tractable, do it.
-  COMPLETENESS IS THE DEFAULT DISPOSITION: a gap discovered in the surface under
-  work — a displayed approximation of a value the system can produce for real,
-  an unrouted capability the feature plainly needs, an unhandled reachable
-  state — is COMPLETION work. Report it as "incomplete without X; building X
-  costs Y", never as an optional extra ("available if you want it later",
-  "could be a fast-follow") — that framing inverts the decision by taxing the
-  user into demanding completeness, when incompleteness is what needs explicit
-  approval.
-</constraint>

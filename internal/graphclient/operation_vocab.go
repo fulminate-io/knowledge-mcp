@@ -104,9 +104,8 @@ const (
 	// pages the same segment_rebuild axis as OpSegmentRepair but reads ONE row rather
 	// than the corpus, and mixing it into the repair term would pollute exactly the
 	// bucket the backstop's load is measured in.
-	OpSegmentHorizonSeed   Operation = "segment.horizon_seed"
-	OpInstructionBootstrap Operation = "instruction.bootstrap"
-	OpPropagationReflect   Operation = "propagation.reflect"
+	OpSegmentHorizonSeed Operation = "segment.horizon_seed"
+	OpPropagationReflect Operation = "propagation.reflect"
 	// OpCrossGraphProbe attributes the cross-graph composer's foreign-node scan:
 	// the by-id probe issued against each loaded foreign graph in turn, plus the
 	// graph-name enumeration that feeds it. It fires while handling some other
@@ -144,7 +143,7 @@ var AllOperations = []Operation{
 	OpPipelineGenPoll, OpPipelineEmbedWriteback,
 	OpCorpusDeltaDrain, OpRebuildSegments, OpSegmentDeltaMerge,
 	OpSegmentHeal, OpSegmentReconcile, OpSegmentRepair, OpSegmentHorizonSeed,
-	OpInstructionBootstrap, OpPropagationReflect,
+	OpPropagationReflect,
 	OpCrossGraphProbe, OpPostCollectFanout,
 
 	OpToolUnknown, OpUnstamped,

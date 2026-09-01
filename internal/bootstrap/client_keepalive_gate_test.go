@@ -27,7 +27,7 @@ func TestConstructClient_KeepaliveGatedOnLogin(t *testing.T) {
 	// unused URL — no RPC is issued in this test, so it never dials.
 	dialer := func(int) *graphclient.GraphClient {
 		gc := graphclient.NewGraphClientForURL("http://local.invalid")
-		t.Cleanup(gc.CloseIdleConnections)
+		t.Cleanup(gc.Close)
 		return gc
 	}
 

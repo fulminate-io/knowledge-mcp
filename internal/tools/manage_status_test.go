@@ -98,7 +98,7 @@ func closedGraphClient(t *testing.T) *graphclient.GraphClient {
 	srv := httptest.NewServer(http.NewServeMux())
 	srv.Close()
 	gc := graphclient.NewGraphClientForURL(srv.URL)
-	t.Cleanup(gc.CloseIdleConnections)
+	t.Cleanup(gc.Close)
 	return gc
 }
 

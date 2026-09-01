@@ -185,8 +185,7 @@ func (s *Set) Wake() <-chan struct{} {
 // OTHER graph is pure amplification — the propagation family, every read of which
 // targets knowledge/default. It is a SIBLING of Wake, not a replacement: Wake keeps
 // its any-graph broadcast for the consumers that legitimately react to any
-// admission (the pipeline catalog refresh, pipeline_refresh.go:77, and the deferred
-// instruction bootstrap, client_workingset.go:121).
+// admission (the pipeline catalog refresh, pipeline_refresh.go:77).
 //
 // Same registration contract as Wake: call it ONCE at wiring time and hold the
 // channel; a channel registered after an admission does not carry that admission.

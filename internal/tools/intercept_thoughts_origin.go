@@ -2,20 +2,26 @@
 
 // intercept_thoughts_origin.go — developer-origin resolution for
 // thoughts(operation:think). The origin param names the agent ROLE that
-// recorded a thought; this file resolves that role to the SEEDED AGENT NODE
-// (instruction bootstrap seeds one agent node per .claude/agents/*.md, with
-// SymbolName == the .md stem, e.g. "planner") so the think path can ride an
+// recorded a thought; this file resolves that role to an agent node whose
+// SymbolName matches (e.g. "planner") so the think path can ride an
 // agent--produced-->thought hub edge.
+//
+// THE AGENT NODES ARE user-authored. NOTHING CREATES THEM. There is no
+// seeding path in this product: a graph acquires agent nodes only if someone
+// writes them, so a graph that carries none — which is every fresh graph —
+// resolves every origin to "" and stamps origin metadata alone. That is the
+// documented degrade below, reached by the ordinary route rather than by an
+// error, and it is why this file's failure mode is silence rather than a
+// stopped write.
 //
 // Resolution is one DRAINED NodeAgent browse (clientthought.DrainThoughtBrowse,
 // NOT a capped limit:0 query — a limit<=0 browse is silently rewritten to the
-// engine's browseDefaultLimit=10, which would miss agent nodes once the seeded
-// set grows). The live graph carries DUPLICATE agent SymbolNames (multiple
-// planner/implementer/researcher nodes from repeated bootstraps), so the
-// name->id map applies the established deterministic tie-break: collect every id
-// for a name, sort.Strings, take the lowest (ids[0]). buildAgentNameToID is the
-// map builder used by the think-path resolver; it surfaces a collision count
-// (names with >1 id) for diagnostics.
+// engine's browseDefaultLimit=10, which would miss agent nodes past the tenth).
+// A graph can carry DUPLICATE agent SymbolNames (several nodes authored under
+// one role name), so the name->id map applies the established deterministic
+// tie-break: collect every id for a name, sort.Strings, take the lowest
+// (ids[0]). buildAgentNameToID is the map builder used by the think-path
+// resolver; it surfaces a collision count (names with >1 id) for diagnostics.
 //
 // This file resolves only the agent-ROLE facet (origin). The companion
 // human-author facet is stamped server-side from the writing user's identity
@@ -25,7 +31,7 @@
 // not a gap.
 //
 // Graceful degrade is the contract: an origin that resolves to no agent node
-// ("main", "orchestrator", "reviewer", or any custom value with no seeded node)
+// ("main", "orchestrator", "reviewer", or any value with no matching node)
 // returns "" — the caller stamps origin metadata only and logs at Debug, never
 // blocking the think create.
 
@@ -39,10 +45,10 @@ import (
 	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
 )
 
-// resolveOriginAgentID resolves a developer-origin role to its seeded agent
+// resolveOriginAgentID resolves a developer-origin role to the matching agent
 // node id, or "" when no agent node carries that SymbolName. An empty origin
-// normalizes to "main" (the conventional default), which has no seeded agent
-// node and so degrades to "" — metadata-only, no hub edge. The lookup is one
+// normalizes to "main" (the conventional default), which conventionally has no
+// agent node and so degrades to "" — metadata-only, no hub edge. The lookup is one
 // drained NodeAgent browse via buildAgentNameToID; on duplicate SymbolNames the
 // lowest id wins (deterministic across runs regardless of browse order).
 func resolveOriginAgentID(ctx context.Context, gc GraphCaller, origin string) string {

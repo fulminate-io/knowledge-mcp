@@ -4,8 +4,6 @@ package graphclient
 
 import (
 	"context"
-	"crypto/tls"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -68,19 +66,6 @@ func newRefuseTestServer(t *testing.T, h *refuseHandler) *httptest.Server {
 	return srv
 }
 
-// newH2CClient returns an h2c-capable http.Client matching the
-// production wiring (cleartext HTTP/2 over a loopback dial).
-func newH2CClient() *http.Client {
-	return &http.Client{
-		Transport: &http2.Transport{
-			AllowHTTP: true,
-			DialTLSContext: func(_ context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-				return net.Dial(network, addr)
-			},
-		},
-	}
-}
-
 // TestSelfHealingWire_UnarySurvivesRestart verifies that after two
 // 503 responses (simulating a brief server downtime), the production
 // unary reconnect interceptor retries past them and surfaces success
@@ -100,8 +85,7 @@ func TestSelfHealingWire_UnarySurvivesRestart(t *testing.T) {
 	flaky := &refuseHandler{inner: mux}
 	srv := newRefuseTestServer(t, flaky)
 
-	httpClient := newH2CClient()
-	t.Cleanup(httpClient.CloseIdleConnections)
+	httpClient := newOwnedH2CClient(t)
 	retry := connect.WithInterceptors(newReconnectInterceptor())
 	client := knowledgev1connect.NewHealthServiceClient(httpClient, srv.URL, retry)
 

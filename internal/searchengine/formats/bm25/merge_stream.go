@@ -124,7 +124,28 @@ func (p *mergePlan) planFieldDict(i, off int) int {
 // THE HEADER BACKPATCH NOW LANDS AFTER THE LENGTH IS KNOWN RATHER THAN BEFORE A
 // TRUNCATE, and the order is safe because v2HdrBlobLen sits in the header, far
 // below w.tail — truncating to w.tail could never have removed it.
-func streamMergeToFile(f searchengine.MergeSink, ins []*mappedSegment, accept []func(searchengine.ExternalID) bool, kind byte) (int64, error) {
+func streamMergeToFile(f searchengine.MergeSink, ins []*mappedSegment, accept []func(searchengine.ExternalID) bool, kind byte) (n int64, err error) {
+	// THE MERGE-SIDE CORRUPTION BOUNDARY. mergeWalk drains every input's
+	// dictionary, so a corrupt constituent raises here exactly as it does on the
+	// read path — and before this boundary existed that panic escaped the
+	// background merge goroutine and killed the process, which is how one bad
+	// file turned into a restart loop rather than one failed merge.
+	//
+	// This function already returns an error, so containment costs no signature
+	// change: the merge fails, the constituents stay as they are, and the owner
+	// retries or quarantines. The id is left EMPTY on purpose — mergeWalk
+	// interleaves several inputs through one heap, so at the point the violation
+	// surfaces this frame cannot say which constituent owned the cursor without
+	// asserting something it does not know. Naming the wrong file would be worse
+	// than naming none: the owner would quarantine a healthy segment.
+	var corrupt *searchengine.CorruptSegmentError
+	defer func() {
+		if corrupt != nil {
+			n, err = 0, corrupt
+		}
+	}()
+	defer searchengine.CatchCorrupt("", &corrupt)
+
 	members, remap := resolveMergeLayout(ins, accept)
 
 	termCount := make([]int, len(defaultFieldConfigs))
@@ -152,6 +173,20 @@ func streamMergeToFile(f searchengine.MergeSink, ins []*mappedSegment, accept []
 		return 0, fmt.Errorf(
 			"bm25 merge: merged segment would be %d bytes, past the %d-byte ceiling the format's u32 offsets can address; merge fewer segments at a time",
 			w.tail, v2MaxBlobBytes)
+	}
+	// THE STRUCTURAL GATE, AND IT RUNS BEFORE THE HEADER IS STAMPED. w.tail is
+	// now the length this segment will declare, so every dictionary row the
+	// emitter wrote can be checked against it with the reader's own rule. A
+	// segment that fails here is one every future reader would refuse, so it must
+	// not be published: returning before the backpatch leaves the scratch file
+	// without a valid header and the caller never takes it.
+	//
+	// This is the at-source loudness that hashing cannot provide. The incident's
+	// segment hashed correctly to its own name — the producer wrote exactly what
+	// it addressed — so the only place the disagreement is visible is here,
+	// between what the dictionary says and what the merge actually produced.
+	if verr := e.verifyWithin(w.tail); verr != nil {
+		return 0, verr
 	}
 	w.patchU32(v2HdrBlobLen, uint32(w.tail))
 	w.flushAll()

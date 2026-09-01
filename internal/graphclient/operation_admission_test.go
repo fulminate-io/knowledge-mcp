@@ -28,7 +28,7 @@ var (
 
 	// (B) Self-admission vectors — background terms that would feed the set itself.
 	wantSelfAdmission = []Operation{
-		OpPipelineEmbedWriteback, OpInstructionBootstrap,
+		OpPipelineEmbedWriteback,
 		OpSegmentReconcile, OpSegmentRepair, OpRebuildSegments, OpSegmentDeltaMerge,
 		OpSegmentHeal, OpSegmentHorizonSeed,
 		OpPipelineGapScan, OpPipelineGraphDiscovery, OpPipelineGenPoll,

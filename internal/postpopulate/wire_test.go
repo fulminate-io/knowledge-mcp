@@ -415,8 +415,7 @@ func TestBrowseNodes_RejectsNonPositiveLimit(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected a refusal, got %d nodes and no error", len(got))
 			}
-			var unbounded *UnboundedBrowseError
-			if !errors.As(err, &unbounded) {
+			if _, ok := errors.AsType[*UnboundedBrowseError](err); !ok {
 				t.Fatalf("expected a typed UnboundedBrowseError, got %T: %v", err, err)
 			}
 			if len(cc.reqs) != 0 {

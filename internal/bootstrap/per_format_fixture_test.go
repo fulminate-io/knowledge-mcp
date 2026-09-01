@@ -62,7 +62,7 @@ func evictedArmFixture(t *testing.T) (*client, kgtypes.GraphType, string, []sear
 	// segment source: there is one source and it is local.
 	authState := auth.NewAuthState(newFakeAuthStore(), time.Minute)
 	local := graphclient.NewGraphClientForURL("http://local.invalid")
-	t.Cleanup(local.CloseIdleConnections)
+	t.Cleanup(local.Close)
 	router := graphclient.NewRouter(local, "http://local.invalid", staticTokenSource{tok: "tok"}, authState)
 
 	c := &client{local: local, router: router, authState: authState}

@@ -42,7 +42,7 @@ offline or low-noise development.
 | `--embed-rpm` | `0` | Client-side LLM pipeline: max embed (Voyage) API requests per MINUTE across all embed workers; 0 = unlimited (default, preserves current 20-worker behavior). Proactive throttle for low-tier Voyage accounts — paces the opening burst so it respects the account RPM before the first 429. Companion to the reactive Retry-After backoff. |
 | `--embed-workers` | `20` | Client-side LLM pipeline: count of embed worker goroutines |
 | `--graph-storage` | `~/.knowledge/` | Directory for graph storage: the server writes its .bin here, and the client roots its segment cache under it (default ~/.knowledge/) |
-| `--headless` | `false` | Run as an embedded/supervisor-managed daemon: serve the loopback /mcp endpoint and resolve query embeddings, but skip every background content + coordination loop. Implies --no-propagation-runtime, --skip-llm-precheck and --no-llm-pipeline, and additionally disables the transcript upload loops. Still loads ~/.knowledge/config (so [credentials] resolve config-first) and still seeds .claude agents/skills. Does not change auth. |
+| `--headless` | `false` | Run as an embedded/supervisor-managed daemon: serve the loopback /mcp endpoint and resolve query embeddings, but skip every background content + coordination loop. Implies --no-propagation-runtime, --skip-llm-precheck and --no-llm-pipeline, and additionally disables the transcript upload loops. Still loads ~/.knowledge/config (so [credentials] resolve config-first). Does not change auth. |
 | `--log-file` |  | Log file path (logs to both stderr and file when set) |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
 | `--no-auth` | `false` | Force the client local-only: suppress BOTH cloud-selection triggers at the Router.pick chokepoint (machineAuth forced false WITHOUT consulting --auth-token/KNOWLEDGE_AUTH_TOKEN, and the keychain replaced with a no-op store so a live `knowledge login` refresh token reports IsLoggedIn==false). Fail-closed: no routed op can reach a fulminate.io host regardless of credentials present. Capability reduction only — the cloud endpoint is never overridden. Use for offline/OSS mode and as the safety floor for the bug-hunt harness. |
@@ -82,7 +82,7 @@ outlives any single session.
 | `--embed-rpm` | `0` | Client-side LLM pipeline: max embed (Voyage) API requests per MINUTE across all embed workers; 0 = unlimited (default, preserves current 20-worker behavior). Proactive throttle for low-tier Voyage accounts — paces the opening burst so it respects the account RPM before the first 429. Companion to the reactive Retry-After backoff. |
 | `--embed-workers` | `20` | Client-side LLM pipeline: count of embed worker goroutines |
 | `--graph-storage` | `~/.knowledge/` | Directory for graph storage: the server writes its .bin here, and the client roots its segment cache under it (default ~/.knowledge/) |
-| `--headless` | `false` | Run as an embedded/supervisor-managed daemon: serve the loopback /mcp endpoint and resolve query embeddings, but skip every background content + coordination loop. Implies --no-propagation-runtime, --skip-llm-precheck and --no-llm-pipeline, and additionally disables the transcript upload loops. Still loads ~/.knowledge/config (so [credentials] resolve config-first) and still seeds .claude agents/skills. Does not change auth. |
+| `--headless` | `false` | Run as an embedded/supervisor-managed daemon: serve the loopback /mcp endpoint and resolve query embeddings, but skip every background content + coordination loop. Implies --no-propagation-runtime, --skip-llm-precheck and --no-llm-pipeline, and additionally disables the transcript upload loops. Still loads ~/.knowledge/config (so [credentials] resolve config-first). Does not change auth. |
 | `--http-port` | `15023` | Loopback TCP port for the streamable-HTTP MCP endpoint (/mcp). Distinct from --port (the graph server). |
 | `--log-file` |  | Log file path (logs to both stderr and file when set) |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
@@ -267,7 +267,8 @@ auto-generated like the client tables above):
 | `--root` | `.` | Project root directory for collectors and the default active repo. |
 | `--port` | `15022` | TCP port for server mode. |
 | `--drain-timeout` | `0` | Max wait for in-flight requests on shutdown (`0` = default of 5 minutes). |
-| `--max-loaded-repos` | `5` | Max repos to auto-load for cross-repo search (`repo='all'`). |
+| `--max-loaded-repos` | `5` | Max lazily-loaded graphs kept in memory at once; past the bound the least-recently-used one is unloaded and re-read from disk on its next access. `0` = unbounded. |
+| `--graph-idle-ttl` | `15m` | Unload a lazily-loaded graph that has gone this long without a read or a write, whatever the resident count. `0` disables the idle sweep. |
 | `--log-level` | `info` | Log level: `debug`, `info`, `warn`, `error`. |
 | `--log-file` |  | Log file path (logs to both stderr and the file when set). |
 | `--pprof` | `false` | Enable the pprof profiling endpoint at `/debug/pprof/`. |
@@ -276,3 +277,22 @@ auto-generated like the client tables above):
 | `--log-rotate-max-age-days` | `30` | Max age (days) of rotated files to retain. `0` disables age-based pruning. |
 | `--log-rotate-compress` | `true` | Gzip rotated log files. |
 | `--situation-ttl` | `1d` | Merge aged session overlays into base and load recent ones on startup (e.g. `1d`, `24h`, `0` to disable). |
+
+### Graph residency
+
+Every graph other than the knowledge base is loaded lazily, on the first request
+that needs it, and the two flags above decide when it leaves memory again. An
+unloaded graph is not lost: its `.bin` is untouched and the next access re-reads
+it, paying one cold load.
+
+Three kinds of graph are never unloaded. The knowledge graph is resident from
+boot and is not part of this bookkeeping at all. The linkage graph is loaded
+eagerly at startup so it is always available. Overlays — session overlays and
+code branch overlays, the names carrying an `@` — are composed into live read
+views and stay with their base.
+
+A graph is only unloaded once it has gone a grace period with no read and no
+write, so a burst of activity across more graphs than `--max-loaded-repos` allows
+will exceed the bound for as long as those graphs stay busy, and settle back to
+it once they go quiet. That is the intended behaviour: the bound yields to work
+in progress rather than unloading a graph a request is still using.

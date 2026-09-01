@@ -4,6 +4,7 @@ package codexassets
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,11 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 )
+
+// probeSkillsRoot is the fixed skills root these emitter tests translate
+// against. Any non-empty path does; a literal keeps the expectations
+// independent of whatever root the machine running the test would resolve.
+const probeSkillsRoot = "/probe/skills-root"
 
 // emitAgentTOML on planner.md produces TOML
 // round-tripping via toml.Unmarshal into a map with name='planner',
@@ -26,7 +32,7 @@ func TestEmitAgentTOML_PlannerRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatal("parseFrontmatter ok=false")
 	}
-	out, err := emitAgentTOML(fm, body)
+	out, err := emitAgentTOML(fm, body, probeSkillsRoot)
 	if err != nil {
 		t.Fatalf("emitAgentTOML: %v", err)
 	}
@@ -71,11 +77,11 @@ func TestEmitAgentTOML_Deterministic(t *testing.T) {
 		Model:       "opus",
 	}
 	body := "Line one.\nLine two with \"quotes\" and a $ARGUMENTS token.\n"
-	a, err := emitAgentTOML(fm, body)
+	a, err := emitAgentTOML(fm, body, probeSkillsRoot)
 	if err != nil {
 		t.Fatalf("first emit: %v", err)
 	}
-	b, err := emitAgentTOML(fm, body)
+	b, err := emitAgentTOML(fm, body, probeSkillsRoot)
 	if err != nil {
 		t.Fatalf("second emit: %v", err)
 	}
@@ -88,12 +94,16 @@ func TestEmitAgentTOML_Deterministic(t *testing.T) {
 // (""" ... """) — readable line breaks per the codex subagents doc shape —
 // and must round-trip EXACTLY, including a body's leading newline (TOML trims
 // the first newline after """, so the encoder has to compensate).
+//
+// The expected value is the rendered resolvedPathsPreamble + a blank line +
+// the body. It is built from the CONST BY NAME rather than re-typed: a second
+// literal copy of the preamble text would drift silently from the emitter's.
 func TestEmitAgentTOML_MultilineFormatRoundTrip(t *testing.T) {
 	fm := frontmatter{Name: "demo", Description: "A demo agent."}
 	// Body starts AND ends with a newline (as a real markdown body does
 	// after frontmatter) and carries a backslash regex + quotes.
 	body := "\n<precedence>\nUse search, not grep -rn '\\.Method('.\nSay \"hi\".\n"
-	out, err := emitAgentTOML(fm, body)
+	out, err := emitAgentTOML(fm, body, probeSkillsRoot)
 	if err != nil {
 		t.Fatalf("emit: %v", err)
 	}
@@ -104,8 +114,9 @@ func TestEmitAgentTOML_MultilineFormatRoundTrip(t *testing.T) {
 	if err := toml.Unmarshal(out, &m); err != nil {
 		t.Fatalf("unmarshal: %v\n%s", err, out)
 	}
-	if di, _ := m["developer_instructions"].(string); di != body {
-		t.Errorf("body did not round-trip exactly:\n want %q\n got  %q", body, di)
+	want := fmt.Sprintf(resolvedPathsPreamble, probeSkillsRoot) + "\n\n" + body
+	if di, _ := m["developer_instructions"].(string); di != want {
+		t.Errorf("developer_instructions did not round-trip exactly:\n want %q\n got  %q", want, di)
 	}
 }
 

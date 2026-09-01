@@ -3,6 +3,7 @@
 package codexassets
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,16 +12,82 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
+// TestTranslateAgent_ResolvedPathsPreamble pins the install-time preamble:
+// it is rendered from the shared const with the EXACT root the caller
+// passed, the body follows verbatim after one blank line, and an empty
+// root is an error rather than a preamble naming nothing.
+//
+// Every expected string is built as fmt.Sprintf(resolvedPathsPreamble, …)
+// — referencing the const BY NAME. That is what enforces the single
+// authoritative declaration: a const that is absent, renamed, or replaced
+// by an inline literal in the emitter fails to compile here or fails
+// outright. A re-typed literal in this file would silently restore the
+// two-copies defect.
+func TestTranslateAgent_ResolvedPathsPreamble(t *testing.T) {
+	const root = "/probe/codex/skills"
+	fixture := "---\nname: probe\ndescription: A probe agent.\n---\n# Heading\n\nBody line.\n"
+
+	// The parsed body is the comparison subject, not the raw markdown
+	// suffix: parseFrontmatter consumes the newline terminating the closing
+	// `---`, so the parsed body is one leading newline shorter.
+	_, parsedBody, ok := parseFrontmatter(fixture)
+	if !ok {
+		t.Fatal("fixture frontmatter does not parse")
+	}
+
+	t.Run("renders_the_exact_root", func(t *testing.T) {
+		out, err := TranslateAgent([]byte(fixture), root)
+		if err != nil {
+			t.Fatalf("TranslateAgent: %v", err)
+		}
+		var m map[string]any
+		if err := toml.Unmarshal(out, &m); err != nil {
+			t.Fatalf("unmarshal: %v\n%s", err, out)
+		}
+		di, _ := m["developer_instructions"].(string)
+		want := fmt.Sprintf(resolvedPathsPreamble, root)
+		if !strings.HasPrefix(di, want) {
+			t.Errorf("developer_instructions does not begin with the preamble rendered for %q:\n want prefix %q\n got        %q", root, want, di)
+		}
+	})
+
+	t.Run("body_follows_verbatim", func(t *testing.T) {
+		out, err := TranslateAgent([]byte(fixture), root)
+		if err != nil {
+			t.Fatalf("TranslateAgent: %v", err)
+		}
+		var m map[string]any
+		if err := toml.Unmarshal(out, &m); err != nil {
+			t.Fatalf("unmarshal: %v\n%s", err, out)
+		}
+		di, _ := m["developer_instructions"].(string)
+		want := fmt.Sprintf(resolvedPathsPreamble, root) + "\n\n" + parsedBody
+		if di != want {
+			t.Errorf("developer_instructions is not preamble + blank line + body verbatim:\n want %q\n got  %q", want, di)
+		}
+	})
+
+	t.Run("empty_root_errors", func(t *testing.T) {
+		if _, err := TranslateAgent([]byte(fixture), ""); err == nil {
+			t.Fatal("TranslateAgent returned nil error on an empty skills root, want error")
+		} else if !strings.Contains(err.Error(), "skills root") {
+			t.Errorf("error %q does not mention the skills root", err)
+		}
+	})
+}
+
 // TestTranslateAgent_AllClaudeAgents walks every .claude/agents/*.md and
 // runs TranslateAgent on each, asserting the output is valid codex TOML:
 // it unmarshals, developer_instructions is emitted as a multiline basic
-// string ("""), name + description are non-empty, and no `model` key
-// survives (codex inherits the parent session's model). This replaces
-// the all-agents coverage the deleted build-time generator used to
-// prove — install-codex-assets now translates these same files at
-// install time, so every one MUST translate cleanly.
+// string ("""), name + description are non-empty, no `model` key
+// survives (codex inherits the parent session's model), and each carries
+// the install-time preamble rendered for the root it was translated
+// against. This replaces the all-agents coverage the deleted build-time
+// generator used to prove — install-codex-assets now translates these
+// same files at install time, so every one MUST translate cleanly.
 func TestTranslateAgent_AllClaudeAgents(t *testing.T) {
 	root := repoRoot(t)
+	const skillsRoot = "/probe/all-agents/skills"
 	agentsDir := filepath.Join(root, ".claude", "agents")
 	entries, err := os.ReadDir(agentsDir)
 	if err != nil {
@@ -38,7 +105,7 @@ func TestTranslateAgent_AllClaudeAgents(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read %s: %v", name, err)
 			}
-			out, err := TranslateAgent(md)
+			out, err := TranslateAgent(md, skillsRoot)
 			if err != nil {
 				t.Fatalf("TranslateAgent(%s): %v", name, err)
 			}
@@ -55,8 +122,12 @@ func TestTranslateAgent_AllClaudeAgents(t *testing.T) {
 			if s, _ := m["description"].(string); s == "" {
 				t.Errorf("%s: description empty, want non-empty", name)
 			}
-			if di, _ := m["developer_instructions"].(string); di == "" {
+			di, _ := m["developer_instructions"].(string)
+			if di == "" {
 				t.Errorf("%s: developer_instructions empty", name)
+			}
+			if want := fmt.Sprintf(resolvedPathsPreamble, skillsRoot); !strings.HasPrefix(di, want) {
+				t.Errorf("%s: developer_instructions does not begin with the install-time preamble:\n want prefix %q", name, want)
 			}
 			if _, present := m["model"]; present {
 				t.Errorf("%s: model key present, want omitted (codex inherits parent default)", name)
@@ -72,7 +143,7 @@ func TestTranslateAgent_AllClaudeAgents(t *testing.T) {
 // TestTranslateAgent_NoFrontmatter returns a clear error rather than
 // emitting a degenerate TOML when the input has no parseable frontmatter.
 func TestTranslateAgent_NoFrontmatter(t *testing.T) {
-	_, err := TranslateAgent([]byte("# Just a heading\n\nNo frontmatter here.\n"))
+	_, err := TranslateAgent([]byte("# Just a heading\n\nNo frontmatter here.\n"), "/probe/skills")
 	if err == nil {
 		t.Fatal("TranslateAgent returned nil error on frontmatter-less input, want error")
 	}
@@ -82,7 +153,7 @@ func TestTranslateAgent_NoFrontmatter(t *testing.T) {
 }
 
 // TestParseFrontmatter_AllClaudeSkills walks every .claude/skills/<name>/SKILL.md
-// and asserts its YAML frontmatter parses with the keys the seeding path reads.
+// and asserts its YAML frontmatter parses with the keys this package reads.
 //
 // WHY THIS EXISTS AS A SEPARATE WALK. The sibling agent walk covers
 // .claude/agents/*.md only, and codexContent deliberately passes skill
@@ -129,9 +200,9 @@ func TestParseFrontmatter_AllClaudeSkills(t *testing.T) {
 			if fm.Description == "" {
 				t.Errorf("%s: frontmatter description empty, want non-empty", e.Name())
 			}
-			// The seeding path names a skill node after its DIRECTORY, so a
-			// frontmatter name that disagrees with the directory would seed a
-			// node nothing can find by the name users type.
+			// A skill is addressed by its DIRECTORY name — that is what both
+			// installers write and what a user types — so a frontmatter name
+			// disagreeing with the directory names the skill two ways at once.
 			if fm.Name != e.Name() {
 				t.Errorf("%s: frontmatter name %q != directory name %q", e.Name(), fm.Name, e.Name())
 			}

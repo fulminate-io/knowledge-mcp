@@ -13,8 +13,8 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
-// agentNode builds a NodeAgent fixture with a given id + SymbolName (the .md
-// stem the instruction bootstrap seeds, e.g. "planner").
+// agentNode builds a NodeAgent fixture with a given id + SymbolName (the role
+// name a user-authored agent node carries, e.g. "planner").
 func agentNode(id, name string) *knowledgev1.Node {
 	return &knowledgev1.Node{Id: id, Type: string(kgtypes.NodeAgent), SymbolName: name}
 }
@@ -24,7 +24,7 @@ func agentNode(id, name string) *knowledgev1.Node {
 // LOWEST id deterministically regardless of browse order (with the collision
 // surfaced by buildAgentNameToID).
 func TestResolveOriginAgentID(t *testing.T) {
-	// Two "planner" agent nodes seeded in NON-sorted browse order ("bbb" before
+	// Two "planner" agent nodes stored in NON-sorted browse order ("bbb" before
 	// "aaa") — the deterministic tie-break must still pick "aaa".
 	fc := &backfillFakeCaller{
 		agents: []*knowledgev1.Node{
@@ -47,7 +47,7 @@ func TestResolveOriginAgentID(t *testing.T) {
 	// (3) A non-duplicate role resolves to its single agent node.
 	assert.Equal(t, "imp-1", resolveOriginAgentID(ctx, fc, "implementer"))
 
-	// (4) Unresolvable values (no seeded agent node) degrade to "" — metadata
+	// (4) Unresolvable values (no agent node of that name) degrade to "" — metadata
 	// only, no hub edge.
 	assert.Empty(t, resolveOriginAgentID(ctx, fc, "main"), "main has no agent node — degrade to empty")
 	assert.Empty(t, resolveOriginAgentID(ctx, fc, "orchestrator"))

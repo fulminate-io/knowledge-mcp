@@ -140,7 +140,7 @@ func startCancelProbeEngine(t *testing.T) (string, *cancelProbeEngine) {
 func TestToolCallCancellationStopsWork(t *testing.T) {
 	srvURL, eng := startCancelProbeEngine(t)
 	local := graphclient.NewGraphClientForURL(srvURL)
-	t.Cleanup(local.CloseIdleConnections)
+	t.Cleanup(local.Close)
 	// Empty auth store → logged out → the Router selects the local engine.
 	c := closeRouterOnCleanup(t, buildE2EClient(local, "http://cloud.invalid", newFakeAuthStore(), 0))
 

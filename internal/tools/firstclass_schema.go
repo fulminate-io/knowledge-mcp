@@ -39,7 +39,7 @@ func ThoughtsToolDef() kgtools.MCPTool {
 				"branches_from": {Type: "string", Description: "(think) Thought ID this branches from (usually after invalidation of the original)."},
 				"links":         {Type: "array", Description: "(think) Node IDs to link this thought to (decisions, findings, code, etc.).", Items: &kgtools.Property{Type: "string"}},
 				"status":        {Type: "string", Description: "(think initial status / recall filter) Default hypothesized for think.", Enum: []string{"hypothesized", "validated", "invalidated"}},
-				"origin":        {Type: "string", Description: "(think) Developer-origin role of the agent recording this thought — conventional values planner|implementer|reviewer|researcher|tester|orchestrator|main; absent => main. Open string (flex-parsed, NOT an enum gate): a custom value is stored as-is. Stamped as origin metadata, and when it resolves to a seeded agent node, an agent--produced-->thought hub edge is written."},
+				"origin":        {Type: "string", Description: "(think) Developer-origin role of the agent recording this thought — conventional values planner|implementer|reviewer|researcher|tester|orchestrator|main; absent => main. Open string (flex-parsed, NOT an enum gate): a custom value is stored as-is. Stamped as origin metadata, and when it resolves to a user-authored agent node, an agent--produced-->thought hub edge is written."},
 
 				// negation gate (think supersession)
 				"verified_quote": {Type: "string", Description: "(think) Negation-gate proof of work — a TOP-LEVEL param on the call. REQUIRED whenever branches_from is set (a supersession): a verbatim substring of the superseded node's CURRENT source. Consumed by the gate before any write and never persisted."},

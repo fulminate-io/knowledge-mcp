@@ -56,5 +56,28 @@ func (e *SegmentedIndex[Q, S]) VectorByID(externalID ExternalID) ([]byte, bool) 
 	if !ok {
 		return nil, false
 	}
-	return vb.VectorByID(externalID)
+
+	// A CORRUPT SEGMENT MUST NOT KILL THE PROCESS HERE EITHER. hnsw's VectorByID
+	// binary-searches the id directory and resolves each candidate's stored id,
+	// so it reaches the same raising accessors a search does — and this entry
+	// point is reached by mode:"similar" and by the propagation loop, neither of
+	// which is a search and neither of which sits behind the query boundary.
+	//
+	// A CONTAINED CORRUPTION REPORTS NOT-FOUND, and the signature is why: there
+	// is no error to return here, so the choices are a miss or a crash. It is not
+	// a SILENT miss — containCorrupt hands the corruption to the owner, which
+	// quarantines the file and accounts for the documents it takes away, so the
+	// miss arrives with the loudest signal this engine has. Returning a wrong
+	// vector was never among the options.
+	var (
+		vec   []byte
+		found bool
+	)
+	if err := e.containCorrupt(entry.meta.ID, func() error {
+		vec, found = vb.VectorByID(externalID)
+		return nil
+	}); err != nil {
+		return nil, false
+	}
+	return vec, found
 }

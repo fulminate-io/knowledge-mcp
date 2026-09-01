@@ -5,8 +5,11 @@ package hnsw
 import (
 	"fmt"
 	"hash/crc32"
+	"math"
 	"sort"
 	"unsafe"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
 // mapped.go is the IN-PLACE READER over a serialVersion-3 blob. It holds no
@@ -119,10 +122,75 @@ func idView(b []byte, off, length int) string {
 		return ""
 	}
 	if off < 0 || length < 0 || off+length > len(b) {
-		panic(fmt.Sprintf("hnsw: id spans [%d,%d) in a %d-byte blob", off, off+length, len(b)))
+		searchengine.RaiseCorrupt("hnsw: id spans [%d,%d) in a %d-byte blob", off, off+length, len(b))
 	}
 	//nolint:gosec // bounds checked immediately above; every id that leaves the segment is copied
 	return unsafe.String(&b[off], length)
+}
+
+// layerOffsetsExtent derives the layer-offset array's byte extent and validates
+// it.
+//
+// THE HEADER CARRIES NO RUN COUNT, so the extent is DERIVED from the gap to the
+// arena — a derivation the writer's emission order guarantees. It must be a
+// positive multiple of 4, or the array is not a whole number of uint32s and the
+// sentinel that closes the last run is missing.
+func layerOffsetsExtent(layerOffsetsOff, neighborsOff int) (int, error) {
+	extent := neighborsOff - layerOffsetsOff
+	if extent <= 0 || extent%4 != 0 {
+		return 0, fmt.Errorf(
+			"hnsw open: layer-offset array spans %d bytes, which is not a positive multiple of 4", extent)
+	}
+	return extent, nil
+}
+
+// checkHeaderInvariants refuses a header whose own numbers are impossible,
+// before any of them is used to drive a loop or index an array.
+//
+// BOTH CHECKS ARE ABOUT VALUES INSIDE VALIDATED SECTIONS. checkSection says
+// where a section LIVES; these two say whether what the header claims about the
+// graph can be true at all — and neither is reachable by a bounds check further
+// down, because neither produces an out-of-range access.
+func (g *mappedGraph) checkHeaderInvariants() error {
+	// THE DESCENT LOOP IS UNBOUNDED UNLESS THE HEADER'S maxLevel IS, which makes
+	// this the one corruption in this format that no panic boundary can catch.
+	// searchTopK descends `for l := maxLevel; l > 0; l--`, so a header claiming
+	// two billion levels spins the CPU on every query against this segment while
+	// never touching an out-of-range byte: nothing raises, nothing is reported,
+	// and the symptom is a daemon that stopped answering rather than one that
+	// crashed.
+	//
+	// THE CEILING IS READ OUT OF THE FORMAT rather than chosen. A node's own top
+	// layer is stored as a uint16 — nodeMaxLevel reads two bytes at
+	// v3EntMaxLevel — and the graph's maxLevel is the maximum over its nodes, so
+	// no honest segment can declare more than that field can express.
+	//
+	// THE FLOOR IS -1, NOT 0, and that is a fact about this encoder rather than a
+	// concession. An EMPTY graph has no levels at all and writes -1 to say so;
+	// searchTopK answers such a segment before the descent is reached, so the
+	// value is never used as a bound there. A floor of 0 rejects every empty
+	// segment the engine seals — observed, not reasoned: it turned the merge of
+	// two empty hnsw segments into a permanent failure, and the merge loop then
+	// retried it every 50ms.
+	if g.maxLevel < -1 || g.maxLevel > math.MaxUint16 {
+		return fmt.Errorf(
+			"hnsw open: header declares max level %d, outside [-1, %d] — no node's own uint16 level field can express it",
+			g.maxLevel, math.MaxUint16)
+	}
+
+	// THE ENTRY POINT IS THE ONE ORDINAL NO TRAVERSAL CHECK COVERS, so it is
+	// checked once here rather than on every search. Every other ordinal reaches
+	// the traversal through a neighbor run and is validated by checkOrdinals; the
+	// entry point arrives straight from the header and is handed to nodeVector
+	// before any run is read. Rejecting it at open costs one comparison per
+	// segment load and turns a corrupt header into a refused segment rather than
+	// a panic on first query.
+	if g.nodes > 0 && int(g.entryPoint) >= g.nodes {
+		return fmt.Errorf(
+			"hnsw open: header names entry point %d in a segment holding %d nodes", g.entryPoint, g.nodes)
+	}
+
+	return nil
 }
 
 // openGraphV3 validates a v3 blob and returns a reader over it.
@@ -196,15 +264,9 @@ func openGraphV3(b []byte) (*mappedGraph, error) {
 	if err := checkSection("id bytes", len(b), idBytesOff, layerOffsetsOff-idBytesOff, 1); err != nil {
 		return nil, err
 	}
-	// THE HEADER CARRIES NO RUN COUNT, so the layer-offsets extent is DERIVED
-	// from the gap to the arena — a derivation the writer's emission order
-	// guarantees. It must be a positive multiple of 4, or the array is not a
-	// whole number of uint32s and the sentinel that closes the last run is
-	// missing.
-	layerOffsetsBytes := neighborsOff - layerOffsetsOff
-	if layerOffsetsBytes <= 0 || layerOffsetsBytes%4 != 0 {
-		return nil, fmt.Errorf(
-			"hnsw open: layer-offset array spans %d bytes, which is not a positive multiple of 4", layerOffsetsBytes)
+	layerOffsetsBytes, err := layerOffsetsExtent(layerOffsetsOff, neighborsOff)
+	if err != nil {
+		return nil, err
 	}
 	if err := checkSection("layer offsets", len(b), layerOffsetsOff, layerOffsetsBytes, 4); err != nil {
 		return nil, err
@@ -221,6 +283,10 @@ func openGraphV3(b []byte) (*mappedGraph, error) {
 	// is deliberate — a criterion extracts this line and asserts it no
 	// longer ends `, 1)`, and a wrapped argument list makes that token unfindable.
 	if err := checkSection("vectors", len(b), vectorsOff, g.nodes*g.vecBytes, dtypeVecAlign(g.dtype)); err != nil {
+		return nil, err
+	}
+
+	if err := g.checkHeaderInvariants(); err != nil {
 		return nil, err
 	}
 
@@ -243,7 +309,19 @@ func le32(b []byte, off int) uint32 {
 }
 
 // entryAt returns the byte offset of node ord's directory entry.
-func (g *mappedGraph) entryAt(ord uint32) int { return g.nodeDirOff + int(ord)*v3NodeEntrySize }
+//
+// The ordinal is bounds-checked because open validates the node directory's
+// EXTENT, not the values that index into it: an ordinal past the node count
+// addresses bytes belonging to some other section, which reads as a plausible
+// entry rather than as a fault. checkOrdinals stops such an ordinal at the point
+// it enters the traversal; this is the accessor-level floor under that, on the
+// bm25 lesson that a guarded path does not imply a guarded format.
+func (g *mappedGraph) entryAt(ord uint32) int {
+	if int(ord) >= g.nodes {
+		searchengine.RaiseCorrupt("hnsw: node ordinal %d addressed in a segment holding %d nodes", ord, g.nodes)
+	}
+	return g.nodeDirOff + int(ord)*v3NodeEntrySize
+}
 
 func (g *mappedGraph) nodeCount() int { return g.nodes }
 
@@ -266,15 +344,47 @@ func (g *mappedGraph) neighborsAt(ord uint32, layer int) []uint32 {
 	e := g.entryAt(ord)
 	base := int(le32(g.blob, e+v3EntLayerIdx)) + layer
 	if base < 0 || base+1 >= len(g.layerOffsets) {
-		panic(fmt.Sprintf("hnsw: layer row %d for node %d is outside the %d-row offset array",
-			base, ord, len(g.layerOffsets)))
+		searchengine.RaiseCorrupt("hnsw: layer row %d for node %d is outside the %d-row offset array",
+			base, ord, len(g.layerOffsets))
 	}
 	lo, hi := int(g.layerOffsets[base]), int(g.layerOffsets[base+1])
 	if lo < 0 || hi < lo || hi > len(g.blob) || (hi-lo)%4 != 0 {
-		panic(fmt.Sprintf("hnsw: neighbor run for node %d layer %d spans [%d,%d) in a %d-byte blob",
-			ord, layer, lo, hi, len(g.blob)))
+		searchengine.RaiseCorrupt("hnsw: neighbor run for node %d layer %d spans [%d,%d) in a %d-byte blob",
+			ord, layer, lo, hi, len(g.blob))
 	}
-	return u32sAt(g.blob, lo, (hi-lo)/4)
+	run := u32sAt(g.blob, lo, (hi-lo)/4)
+	checkOrdinals(run, g.nodes, ord, layer)
+	return run
+}
+
+// checkOrdinals refuses a neighbor run naming a node this segment does not have.
+//
+// THIS IS WHERE UNTRUSTED ORDINALS ENTER THE TRAVERSAL, and validating them here
+// rather than at each use is what makes the coverage complete. A run's ids are
+// consumed by several different pieces of the shared traversal — the visited
+// bitset, the batched scorer's vector lookups, the id resolver for a returned
+// hit — and each one indexes a different array. Guarding them one use at a time
+// would leave whichever use nobody thought of unguarded, which is the shape the
+// bm25 incident took. Observed rather than reasoned: before this check, a search
+// over a segment whose run named a nonexistent node died inside bitset.has with
+// a bare index-out-of-range, killing the process the containment exists to keep
+// alive.
+//
+// THE COST IS ONE COMPARISON PER NEIGHBOR, against a distance computation per
+// neighbor immediately afterwards in every caller — the run this returns is
+// scored, not merely inspected. It is a rounding error on a path that already
+// pays for arithmetic over the whole run.
+//
+// The BUILT graph needs no equivalent: its runs are Go slices this process just
+// constructed, never bytes read back from disk.
+func checkOrdinals(run []uint32, nodes int, ord uint32, layer int) {
+	for _, n := range run {
+		if int(n) >= nodes {
+			searchengine.RaiseCorrupt(
+				"hnsw: node %d layer %d has a neighbor with ordinal %d, but the segment holds %d nodes",
+				ord, layer, n, nodes)
+		}
+	}
 }
 
 // externalIDAt returns node ord's id as an INTERNAL VIEW sharing the blob. Any

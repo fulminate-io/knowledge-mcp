@@ -3,6 +3,7 @@
 package segmentdist
 
 import (
+	"bytes"
 	"os"
 	"testing"
 
@@ -20,19 +21,25 @@ func TestDiskSegmentCachePutGet(t *testing.T) {
 	dir := t.TempDir()
 	c := newDiskSegmentCache(dir, 0, adviceRandom) // unbounded
 
-	c.Put("abc", []byte("hello"))
-	got, ok := c.Get("abc")
-	require.True(t, ok)
-	require.Equal(t, []byte("hello"), got)
+	// THE IDS ARE REAL CONTENT HASHES. Put verifies that the bytes hash to the
+	// id it is given, so a placeholder like "abc" is now refused — correctly: it
+	// is not an address of anything in a content-addressed store.
+	payload := []byte("hello")
+	id := sha256Hex(payload)
 
-	_, ok = c.Get("missing")
+	require.NoError(t, c.Put(id, payload))
+	got, ok := c.Get(id)
+	require.True(t, ok)
+	require.Equal(t, payload, got)
+
+	_, ok = c.Get(sha256Hex([]byte("missing")))
 	require.False(t, ok)
 
 	// Fresh cache over the SAME dir recovers the prior id from disk.
 	c2 := newDiskSegmentCache(dir, 0, adviceRandom)
-	got2, ok := c2.Get("abc")
+	got2, ok := c2.Get(id)
 	require.True(t, ok)
-	require.Equal(t, []byte("hello"), got2)
+	require.Equal(t, payload, got2)
 }
 
 // TestDiskSegmentCacheLRUEviction verifies Put past the byte cap evicts the
@@ -44,20 +51,28 @@ func TestDiskSegmentCacheLRUEviction(t *testing.T) {
 	// Cap at 20 bytes; each blob is 10 bytes → at most 2 resident.
 	c := newDiskSegmentCache(dir, 20, adviceRandom)
 
-	c.Put("a", make([]byte, 10))
-	c.Put("b", make([]byte, 10))
-	// Touch "a" so "b" becomes the LRU.
-	_, ok := c.Get("a")
+	// DISTINCT payloads, because the id is now the content hash: three copies of
+	// the same ten zero bytes would be ONE id, and the eviction this test is
+	// about would never be exercised.
+	blobA := bytes.Repeat([]byte("a"), 10)
+	blobB := bytes.Repeat([]byte("b"), 10)
+	blobC := bytes.Repeat([]byte("c"), 10)
+	idA, idB, idC := sha256Hex(blobA), sha256Hex(blobB), sha256Hex(blobC)
+
+	require.NoError(t, c.Put(idA, blobA))
+	require.NoError(t, c.Put(idB, blobB))
+	// Touch A so B becomes the LRU.
+	_, ok := c.Get(idA)
 	require.True(t, ok)
 
-	// Put "c" (10 bytes) → total would be 30 > 20 → evict LRU ("b").
-	c.Put("c", make([]byte, 10))
+	// Put C (10 bytes) → total would be 30 > 20 → evict LRU (B).
+	require.NoError(t, c.Put(idC, blobC))
 
-	_, ok = c.Get("b")
+	_, ok = c.Get(idB)
 	require.False(t, ok, "LRU entry b should be evicted")
-	_, ok = c.Get("a")
+	_, ok = c.Get(idA)
 	require.True(t, ok, "recently-used a should survive")
-	_, ok = c.Get("c")
+	_, ok = c.Get(idC)
 	require.True(t, ok, "just-inserted MRU c should survive")
 
 	// Total resident bytes under cap.
@@ -74,21 +89,24 @@ func TestDiskSegmentCacheRemove(t *testing.T) {
 	dir := t.TempDir()
 	c := newDiskSegmentCache(dir, 0, adviceRandom) // unbounded — LRU never fires, so Remove is the only eviction
 
-	c.Put("seg1", []byte("vector-blob"))
-	_, ok := c.Get("seg1")
+	blob := []byte("vector-blob")
+	seg1 := sha256Hex(blob)
+
+	require.NoError(t, c.Put(seg1, blob))
+	_, ok := c.Get(seg1)
 	require.True(t, ok, "blob present after Put")
-	require.FileExists(t, c.path("seg1"))
+	require.FileExists(t, c.path(seg1))
 
-	c.Remove("seg1")
+	c.Remove(seg1)
 
-	_, ok = c.Get("seg1")
+	_, ok = c.Get(seg1)
 	require.False(t, ok, "Get must miss after Remove")
-	_, statErr := os.Stat(c.path("seg1"))
+	_, statErr := os.Stat(c.path(seg1))
 	require.True(t, os.IsNotExist(statErr), "the .seg file must be deleted from disk")
 	require.Equal(t, int64(0), c.curByt, "byte counter decremented on Remove")
 
 	// Remove of an absent id is a harmless no-op.
-	require.NotPanics(t, func() { c.Remove("never-existed") })
+	require.NotPanics(t, func() { c.Remove(sha256Hex([]byte("never-existed"))) })
 }
 
 // TestDiskSegmentCacheKeys verifies Keys() enumerates exactly the live in-memory
@@ -100,22 +118,24 @@ func TestDiskSegmentCacheKeys(t *testing.T) {
 
 	dir := t.TempDir()
 	seed := newDiskSegmentCache(dir, 0, adviceRandom)
-	seed.Put("seg-a", []byte("blob-a"))
-	seed.Put("seg-b", []byte("blob-b"))
-	seed.Put("seg-c", []byte("blob-c"))
+	blobA, blobB, blobC, blobD := []byte("blob-a"), []byte("blob-b"), []byte("blob-c"), []byte("blob-d")
+	segA, segB, segC, segD := sha256Hex(blobA), sha256Hex(blobB), sha256Hex(blobC), sha256Hex(blobD)
+	require.NoError(t, seed.Put(segA, blobA))
+	require.NoError(t, seed.Put(segB, blobB))
+	require.NoError(t, seed.Put(segC, blobC))
 
 	// A fresh cache over the SAME dir recovers membership via scanExisting; Keys()
 	// returns exactly those three ids (order-independent set equality).
 	c := newDiskSegmentCache(dir, 0, adviceRandom)
-	require.ElementsMatch(t, []searchengine.SegmentID{"seg-a", "seg-b", "seg-c"}, c.Keys())
+	require.ElementsMatch(t, []searchengine.SegmentID{segA, segB, segC}, c.Keys())
 
 	// A Removed id drops from Keys().
-	c.Remove("seg-b")
-	require.ElementsMatch(t, []searchengine.SegmentID{"seg-a", "seg-c"}, c.Keys())
+	c.Remove(segB)
+	require.ElementsMatch(t, []searchengine.SegmentID{segA, segC}, c.Keys())
 
 	// A Put id appears in Keys().
-	c.Put("seg-d", []byte("blob-d"))
-	require.ElementsMatch(t, []searchengine.SegmentID{"seg-a", "seg-c", "seg-d"}, c.Keys())
+	require.NoError(t, c.Put(segD, blobD))
+	require.ElementsMatch(t, []searchengine.SegmentID{segA, segC, segD}, c.Keys())
 
 	// An empty cache enumerates to an empty (non-nil) slice.
 	empty := newDiskSegmentCache(t.TempDir(), 0, adviceRandom)
