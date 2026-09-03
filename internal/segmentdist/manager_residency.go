@@ -235,23 +235,7 @@ func (m *distManager[Q, S]) evictResident() (freed int64, ok bool) {
 	// tracking. 5. Clear the L2-first once-guard, or load() short-circuits forever
 	// over an empty engine. 6. Latch evicted.
 	m.resMu.Lock()
-	// RE-FILTER AGAINST THE MAP AS IT IS NOW. ids was snapshotted under this lock
-	// and the lock was RELEASED for the gate and the engine unload above, so a
-	// quarantine landing in that window has already run forgetQuarantined and
-	// removed its id from m.resident — but not from this stale slice. Assigning
-	// the slice verbatim puts a withdrawn id back into the strict-reload replay
-	// set, and the reload then hard-fails on bytes nobody intends to supply,
-	// re-opening exactly the leg forgetQuarantined closes.
-	//
-	// It is the same "withdrawn is not missing" rule as forgetQuarantined, applied
-	// to the one path that can reintroduce an id after it was dropped.
-	kept := make([]searchengine.SegmentID, 0, len(ids))
-	for _, id := range ids {
-		if _, still := m.resident[id]; still {
-			kept = append(kept, id)
-		}
-	}
-	m.evictedIDs = kept
+	m.evictedIDs = ids
 	m.resident = make(map[searchengine.SegmentID]residentSeg)
 	m.l2Loaded.Store(false)
 	m.evicted.Store(true)
@@ -440,45 +424,4 @@ func (m *Manager) PoolEvicted(gt kgtypes.GraphType, name string) bool {
 	m.mu.Unlock()
 
 	return (hasHNSW && hnswGate.dm.isEvicted()) || (hasBM25 && bm25Gate.dm.isEvicted())
-}
-
-// forgetQuarantined drops a withdrawn segment from this pool's OWN residency
-// bookkeeping — the resident map and, if it is listed there, the exact set the
-// strict reload replays.
-//
-// WHY THE ENGINE-SIDE WITHDRAWAL IS NOT ENOUGH, traced rather than assumed. The
-// engine's WithdrawSegment removes the id from the PUBLISHED SET; the eviction
-// candidate walk above reads m.resident, which is this manager's own map and is
-// untouched by that. So a quarantined id stayed resident here, and the
-// re-materializability gate then asked the L2 cache for it — where quarantine
-// had already dropped the index entry — counted it missing, and DECLINED THE
-// EVICTION. Not once: forever, because nothing else was ever going to put those
-// bytes back. The pool is pinned in memory by one bad segment.
-//
-// AND THE STRICT RELOAD IS THE SAME FACT ONE STEP LATER. evictedIDs is replayed
-// with tolerateMisses=false, whose contract is that a miss is unrecoverable and
-// must error — correct in general, and wrong for an id deliberately withdrawn,
-// which is absent BY DECISION rather than by loss. Leaving it in the set makes
-// every reload attempt hard-fail and the pool unsearchable until a restart.
-//
-// WITHDRAWN IS NOT MISSING, and that distinction is the whole fix: a withdrawn
-// id leaves both sets, so the gates no longer look for something nobody intends
-// to supply.
-func (m *distManager[Q, S]) forgetQuarantined(id searchengine.SegmentID) {
-	if m == nil {
-		return
-	}
-	m.resMu.Lock()
-	defer m.resMu.Unlock()
-	delete(m.resident, id)
-	if len(m.evictedIDs) == 0 {
-		return
-	}
-	kept := make([]searchengine.SegmentID, 0, len(m.evictedIDs))
-	for _, evicted := range m.evictedIDs {
-		if evicted != id {
-			kept = append(kept, evicted)
-		}
-	}
-	m.evictedIDs = kept
 }

@@ -9,7 +9,7 @@ import (
 
 // NewBundleID returns a fresh random bundle identifier: 16 bytes of
 // crypto/rand, hex-encoded to a 32-character string. Client-side intercepts
-// generate one of these at the start
+// (and the instruction-bootstrap package) generate one of these at the start
 // of a multi-write batch and stamp it onto the create_batch / update_batch
 // wire envelope so every node + edge created by the batch shares a single
 // bundle_anchor in the server's version overlay.

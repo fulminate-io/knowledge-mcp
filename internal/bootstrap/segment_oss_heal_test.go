@@ -45,7 +45,7 @@ func buildOSSHealClient(t *testing.T, embedded int32, codeRepos ...string) (*cli
 	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 
 	local := graphclient.NewGraphClientForURL(srv.URL)
-	t.Cleanup(local.Close)
+	t.Cleanup(local.CloseIdleConnections)
 	authState := auth.NewAuthState(newFakeAuthStore(), time.Minute) // logged OUT → OSS-local source
 	router := graphclient.NewRouter(local, srv.URL, staticTokenSource{tok: "tok"}, authState)
 

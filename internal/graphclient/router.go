@@ -81,10 +81,6 @@ type Router struct {
 // process.
 //
 // Safe on a nil Router and safe to call repeatedly.
-//
-// It carries GraphClient.CloseIdleConnections's limitation with it: a pool-level
-// release reaches only the connections the transport already calls idle. Close
-// below is the release for a router a caller is finished with.
 func (r *Router) CloseIdleConnections() {
 	if r == nil {
 		return
@@ -94,25 +90,6 @@ func (r *Router) CloseIdleConnections() {
 	cloud := r.cloud
 	r.mu.Unlock()
 	cloud.CloseIdleConnections()
-}
-
-// Close tears down the connections of BOTH clients the Router can hold, whether
-// their transports consider them idle or not — the router-shaped counterpart of
-// GraphClient.Close, and for the same reason: a caller discarding a router wants
-// its connections gone as a fact rather than as the outcome of a race with the
-// transport's own stream bookkeeping.
-//
-// Safe on a nil Router, safe to call repeatedly, and safe to call on a router
-// that never routed to cloud (the lazy client is nil, and Close is nil-safe).
-func (r *Router) Close() {
-	if r == nil {
-		return
-	}
-	r.local.Close()
-	r.mu.Lock()
-	cloud := r.cloud
-	r.mu.Unlock()
-	cloud.Close()
 }
 
 // NewRouter wires a Router. local may be nil (cloud-first user with no

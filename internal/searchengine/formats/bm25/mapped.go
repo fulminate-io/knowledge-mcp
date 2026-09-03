@@ -3,12 +3,9 @@
 package bm25
 
 import (
-	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"strings"
-	"sync"
 	"unsafe"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
@@ -21,13 +18,6 @@ import (
 // accumulator's shape and this field reads its equivalents out of the blob.
 type mappedField struct {
 	fieldData
-	// seg is the segment this field belongs to, carried ONLY so a raise from
-	// inside the dictionary can name the stored file it came out of. Every raise
-	// on a field's read path is reachable from another segment's containment
-	// boundary — the merge drains several inputs interleaved, and a scored query
-	// probes every resident segment — so a field that cannot say which segment it
-	// is gets its corruption attributed to whichever one happened to be asking.
-	seg  *mappedSegment
 	blob []byte
 	// lengths is a zero-copy view of this field's per-document token counts.
 	lengths []uint32
@@ -49,39 +39,12 @@ type mappedField struct {
 // views into the blob when a query asks for them. There is no hydrated map form,
 // which is what moves a segment's cost out of the Go heap.
 type mappedSegment struct {
-	// selfID memoizes this segment's own content address, computed on first use.
-	// See selfSegmentID for why a segment needs to know its own name.
-	selfID     searchengine.SegmentID
-	selfIDOnce sync.Once
-
 	blob          []byte
 	kind          byte
 	docCount      int
 	memberOffsets []uint32
 	fields        []*mappedField
 	fieldByName   map[string]*mappedField
-}
-
-// selfSegmentID returns this segment's own content address, which is what the
-// engine names it by: the id is the sha256 of the encoded blob, and for a mapped
-// segment the encoded blob IS the bytes it was opened over.
-//
-// WHY A SEGMENT NEEDS ITS OWN NAME. A scored query resolves corpus-global
-// document frequency by probing EVERY resident segment (CorpusStats.docFreqOf),
-// from inside whichever segment's goroutine asked. So this segment's dictionary
-// is routinely read under a DIFFERENT segment's containment boundary, and a raise
-// that let that boundary name it got a healthy file quarantined while this one
-// kept serving. Attributing the raise here is what stops that.
-//
-// IT IS COMPUTED ONCE. A sha256 over a whole segment is not something to pay per
-// probe; it is paid at most once per segment per process, and only if that
-// segment actually raises or is asked for its identity.
-func (s *mappedSegment) selfSegmentID() searchengine.SegmentID {
-	s.selfIDOnce.Do(func() {
-		sum := sha256.Sum256(s.blob)
-		s.selfID = hex.EncodeToString(sum[:])
-	})
-	return s.selfID
 }
 
 // u32sAt returns a zero-copy view of n uint32 words at off. The cast is
@@ -122,12 +85,12 @@ func u16sAt(b []byte, off, n int) []uint16 {
 // unreachable for an honestly-named blob, so reaching it means a writer defect,
 // and reporting a defect as "empty term" would turn it into quietly wrong
 // search results.
-func termView(id searchengine.SegmentID, b []byte, termOff, termLen int, what string) string {
+func termView(b []byte, termOff, termLen int, what string) string {
 	if termLen == 0 {
 		return ""
 	}
 	if termOff < 0 || termLen < 0 || termOff+termLen > len(b) {
-		searchengine.RaiseCorruptIn(id, "bm25: %s spans [%d,%d) in a %d-byte blob", what, termOff, termOff+termLen, len(b))
+		panic(fmt.Sprintf("bm25: %s spans [%d,%d) in a %d-byte blob", what, termOff, termOff+termLen, len(b)))
 	}
 	//nolint:gosec // bounds checked immediately above; the view stays internal
 	return unsafe.String(&b[termOff], termLen)
@@ -210,7 +173,6 @@ func (s *mappedSegment) openField(e int) (*mappedField, error) {
 		return nil, err
 	}
 	mf := &mappedField{
-		seg: s,
 		fieldData: fieldData{
 			config: FieldConfig{
 				Name:  string(b[nameOff : nameOff+nameLen]),
@@ -229,25 +191,13 @@ func (s *mappedSegment) openField(e int) (*mappedField, error) {
 	return mf, nil
 }
 
-// segmentID is this field's owning segment's content address, or empty when the
-// field was built without one (the build-time accumulator's fields). An empty id
-// leaves the boundary's own attribution in place, which is the correct answer
-// when there is no stored file to name.
-func (mf *mappedField) segmentID() searchengine.SegmentID {
-	if mf == nil || mf.seg == nil {
-		return ""
-	}
-	return mf.seg.selfSegmentID()
-}
-
 // member returns a VIEW of member i's external id. The view aliases the blob and
 // must never cross the segment's API boundary — see IDs and collectTopK, which
 // copy. Keeping views internal is what makes releasing the blob safe.
 func (s *mappedSegment) member(i int) string {
 	lo, hi := int(s.memberOffsets[i]), int(s.memberOffsets[i+1])
 	if lo > hi || hi > len(s.blob) {
-		searchengine.RaiseCorruptIn(s.selfSegmentID(),
-			"bm25: member %d spans [%d,%d) in a %d-byte blob", i, lo, hi, len(s.blob))
+		panic(fmt.Sprintf("bm25: member %d spans [%d,%d) in a %d-byte blob", i, lo, hi, len(s.blob)))
 	}
 	//nolint:gosec // internal view, bounds-checked immediately above; every id that leaves the segment is copied
 	return unsafe.String(&s.blob[lo], hi-lo)
@@ -318,15 +268,7 @@ func (s *mappedSegment) docFreqRow(rows, i int) (string, int64) {
 	termOff := int(binary.LittleEndian.Uint32(s.blob[at:]))
 	termLen := int(binary.LittleEndian.Uint32(s.blob[at+4:]))
 	df := int64(binary.LittleEndian.Uint64(s.blob[at+8:]))
-	// ATTRIBUTED TO THIS SEGMENT, not to whichever boundary is above. This row is
-	// read by segmentDocFreq, which a scored query calls on EVERY resident segment
-	// from one segment's goroutine — so an unattributed raise here names the
-	// asking segment and quarantines a healthy file.
-	if termOff < 0 || termLen < 0 || termOff+termLen > len(s.blob) {
-		searchengine.RaiseCorruptIn(s.selfSegmentID(),
-			"bm25: docFreq term spans [%d,%d) in a %d-byte blob", termOff, termOff+termLen, len(s.blob))
-	}
-	return termView(s.selfSegmentID(), s.blob, termOff, termLen, "docFreq term"), df
+	return termView(s.blob, termOff, termLen, "docFreq term"), df
 }
 
 // docFreqEach walks the segment's document frequencies in ascending term order.

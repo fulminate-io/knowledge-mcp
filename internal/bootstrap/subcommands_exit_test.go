@@ -54,7 +54,8 @@ func TestSubcommandExit_OtherOutcomesUnchanged(t *testing.T) {
 	// A shelled-out child's status still propagates verbatim with no
 	// annotation.
 	childErr := exec.Command("sh", "-c", "exit 7").Run()
-	if _, ok := errors.AsType[*exec.ExitError](childErr); !ok {
+	var exitErr *exec.ExitError
+	if !errors.As(childErr, &exitErr) {
 		t.Fatalf("expected an *exec.ExitError, got %T", childErr)
 	}
 	if code, printMessage := subcommandExit(childErr); code != 7 || printMessage {

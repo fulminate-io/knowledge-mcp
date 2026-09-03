@@ -81,6 +81,49 @@ func (c *client) SegmentStalledSince(gt kgtypes.GraphType, name string) int64 {
 	return c.healBreaker.LatchedSince(gt, name)
 }
 
+// deferInstructionBootstrapUntilAdmitted runs the one-shot instruction bootstrap
+// on the first wake at which knowledge/default is admitted, instead of at boot.
+// It is a boot-time query plus a create_batch against the knowledge graph, which
+// makes it background work against a graph no interaction has earned yet.
+//
+// Spawned with `go` from the wiring path so the wait is awaited HERE, exiting
+// promptly on ctx.Done with no leak — the shape bootDelayReconcile uses.
+//
+// THE TRADE, stated rather than designed around: on a FRESH INSTALL the
+// bootstrap's job is to seed the agent and skill instruction nodes, and the most
+// likely first reader of those nodes is a query against the knowledge graph —
+// which is itself the admitting interaction. So the very first instruction read
+// after a fresh install can observe an unseeded graph, return empty, and only
+// then trigger the seeding a second read would find. The window is one call, it
+// is self-correcting, and no data is lost. Nothing here pre-seeds or otherwise
+// compensates for it.
+func (c *client) deferInstructionBootstrapUntilAdmitted(
+	ctx context.Context, gc instructionBootstrapGC, rootDir string,
+) {
+	// Register the waiter BEFORE the first membership check, and CHECK BEFORE
+	// WAITING. Both halves matter: this runs on a goroutine the caller spawned, so
+	// an admission can land before it is scheduled, and a plain wait-then-check
+	// would block for a wake that has already been delivered to nobody. Checking
+	// first catches that admission; registering first means any admission after
+	// the check is a signal this waiter receives. There is no gap between them.
+	wake := c.workingSet.Wake()
+	for {
+		if c.workingSet.Has(kgtypes.GraphKnowledge, "default") {
+			if err := runInstructionBootstrap(ctx, gc, rootDir); err != nil {
+				slog.Warn("instruction bootstrap failed; agent/skill nodes will not be seeded this session",
+					"error", err)
+			}
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-wake:
+			// A wake for some other graph: loop and re-check.
+		}
+	}
+}
+
 // admittingSink records the collect admission and delegates verbatim. It wraps
 // the ingest Sink — the terminal destination every write path in the collector
 // package routes through — so a collect of ANY graph family admits the graph it

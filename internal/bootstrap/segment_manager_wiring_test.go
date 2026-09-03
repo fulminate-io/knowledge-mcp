@@ -61,7 +61,7 @@ func TestEnsureSegmentManagerWiresOffline(t *testing.T) {
 	// exactly the offline wiring state.
 	authState := auth.NewAuthState(newFakeAuthStore(), time.Minute) // logged out → local
 	local := graphclient.NewGraphClientForURL("http://local.invalid")
-	t.Cleanup(local.Close)
+	t.Cleanup(local.CloseIdleConnections)
 	router := graphclient.NewRouter(local, "http://local.invalid", staticTokenSource{tok: "tok"}, authState)
 
 	c := &client{local: local, router: router, authState: authState}

@@ -77,7 +77,7 @@ var (
 		if err != nil {
 			return 0
 		}
-		first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+		first := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]
 		pid, err := strconv.Atoi(strings.TrimSpace(first))
 		if err != nil {
 			return 0

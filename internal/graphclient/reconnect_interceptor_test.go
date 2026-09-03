@@ -4,6 +4,7 @@ package graphclient
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net"
 	"net/http"
@@ -73,7 +74,15 @@ func newRetryTestHarness(t *testing.T, respond func(attempt int32) error) *retry
 	srv := httptest.NewServer(h2c.NewHandler(mux, h2s))
 	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 
-	httpClient := newOwnedH2CClient(t)
+	httpClient := &http.Client{
+		Transport: &http2.Transport{
+			AllowHTTP: true,
+			DialTLSContext: func(_ context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+				return net.Dial(network, addr)
+			},
+		},
+	}
+	t.Cleanup(httpClient.CloseIdleConnections)
 	retry := connect.WithInterceptors(newReconnectInterceptor())
 	client := knowledgev1connect.NewHealthServiceClient(httpClient, srv.URL, retry)
 	return &retryTestHarness{server: srv, client: client, attempt: &counter}
@@ -198,7 +207,15 @@ func TestReconnectInterceptor_RetriesOnServerRestart(t *testing.T) {
 	// Build a dedicated http client that we'll reuse across both
 	// servers so the HTTP/2 conn pool is shared (and goes stale when
 	// A dies).
-	httpClient := newOwnedH2CClient(t)
+	httpClient := &http.Client{
+		Transport: &http2.Transport{
+			AllowHTTP: true,
+			DialTLSContext: func(_ context.Context, network, a string, _ *tls.Config) (net.Conn, error) {
+				return net.Dial(network, a)
+			},
+		},
+	}
+	t.Cleanup(httpClient.CloseIdleConnections)
 	retry := connect.WithInterceptors(newReconnectInterceptor())
 	client := knowledgev1connect.NewHealthServiceClient(httpClient, "http://"+addr, retry)
 

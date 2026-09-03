@@ -347,7 +347,8 @@ func TestTruncation(t *testing.T) {
 		if !errors.Is(err, ErrResponseTruncated) {
 			t.Errorf("errors.Is(ErrResponseTruncated) = false for %v", err)
 		}
-		if _, ok := errors.AsType[*TruncatedOutputError](err); !ok {
+		var te *TruncatedOutputError
+		if !errors.As(err, &te) {
 			t.Errorf("errors.As(*TruncatedOutputError) = false for %v", err)
 		}
 		var le *llm.LLMError

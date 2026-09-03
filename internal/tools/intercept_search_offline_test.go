@@ -91,7 +91,7 @@ func TestInterceptSearchKnowledge_OfflineReturnsRealResults(t *testing.T) {
 	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 
 	gc := graphclient.NewGraphClientForURL(srv.URL)
-	t.Cleanup(gc.Close)
+	t.Cleanup(gc.CloseIdleConnections)
 
 	// Populate the Manager with real BM25 segments under knowledge/"default" (the
 	// graph+name composeKnowledgeSearch queries). A NOT-logged-in caller routes the

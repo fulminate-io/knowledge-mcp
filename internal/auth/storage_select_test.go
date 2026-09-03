@@ -42,7 +42,8 @@ func wrappedExecNotFound(t *testing.T) error {
 func wrappedExitError(t *testing.T) error {
 	t.Helper()
 	err := exec.Command("sh", "-c", "exit 1").Run()
-	if _, ok := errors.AsType[*exec.ExitError](err); !ok {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
 		t.Fatalf("expected an *exec.ExitError, got %T (%v)", err, err)
 	}
 	return fmt.Errorf("auth: keychain get %q: %w", KeyClientID, err)

@@ -40,7 +40,7 @@ func TestPropagationVectorDeps_LazySegmentManager(t *testing.T) {
 		// an unreachable URL is enough to satisfy ensureSegmentManager's only guard.
 		authState := auth.NewAuthState(newFakeAuthStore(), time.Minute)
 		local := graphclient.NewGraphClientForURL("http://local.invalid")
-		t.Cleanup(local.Close)
+		t.Cleanup(local.CloseIdleConnections)
 		router := graphclient.NewRouter(local, "http://local.invalid", staticTokenSource{tok: "tok"}, authState)
 		return &client{local: local, router: router, authState: authState}
 	}

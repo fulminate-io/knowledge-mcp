@@ -126,13 +126,7 @@ func TestPutReportsAFailedParentDirSync(t *testing.T) {
 		root := unopenableCacheRoot(t)
 		c := newDiskSegmentCache(root, 0, adviceRandom)
 
-		// A REAL CONTENT HASH: Put now verifies the id against the bytes, so a
-		// placeholder would be refused for THAT reason and this leg would stop
-		// testing the durability failure it is about.
-		payload := []byte("payload")
-		id := sha256Hex(payload)
-
-		err := c.Put(id, payload)
+		err := c.Put("abc", []byte("payload"))
 
 		require.Error(t, err,
 			"Put must surface a durability failure from the only remaining persistence path")
@@ -141,7 +135,7 @@ func TestPutReportsAFailedParentDirSync(t *testing.T) {
 		// AND THE ENTRY IS NOT BOOKED. A Put that indexed the segment while reporting an
 		// error would tell the reclaim the blob is persisted and let it delete the
 		// constituents anyway.
-		require.NotContains(t, c.index, id,
+		require.NotContains(t, c.index, "abc",
 			"a Put that reported an error must not have booked the id as resident")
 	})
 
@@ -149,14 +143,11 @@ func TestPutReportsAFailedParentDirSync(t *testing.T) {
 		t.Parallel()
 		c := newDiskSegmentCache(t.TempDir(), 0, adviceRandom)
 
-		payload := []byte("payload")
-		id := sha256Hex(payload)
-
-		require.NoError(t, c.Put(id, payload),
+		require.NoError(t, c.Put("abc", []byte("payload")),
 			"CONTROL: a Put into a syncable directory must succeed")
-		got, ok := c.Get(id)
+		got, ok := c.Get("abc")
 		require.True(t, ok, "CONTROL: and the blob must be readable back")
-		require.Equal(t, payload, got)
+		require.Equal(t, []byte("payload"), got)
 	})
 }
 

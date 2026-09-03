@@ -116,15 +116,6 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	// bootstrap.Run currently returns a non-nil error unconditionally: bare
-	// `knowledge` no longer serves MCP over stdio and its only job is to say so
-	// and point at the daemon. staticcheck is therefore right that this
-	// comparison is always true today. The check stays a check rather than
-	// collapsing into an unconditional exit, because what makes it always true
-	// is one function's present behaviour, not a property of this call site —
-	// hard-coding today's answer here is what would silently swallow a success
-	// the day Run has one again.
-	//nolint:staticcheck // SA4023: always true while Run unconditionally refuses; kept as a check so a future success path is honored.
 	if err := bootstrap.Run(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

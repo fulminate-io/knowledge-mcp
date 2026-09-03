@@ -53,12 +53,6 @@ type GraphClient struct {
 	// interceptor closure is built before the struct literal and the two must
 	// share one cell.
 	freshnessGen *atomic.Uint64
-
-	// conns records the connections the transport dialed and still holds open,
-	// so Close can reach the ones a pool-level release cannot. Nil on a bare
-	// &GraphClient{} literal, which several tests stand up; every method on it
-	// is nil-safe for that reason.
-	conns *ownedConns
 }
 
 // FreshnessGen returns the most recent NON-ZERO account freshness watermark this
@@ -90,6 +84,10 @@ func NewGraphClient(port int) *GraphClient {
 	return NewGraphClientForURL(fmt.Sprintf("http://127.0.0.1:%d", port))
 }
 
+// NewGraphClientForURL is the URL-shaped constructor used by tests that need
+// to point a GraphClient at an httptest.Server. The h2c-aware transport and
+// the reconnect interceptor are wired identically to NewGraphClient — only
+// the base URL differs. Production code stays on the port-shaped form.
 // CloseIdleConnections releases the connections this client is holding idle in its
 // transport pool, mirroring http.Client.CloseIdleConnections.
 //
@@ -102,14 +100,6 @@ func NewGraphClient(port int) *GraphClient {
 // all — where each abandoned client otherwise pins a connection and a goroutine for
 // the life of the process.
 //
-// WHAT IT CANNOT DO, and why Close exists beside it: a pool-level release reaches
-// only the connections the transport already considers IDLE. A connection carrying
-// a request the transport has not finished retiring is skipped, and this transport
-// sets no idle timeout, so nothing reaps it afterwards either. A caller that
-// discards its client immediately after a round trip races the transport for that
-// retirement; a caller that discards it while a request is in flight loses
-// outright. Both should call Close.
-//
 // It is safe to call more than once and on a nil client.
 func (c *GraphClient) CloseIdleConnections() {
 	if c == nil || c.httpClient == nil {
@@ -118,46 +108,13 @@ func (c *GraphClient) CloseIdleConnections() {
 	c.httpClient.CloseIdleConnections()
 }
 
-// Close tears down every connection this client dialed and still holds open,
-// whether the transport considers it idle or not, and then releases the pool.
-//
-// This is the release a ONE-SHOT client wants — a readiness poll, a liveness
-// probe, any client constructed for a handful of round trips and discarded.
-// Unlike CloseIdleConnections it does not depend on winning a race with the
-// transport's own stream bookkeeping: the connection is closed directly, so the
-// client's read loop and the peer's serve goroutines end because their socket
-// ended. Long-lived clients — the daemon's — never call it; a pool that outlives
-// individual requests is the point of a pool.
-//
-// A connection closed here is closed under an in-flight request, which surfaces
-// to that request as a transport error. That is the intended meaning: Close says
-// this client is done, not this client is idle.
-//
-// It is safe to call more than once, concurrently, and on a nil client.
-func (c *GraphClient) Close() {
-	if c == nil {
-		return
-	}
-	c.conns.closeAll()
-	c.CloseIdleConnections()
-}
-
-// NewGraphClientForURL is the URL-shaped constructor used by tests that need
-// to point a GraphClient at an httptest.Server. The h2c-aware transport and
-// the reconnect interceptor are wired identically to NewGraphClient — only
-// the base URL differs. Production code stays on the port-shaped form.
 func NewGraphClientForURL(baseURL string) *GraphClient {
-	owned := &ownedConns{}
 	httpClient := &http.Client{
 		Transport: &http2.Transport{
 			AllowHTTP: true,
 			DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
 				var d net.Dialer
-				conn, err := d.DialContext(ctx, network, addr)
-				if err != nil {
-					return nil, err
-				}
-				return owned.track(conn), nil
+				return d.DialContext(ctx, network, addr)
 			},
 			// No keep-alive config here — http2.Transport manages its
 			// own connection pool; when a server restart invalidates
@@ -190,7 +147,6 @@ func NewGraphClientForURL(baseURL string) *GraphClient {
 	return &GraphClient{
 		baseURL:      baseURL,
 		httpClient:   httpClient,
-		conns:        owned,
 		health:       knowledgev1connect.NewHealthServiceClient(httpClient, baseURL, retry),
 		ingest:       knowledgev1connect.NewIngestServiceClient(httpClient, baseURL, retry),
 		engine:       knowledgev1connect.NewEngineServiceClient(httpClient, baseURL, retry),

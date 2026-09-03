@@ -232,7 +232,7 @@ func newInterceptHarnessWithHandler(t *testing.T, execHits *atomic.Int64, resp *
 	srv := httptest.NewServer(h2c.NewHandler(mux, h2s))
 	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 	gc := graphclient.NewGraphClientForURL(srv.URL)
-	t.Cleanup(gc.Close)
+	t.Cleanup(gc.CloseIdleConnections)
 	return gc, h
 }
 

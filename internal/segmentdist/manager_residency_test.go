@@ -179,11 +179,7 @@ func TestStrictReloadErrorsRatherThanServingAShortList(t *testing.T) {
 		require.NoError(t, err)
 		mergedBytes, err := seg.Encode()
 		require.NoError(t, err)
-		// THE MERGED ID IS ITS OWN CONTENT HASH. reclaimMerged Puts this blob, and
-		// Put now verifies that the bytes hash to the id — a readable placeholder
-		// is refused, so the reclaim would silently fail to store it and the
-		// reload below would error for a reason this test is not about.
-		mergedID := sha256Hex(mergedBytes)
+		const mergedID = "merged-after-eviction-0001"
 
 		// The superseded constituents are genuinely unrecoverable once the merge has
 		// reclaimed them — which is precisely why a strict reload still naming them

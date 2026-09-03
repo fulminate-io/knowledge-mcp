@@ -88,50 +88,6 @@ func TestMapMirrorPath_ClassifiesMirrorOnly(t *testing.T) {
 	}
 }
 
-// TestMapPath_GovernanceClassifiesAsClaudeAsset drives the FLAT governance file
-// in BOTH directions: the sync script ships it at an identical path, so each
-// direction must return the path as its own counterpart, classified mapped.
-//
-// The leak gate's scan set derives from these classifications, so a governance
-// file the map does not recognize is a shipped file the gate never sees.
-//
-// KNOWN-NEGATIVE, and it is the whole reason this is a test rather than a grep
-// for the literal: a sibling FLAT file under .claude/skills/ that the sync
-// script does NOT ship must stay unmapped. A classifier widened to the whole
-// directory — ".claude/skills/*.md" instead of the equality this asserts —
-// passes the positive half and fails here.
-func TestMapPath_GovernanceClassifiesAsClaudeAsset(t *testing.T) {
-	const governance = ".claude/skills/GOVERNANCE.md"
-
-	internal, class, err := MapMirrorPath(governance)
-	if err != nil {
-		t.Fatalf("MapMirrorPath(%s): %v", governance, err)
-	}
-	if class != PathMapped || internal != governance {
-		t.Errorf("MapMirrorPath(%s) = (%q,%s), want (%q,%s)", governance, internal, class, governance, PathMapped)
-	}
-
-	mirror, class, err := MapInternalPath(governance)
-	if err != nil {
-		t.Fatalf("MapInternalPath(%s): %v", governance, err)
-	}
-	if class != PathMapped || mirror != governance {
-		t.Errorf("MapInternalPath(%s) = (%q,%s), want (%q,%s)", governance, mirror, class, governance, PathMapped)
-	}
-
-	const unshipped = ".claude/skills/NOT_SHIPPED.md"
-	if _, class, err := MapMirrorPath(unshipped); err != nil {
-		t.Fatalf("MapMirrorPath(%s): %v", unshipped, err)
-	} else if class == PathMapped {
-		t.Errorf("MapMirrorPath(%s) classified mapped; the classifier is directory-wide, not file-exact", unshipped)
-	}
-	if _, class, err := MapInternalPath(unshipped); err != nil {
-		t.Fatalf("MapInternalPath(%s): %v", unshipped, err)
-	} else if class == PathMapped {
-		t.Errorf("MapInternalPath(%s) classified mapped; the classifier is directory-wide, not file-exact", unshipped)
-	}
-}
-
 // TestMapInternalPath_ClassifiesInternalOnly is the mirror image of the control
 // above, for the direction the reporting half consumes. The sync script never
 // copies the server binary, the deploy tree or the proto sources.

@@ -128,8 +128,9 @@ func (p *PropagationLoop) Stop(deadline time.Duration) {
 // Before waiting it CHECKS membership once and catches up, because a wake alone
 // is not enough: an admission landing before the waiter is registered is lost —
 // the broadcast fires into no registered channel, and only a graph's FIRST
-// admission is ever signaled, so no second signal follows. Register the waiter,
-// then check, then wait — in that order — and the check is safe from a gap here
+// admission is ever signaled, so no second signal follows. This is the same
+// register-then-check-then-wait discipline deferInstructionBootstrapUntilAdmitted
+// states in bootstrap/client_workingset.go, and the check is safe from a gap here
 // because registration STRICTLY PRECEDES it: bootstrap/propagation.go calls
 // WithWorkingSetGate (whose argument registers the WakeFor waiter) and only then
 // calls Start. An admission before the check is caught by the check; one after it

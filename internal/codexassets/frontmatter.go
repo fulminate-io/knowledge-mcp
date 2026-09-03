@@ -1,20 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // frontmatter.go — YAML-frontmatter parsing for the codex-asset
-// translation library, and the client's ONLY frontmatter parser.
+// translation library. Mirrors parseInstructionFrontmatter
+// (cmd/knowledge/internal/bootstrap/instruction_bootstrap.go:197)
+// byte-for-byte on the marker-split algorithm, but the translator needs
+// a WIDER frontmatter struct than the bootstrap helper's unexported
+// Name+Description-only type: agent .md→.toml conversion reads the
+// extra Claude-only fields (model/tools/skills/argument-hint) so the
+// emitter can decide what to OMIT from the codex TOML.
 //
-// The parse is deliberately narrow in what it promises and wide in what
-// it reads: markers are `---` on their own line, and the struct carries
-// every field the agent .md→.toml conversion needs — including the
-// Claude-only ones (model/tools/skills/argument-hint) — because the
-// emitter decides what to OMIT from the codex TOML by reading them.
-//
-// The parser is TOLERANT BY DESIGN rather than strict: a file with no
-// leading `---`, no closing `---`, or an unparseable YAML block comes
-// back (zero, full-content, false) rather than as an error. Callers
-// decide what a false means for them — TranslateAgent treats it as a
-// failed install, while a caller that only wants a body can take the
-// content unchanged.
+// Why a copy of the 22-line split logic instead of calling the
+// bootstrap helper: that helper lives in package bootstrap with an
+// unexported narrow struct. Copying the split loop is cheaper than
+// exporting + widening the bootstrap type, which would broaden the
+// bootstrap API surface for this translation library.
 
 package codexassets
 
@@ -25,11 +24,11 @@ import (
 )
 
 // frontmatter is the YAML frontmatter block at the top of
-// .claude/agents/*.md and .claude/skills/*/SKILL.md files. It carries
-// more than name+description because the codex agent emitter reads the
-// Claude-only fields to decide what to drop from the generated TOML
-// (model/sandbox/mcp_servers inherit the parent codex session, so they
-// are omitted).
+// .claude/agents/*.md and .claude/skills/*/SKILL.md files. It is wider
+// than bootstrap.instructionFrontmatter (Name+Description only) because
+// the codex agent emitter reads the Claude-only fields to decide what
+// to drop from the generated TOML (model/sandbox/mcp_servers inherit
+// the parent codex session, so they are omitted).
 type frontmatter struct {
 	Name         string      `yaml:"name"`
 	Description  string      `yaml:"description"`
@@ -65,11 +64,11 @@ func (s *stringSlice) UnmarshalYAML(value *yaml.Node) error {
 }
 
 // parseFrontmatter splits a markdown file into (frontmatter, body, ok).
-// Markers are `---` on their own line. When there is no leading `---`
-// line, or no closing `---`, or the YAML block fails to unmarshal, it
-// returns (zero, full-content, false) — the body is handed back whole so
-// a caller that only wants text loses nothing. On success it returns the
-// parsed frontmatter, the body after the closing marker, and true.
+// Markers are `---` on their own line. Mirrors
+// parseInstructionFrontmatter: when there is no leading `---` line, or
+// no closing `---`, or the YAML block fails to unmarshal, it returns
+// (zero, full-content, false). On success it returns the parsed
+// frontmatter, the body after the closing marker, and true.
 func parseFrontmatter(content string) (frontmatter, string, bool) {
 	lines := strings.Split(content, "\n")
 	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {

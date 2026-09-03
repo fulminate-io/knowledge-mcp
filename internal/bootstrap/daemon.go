@@ -68,8 +68,8 @@ const (
 // buildClient constructs the MCP client + runs the cheap synchronous bind-ready
 // prefix (constructClient, the boot-spawn decision, the one-shot asset-drift
 // hints), then returns the *client ready to BIND the HTTP MCP listener. The
-// background runtimes (PropagationLoop, segment Manager, LLM pipeline)
-// are NOT wired here — runServe launches
+// background runtimes (PropagationLoop, segment Manager, LLM pipeline,
+// instruction bootstrap) are NOT wired here — runServe launches
 // c.wireRuntimesBackground in a goroutine AFTER the listener binds (Bind-first startup:
 // bind first, wire in the background) so first-call latency is ~25ms instead of
 // blocking on the ~2.6s wire chain. The serve daemon (runServe) is its sole
@@ -362,6 +362,18 @@ func (c *client) wireRuntimesBackground(ctx context.Context, f Config) {
 	// publishes them — readers seeing PipelineReady()==true observe the wired
 	// handles. Do NOT reorder the Store before the field writes.
 	c.markPipelineReady()
+
+	// Seed agent + skill nodes from .claude/{agents,
+	// skills}/*.md. Server-side projects.Bootstrap call has been
+	// removed; the client owns disk I/O for code-graph + project
+	// assets now. Non-fatal — startup continues on error.
+	//
+	// DEFERRED UNTIL ADMITTED, not run at boot: it is a query plus a create_batch
+	// against the knowledge graph, so at boot it would be background work against
+	// a graph no interaction has earned. The goroutine waits on the working set
+	// and exits on ctx.Done.
+	go c.deferInstructionBootstrapUntilAdmitted(ctx, c.router, f.RootDir)
+	stage("instruction bootstrap deferred until the knowledge graph is admitted")
 
 	// Background hourly transcript upload — gated on NoTranscriptUpload (set under
 	// --headless) so an embedded daemon spawns no upload loops. See

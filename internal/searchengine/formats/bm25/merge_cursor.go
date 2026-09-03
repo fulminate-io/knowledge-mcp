@@ -7,8 +7,6 @@ import (
 	"encoding/binary"
 	"slices"
 	"unsafe"
-
-	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
 // dictIter walks one field's dictionary in ascending term order, holding four
@@ -53,63 +51,24 @@ func (it *dictIter) next() bool {
 // nextBlocked reconstructs the next front-coded term. The first term of a block
 // is stored whole in the first-term index; every later one stores only the bytes
 // on which it diverges from its predecessor.
-// EVERY SLICE HERE IS BOUNDS-CHECKED AGAINST THE BLOB, and the checks are not
-// belt-and-braces: a corrupt segment reaches this function with a cursor that
-// walks off its own dictionary, and an unchecked slice raises a RUNTIME bounds
-// panic rather than a typed corruption. That distinction decides whether the
-// process survives — the engine's boundary deliberately re-panics anything that
-// is not a CorruptSegmentError, so an untyped bounds panic here kills the daemon
-// exactly as the original defect did.
-//
-// OBSERVED, not anticipated: driving the preserved incident segment through this
-// iterator without touching postings() panicked with "slice bounds out of range
-// [:32] with capacity 8" at the front-coding append below. The invariant checks
-// elsewhere in this format did not cover it, because they guard the posting run
-// and the term view rather than the cursor that finds them.
 func (it *dictIter) nextBlocked() {
+	b := it.mf.blob
 	if it.idx%blockedBlockTerms == 0 {
-		it.openBlock()
+		block := it.idx / blockedBlockTerms
+		it.at = int(binary.LittleEndian.Uint32(b[it.mf.blockIdxOff+4*block:]))
+		it.scratch = append(it.scratch[:0], it.mf.firstTermAt(block)...)
 	} else {
-		it.extendPreviousTerm()
-	}
-	it.readEntry()
-	//nolint:gosec // view over the local reconstruction buffer, documented as valid until the next next()
-	it.term = unsafe.String(unsafe.SliceData(it.scratch), len(it.scratch))
-}
-
-// openBlock starts a new front-coding block: the first term of a block is stored
-// whole, so the scratch buffer is replaced rather than extended.
-func (it *dictIter) openBlock() {
-	b := it.mf.blob
-	block := it.idx / blockedBlockTerms
-	at := it.mf.blockIdxOff + 4*block
-	if block < 0 || block >= it.mf.blockCount || at < 0 || at+4 > len(b) {
-		searchengine.RaiseCorruptIn(it.mf.segmentID(),
-			"bm25: dictionary block %d of %d is past the %d-byte blob", block, it.mf.blockCount, len(b))
-	}
-	it.at = int(binary.LittleEndian.Uint32(b[at:]))
-	it.scratch = append(it.scratch[:0], it.mf.firstTermAt(block)...)
-}
-
-// extendPreviousTerm reconstructs a term that stores only the bytes on which it
-// diverges from its predecessor.
-func (it *dictIter) extendPreviousTerm() {
-	// ONE DECODER, SHARED WITH THE SEARCH PATH. See stepFrontCoded (mapped_dict.go)
-	// for why these two readers must not be separate implementations: they were,
-	// and a guard added to one left the other fatal on the same bytes.
-	it.scratch, it.at = stepFrontCoded(it.mf.segmentID(), it.mf.blob, it.at, it.scratch)
-}
-
-// readEntry reads the posting-run location that follows the reconstructed term.
-func (it *dictIter) readEntry() {
-	b := it.mf.blob
-	if it.at < 0 || it.at+8 > len(b) {
-		searchengine.RaiseCorruptIn(it.mf.segmentID(),
-			"bm25: dictionary entry at offset %d is past the %d-byte blob", it.at, len(b))
+		shared := int(binary.LittleEndian.Uint16(b[it.at:]))
+		suffixLen := int(binary.LittleEndian.Uint16(b[it.at+2:]))
+		it.at += 4
+		it.scratch = append(it.scratch[:shared], b[it.at:it.at+suffixLen]...)
+		it.at += suffixLen
 	}
 	it.postOff = int(binary.LittleEndian.Uint32(b[it.at:]))
 	it.count = int(binary.LittleEndian.Uint32(b[it.at+4:]))
 	it.at += 8
+	//nolint:gosec // view over the local reconstruction buffer, documented as valid until the next next()
+	it.term = unsafe.String(unsafe.SliceData(it.scratch), len(it.scratch))
 }
 
 // eachTerm walks every term in the field's dictionary in ASCENDING term order,

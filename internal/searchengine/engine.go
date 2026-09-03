@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 )
@@ -326,6 +327,39 @@ func (e *SegmentedIndex[Q, S]) Delete(id ExternalID) {
 		}
 	}
 	e.activeMu.Unlock()
+}
+
+// Search runs a lock-free, parallel cross-segment query. It loads the immutable
+// set with a SINGLE atomic load (NO mutex, NO RLock — activeMu is never touched
+// here), fans out one goroutine per segment bounded by NumCPU, each writing a
+// preallocated result slot (no shared-slice contention), then merges the global
+// top-k. The liveDocs accept filter excludes deleted ids. The only
+// synchronization is the atomic load + the fan-out WaitGroup/semaphore.
+func (e *SegmentedIndex[Q, S]) Search(q Q, k int) []Hit {
+	set := e.set.Load()
+	if len(set.entries) == 0 || k <= 0 {
+		return nil
+	}
+
+	results := make([][]Hit, len(set.entries))
+	sem := make(chan struct{}, runtime.NumCPU())
+	var wg sync.WaitGroup
+	for i, entry := range set.entries {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, entry *segmentEntry[Q, S]) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			accept := func(id ExternalID) bool {
+				ord, ok := entry.members[id]
+				return ok && entry.live.Live(ord)
+			}
+			results[i] = entry.payload.Search(q, set.stats, k, accept)
+		}(i, entry)
+	}
+	wg.Wait()
+
+	return mergeTopK(results, k)
 }
 
 // ResidentDocCount sums meta.DocCount across every sealed segment currently

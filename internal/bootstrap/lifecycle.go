@@ -311,19 +311,10 @@ func waitForServer(port int, deadline time.Duration) error {
 	end := time.Now().Add(deadline)
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	// Readiness-poll client only — the caller's real client is constructed
-	// separately, so nothing else ever reuses this connection.
-	//
-	// Close, NOT CloseIdleConnections: this client is discarded the instant the
-	// health check succeeds, and at that instant the transport has not
-	// necessarily finished retiring the stream the check just used. A pool-level
-	// release skips a connection it does not yet consider idle, and this
-	// transport holds no idle timeout that would reap it later — so losing that
-	// race leaves the connection, its read loop and the SERVER's serve
-	// goroutines running for the life of the process. Close owns the connections
-	// it dialed and ends them outright, which makes the teardown a fact rather
-	// than the outcome of a race.
+	// separately, so nothing else ever reuses this connection. Releasing it on
+	// the way out keeps the h2 read/write loops from outliving the wait.
 	gc := graphclient.NewGraphClient(port)
-	defer gc.Close()
+	defer gc.CloseIdleConnections()
 
 	for time.Now().Before(end) {
 		conn, err := dialWithTimeout(addr, 200*time.Millisecond)

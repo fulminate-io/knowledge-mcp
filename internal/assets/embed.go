@@ -24,12 +24,10 @@ package assets
 
 import "embed"
 
-// Files mirrors .claude/agents/*.md and the whole .claude/skills tree —
-// the per-skill dirs AND the flat governance file — at build time.
-// Path layout:
+// Files mirrors .claude/agents/*.md and .claude/skills/*/SKILL.md
+// at build time. Path layout:
 //
 //	agents/<agent-name>.md
-//	skills/GOVERNANCE.md
 //	skills/<skill-name>/SKILL.md
 //
 // Callers walk the FS via fs.WalkDir(Files, ".", ...) and either write

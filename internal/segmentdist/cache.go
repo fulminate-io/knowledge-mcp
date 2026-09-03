@@ -194,38 +194,10 @@ func (c *diskSegmentCache) GetMapped(id searchengine.SegmentID) ([]byte, func(),
 // remaining persistence path.
 func (c *diskSegmentCache) Put(id searchengine.SegmentID, parts ...[]byte) error {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if el, ok := c.index[id]; ok {
 		// Already cached (immutable content) — just refresh recency.
-		c.ll.MoveToFront(el)
-		c.mu.Unlock()
-		return nil
-	}
-	c.mu.Unlock()
-
-	// THE CONTENT ADDRESS IS VERIFIED BEFORE ANYTHING REACHES DISK. The id is
-	// caller-supplied and every reader trusts it as the name of these exact
-	// bytes; a caller whose buffer changed after it hashed would otherwise store
-	// unreadable bytes under a good name and take the crash somewhere else, much
-	// later. See cache_verify.go for what that cost.
-	//
-	// IT RUNS OUTSIDE c.mu DELIBERATELY. Nothing it touches is shared — the id is
-	// a value and the parts are the caller's own buffers — while a sha256 over a
-	// whole segment is milliseconds of pure CPU. Under the lock it serialized
-	// every concurrent Put behind every other Put's hashing, which the seed path
-	// hits hardest because that path copies segments in parallel precisely to
-	// avoid such a queue.
-	if err := verifyContentAddress(id, parts...); err != nil {
-		return err
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	// RE-CHECK AFTER RE-ACQUIRING: another Put may have landed this id while this
-	// one was hashing. Writing anyway would be harmless — the store is
-	// content-addressed, so the bytes are identical — but the accounting below is
-	// not idempotent, and double-counting the same segment would walk curByt away
-	// from what is on disk.
-	if el, ok := c.index[id]; ok {
 		c.ll.MoveToFront(el)
 		return nil
 	}

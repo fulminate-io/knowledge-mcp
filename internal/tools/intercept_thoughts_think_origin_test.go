@@ -47,7 +47,7 @@ func producedEdges(fc *backfillFakeCaller) []*knowledgev1.BatchEdgeSpec {
 func TestComposeThoughtCreate_Origin(t *testing.T) {
 	ctx := context.Background()
 
-	// (1) RESOLVABLE origin: a user-authored "planner" agent node exists.
+	// (1) RESOLVABLE origin: a seeded "planner" agent node exists.
 	t.Run("resolvable stamps metadata + produced edge", func(t *testing.T) {
 		fc := &backfillFakeCaller{
 			agents:    []*knowledgev1.Node{agentNode("agent-planner", "planner")},

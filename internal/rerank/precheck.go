@@ -107,7 +107,8 @@ func CheckProvider(ctx context.Context, sec config.RerankSection) error {
 // present (any arm that returns the shared taxonomy) and falls back to
 // naming the raw failure otherwise.
 func rerankPingError(provider config.EmbedProvider, elapsed time.Duration, err error) error {
-	if llmErr, ok := errors.AsType[*llm.LLMError](err); ok {
+	var llmErr *llm.LLMError
+	if errors.As(err, &llmErr) {
 		switch llmErr.Reason {
 		case "http_401", "http_403":
 			return fmt.Errorf("rerank precheck: %s rejected the API key (%s): the key may be invalid, revoked, or out of credits — %w", provider, llmErr.Reason, err)

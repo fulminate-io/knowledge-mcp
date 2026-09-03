@@ -12,15 +12,6 @@
 // .toml via codexassets.TranslateAgent before writing. There is no
 // second embed for the codex twin.
 //
-// Every translated agent carries an install-time resolved-paths preamble
-// leading its developer_instructions, naming the SKILLS root this install
-// resolved. That is why the translation seam is handed the destination
-// rather than only the bytes: an agent def's mandated reads are written
-// against ~/.claude/skills/, and under codex's split roots they resolve
-// only if the agent is told where the skills root actually landed. Each
-// codexContent call site must therefore pass ITS OWN resolved dest, never
-// a constant.
-//
 // Codex uses SPLIT roots (unlike claude's single ~/.claude): skills
 // install under ~/.agents/skills/<name>/SKILL.md (codex user-skill
 // scope), agents under ~/.codex/agents/<name>.toml. There is therefore
@@ -205,15 +196,9 @@ func codexOutPath(dest codexDest, embedPath string) (string, bool) {
 // skill files pass through verbatim; agent .md files are translated to
 // codex TOML via codexassets.TranslateAgent. The raw bytes come from
 // the shared assets.Files embed.
-//
-// It takes the whole resolved dest because the translation renders
-// dest.skills into each agent's install-time resolved-paths preamble. A
-// caller handing over a constant or zero-value dest would produce agents
-// pointing at the wrong root — and TranslateAgent errors on an empty one
-// rather than emitting that silently.
-func codexContent(dest codexDest, embedPath string, raw []byte) ([]byte, error) {
+func codexContent(embedPath string, raw []byte) ([]byte, error) {
 	if strings.HasPrefix(embedPath, "agents/") {
-		out, err := codexassets.TranslateAgent(raw, dest.skills)
+		out, err := codexassets.TranslateAgent(raw)
 		if err != nil {
 			return nil, fmt.Errorf("translate agent %s: %w", embedPath, err)
 		}
@@ -264,7 +249,7 @@ func installCodexAssets(dest codexDest, dryRun, verbose bool) (int, error) {
 		if err != nil {
 			return written, fmt.Errorf("read embedded %s: %w", p, err)
 		}
-		data, err := codexContent(dest, p, raw)
+		data, err := codexContent(p, raw)
 		if err != nil {
 			return written, err
 		}
@@ -312,7 +297,7 @@ func runCodexDiff(dest codexDest) error {
 		if err != nil {
 			return fmt.Errorf("read embedded %s: %w", p, err)
 		}
-		want, err := codexContent(dest, p, raw)
+		want, err := codexContent(p, raw)
 		if err != nil {
 			return err
 		}
