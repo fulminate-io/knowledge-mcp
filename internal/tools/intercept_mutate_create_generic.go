@@ -88,7 +88,14 @@ func handleClientMutateCreateContextLinked(ctx context.Context, deps ClientDeps,
 	// Context links: pre-validated ticket/session/knowledge-link edges ride the
 	// create_batch; code links + warnings are handled after. Node is slot 0.
 	cl := buildContextLinks(ctx, gc, a.TicketID, a.Session, a.Links)
-	ids, perr := PersistBatch(ctx, gc, []*knowledgev1.Node{node}, cl.batchEdges, newBundleID())
+	// A plan_annotation's relates-to edges carry the annotation's kind and tier,
+	// so a section's review state is readable from the section's own edges without
+	// hydrating any annotation node. Every other type passes through untouched.
+	batchEdges, serr := stampPlanAnnotationEdges(a, cl.batchEdges)
+	if serr != nil {
+		return errorResult("create: " + serr.Error())
+	}
+	ids, perr := PersistBatch(ctx, gc, []*knowledgev1.Node{node}, batchEdges, newBundleID())
 	if perr != nil {
 		return errorResult("create: " + perr.Error())
 	}

@@ -62,7 +62,7 @@ func chunkSegments(t *testing.T, items []binaryBuildItem, perSeg, ef int) []*hns
 		for _, it := range items[i:end] {
 			docs = append(docs, searchengine.Document{ID: it.id, Vector: it.vec})
 		}
-		seg, err := Format{}.Build(docs)
+		seg, _, err := Format{}.Build(docs)
 		if err != nil {
 			t.Fatalf("Build segment: %v", err)
 		}

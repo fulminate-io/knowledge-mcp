@@ -182,7 +182,7 @@ func TestNegativeControlPerSegmentIDFDiverges(t *testing.T) {
 	var segs []*mappedSegment
 	for i := 0; i < corpus; i += perSeg {
 		end := min(i+perSeg, corpus)
-		s, err := Format{}.Build(docs[i:end])
+		s, _, err := Format{}.Build(docs[i:end])
 		require.NoError(t, err)
 		segs = append(segs, s.(*mappedSegment))
 	}

@@ -207,7 +207,7 @@ func TestCloudAcceptanceAndDenyConjunction(t *testing.T) {
 	// Dispatch is unqualified because this test lives IN package engine; the
 	// production chokepoint (bootstrap/mcp.go:199) calls it as engine.Dispatch
 	// against this same function through Router.Execute.
-	out, err := Dispatch(ctx, r.Execute, "search",
+	out, err := Dispatch(ctx, r.Execute, nil, "search",
 		json.RawMessage(`{"query":"x","graph":"knowledge"}`))
 	require.NoError(t, err, "a successful Execute is rendered, not returned as a Go error")
 	assert.False(t, out.IsError, "the cloud-routed search must succeed (no local server)")
@@ -218,7 +218,7 @@ func TestCloudAcceptanceAndDenyConjunction(t *testing.T) {
 		"the acceptance op routed to the cloud backend EXACTLY once")
 
 	// HALF (b) DENY: query{mode:stats} is EXPLICITLY denied, not degraded.
-	denyOut, denyErr := Dispatch(ctx, r.Execute, "query",
+	denyOut, denyErr := Dispatch(ctx, r.Execute, nil, "query",
 		json.RawMessage(`{"mode":"stats"}`))
 	require.NoError(t, denyErr, "a deny is RENDERED as an error result, not returned as a Go error")
 	assert.True(t, denyOut.IsError, "query{mode:stats} is an explicit deny (IsError)")

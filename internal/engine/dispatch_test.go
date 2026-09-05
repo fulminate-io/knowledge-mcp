@@ -44,6 +44,7 @@ func TestDispatch_DenyOnOkFalse(t *testing.T) {
 	d := &dispatchCounters{}
 	out, err := Dispatch(context.Background(),
 		d.exec(nil, errors.New("exec must not run")),
+		nil,
 		"query", json.RawMessage(`{"mode":"stats"}`))
 	require.NoError(t, err, "a deny is rendered as an error result, not returned as a Go error")
 	assert.True(t, out.IsError, "an uncompilable shape is denied (IsError)")
@@ -64,6 +65,7 @@ func TestDispatch_ExecOnceThenRenderOnOkTrue(t *testing.T) {
 
 	out, derr := Dispatch(context.Background(),
 		d.exec(resp, nil),
+		nil,
 		"search", json.RawMessage(`{"query":"x","graph":"knowledge"}`))
 	require.NoError(t, derr)
 	assert.Equal(t, 1, d.execCalls, "exec runs EXACTLY once (bounded-constant)")
@@ -79,6 +81,7 @@ func TestDispatch_MapsInvalidArgument(t *testing.T) {
 	engineErr := connect.NewError(connect.CodeInvalidArgument, errors.New("unknown set_fields key"))
 	out, err := Dispatch(context.Background(),
 		d.exec(nil, engineErr),
+		nil,
 		"mutate", json.RawMessage(`{"operation":"update","id":"n1","status":"closed"}`))
 	require.NoError(t, err, "engine validation error is rendered, not returned")
 	assert.True(t, out.IsError)
@@ -104,6 +107,7 @@ func TestDispatch_CreateValidationErrorRelayedFromServer(t *testing.T) {
 		errors.New("planToMutation: mutate(create): summary is required and must be non-empty (search-optimized one-line summary)"))
 	out, err := Dispatch(context.Background(),
 		d.exec(nil, serverErr),
+		nil,
 		"mutate", json.RawMessage(`{"operation":"create","type":"document","name":"X"}`))
 	require.NoError(t, err, "the server validation error is rendered, not returned")
 	assert.True(t, out.IsError, "the server validation failure surfaces as an error result")
@@ -118,6 +122,7 @@ func TestDispatch_MapsNotFound(t *testing.T) {
 	engineErr := connect.NewError(connect.CodeNotFound, errors.New("node missing not found"))
 	out, err := Dispatch(context.Background(),
 		d.exec(nil, engineErr),
+		nil,
 		"query", json.RawMessage(`{"id":"missing"}`))
 	require.NoError(t, err)
 	assert.True(t, out.IsError)
@@ -132,6 +137,7 @@ func TestDispatch_RenderQueryIDBareNode(t *testing.T) {
 	resp := enginetest.ResponseWithNode(&knowledgev1.Node{Id: "n1", SymbolName: "Doc", Type: "document"})
 	out, derr := Dispatch(context.Background(),
 		d.exec(resp, nil),
+		nil,
 		"query", json.RawMessage(`{"id":"n1"}`))
 	require.NoError(t, derr)
 	text := out.Content[0].Text
@@ -151,6 +157,7 @@ func TestDispatch_RenderQueryIDsBulk(t *testing.T) {
 	)
 	out, derr := Dispatch(context.Background(),
 		d.exec(resp, nil),
+		nil,
 		"query", json.RawMessage(`{"ids":["a","b"]}`))
 	require.NoError(t, derr)
 	assert.Contains(t, out.Content[0].Text, `"label":"knowledge"`)
@@ -205,6 +212,7 @@ func TestDispatch_IncludeEdgesThreeExecCalls(t *testing.T) {
 
 	out, err := Dispatch(context.Background(),
 		s.fn(),
+		nil,
 		"query", json.RawMessage(`{"id":"n1","include_edges":true,"graph":"knowledge"}`))
 	require.NoError(t, err)
 
@@ -234,6 +242,7 @@ func TestDispatch_RenderMutateCreateIDs(t *testing.T) {
 	resp := &knowledgev1.ExecuteResponse{Ids: []string{"created-1"}}
 	out, err := Dispatch(context.Background(),
 		d.exec(resp, nil),
+		nil,
 		"mutate", json.RawMessage(`{"operation":"create","type":"document","name":"X","summary":"s"}`))
 	require.NoError(t, err)
 	assert.Contains(t, out.Content[0].Text, "Created → ID: created-1")
@@ -253,6 +262,7 @@ func TestDispatch_RenderDeleteTool(t *testing.T) {
 	resp := &knowledgev1.ExecuteResponse{AffectedCount: 3}
 	out, err := Dispatch(context.Background(),
 		d.exec(resp, nil),
+		nil,
 		"delete", json.RawMessage(`{"ids":["a","b","c"]}`))
 	require.NoError(t, err)
 	assert.False(t, out.IsError, "the standalone delete tool renders cleanly (not the unrenderable-tool error)")
@@ -276,6 +286,7 @@ func TestDispatch_BareThoughtCreate_NoSummaryGate(t *testing.T) {
 	resp := &knowledgev1.ExecuteResponse{Ids: []string{"t-1"}}
 	out, err := Dispatch(context.Background(),
 		d.exec(resp, nil),
+		nil,
 		"mutate", json.RawMessage(`{"operation":"create","type":"thought","content":"x"}`))
 	require.NoError(t, err)
 	assert.False(t, out.IsError, "a bare thought create must NOT be summary-gated")
@@ -293,6 +304,7 @@ func TestDispatch_BareChargeCreate_NoSummaryGate(t *testing.T) {
 	resp := &knowledgev1.ExecuteResponse{Ids: []string{"c-1"}}
 	out, err := Dispatch(context.Background(),
 		d.exec(resp, nil),
+		nil,
 		"mutate", json.RawMessage(`{"operation":"create","type":"charge","content":"x"}`))
 	require.NoError(t, err)
 	assert.False(t, out.IsError, "a bare charge create must NOT be summary-gated")
@@ -327,6 +339,7 @@ func TestDispatch_PrecheckQueryEmptyTextRequiresText(t *testing.T) {
 			args := `{"mode":"` + mode + `"}` // no text field → empty.
 			out, err := Dispatch(context.Background(),
 				d.exec(nil, errors.New("exec must not run — precheck rejects empty text")),
+				nil,
 				"query", json.RawMessage(args))
 			require.NoError(t, err, "the requires-text validation error is rendered, not returned")
 			assert.True(t, out.IsError, "empty-text %s is a validation failure (IsError)", mode)
@@ -405,6 +418,7 @@ func TestDispatch_RendersNoBackend_AndUnreachable(t *testing.T) {
 			d := &dispatchCounters{}
 			out, err := Dispatch(context.Background(),
 				d.exec(nil, tc.err),
+				nil,
 				"search", json.RawMessage(`{"query":"x","graph":"knowledge"}`))
 			require.NoError(t, err, "transport error is rendered, not returned")
 			assert.True(t, out.IsError, "transport error surfaces as an error result")
@@ -442,6 +456,7 @@ func TestDispatch_PrecheckQueryNonTextRequiredModesUngated(t *testing.T) {
 			resp := enginetest.ResponseWithNodes()
 			out, err := Dispatch(context.Background(),
 				d.exec(resp, nil),
+				nil,
 				"query", json.RawMessage(tc.args))
 			require.NoError(t, err)
 			assert.NotContains(t, out.Content[0].Text, "requires a non-empty text query",

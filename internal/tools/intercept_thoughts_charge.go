@@ -264,7 +264,9 @@ func resolveCrossGraphIDOutcome(ctx context.Context, gc GraphCaller, ex render.E
 // (tools_mutate_create_thought.go:170) — the charge/think composers need the
 // SAME SymbolName the server produced; the client cannot import the server-side
 // package (import boundary), so this is the design-locked transitional
-// duplication (cf. canonicalEdgeCasing). Made rune-correct here: maxLen counts
+// duplication — the same justification the engine test fixtures record for
+// re-declaring the store's exact edge-type comparison across the same
+// boundary. Made rune-correct here: maxLen counts
 // runes, not bytes, and the word-boundary cut operates on the rune-bounded
 // prefix.
 func truncateAtWordCreate(s string, maxLen int) string {

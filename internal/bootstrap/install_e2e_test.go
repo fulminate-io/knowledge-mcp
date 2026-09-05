@@ -294,13 +294,24 @@ func TestInstall_PermissionDenied_UX(t *testing.T) {
 	binContent := []byte("bytes")
 	asset := "knowledge-server-linux-amd64.tar.gz"
 	archive := buildTarGz(t, map[string][]byte{"knowledge-server": binContent})
-	checksums := makeChecksums(map[string][]byte{asset: archive})
+	// BOTH assets are served, and the client target is stubbed into a WRITABLE
+	// directory. The install now fetches every binary before it stages any, so
+	// a release missing the client asset fails at the fetch phase and this
+	// test's permission assertion would never be reached — the fixture has to
+	// let the fetch phase complete for the STAGE phase's permission failure to
+	// be the one that surfaces. That reordering is the point of the staged
+	// install: nothing touches a destination until everything is in hand.
+	clientAsset := "knowledge-linux-amd64.tar.gz"
+	clientArchive := buildTarGz(t, map[string][]byte{"knowledge": []byte("client bytes")})
+	checksums := makeChecksums(map[string][]byte{asset: archive, clientAsset: clientArchive})
 
 	srv := newReleaseServer(t, releaseStub{
-		tag:       "v1.2.3",
-		assetName: asset,
-		archive:   archive,
-		checksums: checksums,
+		tag:             "v1.2.3",
+		assetName:       asset,
+		archive:         archive,
+		clientAssetName: clientAsset,
+		clientArchive:   clientArchive,
+		checksums:       checksums,
 	})
 	pointHTTPClientAt(t, srv)
 	withVersion(t, "v1.2.3")
@@ -311,6 +322,7 @@ func TestInstall_PermissionDenied_UX(t *testing.T) {
 	}
 	// Restore permissions on cleanup so t.TempDir's RemoveAll can fire.
 	t.Cleanup(func() { _ = os.Chmod(unwritable, 0o700) }) //nolint:gosec // restoring write so t.TempDir cleanup can RemoveAll
+	withStubExecutable(t, filepath.Join(t.TempDir(), "knowledge"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -119,16 +119,12 @@ func TestOpenFile_StubMethods_ReturnErrNotImplemented(t *testing.T) {
 		// Page.Blocks + Page.BlocksWithParams are no longer stubs —
 		// T4 wired them to layout.Cluster / ClusterWithParams.
 		// Positive coverage lives in TestPage_Blocks_* below.
+		// Page.HeadersFooters and Page.Footnotes are no longer stubs
+		// here because they no longer exist: the skip leg they fed
+		// never worked, and running page chrome is now identified by
+		// cross-page text repetition and stamped as a signal instead.
 		{"Page.ReadingOrder", func() error {
 			_, err := page.ReadingOrder()
-			return err
-		}},
-		{"Page.HeadersFooters", func() error {
-			_, err := page.HeadersFooters()
-			return err
-		}},
-		{"Page.Footnotes", func() error {
-			_, err := page.Footnotes()
 			return err
 		}},
 	}

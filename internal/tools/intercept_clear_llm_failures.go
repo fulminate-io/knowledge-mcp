@@ -27,7 +27,7 @@ var llmFailureKeys = []string{
 
 // llmFailureGraphTypes are the LLM-eligible graph types swept when no graph is
 // specified. Mirrors the server resolveClearLLMFailuresTargets list: logs / web
-// / linkage / transformers never participate in the LLM pipeline so they cannot
+// / linkage never participate in the LLM pipeline so they cannot
 // accumulate failure markers.
 var llmFailureGraphTypes = []string{
 	string(kgtypes.GraphKnowledge),
@@ -352,7 +352,7 @@ func execClearMarkerUpdate(ctx context.Context, ex render.Executor, tgt clearLLM
 // and nothing about which graph is written. Other graph types each carry their
 // name discriminant on a TYPE-SPECIFIC GraphSelector field (Repo for code,
 // Account for cloud/cicd, Language for practice, Name for
-// logs/web/pdf/transformers). The server-side resolver
+// logs/web/pdf). The server-side resolver
 // enforces the right field per graph type and rejects a sel.Name on a code graph
 // with "graph=code requires repo: graph selector invalid", so the discriminant
 // choice here is load-bearing.

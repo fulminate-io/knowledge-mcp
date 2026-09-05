@@ -97,7 +97,6 @@ func runPopplerFixture(t *testing.T, fc fixtureCase) {
 			HeadingFontSizeRatio: 1.15, HeadingMinBoldOnly: true,
 			CodeMonospaceRatio: 0.8,
 		},
-		SkipHeadersFooters: true,
 	})
 	if err != nil {
 		t.Fatalf("doc.Chunks(%s): %v", fc.SourcePath, err)

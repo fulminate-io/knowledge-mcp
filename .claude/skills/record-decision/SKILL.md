@@ -15,18 +15,23 @@ This skill is decision-recording-specific.
 
 Record an architectural or design decision in the knowledge store. Good decisions are searchable months later — they tell future developers WHY things are the way they are.
 
-<constraint id="user-only-decisions" severity="hard">
+<constraint id="decision-attribution" severity="hard">
 
   <rule>
-    Decisions are recorded only when the USER makes them. Never record_decision
-    for Claude/agent implementation choices. And record_decision requires a summary —
-    a deliberate, search-optimized one-liner you author; it is never derived for you.
+    Record decisions freely and promptly — never ask permission to record. The
+    rule is ATTRIBUTION, not permission: the choice field names WHO decided. A
+    decision the user made carries the user's words verbatim and the alternatives
+    they saw; a choice you made is recorded as yours and is never attributed to or
+    conflated with the user's. record_decision requires a summary — a deliberate,
+    search-optimized one-liner you author; it is never derived for you.
   </rule>
 
   <override-default>
-    Trained behavior: capture every reasoning step as a "decision." Wrong here —
-    a record_decision node implies a user-owned choice with full alternatives
-    considered. Agent-level implementation notes go to `thoughts(operation:"think")` and findings, not decision nodes.
+    Trained behavior: capture every reasoning step as a "decision," or merge your
+    own implementation choices into the user's decision record. Wrong here —
+    routine implementation notes go to `thoughts(operation:"think")` and findings;
+    a decision node is for a real choice among alternatives, and its record must
+    make clear whether the user or the agent made it.
   </override-default>
 
 </constraint>
@@ -142,39 +147,5 @@ Show recorded decision + connections + node ID for future reference.
 
 </constraint>
 
-<constraint id="fallbacks-require-express-user-approval" severity="hard">
-  Fallbacks are covers for incorrect behavior. Any silently-degraded lane,
-  catch-and-continue, default-on-error, or graceful-degradation path requires
-  EXPRESS USER APPROVAL, recorded (ticket or decision) where the fallback lives —
-  no agent has discretion to classify one as legitimate. The default response to
-  an error state is to FAIL LOUDLY, naming the condition and what was dropped, at
-  the point of the mistake. CONVERGENCE TEST: a real fallback repairs the
-  condition it fires for and returns the system to its primary path; a lane that
-  can fire forever on the same cause is hiding a defect, not handling one — it
-  must be an error. An unticketed, unapproved fallback — in a plan, a design, a
-  changeset, or existing code you are changing — is a T2 finding raised to the
-  user; never wave one through, build one on your own authority, or soften one
-  to a note. Retired fallback code is REMOVED, never bypassed in place. The
-  instinct that produces fallbacks is sycophancy expressed as architecture —
-  treat your own urge to add one as the signal to raise it, not to build it.
-</constraint>
+<law-pointer>Fallbacks-require-express-user-approval and deferral-is-a-user-decision are governance laws — full text in `.claude/skills/GOVERNANCE.md`, read at session start. They bind here exactly as written there.</law-pointer>
 
-<constraint id="deferral-is-a-user-decision" severity="hard">
-  Deferral is a USER decision — never yours. Never defer, postpone, descope, or
-  "leave for a follow-up" any surfaced defect, gap, or required disposition on
-  your own judgement, and never present deferral as an outcome you have chosen.
-  The only dispositions you may produce: DO the work, DISPROVE the need with
-  evidence, or SURFACE the item UNDECIDED to whoever holds the decision — with
-  the honest cost of doing it now. A brief that offers "defer" as one of your
-  answers does not make it yours. Postponed is not rejected: an item the user
-  defers stays recorded as open work, never silently dropped. Most deferral
-  impulses are work avoidance — if the item is in scope and tractable, do it.
-  COMPLETENESS IS THE DEFAULT DISPOSITION: a gap discovered in the surface under
-  work — a displayed approximation of a value the system can produce for real,
-  an unrouted capability the feature plainly needs, an unhandled reachable
-  state — is COMPLETION work. Report it as "incomplete without X; building X
-  costs Y", never as an optional extra ("available if you want it later",
-  "could be a fast-follow") — that framing inverts the decision by taxing the
-  user into demanding completeness, when incompleteness is what needs explicit
-  approval.
-</constraint>

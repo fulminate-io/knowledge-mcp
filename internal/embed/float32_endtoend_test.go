@@ -129,7 +129,7 @@ dtype = "ubinary"
 			{ID: "a", Vector: floatVec, Dtype: floatProfile.Dtype},
 			{ID: "b", Vector: orthogonal(floatVec), Dtype: floatProfile.Dtype},
 		}
-		seg, err := hnsw.New().Build(docs)
+		seg, _, err := hnsw.New().Build(docs)
 		require.NoError(t, err, "the arm's bytes must seal — a width or dtype disagreement fails here")
 
 		hits := seg.Search(floatVec, struct{}{}, 2, nil)
@@ -167,7 +167,7 @@ dtype = "ubinary"
 			"a ubinary profile still yields ONE BYTE per returned value, byte-for-byte as before")
 
 		docs := []searchengine.Document{{ID: "u", Vector: vecs[0], Dtype: prof.Dtype}}
-		seg, err := hnsw.New().Build(docs)
+		seg, _, err := hnsw.New().Build(docs)
 		require.NoError(t, err)
 		hits := seg.Search(vecs[0], struct{}{}, 1, nil)
 		require.Len(t, hits, 1)

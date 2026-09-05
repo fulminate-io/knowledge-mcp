@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/ast"
+	"github.com/fulminate-io/knowledge-mcp/internal/collector/treesitter"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 )
@@ -36,15 +38,29 @@ func (CorpusScanAnalyzer) Run(ctx context.Context, req foundation.Request) ([]fo
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("topology/%s: %w", AnalyzerName, err)
 	}
-	subset, err := validateScanRequest(req)
+	opts, err := validateScanRequest(req)
 	if err != nil {
 		return nil, err
 	}
-	set, err := fetchCorpus(ctx, req, subset)
+	set, err := fetchCorpus(ctx, req, opts.checks)
 	if err != nil {
 		return nil, err
 	}
-	return runCorpus(ctx, req, set)
+	return runCorpus(ctx, req, set, opts)
+}
+
+// scanOptions are the validated per-run controls this analyzer reads off
+// Request.Extra. They travel as one value because every one of them has to
+// reach the per-check execution loop, and a growing parameter list there is how
+// a control comes to be validated and then not passed.
+type scanOptions struct {
+	// checks is the id subset, nil for "every check in the corpus".
+	checks []string
+	// includeTests is the RUN-WIDE test-file knob, already resolved from its
+	// three input states. It is folded with each check's own declaration at
+	// execution: a run-wide true widens every ast check, and a check's
+	// declaration widens that check alone.
+	includeTests bool
 }
 
 // validateScanRequest refuses every malformed input with a typed error naming
@@ -57,27 +73,74 @@ func (CorpusScanAnalyzer) Run(ctx context.Context, req foundation.Request) ([]fo
 // error message and by a family-local Register wrapper, so corpus_scan is only
 // ever dispatched BY NAME. A graph mismatch is therefore caller error and must
 // be loud. Do not "fix" this back toward the dsm shape.
-func validateScanRequest(req foundation.Request) ([]string, error) {
+func validateScanRequest(req foundation.Request) (scanOptions, error) {
 	if req.Graph != kgtypes.GraphCode {
-		return nil, fmt.Errorf("topology/%s: graph=%q is not analyzable — corpus checks run against a code graph (%s)",
+		return scanOptions{}, fmt.Errorf("topology/%s: graph=%q is not analyzable — corpus checks run against a code graph (%s)",
 			AnalyzerName, req.Graph, kgtypes.GraphCode)
 	}
 	if req.Name == "" {
-		return nil, fmt.Errorf("topology/%s: the target repo is required — pass repo, which rides into the analyzer as the code-graph instance name", AnalyzerName)
+		return scanOptions{}, fmt.Errorf("topology/%s: the target repo is required — pass repo, which rides into the analyzer as the code-graph instance name", AnalyzerName)
 	}
 	if req.RepoRoot == "" {
-		return nil, fmt.Errorf("topology/%s: the repo working-directory root is required — ast checks walk the tree off disk and there is nothing to walk", AnalyzerName)
+		return scanOptions{}, fmt.Errorf("topology/%s: the repo working-directory root is required — ast checks walk the tree off disk and there is nothing to walk", AnalyzerName)
 	}
 	if req.Language == "" {
-		return nil, fmt.Errorf("topology/%s: language is required — it selects the checks corpus to read and there is no default corpus", AnalyzerName)
+		return scanOptions{}, fmt.Errorf("topology/%s: language is required — it selects the checks corpus to read and there is no default corpus", AnalyzerName)
 	}
 	if req.Caller == nil {
-		return nil, fmt.Errorf("topology/%s: req.Caller must not be nil", AnalyzerName)
+		return scanOptions{}, fmt.Errorf("topology/%s: req.Caller must not be nil", AnalyzerName)
 	}
-	return parseChecksSubset(req.Extra)
+	checks, err := parseChecksSubset(req.Extra)
+	if err != nil {
+		return scanOptions{}, err
+	}
+	includeTests, err := parseIncludeTests(req.Extra, req.Language)
+	if err != nil {
+		return scanOptions{}, err
+	}
+	return scanOptions{checks: checks, includeTests: includeTests}, nil
 }
 
-// parseChecksSubset reads the ONE Extra key this analyzer consumes.
+// parseIncludeTests reads the run-wide test-file knob, strictly.
+//
+// IT READS THE RAW MAP VALUE for the same reason parseChecksSubset does — the
+// foundation Extra helpers default on a missing, empty or unparseable value, and
+// a silent default on a control that decides WHICH FILES ARE SCANNED would let a
+// typo report a narrower corpus as clean.
+//
+// AN OMITTED KEY IS NOT AN EXPLICIT FALSE, and the difference is the whole
+// language check below. A caller who never asked for the control was never
+// misled about it, so an omitted key is legal for every language; an explicit
+// value for a language ast carries no test-file convention for is refused,
+// because there the walk filters nothing at either setting and the caller would
+// believe a control is in force when it is not. This is the ast tool's own rule
+// (tools.validateIncludeTests), applied at the ONE place EVERY face converges —
+// manage_checks(run), `knowledge check run`, and the topology dispatcher, which
+// forwards Extra verbatim — rather than once per face. The third of those
+// declares no parameter of its own, so this parse is the only gate it has.
+func parseIncludeTests(extra map[string]string, language string) (bool, error) {
+	raw, present := extra[ExtraKeyIncludeTests]
+	if !present {
+		return false, nil
+	}
+	var value bool
+	switch strings.TrimSpace(raw) {
+	case "true":
+		value = true
+	case "false":
+		value = false
+	default:
+		return false, fmt.Errorf("topology/%s: %s=%q is not admitted (admitted: true, false; omit the key to walk non-test files only)",
+			AnalyzerName, ExtraKeyIncludeTests, raw)
+	}
+	if !ast.HasTestFilePredicate(treesitter.Language(language)) {
+		return false, fmt.Errorf("topology/%s: %s is not supported for language %s — ast has no test-file convention registered for it, so the flag would silently do nothing. Languages that do: %s. Omit %s for this language",
+			AnalyzerName, ExtraKeyIncludeTests, language, strings.Join(ast.TestFilePredicateLanguages(), ", "), ExtraKeyIncludeTests)
+	}
+	return value, nil
+}
+
+// parseChecksSubset reads the check-subset Extra key.
 //
 // It reads the RAW map value on purpose. foundation.ExtraString returns its
 // default when the key is missing OR empty, and foundation.ExtraFloat /

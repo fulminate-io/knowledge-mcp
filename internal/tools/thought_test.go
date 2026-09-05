@@ -49,6 +49,7 @@ type thoughtTestDeps struct{}
 
 func (thoughtTestDeps) LocalLiveness() LocalLiveness                 { return nil }
 func (thoughtTestDeps) Sink() collector.Sink                         { return nil }
+func (thoughtTestDeps) SubgraphFetcher() CloudSubgraphFetcher        { return nil }
 func (thoughtTestDeps) RootDir() string                              { return "" }
 func (thoughtTestDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
 func (thoughtTestDeps) PropReady() bool                              { return true }

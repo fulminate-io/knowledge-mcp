@@ -149,6 +149,7 @@ func TestEmbedWriteAbortsWhenTheBlobCannotBePersisted(t *testing.T) {
 // A copy that silently dropped a blob produces a branch seeded with a HOLE, and the
 // branch's own searches would be the only thing that ever noticed.
 func TestBranchSeedAbortsWhenACopiedBlobCannotBePersisted(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	t.Run("branch_seed_aborts_rather_than_reporting_a_partial_copy", func(t *testing.T) {

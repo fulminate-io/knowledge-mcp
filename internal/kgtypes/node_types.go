@@ -94,6 +94,29 @@ const (
 	// dual declaration across the two modules (no shared package).
 	NodeGraphTypeDef NodeType = "graph_type_def"
 
+	// Plan-part node types — the chunked plan shape.
+	//
+	// A plan in the chunked shape is a ROOT node carrying the goal plus one
+	// NodePlanSection child per part, joined by positioned `contains` edges. Each
+	// section body is written and read ALONE, so a planner revising one part
+	// issues one write against one node and every other node is untouched.
+	//
+	// NodePlanAnnotation is a reviewer's note ON a section — correct, finding, or
+	// needed change — joined to that section by the existing relates-to edge. The
+	// NODE TYPE carries the meaning, which is why no new edge type was added: the
+	// section tree traverses `contains` only, so annotations stay out of the tree
+	// and cannot change a plan's rendered shape.
+	//
+	// THE LITERALS ARE QUALIFIED ("plan_section", not "section") because the bare
+	// "section" is already a node type in the raw web and pdf graphs. The wire
+	// strings are mirrored verbatim by the server store vocabulary
+	// (cmd/knowledge-server/internal/store/node_types_vocab.go) — a deliberate
+	// dual declaration across the two modules (no shared package) — and a
+	// per-module drift-guard pair plus the cross-module vocabulary census pin
+	// them.
+	NodePlanSection    NodeType = "plan_section"    // one part of a chunked plan; body written and read alone
+	NodePlanAnnotation NodeType = "plan_annotation" // a reviewer's note on one plan section
+
 	// Self-tuning metadata storage node types.
 	//
 	// NodeMetaValue is a shared value-node holding the actual content for
@@ -120,7 +143,8 @@ var knowledgeTypes = map[NodeType]bool{
 	NodeAgent: true, NodeSkill: true, nodeToolGuide: true,
 	NodePattern: true, NodeReuseCheck: true,
 	NodeUseCase: true, NodeExample: true,
-	NodeMetaValue: true,
+	NodeMetaValue:   true,
+	NodePlanSection: true, NodePlanAnnotation: true,
 }
 
 // commentTypes are node types that represent comments.

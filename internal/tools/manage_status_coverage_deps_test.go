@@ -26,10 +26,11 @@ type coverageDeps struct {
 	segCov SegmentCoverageReader
 }
 
-func (d *coverageDeps) LocalLiveness() LocalLiveness    { return nil }
-func (d *coverageDeps) Sink() collector.Sink            { return nil }
-func (d *coverageDeps) RootDir() string                 { return "" }
-func (d *coverageDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+func (d *coverageDeps) LocalLiveness() LocalLiveness          { return nil }
+func (d *coverageDeps) Sink() collector.Sink                  { return nil }
+func (d *coverageDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
+func (d *coverageDeps) RootDir() string                       { return "" }
+func (d *coverageDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
 
 func (d *coverageDeps) PropReady() bool     { return true }
 func (d *coverageDeps) PipelineReady() bool { return true }

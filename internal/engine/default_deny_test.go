@@ -73,9 +73,9 @@ func TestDefaultDeny_SpecializedShapes(t *testing.T) {
 		// equivalence tests TestEquivalence_SearchMultiType / SearchResourceType /
 		// TraverseEdgeMetadata).
 		// Cross-graph link_graph stays specialized (proxy creation, legacy).
-		// NOTE: practice/transformers mutate (link/create) are NO LONGER here —
+		// NOTE: practice/checks mutate (link/create) are NO LONGER here —
 		// the compileMutate guard was narrowed to link_graph-only, so an
-		// intra-practice/transformers op (no link_graph) Target-routes to a
+		// intra-practice/checks op (no link_graph) Target-routes to a
 		// MutationPlan (proven by TestCompileMutate_PracticeTransformers). The
 		// tools-layer InterceptMutate routes the cross-graph proxy decision tree
 		// (handleClientCrossGraphLink) BEFORE reaching the engine.
@@ -125,7 +125,7 @@ func TestDefaultDeny_SpecializedShapes(t *testing.T) {
 				execCalls++
 				return nil, nil
 			}
-			out, err := Dispatch(context.Background(), execFn, tc.tool, json.RawMessage(tc.args))
+			out, err := Dispatch(context.Background(), execFn, nil, tc.tool, json.RawMessage(tc.args))
 			require.NoError(t, err, "a deny is rendered as an error result, not returned")
 			assert.Equal(t, 0, execCalls, "%s must NOT hit Execute", tc.name)
 			assert.True(t, out.IsError, "%s must be DENIED (IsError) — no legacy fallback exists", tc.name)

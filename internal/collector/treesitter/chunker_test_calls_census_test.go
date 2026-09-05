@@ -45,7 +45,10 @@ const (
 )
 
 type testCallsConsumerRow struct {
-	// Path is repo-relative and must match a file the walk finds.
+	// Path is relative to the root the half that declares the row walks:
+	// MODULE-relative here (internal/...), REPO-relative in the staging-only
+	// server half (cmd/knowledge-server/internal/...). Either way it must match
+	// a file that half's walk finds.
 	Path        string
 	Disposition testCallsDisposition
 	// Reason is MANDATORY. An exclusion whose reason is empty is
@@ -54,19 +57,28 @@ type testCallsConsumerRow struct {
 	Reason string
 }
 
-// testCallsConsumerCensus carries one row per file under the two internal trees
-// that names EdgeCalls or the literal "CALLS".
+// testCallsConsumerCensus carries one row per file under THIS MODULE's internal
+// tree that names EdgeCalls or the literal "CALLS". Paths are MODULE-relative,
+// which is the one spelling correct in both layouts this file is compiled in:
+// the tree is cmd/knowledge/internal here and internal/ in the published
+// mirror, and the walk takes each path relative to the module root in both.
+//
+// THE SERVER MODULE'S CONSUMERS ARE CENSUSED BY THE OTHER HALF,
+// chunker_test_calls_census_server_test.go, which the sync script removes from
+// the published tree because the mirror has no server module to walk. The two
+// halves together cover exactly what the single two-tree census covered, and
+// each asserts set agreement in BOTH directions over its own tree.
 //
 // EVERY REASON BELOW WAS READ IN CURRENT SOURCE, not inherited from the plan.
 var testCallsConsumerCensus = []testCallsConsumerRow{
 	{
-		Path:        "cmd/knowledge/internal/kgtypes/edge_types.go",
+		Path:        "internal/kgtypes/edge_types.go",
 		Disposition: dispositionProducer,
 		Reason: "Declares the client-side edge vocabulary, EdgeCalls and EdgeTestCalls both. " +
 			"It consumes nothing; a disposition here would be a decision about a const block.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/kgtypes/edge_types_cloud.go",
+		Path:        "internal/kgtypes/edge_types_cloud.go",
 		Disposition: dispositionProducer,
 		Reason: "Declares the cloud, CI/CD, cross-domain and log-graph edge vocabulary, split out " +
 			"of edge_types.go by vocabulary. It names EdgeCalls in ONE PLACE ONLY — the " +
@@ -75,19 +87,19 @@ var testCallsConsumerCensus = []testCallsConsumerRow{
 			"here would be a decision about a const block.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/types.go",
+		Path:        "internal/collector/treesitter/types.go",
 		Disposition: dispositionProducer,
 		Reason: "The chunker's own EdgeType mirror of the kgtypes vocabulary — a deliberate " +
 			"per-module duplicate, since no hand-written package is shared across the two binaries.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_edges.go",
+		Path:        "internal/collector/treesitter/chunker_edges.go",
 		Disposition: dispositionProducer,
 		Reason: "extractCallEdges BUILDS the call edges; the Type is stamped by its two callers " +
 			"(emitDeclarationEdges and emitTestBlockCallEdges), so this file decides nothing about test traffic.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/topology/graph/blast_radius.go",
+		Path:        "internal/topology/graph/blast_radius.go",
 		Disposition: dispositionExcluded,
 		Reason: "Impact radius walks kgtypes.EdgeCalls (blast_radius.go:217). Test traffic must not " +
 			"widen a production symbol's blast radius — a symbol is not more dangerous to change " +
@@ -95,7 +107,7 @@ var testCallsConsumerCensus = []testCallsConsumerRow{
 			"edge_types=TEST_CALLS explicitly when that IS the question being asked.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/topology/corpusscan/assertion.go",
+		Path:        "internal/topology/corpusscan/assertion.go",
 		Disposition: dispositionOptsIn,
 		Reason: "codeEdgeTypes admits kgtypes.EdgeTestCalls alongside kgtypes.EdgeCalls, so a corpus " +
 			"author asks for test traffic BY NAME in the check body's edge_type and gets exactly what " +
@@ -105,31 +117,14 @@ var testCallsConsumerCensus = []testCallsConsumerRow{
 			"and read as a clean scan.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/topology/graph/god_object_metrics.go",
+		Path:        "internal/topology/graph/god_object_metrics.go",
 		Disposition: dispositionExcluded,
 		Reason: "Fan-in / fan-out / coupling all filter on kgtypes.EdgeCalls (god_object_metrics.go:68,131,161,213). " +
 			"Counting test callers would make a well-tested helper look like a god object, which is " +
 			"the arbitrary style-dependent distortion the distinct edge type exists to remove.",
 	},
 	{
-		Path:        "cmd/knowledge-server/internal/store/graph_traversal.go",
-		Disposition: dispositionExcluded,
-		Reason: "FindCallers/FindCallees are the fixed-CALLS convenience arms (graph_traversal.go:68,73) and " +
-			"stay production-only. They are not the general surface: Traverse and FindRelated take " +
-			"edge types from the caller, so asking for test callers needs no change here.",
-	},
-	{
-		Path:        "cmd/knowledge-server/internal/store/edge_types_vocab.go",
-		Disposition: dispositionExcluded,
-		Reason: "CHECKED, AND THE ANSWER IS THAT TEST_CALLS IS ALREADY TRAVERSABLE. The server's const " +
-			"block is a vocabulary, not a validator: bootstrap/engine_decode.go:133-134 converts every " +
-			"requested edge type with a bare store.EdgeType(et) and applies no allowlist — in contrast " +
-			"to fieldPredicateAllowlist directly below it, which does. So no server-side const is " +
-			"needed for traverse(edge_types:[\"TEST_CALLS\"]) to work, and adding one to a server " +
-			"vocabulary the client never reads would be ceremony.",
-	},
-	{
-		Path:        "cmd/knowledge/internal/tools/intercept_query_analyze_node.go",
+		Path:        "internal/tools/intercept_query_analyze_node.go",
 		Disposition: dispositionOptsIn,
 		Reason: "THE RENDERER RISK, NOW CLOSED. traverseCallNodes takes the call edge type as a " +
 			"parameter, and composeAnalyzeNode runs the caller and callee walks TWICE — once over " +
@@ -145,21 +140,25 @@ var testCallsConsumerCensus = []testCallsConsumerRow{
 	},
 }
 
-// TestTestCallsConsumerCensus walks the two internal trees, finds every file
-// that consumes the CALLS edge type, and requires each to carry a disposition.
+// TestTestCallsConsumerCensus walks THIS MODULE's internal tree, finds every
+// file that consumes the CALLS edge type, and requires each to carry a
+// disposition.
+//
+// THE ROOT IS THE MODULE ROOT, not the repository root, and that is what makes
+// this half publishable. repoRoot walks to the first go.mod: cmd/knowledge in
+// this repository, the mirror root in the published one. The walk root is
+// <module>/internal in both, and every path below is taken relative to the
+// module root, so one set of rows is correct in both layouts.
 func TestTestCallsConsumerCensus(t *testing.T) {
-	root := repoRootForCensus(t)
+	root := repoRoot(t)
 
 	found := map[string]bool{}
 	// readsTestCalls records, per subject file, whether it names the test-call
 	// vocabulary at all. It is what turns each row's disposition from a claim
 	// into an assertion — see the disposition-accuracy check below.
 	readsTestCalls := map[string]bool{}
-	for _, tree := range []string{
-		filepath.Join("cmd", "knowledge", "internal"),
-		filepath.Join("cmd", "knowledge-server", "internal"),
-	} {
-		walkRoot := filepath.Join(root, tree)
+	{
+		walkRoot := filepath.Join(root, "internal")
 		require.DirExists(t, walkRoot, "census control: the consumer tree exists")
 		err := filepath.WalkDir(walkRoot, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
@@ -205,6 +204,13 @@ func TestTestCallsConsumerCensus(t *testing.T) {
 	// must fail loudly here rather than pass as a clean census.
 	require.NotEmpty(t, found, "census control: the walk found at least one CALLS consumer")
 	require.NotEmpty(t, testCallsConsumerCensus, "census control: the disposition table is not empty")
+	// AND A NAMED FILE THE WALK MUST FIND. Non-emptiness alone is satisfied by
+	// any one file, so a walk that resolved to the wrong tree — and this half is
+	// now compiled in two layouts — would still pass it. This names the opts_in
+	// renderer, which is also a row of the table above, so a walk that misses it
+	// fails both directions at once.
+	require.True(t, found["internal/tools/intercept_query_analyze_node.go"],
+		"census control: the walk must find the opts_in renderer BY NAME, not merely find something")
 
 	byPath := map[string]testCallsConsumerRow{}
 	for _, row := range testCallsConsumerCensus {
@@ -251,29 +257,5 @@ func TestTestCallsConsumerCensus(t *testing.T) {
 		assert.True(t, found[path],
 			"the census carries a row for %s, which no longer consumes the CALLS edge type. "+
 				"Remove the row, or restore the consumer.", path)
-	}
-}
-
-// repoRootForCensus walks up from the package directory to the tree holding
-// BOTH internal trees the census covers.
-//
-// It anchors on those two directories rather than on go.mod, because go.mod is
-// ambiguous here: cmd/knowledge is its own module, so the first go.mod above
-// this package is the CLIENT module's and stops the walk one binary short of
-// the server tree the census must also read.
-func repoRootForCensus(t *testing.T) string {
-	t.Helper()
-	dir, err := os.Getwd()
-	require.NoError(t, err)
-	for {
-		_, clientErr := os.Stat(filepath.Join(dir, "cmd", "knowledge", "internal"))
-		_, serverErr := os.Stat(filepath.Join(dir, "cmd", "knowledge-server", "internal"))
-		if clientErr == nil && serverErr == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		require.NotEqual(t, parent, dir,
-			"walked to the filesystem root without finding a tree holding both cmd/knowledge/internal and cmd/knowledge-server/internal")
-		dir = parent
 	}
 }

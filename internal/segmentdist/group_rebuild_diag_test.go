@@ -48,6 +48,7 @@ const (
 // additionally filtered by graph name and format, so a stray emitter cannot be
 // mistaken for this delete's.
 func TestGroupRebuildDiagnosticEmitsBeforeTheExpensiveCall(t *testing.T) {
+	requireMeasurementRun(t)
 	ctx := context.Background()
 	const name = "group-rebuild-diag"
 

@@ -77,7 +77,7 @@ var (
 		if err != nil {
 			return 0
 		}
-		first := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]
+		first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
 		pid, err := strconv.Atoi(strings.TrimSpace(first))
 		if err != nil {
 			return 0
@@ -299,19 +299,22 @@ func kickstartUnit(label, unit string) error {
 // spawnDaemonProcess forks the running knowledge client as the 15023
 // serve daemon: a bare fork+exec with NO SysProcAttr (the kernel
 // reparents the child to launchd/systemd for free — see lifecycle.go's
-// no-Setsid caveat). Mirrors spawnServer's shape (log-file via
-// os.OpenFile, stdin=/dev/null, Release after start). The argv
-// matches the canonical brew service block invocation.
+// no-Setsid caveat). Mirrors spawnServer's shape (the child opens its own
+// --log-file, stdin=/dev/null, Release after start). The argv matches the
+// canonical brew service block invocation.
 func spawnDaemonProcess(graphStorage string) error {
 	exe, err := getExecutable()
 	if err != nil {
 		return fmt.Errorf("resolve client path for daemon: %w", err)
 	}
 	// The DAEMON opens this path itself, via the --log-file below, and tees it
-	// with its inherited stderr. This process no longer opens it: holding a
-	// write handle it never writes to would create the file as a side effect and
-	// say nothing about whether the daemon could actually use it.
-	logPath := filepath.Join(expandTilde(graphStorage), "knowledge-daemon.log")
+	// with its inherited stderr. This process only guarantees the DIRECTORY: the
+	// daemon reports a failed open on stderr and then runs on one sink, and a
+	// single sink is the state this seam exists to avoid.
+	logPath := daemonLogPath(graphStorage)
+	if err := ensureLogDir(logPath); err != nil {
+		return err
+	}
 	devNull, err := os.OpenFile(os.DevNull, os.O_RDONLY, 0)
 	if err != nil {
 		return fmt.Errorf("open devnull: %w", err)
@@ -332,6 +335,11 @@ func spawnDaemonProcess(graphStorage string) error {
 	// survive. The daemon tees its own --log-file (already in the argv above)
 	// with this inherited stderr, so the durable record is kept there.
 	//
+	// AND THE DAEMON SURVIVES THIS FD DYING UNDER IT, which is what makes keeping
+	// the stream safe rather than fatal: it ignores SIGPIPE and retires the
+	// stream on the first EPIPE, recording that once in its log file. See
+	// spawn_detached_stdio.go.
+	//
 	// STDERR, NEVER STDOUT: this process writes user-facing CLI output to stdout
 	// — the restart notice printed above is one of its lines — and a daemon's log
 	// lines interleaved into it would corrupt what the operator reads.
@@ -346,6 +354,12 @@ func spawnDaemonProcess(graphStorage string) error {
 	_ = devNull.Close()
 
 	_ = cmd.Process.Release()
+	// NAME THE DURABLE SINK. The daemon's lines also reach this terminal through
+	// the inherited stderr, but that stream ends with the terminal while the file
+	// is what an operator reads afterwards — and it is where the daemon records
+	// the notice if that stream ever dies under it. `knowledge start` already
+	// prints the server's log path for the same reason.
+	fmt.Fprintf(os.Stdout, "knowledge setup: daemon logging to %s\n", logPath)
 	return nil
 }
 

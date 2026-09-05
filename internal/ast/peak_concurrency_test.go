@@ -4,6 +4,7 @@ package ast
 
 import (
 	"context"
+	"os"
 	"runtime"
 	"runtime/metrics"
 	"slices"
@@ -17,6 +18,17 @@ import (
 )
 
 // peak_concurrency_test.go — the concurrent-load peak instrument for ast.Match.
+//
+// HOW TO RUN THE TWO TESTS HERE. TestMatch_ConcurrentPeakIsBounded is the
+// acceptance gate and runs in the ordinary suite. TestMatch_PeakProbeSeesConcurrentMultiplier
+// is the instrument control and is OPT-IN, because its ratio's denominator moves
+// with whatever else the machine is doing:
+//
+//	make measure-ast-peak    # sets AST_PEAK_CONTROL=1; run it on a quiet machine
+//
+// Without that opt-in the control SKIPS and says so, naming the variable and the
+// floor it did not check. See astPeakControlEnv for why the schedule moved and
+// why the floor itself did not.
 //
 // WHAT IT MEASURES, AND WHY THAT TERM AND NOT ANOTHER. ast.Match's heap peak has
 // two terms that both scale with concurrent call count, and only one of them is
@@ -92,6 +104,60 @@ const astPeakCorpusFiles = 50
 // on the order pin for its own correctness. A 3.5 floor would sit 8% from that
 // reverse-order minimum.
 const astPeakControlFloor = 3.0
+
+// astPeakControlEnv gates TestMatch_PeakProbeSeesConcurrentMultiplier. Set it to
+// 1 and the control runs; leave it unset and the control SKIPS, so the floor
+// above is not checked on that run.
+//
+// WHY THE CONTROL IS OPT-IN. Both arms are peak-allocation readings taken on
+// whatever machine runs them, and the SEQUENTIAL arm — the DENOMINATOR — is the
+// one that moves: 65-133MB across repeated runs of one unchanged tree, while the
+// concurrent arm stayed inside a 293-384MB band. Ambient load therefore
+// COMPRESSES the ratio, measured at 3.48-4.23 quiet against 2.06-2.80 while
+// sibling build lanes ran. A floor under a compressing measurement fails CORRECT
+// work, and it did: this control went red inside the pre-commit hook on three
+// separate changesets whose diffs touched no file in this package at all.
+//
+// THE ASSERTION IS NOT WEAKENED, ONLY ITS SCHEDULE. astPeakControlFloor stays at
+// 3.0 and the control still demands it under the opt-in. Lowering the floor to
+// fit a loaded machine was the one repair explicitly ruled out: it would leave a
+// gate that neither catches the defect nor fails honestly.
+//
+// THE ACCEPTANCE GATE STAYS IN THE DEFAULT SUITE, and the direction is why.
+// TestMatch_ConcurrentPeakIsBounded asserts a CEILING, so the compression that
+// turns a floor red can only make a ceiling greener — load cannot manufacture a
+// false red there.
+//
+// ENV-GATED, NOT BUILD-TAG-GATED, following veckernel's PerfEnv at
+// cmd/knowledge/internal/searchengine/veckernel/perf_test.go:29: a file behind a
+// build tag is one the linter never compiles unless every lint invocation is
+// told about that tag, and a pass that silently skips files reports success
+// having checked nothing.
+const astPeakControlEnv = "AST_PEAK_CONTROL"
+
+// requirePeakControlEnabled skips unless astPeakControlEnv is set to exactly "1".
+//
+// EXACTLY "1" rather than any non-empty value, for the reason veckernel's
+// envEnabled gives at perf_test.go:57: an operator who exports the variable as 0
+// in order to turn the gate OFF must not thereby have turned it on.
+//
+// THE SKIP IS LOUD ON PURPOSE. It names the variable, the target that sets it,
+// and the assertion that went unmeasured — the hook's output is where a reader
+// learns the probe did not run, and a skip that reads like a pass is the failure
+// this file is otherwise built to catch. It also names what DOES still cover
+// overlap in the default suite, so the skip cannot be read as "nothing checks
+// this any more".
+func requirePeakControlEnabled(t *testing.T) {
+	t.Helper()
+	if os.Getenv(astPeakControlEnv) != "1" {
+		t.Skipf("INSTRUMENT CONTROL NOT MEASURED: the %.1fx concurrent/sequential peak floor was not checked. "+
+			"Set %s=1, or run `make measure-ast-peak`, on a QUIET machine to run it — it is a peak-allocation "+
+			"ratio whose denominator moves with ambient load, which is why it is opt-in rather than a commit "+
+			"gate. Overlap itself is still proven on every run by TestMatch_ConcurrentInFlightDoesNotMultiply, "+
+			"whose uncapped arm counts in-flight files instead of measuring bytes.",
+			astPeakControlFloor, astPeakControlEnv)
+	}
+}
 
 // astPeakWorkers PINS the per-call worker fan-out for the instrument control,
 // so what it measures is a property of the PROBE rather than of the host.
@@ -317,6 +383,10 @@ func logPeakArm(tb testing.TB, arm string, peak uint64, matches int, wall time.D
 // question about the TOOL — which is what makes a later low reading mean "the
 // peak is bounded" rather than "the probe reads nothing".
 //
+// PERMANENT, BUT OPT-IN: it runs only under astPeakControlEnv, which is what
+// keeps a load-sensitive ratio out of the per-commit hook. The rationale, the
+// measured load spread, and why the floor did NOT move are on that constant.
+//
 // ARM ORDER IS PINNED: THE SEQUENTIAL ARM RUNS FIRST, THEN THE CONCURRENT ONE.
 // This is not cosmetic. A probe of the reverse order measured the uncapped ratio
 // dropping to a minimum of 3.783 against 5.021 in the pinned order, because the
@@ -324,6 +394,10 @@ func logPeakArm(tb testing.TB, arm string, peak uint64, matches int, wall time.D
 // order is the conservative one for the acceptance ceiling and the generous one
 // for this control's floor; reversing it silently narrows both margins.
 func TestMatch_PeakProbeSeesConcurrentMultiplier(t *testing.T) {
+	// OPT-IN, AND LOUD WHEN IT IS NOT TAKEN — see astPeakControlEnv. This is the
+	// first statement in the test so a skipped run costs nothing: no corpus is
+	// written and no arm is measured.
+	requirePeakControlEnabled(t)
 	// THE PERMANENT MUTATION PIN: both arms run through an effectively UNBOUNDED
 	// gate, so this keeps measuring the same uncapped overlap after the admission
 	// gate lands as it did before. It is the standing "remove the cap and the peak
@@ -364,6 +438,22 @@ func TestMatch_PeakProbeSeesConcurrentMultiplier(t *testing.T) {
 //
 // A RED HERE IS NOT REPAIRED BY LOOSENING astPeakRatioCeiling. The sanctioned
 // repair is the admission gate in match_admission.go.
+//
+// WHAT KEEPS THIS GATE FROM PASSING VACUOUSLY NOW THAT THE HEAP-RATIO CONTROL IS
+// OPT-IN. A ceiling is satisfied by any low reading, so it needs standing proof
+// that the arms genuinely overlap — otherwise a probe measuring nothing looks
+// like a bounded peak. Three things supply that on every ordinary run, none of
+// them load-sensitive: TestMatch_ConcurrentInFlightDoesNotMultiply
+// (match_admission_test.go:93) drives this same corpus through the UNCAPPED seam
+// and requires the in-flight high-water to reach at least 2*runtime.NumCPU() —
+// a COUNTING instrument, so its verdict does not move with the load average, and
+// its message says the quiet part out loud: if the uncapped seam did not
+// overlap, the capped arm proved nothing; matchArmPeak's run proof fails an arm
+// whose calls scanned zero files or matched nothing; and the require.NotZerof
+// below fails the zero sequential peak a dead probe would produce.
+//
+// The opt-in control remains the answer to the sharper question — whether the
+// heap gauge separates the two states by the expected MULTIPLE.
 func TestMatch_ConcurrentPeakIsBounded(t *testing.T) {
 	dir := countRetentionCorpus(t, astPeakStmtsPerFile)
 

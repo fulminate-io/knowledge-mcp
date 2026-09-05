@@ -62,12 +62,12 @@ type vecFormat struct{}
 
 func (vecFormat) Name() string { return "vec" }
 
-func (vecFormat) Build(docs []Document) (Segment[mockQuery, mockStats], error) {
+func (vecFormat) Build(docs []Document) (Segment[mockQuery, mockStats], BuildReport, error) {
 	rows := make([]vecRow, 0, len(docs))
 	for _, d := range docs {
 		rows = append(rows, vecRow{ID: d.ID, Vector: d.Vector})
 	}
-	return &vecSegment{rows: rows}, nil
+	return &vecSegment{rows: rows}, BuildReport{}, nil
 }
 
 func (vecFormat) Decode(blob []byte) (Segment[mockQuery, mockStats], error) {

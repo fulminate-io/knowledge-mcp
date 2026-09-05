@@ -246,7 +246,24 @@ func edgePtrsForTest(edges []knowledgev1.Edge) []*knowledgev1.Edge {
 	out := make([]*knowledgev1.Edge, len(edges))
 	for i := range edges {
 		e := &edges[i]
-		out[i] = &knowledgev1.Edge{FromId: e.FromId, ToId: e.ToId, Type: e.Type}
+		// THE EDGE METADATA IS COPIED, not just the three identity fields. This
+		// helper stands in for the wire, and engine.EdgesFromProto carries
+		// Weight, Confidence, Method, Evidence and LastValidated verbatim — so a
+		// helper that rebuilt an edge from FromId/ToId/Type alone would silently
+		// strip the very field a test seeded. A fixture that drops the field
+		// under test makes its own assertion vacuous: a sibling-order test
+		// seeding a position on Evidence would read as "position ignored" and
+		// pass against a correct implementation.
+		out[i] = &knowledgev1.Edge{
+			FromId:        e.FromId,
+			ToId:          e.ToId,
+			Type:          e.Type,
+			Weight:        e.Weight,
+			Confidence:    e.Confidence,
+			Method:        e.Method,
+			Evidence:      e.Evidence,
+			LastValidated: e.LastValidated,
+		}
 	}
 	return out
 }

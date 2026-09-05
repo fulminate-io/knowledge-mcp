@@ -4,11 +4,13 @@ package web
 
 import (
 	"encoding/base64"
+	"strconv"
 	"testing"
 	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 )
 
 // fixtureBody is the retained response body buildFixture claims to have
@@ -50,9 +52,29 @@ func buildFixture() *pageRecord {
 	}
 }
 
+// mustEmitFromPage runs the emitter and FAILS THE TEST on the loud-error
+// return, rather than discarding it into a blank identifier at twenty call
+// sites.
+//
+// emitFromPage's error reports a condition no correct build reaches — the four
+// marshal branches that used to drop a metadata key or an edge's evidence in
+// silence. Discarding it here would put the tests in exactly the posture the
+// ticket removed from the production code: a failure that happened, and
+// nothing that says so.
+func mustEmitFromPage(t *testing.T, p *pageRecord, collectedAt time.Time) ([]*knowledgev1.Node, []kgwire.BatchEdge) {
+	t.Helper()
+	// A ZERO graphSource: these tests assert the page shape, not the crawl's
+	// provenance, and the zero value writes no source keys.
+	nodes, edges, err := emitFromPage(p, collectedAt, graphSource{})
+	if err != nil {
+		t.Fatalf("emitFromPage: %v", err)
+	}
+	return nodes, edges
+}
+
 func TestEmitFromPage_NodeCountAndTypes(t *testing.T) {
 	p := buildFixture()
-	nodes, _ := emitFromPage(p)
+	nodes, _ := mustEmitFromPage(t, p, time.Time{})
 
 	// Expected: 1 page + 1 section + 2 paragraphs + 1 code_block + 1 list
 	// + 2 list_items + 1 link + 1 raw_html = 10 nodes.
@@ -86,134 +108,31 @@ func TestEmitFromPage_NodeCountAndTypes(t *testing.T) {
 	}
 }
 
-// TestEmitFromPage_PageDescriptionFlattens confirms the page node carries
-// the flattened body — heading + paragraph + list-item text — under
-// Node.Description. Without this, recipes translating page → pattern
-// (azure-patterns, hohpe-eip, ...) emit pattern nodes with no body
-// content, and BM25 / HNSW indexes silently drop them from search.
-func TestEmitFromPage_PageDescriptionFlattens(t *testing.T) {
-	p := buildFixture()
-	nodes, _ := emitFromPage(p)
-
-	var pageNode *knowledgev1.Node
-	for i := range nodes {
-		if nodes[i].Type == "page" {
-			pageNode = nodes[i]
-			break
-		}
-	}
-	if pageNode == nil {
-		t.Fatal("page node missing")
-	}
-	desc := pageNode.Description
-	if desc == "" {
-		t.Fatal("page Description is empty — flattenPageBody did not populate")
-	}
-	wantSubstrings := []string{
-		"# Intro",     // heading w/ depth 1
-		"first para",  // paragraph 1
-		"second para", // paragraph 2
-		"- item-a",    // list item
-		"- item-b",    // list item
-	}
-	for _, want := range wantSubstrings {
-		if !contains(desc, want) {
-			t.Errorf("page.Description missing %q\n--- got ---\n%s", want, desc)
-		}
-	}
-	// Code blocks, links, and external cites must NOT appear in the
-	// flattened body — those are shape nodes, not searchable prose.
-	for _, unwant := range []string{"package x", "https://example.com/other"} {
-		if contains(desc, unwant) {
-			t.Errorf("page.Description should not contain %q (shape node leaked into body)\n--- got ---\n%s", unwant, desc)
-		}
-	}
-}
-
-// TestEmitFromPage_PageDescriptionIsUntruncated confirms the flattened page
-// body is NOT character-truncated. The ceiling that used to apply here cut the
-// Description at 8000 characters; a page whose prose runs past that must now
-// reach the graph whole.
+// THE TWO PAGE-BODY TESTS THAT STOOD HERE ARE RETIRED, and this note is the
+// record of where they went rather than a silence a later reader has to
+// reconstruct.
 //
-// The two assertions are complementary rather than redundant: equality against
-// the full flatten catches truncation at ANY length, and the strict
-// greater-than-8000 guard is what proves the fixture actually crosses the
-// removed ceiling — without it, equality would hold trivially on a short page
-// and the test would go green against a still-capped implementation.
-func TestEmitFromPage_PageDescriptionIsUntruncated(t *testing.T) {
-	const filler = "lorem ipsum dolor sit amet "
-	const removedCeiling = 8000
-	repeats := (removedCeiling / len(filler)) + 100
-	bigPara := paragraphRecord{Text: repeatString(filler, repeats)}
-	sec := &sectionRecord{
-		Heading:  "Big",
-		Depth:    1,
-		Children: []contentRecord{bigPara},
-	}
-	p := &pageRecord{
-		URL:         "https://example.com/big",
-		FinalURL:    "https://example.com/big",
-		Title:       "Big",
-		HTTPStatus:  200,
-		ContentHash: "abc",
-		TopSections: []*sectionRecord{sec},
-	}
-	nodes, _ := emitFromPage(p)
-	var pageNode *knowledgev1.Node
-	for i := range nodes {
-		if nodes[i].Type == "page" {
-			pageNode = nodes[i]
-			break
-		}
-	}
-	if pageNode == nil {
-		t.Fatal("page node missing")
-	}
-
-	want := flattenPageBody(p.TopSections)
-	if len(want) <= removedCeiling {
-		t.Fatalf("fixture flattens to only %d chars, at or under the removed ceiling %d — this test could not detect truncation",
-			len(want), removedCeiling)
-	}
-	if got := len(pageNode.Description); got != len(want) {
-		t.Errorf("page.Description is %d chars, want the full flatten's %d — something is still truncating", got, len(want))
-	}
-	if pageNode.Description != want {
-		t.Error("page.Description differs from the full flatten of the same sections")
-	}
-	if len(pageNode.Description) <= removedCeiling {
-		t.Errorf("page.Description is %d chars, still at or under the removed ceiling %d",
-			len(pageNode.Description), removedCeiling)
-	}
-}
-
-// repeatString concatenates s n times. strings.Repeat would do, but the
-// test file already imports nothing from strings — keep imports minimal.
-func repeatString(s string, n int) string {
-	out := make([]byte, 0, len(s)*n)
-	for range n {
-		out = append(out, s...)
-	}
-	return string(out)
-}
-
-// contains is a tiny helper kept here to avoid a strings import.
-func contains(haystack, needle string) bool {
-	if len(needle) == 0 {
-		return true
-	}
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
-}
+// TestEmitFromPage_PageDescriptionFlattens asserted that the page node carried
+// a flattened body of its sections' heading, paragraph and list-item text.
+// That flatten no longer happens: under the ruling "pages are made up of
+// chunks never put the whole page as content" the page-level flatten is
+// retired rather than relocated, so the test's subject does not exist. Its
+// substance is not lost — the same words are asserted reachable, on the chunk
+// nodes that own them, by the reachability census in
+// TestEmit_PageIsItsChunksNotItsBody.
+//
+// TestEmitFromPage_PageDescriptionIsUntruncated was the untruncated guard: it
+// proved a page whose prose ran past the removed 8000-character ceiling
+// reached the graph whole. THE CONCERN IT GUARDED IS NOW SATISFIED BY
+// CONSTRUCTION, which is why the guard is removed rather than rewritten: a
+// page body cannot be silently truncated when no page body is composed at
+// all, and every chunk node carries its own untruncated text with no ceiling
+// anywhere on that path.
 
 func TestEmitFromPage_StableIDs(t *testing.T) {
 	p := buildFixture()
-	n1, _ := emitFromPage(p)
-	n2, _ := emitFromPage(p)
+	n1, _ := mustEmitFromPage(t, p, time.Time{})
+	n2, _ := mustEmitFromPage(t, p, time.Time{})
 	if len(n1) != len(n2) {
 		t.Fatalf("emit not deterministic: %d vs %d", len(n1), len(n2))
 	}
@@ -232,7 +151,7 @@ func TestEmitFromPage_StableIDs(t *testing.T) {
 
 func TestEmitFromPage_ContainsEdgeTree(t *testing.T) {
 	p := buildFixture()
-	nodes, edges := emitFromPage(p)
+	nodes, edges := mustEmitFromPage(t, p, time.Time{})
 	byID := indexNodes(nodes)
 
 	pageID := nodes[0].Id
@@ -263,7 +182,7 @@ func TestEmitFromPage_ContainsEdgeTree(t *testing.T) {
 
 func TestEmitFromPage_PositionMetadataMonotonic(t *testing.T) {
 	p := buildFixture()
-	nodes, edges := emitFromPage(p)
+	nodes, edges := mustEmitFromPage(t, p, time.Time{})
 	byID := indexNodes(nodes)
 
 	pageID := nodes[0].Id
@@ -277,9 +196,89 @@ func TestEmitFromPage_PositionMetadataMonotonic(t *testing.T) {
 	}
 }
 
+// TestEmitFromPage_PositionMetadataOnEveryContainedNode asserts the
+// node-level half of document order: EVERY node that is the target of a
+// CONTAINS edge carries a `position` metadata key equal to that edge's
+// Evidence position, and the parentless page root carries none.
+//
+// Complementary to TestEmitFromPage_PositionMetadataMonotonic above, which
+// reads EDGE positions only and never touches node metadata — do not fold
+// the two together.
+func TestEmitFromPage_PositionMetadataOnEveryContainedNode(t *testing.T) {
+	p := buildFixture()
+	nodes, edges := mustEmitFromPage(t, p, time.Time{})
+	byID := indexNodes(nodes)
+
+	walked := 0
+	for _, e := range edges {
+		if e.Type != kgtypes.EdgeContains {
+			continue
+		}
+		walked++
+		md := parseMeta(t, e.Evidence)
+		child := byID[e.ToID]
+		if child == nil {
+			t.Fatalf("contains edge %s→%s: no such node", e.FromID, e.ToID)
+		}
+		got, ok := child.Metadata["position"]
+		if !ok {
+			t.Errorf("node %s (type %s) has NO position metadata; edge position=%q",
+				child.Id, child.Type, md["position"])
+			continue
+		}
+		if got != md["position"] {
+			t.Errorf("node %s (type %s): position=%q, want %q (its CONTAINS edge position)",
+				child.Id, child.Type, got, md["position"])
+		}
+	}
+	// Guard: a fixture or edge-type mistake must not let this pass vacuously.
+	if walked == 0 {
+		t.Fatal("walked 0 CONTAINS edges — the assertion never ran")
+	}
+
+	if _, ok := nodes[0].Metadata["position"]; ok {
+		t.Errorf("page root %s carries a position key %q; a parentless root has no edge position to mirror",
+			nodes[0].Id, nodes[0].Metadata["position"])
+	}
+}
+
+// TestEmitFromPage_StampsCollectorSchemaVersion asserts the version stamp lands
+// on the page ROOT and on no child node. The negative half is what rejects an
+// implementation that stamps every node.
+//
+// Asserted against the package constant rather than a hardcoded "1" so a future
+// bump does not false-red the test, plus a separate assertion that the constant
+// is greater than zero so its value cannot be read as unstamped.
+func TestEmitFromPage_StampsCollectorSchemaVersion(t *testing.T) {
+	if collectorSchemaVersion <= 0 {
+		t.Fatalf("collectorSchemaVersion = %d, want > 0 — zero cannot be told from unstamped", collectorSchemaVersion)
+	}
+	p := buildFixture()
+	nodes, edges := mustEmitFromPage(t, p, time.Time{})
+	byID := indexNodes(nodes)
+
+	want := strconv.Itoa(collectorSchemaVersion)
+	if got := nodes[0].Metadata["collector_schema_version"]; got != want {
+		t.Errorf("page root collector_schema_version = %q, want %q", got, want)
+	}
+
+	pageID := nodes[0].Id
+	sectionID := findOneChild(t, edges, pageID, "section", byID)
+	paragraphID := findFirstChildID(edges, sectionID, "paragraph", byID)
+	if sectionID == "" || paragraphID == "" {
+		t.Fatal("fixture did not yield a section and a paragraph — the negative half never ran")
+	}
+	for _, id := range []string{sectionID, paragraphID} {
+		if got, ok := byID[id].Metadata["collector_schema_version"]; ok {
+			t.Errorf("%s node %s carries collector_schema_version=%q; the stamp belongs on the root only",
+				byID[id].Type, id, got)
+		}
+	}
+}
+
 func TestEmitFromPage_InternalExternalEdgesDistinguishable(t *testing.T) {
 	p := buildFixture()
-	nodes, edges := emitFromPage(p)
+	nodes, edges := mustEmitFromPage(t, p, time.Time{})
 	pageID := nodes[0].Id
 
 	var internal, external int
@@ -312,7 +311,7 @@ func TestEmitFromPage_InternalExternalEdgesDistinguishable(t *testing.T) {
 }
 
 func TestEmitFromPage_NilReturnsEmpty(t *testing.T) {
-	nodes, edges := emitFromPage(nil)
+	nodes, edges := mustEmitFromPage(t, nil, time.Time{})
 	if len(nodes) != 0 || len(edges) != 0 {
 		t.Fatalf("nil page: want empty, got %d nodes, %d edges", len(nodes), len(edges))
 	}
@@ -354,7 +353,7 @@ func TestEmit_InlineEmphasis(t *testing.T) {
 			},
 		}},
 	}
-	nodes, _ := emitFromPage(p)
+	nodes, _ := mustEmitFromPage(t, p, time.Time{})
 	assertInlineEmphasis(t, nodes, "paragraph", "a bold c it d", emphsPara)
 	assertInlineEmphasis(t, nodes, "paragraph", "plain line", nil)
 	assertInlineEmphasis(t, nodes, "list_item", "set `FOO` now", emphsItem)

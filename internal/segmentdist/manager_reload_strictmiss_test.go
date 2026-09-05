@@ -30,15 +30,17 @@ import (
 func TestReloadStrictMissIsAnError(t *testing.T) {
 	t.Parallel()
 
-	const (
-		present = searchengine.SegmentID("seg-present")
-		// Removed from L2 underneath the evicted pool — a Remove racing the
-		// re-materialization.
-		removedUnderneath = searchengine.SegmentID("seg-removed-underneath")
-	)
 	// Decodable mock-format bytes: the tolerant leg reaches engine.Import, so a
 	// payload that fails Decode would fail that leg for the wrong reason.
 	presentBytes := []byte(`[{"id":"d1","content":"alpha"}]`)
+	// THE IDS ARE THE CONTENT HASHES OF THEIR OWN BYTES, because Put now verifies
+	// the address it is given. `present` is the id of the bytes actually stored;
+	// `removedUnderneath` names a segment that is deliberately never written, so
+	// any distinct hash serves.
+	present := sha256Hex(presentBytes)
+	// Removed from L2 underneath the evicted pool — a Remove racing the
+	// re-materialization.
+	removedUnderneath := sha256Hex([]byte("seg-removed-underneath"))
 
 	newFixture := func(t *testing.T) *distManager[mockQuery, mockStats] {
 		t.Helper()

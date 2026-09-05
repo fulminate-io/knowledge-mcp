@@ -53,10 +53,11 @@ func (c *ctxCapturingCaller) Execute(
 // (intercept_search_query_dispatch_test.go:175).
 type sessionPropagationDeps struct{ gc GraphCaller }
 
-func (d sessionPropagationDeps) LocalLiveness() LocalLiveness    { return nil }
-func (d sessionPropagationDeps) Sink() collector.Sink            { return nil }
-func (d sessionPropagationDeps) RootDir() string                 { return "" }
-func (d sessionPropagationDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+func (d sessionPropagationDeps) LocalLiveness() LocalLiveness          { return nil }
+func (d sessionPropagationDeps) Sink() collector.Sink                  { return nil }
+func (d sessionPropagationDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
+func (d sessionPropagationDeps) RootDir() string                       { return "" }
+func (d sessionPropagationDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
 
 func (d sessionPropagationDeps) PropReady() bool     { return true }
 func (d sessionPropagationDeps) PipelineReady() bool { return true }

@@ -182,6 +182,37 @@ func selectSummarizer(fc *llmproviders.FallbackChain) (llmproviders.Summarizer, 
 	}
 }
 
+// attachSegmentDependentHooks wires the three pipeline hooks that need a
+// segment manager, all behind the one nil guard they share. Relocated whole out
+// of wirePipelineRuntime, which had grown past the function-length cap; it is a
+// list of wirings, exactly like attachCollectGate and attachLocalPresence above,
+// and nothing about the wiring order or the guard changed in the move.
+//
+// Wire the auto-heal factory: on the embed drain after a collect armed
+// the heal-check, a code graph with ZERO shipped segments triggers a one-shot
+// rebuild (closure built over the segment-presence probe + tools.RebuildSegments,
+// single-flight shared with the manual rebuild_segments op). Guarded on the
+// segment manager being wired — without it there is no probe/shipper, so the
+// factory (and the per-collector heal closure) stay unset and the heal-check
+// no-ops (headless/degraded mode unaffected).
+func attachSegmentDependentHooks(p *pipeline.Pipeline, c *client) {
+	if c.segmentMgr == nil {
+		return
+	}
+	p.AttachHealFactory(c.buildHealFactory())
+	attachBalanceVerdict(p, c)
+	// Wire the segment cheap tick's consumer end: when the bulk gen
+	// poll reports a graph's segment stamp past the last stamp this client poked
+	// on, record a reconcile nudge so the segment loop pulls that graph's delta
+	// now instead of at its next periodic tick. Same guard as the heal factory —
+	// without a segment manager there is nothing to nudge, and the poll simply
+	// samples the axis without acting on it.
+	mgr := c.segmentMgr
+	p.SetSegmentNudger(func(gt kgtypes.GraphType, name string) {
+		mgr.NudgeSegmentDelta(gt, name)
+	})
+}
+
 // wirePipelineRuntime constructs the client-side LLM pipeline (summarize
 // + embed worker pools + per-graph collectors) and attaches it to *client.
 // Returns nil on success; nil + log-and-skip when --no-llm-pipeline is
@@ -272,30 +303,21 @@ func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 	// registration pass below already reads it.
 	p.AttachWorkingSet(c.workingSet)
 
+	// Wire the working-set EVICTION the collector's durable-not-found arm reaches.
+	// The landed RemoveFromWorkingSet takes no reason argument, so the reason is
+	// logged HERE rather than passed down; logging on the true return preserves the
+	// log-exactly-once property the reason string exists for.
+	p.AttachGraphEvictor(func(gt kgtypes.GraphType, name, reason string) {
+		if c.RemoveFromWorkingSet(gt, name) {
+			slog.Info("working set: graph evicted",
+				"graph_type", gt, "name", name, "reason", reason)
+		}
+	})
+
 	// Narrows the wanted set to graphs this machine can serve; held by a structural check, not a test.
 	attachLocalPresence(p, c)
 
-	// Wire the auto-heal factory: on the embed drain after a collect armed
-	// the heal-check, a code graph with ZERO shipped segments triggers a one-shot
-	// rebuild (closure built over the segment-presence probe + tools.RebuildSegments,
-	// single-flight shared with the manual rebuild_segments op). Guarded on the
-	// segment manager being wired — without it there is no probe/shipper, so the
-	// factory (and the per-collector heal closure) stay unset and the heal-check
-	// no-ops (headless/degraded mode unaffected).
-	if c.segmentMgr != nil {
-		p.AttachHealFactory(c.buildHealFactory())
-		attachBalanceVerdict(p, c)
-		// Wire the segment cheap tick's consumer end: when the bulk gen
-		// poll reports a graph's segment stamp past the last stamp this client poked
-		// on, record a reconcile nudge so the segment loop pulls that graph's delta
-		// now instead of at its next periodic tick. Same guard as the heal factory —
-		// without a segment manager there is nothing to nudge, and the poll simply
-		// samples the axis without acting on it.
-		mgr := c.segmentMgr
-		p.SetSegmentNudger(func(gt kgtypes.GraphType, name string) {
-			mgr.NudgeSegmentDelta(gt, name)
-		})
-	}
+	attachSegmentDependentHooks(p, c)
 
 	attachCollectGate(p, c)
 

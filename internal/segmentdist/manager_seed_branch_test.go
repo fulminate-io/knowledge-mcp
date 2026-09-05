@@ -112,6 +112,7 @@ func branchEngineCache(cacheDir, name, format string, maxBytes int64) *diskSegme
 // already retired, into a branch that would then serve them as live. An assertion
 // that only counted the copied partitions would pass while doing exactly that.
 func TestSeedBranchBucketFromBase_CopiesPublishedPartitions(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 	ctx := context.Background()
 	cacheDir := t.TempDir()
@@ -165,6 +166,7 @@ func TestSeedBranchBucketFromBase_CopiesPublishedPartitions(t *testing.T) {
 // that looks seeded while missing documents — which is precisely what a
 // shipped-complete gate downstream would believe.
 func TestSeedBranchBucketFromBase_RefusesToOverflowTheBudget(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 	ctx := context.Background()
 	cacheDir := t.TempDir()
@@ -212,6 +214,7 @@ func TestSeedBranchBucketFromBase_RefusesToOverflowTheBudget(t *testing.T) {
 // would refill it. A counter could be satisfied by a seed that ran and did
 // nothing; an empty bucket cannot.
 func TestManagerFor_BranchGraphSeedsFromBaseOnce(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 	cacheDir := t.TempDir()
 	hnswFmt := hnsw.New().Name()

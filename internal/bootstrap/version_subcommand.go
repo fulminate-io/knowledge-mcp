@@ -65,7 +65,14 @@ func runVersion(args []string) error {
 	}
 
 	serverVersion, ok := probeDaemonVersion(*port)
-	fmt.Fprint(os.Stdout, renderVersionOutput(Version, serverVersion, ok))
+	// The installed server binary is read off disk under its own bounded
+	// context, so a corrupt or wrong-architecture binary cannot wedge a version
+	// print; an unreadable one degrades to no line, exactly as an unreachable
+	// daemon does.
+	binCtx, cancel := context.WithTimeout(context.Background(), serverBinaryVersionBudget)
+	defer cancel()
+	serverBinVer, serverBinOK := serverBinaryVersion(binCtx)
+	fmt.Fprint(os.Stdout, renderVersionOutput(Version, serverVersion, ok, serverBinVer, serverBinOK))
 	return nil
 }
 
@@ -76,15 +83,28 @@ func runVersion(args []string) error {
 // so the two surfaces cannot drift). Pure and side-effect-free so the skew
 // formatting is unit-testable without a live daemon; runVersion keeps the
 // probe + os.Stdout write and delegates all formatting here.
-func renderVersionOutput(clientVer, daemonVer string, daemonKnown bool) string {
+func renderVersionOutput(clientVer, daemonVer string, daemonKnown bool, serverBinVer string, serverBinKnown bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "knowledge %s\n", clientVer)
 	if daemonKnown {
 		fmt.Fprintf(&b, "server %s\n", daemonVer)
 	}
+	// The INSTALLED server binary, distinct from the RUNNING daemon above: one
+	// is a file on disk, the other a live process, and they diverge for
+	// different reasons with different remedies.
+	if serverBinKnown {
+		fmt.Fprintf(&b, "server binary %s\n", serverBinVer)
+	}
 	if line, skewed := graphclient.VersionSkewLine(clientVer, daemonVer); skewed {
 		fmt.Fprintf(&b, "%s\n", line)
 	}
+	if line, skewed := graphclient.ServerBinarySkewLine(clientVer, serverBinVer); skewed {
+		fmt.Fprintf(&b, "%s\n", line)
+	}
+	// The gateway's version verdict and this client's own possession proof,
+	// appended by a separate renderer so the skew line above stays untouched.
+	// Contributes nothing at all when neither is set.
+	b.WriteString(renderClientVersionState())
 	return b.String()
 }
 

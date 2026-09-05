@@ -65,36 +65,21 @@ func TestNormalizeForRotation_TwoSeventy(t *testing.T) {
 	}
 }
 
-// normalizeBBoxForRoundTrip applies the same point-transform as
-// normalizeForRotation to a Rect's two opposite corners. It exists
-// only in test code so we can verify denormalizeBBox is the literal
-// inverse: denormalizeBBox(normalizeBBoxForRoundTrip(r)) == r.
+// normalizeBBoxForRoundTrip applies the forward point transform —
+// NormalizePoint, the same one normalizeForRotation applies to a run's
+// anchor — to a Rect's two opposite corners. It exists only in test
+// code so we can verify denormalizeBBox is the literal inverse:
+// denormalizeBBox(normalizeBBoxForRoundTrip(r)) == r.
+//
+// It delegates rather than carrying its own copy of the switch, so
+// this round-trip proof is a proof about the production formula and
+// cannot drift away from it.
 func normalizeBBoxForRoundTrip(b Rect, rotation int, mb Rect) Rect {
 	if rotation == 0 {
 		return b
 	}
-	mbW := mb.X1
-	mbH := mb.Y1
-	var p0x, p0y, p1x, p1y float64
-	switch rotation {
-	case 90:
-		p0x = b.Y0
-		p0y = mbW - b.X0
-		p1x = b.Y1
-		p1y = mbW - b.X1
-	case 180:
-		p0x = mbW - b.X0
-		p0y = mbH - b.Y0
-		p1x = mbW - b.X1
-		p1y = mbH - b.Y1
-	case 270:
-		p0x = mbH - b.Y0
-		p0y = b.X0
-		p1x = mbH - b.Y1
-		p1y = b.X1
-	default:
-		return b
-	}
+	p0x, p0y := NormalizePoint(b.X0, b.Y0, rotation, mb)
+	p1x, p1y := NormalizePoint(b.X1, b.Y1, rotation, mb)
 	x0, x1 := p0x, p1x
 	if x0 > x1 {
 		x0, x1 = x1, x0

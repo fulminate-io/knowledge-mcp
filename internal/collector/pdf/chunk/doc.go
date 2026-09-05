@@ -26,16 +26,14 @@
 // pages. All three signals are required — terminator punctuation,
 // font mismatch, or X-start mismatch each block the merge.
 //
-// # Header / footer / footnote filtering
+// # Running page chrome
 //
-// SkipHeadersFooters and SkipFootnotes drop blocks classified as
-// header/footer or footnote before chunk emission. These delegate to
-// the source Document's PageHeadersFooters and PageFootnotes methods.
-// When a method is not yet implemented at the source layer (the
-// public collector/pdf package's HeadersFooters / Footnotes are owned
-// by a separate ticket), Build treats the ErrPageMethodNotImplemented
-// sentinel as "no header/footer/footnote blocks to skip" and
-// continues without surfacing an error.
+// Build drops nothing. A block whose text repeats across pages — a
+// running header, a footer, a page number — is STAMPED with
+// page_repeat_count and the two companion chrome signals and emitted
+// like any other block. A consumer that wants it gone filters on those
+// signals; chrome.IsPageChrome is the one Go copy of the rule the old
+// deleting detector applied, for callers who want that exact verdict.
 //
 // # MinChunkChars
 //

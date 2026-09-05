@@ -107,7 +107,7 @@ func TestAssembleSubtree_TwoExecuteCallsAnyWidth(t *testing.T) {
 		var sb strings.Builder
 		RenderTreeFromIndex(&sb, &knowledgev1.Node{
 			Id: "root", SymbolName: "Root", Type: string(kgtypes.NodePlan),
-		}, 0, 16, childIndex, dependsOn)
+		}, 0, 16, childIndex, dependsOn, nil)
 		out := sb.String()
 		assert.Contains(t, out, "ID: root")
 		for id := range byID {
@@ -131,7 +131,7 @@ func TestAssembleSubtree_TwoExecuteCallsAnyWidth(t *testing.T) {
 		var sb strings.Builder
 		RenderTreeFromIndex(&sb, &knowledgev1.Node{
 			Id: "root", SymbolName: "Root", Type: string(kgtypes.NodePlan),
-		}, 0, 16, childIndex, dependsOn)
+		}, 0, 16, childIndex, dependsOn, nil)
 		assert.Equal(t, 1, strings.Count(sb.String(), "ID: "), "root only")
 	})
 

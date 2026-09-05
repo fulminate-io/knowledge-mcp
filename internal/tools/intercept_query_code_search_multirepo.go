@@ -110,9 +110,12 @@ func composeCodeSearchMultiRepo(ctx context.Context, deps ClientDeps, cdeps code
 	}
 	merged = applyCodeResultFilters(merged, a)
 
+	// The json branch reads BOTH caller knobs the cross-repo text render below
+	// reads — this composer has its own render site, so the single-repo one
+	// honoring them proves nothing about this one.
 	if a.Format == "json" {
 		return appendDegradeContent(
-			engine.RenderForCaller(strings.Join(queries, " "), flattenCodeResults(merged), "json", nil, ""),
+			engine.RenderForCaller(strings.Join(queries, " "), flattenCodeResults(merged, includeSource), "json", a.Fields, ""),
 			cdeps.degrade)
 	}
 

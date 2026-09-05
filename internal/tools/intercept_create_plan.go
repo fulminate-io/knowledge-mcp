@@ -41,6 +41,7 @@ type createPlanArgs struct {
 	ResearchID       string                  `json:"research_id,omitempty"`
 	TicketID         string                  `json:"ticket_id,omitempty"`
 	Phases           []createPlanPhase       `json:"phases"`
+	Sections         []createPlanSection     `json:"sections,omitempty"`
 	OpenQuestions    []createPlanQuestion    `json:"open_questions,omitempty"`
 	PatternIDs       []string                `json:"pattern_ids,omitempty"`
 	NoPatternsReason string                  `json:"no_patterns_reason,omitempty"`
@@ -108,8 +109,15 @@ func InterceptCreatePlan(ctx context.Context, deps ClientDeps, params kgtools.Ca
 	if err := rejectUndeclaredParams("create_plan", "", CreatePlanToolDef().InputSchema.Properties, params.Arguments); err != nil {
 		return true, errorResult(err.Error())
 	}
-	if len(a.Phases) == 0 {
-		return true, errorResult("at least one phase is required")
+	// The nested sections[] scan, beside the top-level one above: the decode
+	// discards any nested key createPlanSection has no field for, and
+	// rejectUndeclaredParams is TOP-LEVEL ONLY, so an undeclared section key
+	// would otherwise vanish into a successful create.
+	if err := rejectUndeclaredSectionKeys(params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
+	if err := validatePlanShape(&a); err != nil {
+		return true, errorResult(err.Error())
 	}
 
 	clampWarnings, err := validatePlanSummaries(&a)
@@ -133,7 +141,14 @@ func InterceptCreatePlan(ctx context.Context, deps ClientDeps, params kgtools.Ca
 	planArgs.LanguagePatterns = res.effectiveLangIDs
 	res.warnings = append(res.warnings, clampWarnings...)
 
-	nodes, edges := projects.BuildPlanGraph(planArgs, res.unresolvedIDs, res.unresolvedLangIDs)
+	nodes, edges, berr := projects.BuildPlanGraph(planArgs, res.unresolvedIDs, res.unresolvedLangIDs)
+	if berr != nil {
+		// PRE-WRITE and LOUD: the builder failed to encode a section's position,
+		// and an edge without it is indistinguishable from an unpositioned one —
+		// so the plan would persist and render its sections in arrival order with
+		// nothing reporting the loss. Nothing has been written at this point.
+		return true, errorResult("create plan: " + berr.Error())
+	}
 
 	bundleID := newBundleID()
 	ids, perr := PersistBatch(ctx, gc, nodes, edges, bundleID)
@@ -210,6 +225,11 @@ func validatePlanSummaries(a *createPlanArgs) (warnings []string, err error) {
 			warnings = append(warnings, cw...)
 		}
 	}
+	sw, serr := validatePlanSections(a.Sections)
+	if serr != nil {
+		return nil, serr
+	}
+	warnings = append(warnings, sw...)
 	pw, perr := validateProposedPatternSummaries(a.ProposedPatterns)
 	if perr != nil {
 		return nil, perr
@@ -303,7 +323,7 @@ func renderCreatePlanText(ctx context.Context, gc GraphCaller, a createPlanArgs,
 		return textResult(fmt.Sprintf("Plan created: %s → ID: %s [graph: knowledge/default]", a.Name, planID))
 	}
 	childIndex, byID, dependsOn, truncated := render.AssembleSubtree(ctx, gc, root.Id, 3)
-	render.RenderTreeFromIndex(&sb, root, 0, 3, childIndex, dependsOn)
+	render.RenderTreeFromIndex(&sb, root, 0, 3, childIndex, dependsOn, nil)
 	writeClientWarningsSection(&sb, warnings)
 	if section := suggestPatternsForPlanClient(a.Name, a.Goal, a.NoPatternsReason); section != "" {
 		sb.WriteString(section)
@@ -356,6 +376,14 @@ func buildPlanArgsFromWire(a createPlanArgs) projects.PlanArgs {
 			phaseArgs.Steps = append(phaseArgs.Steps, stepArgs)
 		}
 		planArgs.Phases = append(planArgs.Phases, phaseArgs)
+	}
+	for _, sec := range a.Sections {
+		planArgs.Sections = append(planArgs.Sections, projects.SectionArgs{
+			Name:     sec.Name,
+			Body:     sec.Body,
+			Summary:  sec.Summary,
+			Position: sec.Position,
+		})
 	}
 	for _, q := range a.OpenQuestions {
 		planArgs.OpenQuestions = append(planArgs.OpenQuestions, projects.QuestionArgs{

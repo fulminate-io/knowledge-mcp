@@ -60,6 +60,50 @@ func (e *ErrGroupNotFound) Error() string {
 	return fmt.Sprintf("linear: group %q not found in workspace", e.GroupKey)
 }
 
+// workspaceLabelScope is the scope name an ambiguity refusal prints for a
+// label Linear returns with team: null — a workspace-scoped label, visible to
+// every team, which is why it can collide with a team-scoped label of the
+// same name.
+const workspaceLabelScope = "workspace"
+
+// LabelMatch is one label a filtered lookup matched, carrying the scope it
+// lives at so a refusal can distinguish two matches that share a name.
+// Scope is "team <key>" for a team-scoped label and workspaceLabelScope for
+// a workspace-scoped one.
+type LabelMatch struct {
+	ID    string
+	Name  string
+	Scope string
+}
+
+// ErrAmbiguousLabel wraps a requested label name the tracker matched more
+// than once — a team-scoped and a workspace-scoped label of the same name, or
+// two case variants of it. Choosing one would be a silent guess at which
+// label the caller meant, and attaching the wrong label is invisible after
+// the fact, so the adapter refuses before any create and names every match it
+// read.
+//
+// More reports that the tracker said further matches exist beyond the page
+// the lookup read; without it a truncated list would read as a complete one.
+type ErrAmbiguousLabel struct {
+	Requested string
+	Matches   []LabelMatch
+	More      bool
+}
+
+func (e *ErrAmbiguousLabel) Error() string {
+	parts := make([]string, 0, len(e.Matches))
+	for _, m := range e.Matches {
+		parts = append(parts, fmt.Sprintf("%q (%s, id %s)", m.Name, m.Scope, m.ID))
+	}
+	msg := fmt.Sprintf("linear: label %q is ambiguous — it matches %d labels: %s",
+		e.Requested, len(e.Matches), strings.Join(parts, "; "))
+	if e.More {
+		msg += "; further matches exist beyond the ones listed"
+	}
+	return msg + ". Rename or remove one of them, or ask for the label by an unambiguous name"
+}
+
 // graphQLError is the shape of a single error in a Linear GraphQL response's
 // top-level `errors` array. Used internally by client.do to summarize
 // errors. Not exported — callers see wrapped fmt.Errorf strings or the typed

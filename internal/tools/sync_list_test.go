@@ -42,10 +42,11 @@ type fakeSyncListDeps struct {
 	host     string
 }
 
-func (d *fakeSyncListDeps) LocalLiveness() LocalLiveness    { return nil }
-func (d *fakeSyncListDeps) Sink() collector.Sink            { return nil }
-func (d *fakeSyncListDeps) RootDir() string                 { return "" }
-func (d *fakeSyncListDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+func (d *fakeSyncListDeps) LocalLiveness() LocalLiveness          { return nil }
+func (d *fakeSyncListDeps) Sink() collector.Sink                  { return nil }
+func (d *fakeSyncListDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
+func (d *fakeSyncListDeps) RootDir() string                       { return "" }
+func (d *fakeSyncListDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
 
 func (d *fakeSyncListDeps) PropReady() bool     { return true }
 func (d *fakeSyncListDeps) PipelineReady() bool { return true }

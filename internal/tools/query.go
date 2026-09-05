@@ -74,7 +74,11 @@ func InterceptQuery(ctx context.Context, deps ClientDeps, params kgtools.CallToo
 	// so only the reducible read modes reach here. The client embed pre-step above
 	// is preserved verbatim — the embedded query_vector rides on the args the
 	// compiler lowers into the plan.
-	resp, err := engine.Dispatch(ctx, gc.Execute, "query", args)
+	stats, serr := statsFnOf(gc)
+	if serr != nil {
+		return true, errorResult("query: " + serr.Error())
+	}
+	resp, err := engine.Dispatch(ctx, gc.Execute, stats, "query", args)
 	if err != nil {
 		return true, errorResult("query call failed: " + err.Error())
 	}

@@ -40,6 +40,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
+	"github.com/fulminate-io/knowledge-mcp/internal/clientver"
 )
 
 // connectRequest / connectResponse are the client side of Contract A (the
@@ -204,7 +205,7 @@ func runTunnel(ctx context.Context, apiURL, env string, opts tunnelOpts) error {
 	// The direct-cert SSH path needs the certificate (its identity), the host_ca_pubkey
 	// (the trust anchor it installs to VERIFY the server), and the relay_token — only to
 	// read its env_id claim, which is the host-cert principal ssh matches against.
-	cert, relayToken, hostCAPubKey, err := fetchCert(ctx, connectHTTPClient, apiURL, token, kp.authorizedKey, env)
+	cert, relayToken, hostCAPubKey, err := fetchCertProving(ctx, connectHTTPClient, apiURL, token, kp.authorizedKey, env)
 	if err != nil {
 		return err
 	}
@@ -395,6 +396,13 @@ func fetchCert(ctx context.Context, client *http.Client, apiURL, token, publicKe
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
+	// This path sets its bearer BY HAND rather than riding the sync transport's
+	// stamping chokepoint, which is exactly why it went unstamped: nothing here
+	// passes through the one place that stamps everything else. Use the shared
+	// implementation rather than a literal header pair, so this site cannot
+	// drift from it silently — the census would still list the site, so a drift
+	// here is precisely what no gate would notice.
+	clientver.Stamp(req.Header)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -420,6 +428,23 @@ func fetchCert(ctx context.Context, client *http.Client, apiURL, token, publicKe
 		return "", "", "", fmt.Errorf("not authorized: no matching dev environment is available to your account (403)")
 	case http.StatusServiceUnavailable:
 		return "", "", "", fmt.Errorf("dev-VM SSH is unavailable on this deployment (503)")
+	case http.StatusUpgradeRequired:
+		// A version refusal. Routed through the shared classifier so a refused
+		// tunnel names the minimum, this client's version and the upgrade
+		// command, rather than falling to the default arm and reporting a bare
+		// status the user cannot act on.
+		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, auth.MaxErrorBodyBytes))
+		if refusal, ok := auth.LatchVersionRefusal(auth.RefusalObservation{
+			Status:    resp.StatusCode,
+			Header:    resp.Header,
+			Body:      raw,
+			ReadErr:   readErr,
+			Transport: "tunnel",
+			Path:      reqURL,
+		}); ok {
+			return "", "", "", refusal
+		}
+		return "", "", "", fmt.Errorf("connect refused this client's version (426): %s", strings.TrimSpace(string(raw)))
 	default:
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return "", "", "", fmt.Errorf("connect failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))

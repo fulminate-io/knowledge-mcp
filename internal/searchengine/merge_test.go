@@ -10,17 +10,26 @@ import (
 // mergeWaitTimeout bounds how long a test waits for the background merge to fire.
 const mergeWaitTimeout = 2 * time.Second
 
-// waitForMerge polls until at least one merge completes or the deadline passes.
-// Returns the final MergeCount.
-func waitForMerge(e *SegmentedIndex[mockQuery, mockStats]) uint64 {
+// waitForMerge polls until at least one background merge completes, and FAILS the
+// test naming the deadline when none ever does.
+//
+// A WAIT THAT CANNOT BE SATISFIED IS A RED, NOT A SILENT TAX. It used to return
+// the current count on timeout, which left it to each caller to notice the zero —
+// and the caller that did not notice (TestMergeUnderRead, whose only assertion is
+// a search result that holds whether or not a merge fires) sat through the whole
+// deadline and passed anyway. Failing HERE makes every call site correct by
+// construction instead of by its author's diligence.
+func waitForMerge(t testing.TB, e *SegmentedIndex[mockQuery, mockStats]) {
+	t.Helper()
 	deadline := time.Now().Add(mergeWaitTimeout)
 	for time.Now().Before(deadline) {
 		if e.MergeCount() >= 1 {
-			return e.MergeCount()
+			return
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	return e.MergeCount()
+	t.Fatalf("no background merge fired within %s (MergeCount still %d) — "+
+		"the engine's merge trigger is disarmed or the occasion never arrived", mergeWaitTimeout, e.MergeCount())
 }
 
 // mergeEngine builds an engine whose merge fires readily: one doc per segment,
@@ -52,9 +61,7 @@ func TestMergeReclaimsDead(t *testing.T) {
 	e.Delete("a")
 	e.Delete("b")
 
-	if got := waitForMerge(e); got < 1 {
-		t.Fatalf("background merge never fired: MergeCount=%d", got)
-	}
+	waitForMerge(t, e)
 
 	// After merge: a fresh all-live segment with only the live docs.
 	got := searchIDs(e.Search(mockQuery{term: "x"}, 10))
@@ -95,7 +102,7 @@ func TestMergeUnderRead(t *testing.T) {
 
 	e.Delete("a")
 	e.Delete("b")
-	waitForMerge(e)
+	waitForMerge(t, e)
 	<-done
 
 	got := searchIDs(e.Search(mockQuery{term: "x"}, 10))
@@ -123,9 +130,7 @@ func TestMergePulledSegment(t *testing.T) {
 	dst.Delete("a")
 	dst.Delete("b")
 
-	if got := waitForMerge(dst); got < 1 {
-		t.Fatalf("merge of pulled segment never fired: MergeCount=%d", got)
-	}
+	waitForMerge(t, dst)
 	got := searchIDs(dst.Search(mockQuery{term: "x"}, 10))
 	if fmt.Sprint(got) != "[c d]" {
 		t.Fatalf("post-merge pulled-segment search = %v, want [c d]", got)
@@ -145,9 +150,7 @@ func TestMergeSegmentCountTarget(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := waitForMerge(e); got < 1 {
-		t.Fatalf("count-target merge never fired: MergeCount=%d", got)
-	}
+	waitForMerge(t, e)
 	// All 10 docs still searchable after consolidation.
 	got := e.Search(mockQuery{term: "x"}, 20)
 	ids := searchIDs(got)

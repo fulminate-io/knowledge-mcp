@@ -54,6 +54,19 @@ const (
 	TokTildeEq
 	// TokBangTilde is `!~` — the regex not-match operator.
 	TokBangTilde
+	// TokWhereJSON is the JSON where-tree span that follows `where` or
+	// `filter`. Value holds the RAW, UNDECODED span INCLUDING the outer
+	// braces.
+	//
+	// THAT IS THE OPPOSITE OF EVERY OTHER KIND IN THIS ENUM, and the
+	// exception is deliberate. lexString strips its quotes and unescapes,
+	// lexRegex strips its slashes and decodes \/, lexVar strips the sigil —
+	// so the house rule is that a Token.Value is DECODED. A where-tree is
+	// decoded by encoding/json in ParseWhereTree, which needs the braces and
+	// the original escape sequences intact; a reader who applies the house
+	// rule here and unescapes the span corrupts the JSON before the parser
+	// ever sees it.
+	TokWhereJSON
 )
 
 // Token is a lexed unit carrying its kind, source-exact spelling (or
@@ -94,6 +107,11 @@ func Lex(src []byte) ([]Token, error) {
 		if err != nil {
 			return nil, err
 		}
+		// ONE TOKEN OF LOOK-BEHIND, and it is the whole mechanism that lets a
+		// JSON object ride a token stream that has no ':' token: an open brace
+		// starts a where-tree span only when the token before it was the
+		// identifier `where` or `filter`.
+		lx.prev = tok
 		out = append(out, tok)
 		if tok.Kind == TokEOF {
 			return out, nil
@@ -108,6 +126,11 @@ type lexer struct {
 	off  int
 	line int
 	col  int
+	// prev is the last token Lex emitted. It exists for exactly one decision:
+	// whether an open brace begins a where-tree span. Lex sets it after each
+	// successful next(), so a lexer driven by calling next() directly (as some
+	// tests do) sees a zero prev and never takes the span branch.
+	prev Token
 }
 
 // next returns the next non-whitespace non-comment token. Whitespace
@@ -119,6 +142,15 @@ func (l *lexer) next() (Token, error) {
 		return Token{Kind: TokEOF, Pos: l.pos()}, nil
 	}
 	ch := l.src[l.off]
+	// THE WHERE-TREE SPAN IS DECIDED BEFORE THE PUNCTUATION DISPATCH, because
+	// '{' is otherwise a TokLBrace and an emit block would swallow the branch.
+	// The predicate keys on the FOLLOWING BYTE as well as the preceding token:
+	// nothing else in the grammar puts an open brace directly after `where` or
+	// `filter` — parseEmit's brace follows the emit TYPE ident, and an emit
+	// field literally named `where` is followed by ':='.
+	if ch == '{' && l.prev.Kind == TokIdent && (l.prev.Value == "where" || l.prev.Value == "filter") {
+		return l.lexWhereJSON()
+	}
 	if tok, ok := l.singleCharToken(ch); ok {
 		return tok, nil
 	}

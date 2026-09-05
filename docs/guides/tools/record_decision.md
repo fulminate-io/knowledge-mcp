@@ -14,17 +14,18 @@ Reach for `record_decision` whenever you make a design choice you'll want to
 justify later — which storage engine, which transport, which API shape. Search
 first so you extend or supersede an existing decision instead of duplicating it.
 
-A decision needs `name`, `choice`, and `rationale`; `alternatives` and
-`informed_by` are strongly encouraged. A record with no rationale and no
+A decision needs `name`, `choice`, `rationale`, and an author-supplied
+`summary`; `alternatives` and `informed_by` are strongly encouraged. A record with no rationale and no
 alternatives is not really a decision — if there were no alternatives, was a
 decision even made?
 
 ```jsonc
 record_decision({
-  "name": "Use Badger v4 for graph storage",
-  "choice": "Badger v4 with custom serialization",
-  "rationale": "Concurrent read performance is markedly better and there are no file locks.",
-  "alternatives": "SQLite: rejected — file locking is incompatible with the MCP server model.",
+  "name": "Use cursor pagination for the /orders list endpoint",
+  "summary": "The orders list paginates by an opaque cursor over (created_at, id) instead of page numbers, so inserts during a scan never repeat or skip rows",
+  "choice": "Opaque cursor encoding (created_at, id); page-number parameters are rejected with 400",
+  "rationale": "Orders are inserted continuously, and offset pagination repeats or skips rows when the table shifts under a client mid-scan.",
+  "alternatives": "Offset/limit: rejected — unstable under concurrent inserts. Keyset on id alone: rejected — ids are not time-ordered in this schema.",
   "informed_by": "finding_id1,finding_id2"
 })
 ```

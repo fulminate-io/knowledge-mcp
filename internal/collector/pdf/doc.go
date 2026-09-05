@@ -4,6 +4,13 @@
 //   - Born-digital PDFs only — no OCR, no scanned-page rasterization.
 //   - No chart / figure / handwriting analysis.
 //   - No table-grid reconstruction (only paragraph + heading + list flow).
+//   - No right-to-left run ordering. Runs within one rendered line are
+//     always ordered left to right by X — bandRunsToLines applies that sort
+//     unconditionally (layout/lines.go:106, "Rule 1.4") with no script or
+//     writing-direction term — so a line set in a right-to-left script is
+//     not returned in its reading order. This holds on the tagged and the
+//     untagged path alike, and the page-rotation handling does not address
+//     it: rotation reorders BLOCKS and LINES, never the runs inside a line.
 //
 // Anything outside that envelope returns ErrNotImplemented or an empty result;
 // scope expansion is deliberately deferred to follow-up tickets.

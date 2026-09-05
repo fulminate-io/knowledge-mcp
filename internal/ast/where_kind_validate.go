@@ -179,7 +179,7 @@ func (v *kindVocabulary) checkKind(name string, lang treesitter.Language) error 
 			"ast/where: %q is an anonymous token of the %s grammar, not a named node kind — a kind leaf can only match named kinds. operation=explain prints anonymous tokens (punctuation and keywords) that a kind leaf can never match; operation=list_node_kinds lists the ones it can",
 			name, lang)
 	}
-	suggestions := closestKinds(name, v.sorted)
+	suggestions := ClosestVocabulary(name, v.sorted)
 	if len(suggestions) == 0 {
 		return fmt.Errorf(
 			"ast/where: unknown node kind %q for language %s, and no kind in that grammar is close enough to suggest — list the valid kinds with operation=list_node_kinds",

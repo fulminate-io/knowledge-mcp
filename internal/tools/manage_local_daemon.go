@@ -40,6 +40,9 @@ func addLocalDaemonJSON(ctx context.Context, deps ClientDeps, m map[string]any) 
 	if th, ok := transcriptUploadHealth(deps); ok {
 		addTranscriptHealthJSON(m, th)
 	}
+	if uh, ok := updateCheckHealth(deps); ok {
+		addUpdateHealthJSON(m, uh)
+	}
 	if runs, ok := collectRunSnapshot(deps); ok {
 		addCollectRunsJSON(m, runs)
 	}

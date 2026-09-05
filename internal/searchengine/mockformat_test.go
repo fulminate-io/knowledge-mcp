@@ -40,12 +40,12 @@ type mockFormat struct{}
 
 func (mockFormat) Name() string { return "mock" }
 
-func (mockFormat) Build(docs []Document) (Segment[mockQuery, mockStats], error) {
+func (mockFormat) Build(docs []Document) (Segment[mockQuery, mockStats], BuildReport, error) {
 	rows := make([]mockRow, 0, len(docs))
 	for _, d := range docs {
 		rows = append(rows, mockRow{ID: d.ID, Content: d.Fields[FieldContent]})
 	}
-	return &mockSegment{rows: rows}, nil
+	return &mockSegment{rows: rows}, BuildReport{}, nil
 }
 
 func (mockFormat) Decode(blob []byte) (Segment[mockQuery, mockStats], error) {

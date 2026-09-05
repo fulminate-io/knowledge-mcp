@@ -153,20 +153,51 @@ func runAccuracyFixture(t *testing.T, fc fixtureCase) {
 			HeadingFontSizeRatio: 1.15, HeadingMinBoldOnly: true,
 			CodeMonospaceRatio: 0.8,
 		},
-		SkipHeadersFooters: true, // graceful no-op until T5 lands
-		MinChunkChars:      0,
+		MinChunkChars: 0,
 	})
 	if err != nil {
 		t.Fatalf("doc.Chunks: %v", err)
 	}
 
-	m := scoreMetrics(actual, gf.Chunks)
-	t.Logf("fixture=%s actual=%d golden=%d chunkCountDelta=%.3f boundaryIoU=%.3f classAcc=%.3f headLvlAgree=%.3f kendallDiv=%.3f textLev=%.3f",
-		fc.Name, m.ActualCount, m.GoldenCount, m.ChunkCountDelta, m.BoundaryIoU,
+	substantive, chrome := partitionChrome(actual)
+
+	m := scoreMetrics(substantive, gf.Chunks)
+	t.Logf("fixture=%s actual=%d chrome=%d golden=%d chunkCountDelta=%.3f boundaryIoU=%.3f classAcc=%.3f headLvlAgree=%.3f kendallDiv=%.3f textLev=%.3f",
+		fc.Name, m.ActualCount, len(chrome), m.GoldenCount, m.ChunkCountDelta, m.BoundaryIoU,
 		m.ClassificationAccuracy, m.HeadingLevelAgreement, m.ReadingOrderKendallTauDivergence,
 		m.TextSimilarityLevenshtein)
 
 	enforceThresholds(t, fc.Name, m, thr)
+}
+
+// partitionChrome splits collected chunks into the SUBSTANTIVE
+// population and the running page chrome, on the collector's own
+// exported predicate.
+//
+// The goldens under testdata/corpus are HAND-MARKED ground truth: a
+// human read each document and recorded its substantive content, at a
+// time when the collector deleted running chrome before anyone saw it.
+// Now that chrome is retained, the emitted set legitimately contains
+// blocks the golden never listed, and scoring the two against each
+// other compares different populations.
+//
+// The honest repair is to score the population the goldens describe,
+// which is what this does. The two dishonest repairs — re-marking the
+// goldens to include chrome, or relaxing a threshold until the mismatch
+// fits under it — would each convert an external expectation into one
+// derived from the collector's own current output. Every default
+// threshold stays exactly as it was and no fixture carries an override;
+// the phase criterion pins that the excluded population is precisely
+// what the retired deletion rule removed.
+func partitionChrome(chunks []pdf.Chunk) (substantive, chrome []pdf.Chunk) {
+	for _, c := range chunks {
+		if pdf.IsPageChrome(c.Metadata) {
+			chrome = append(chrome, c)
+			continue
+		}
+		substantive = append(substantive, c)
+	}
+	return substantive, chrome
 }
 
 // enforceThresholds calls t.Errorf with a diagnostic naming the

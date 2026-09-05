@@ -102,9 +102,38 @@ func f64(p *float64) float64 {
 	return *p
 }
 
+// sharedTestdataPath resolves a file in the SHARED testdata directory by
+// walking up from this package to the first ancestor that carries BOTH a
+// go.mod and that file under testdata/.
+//
+// NO FIXED ".." COUNT SPELLS BOTH LAYOUTS. The fixture is read by a test in
+// each of the two modules, so it sits ABOVE both module roots here; the
+// published mirror is a single module whose root carries testdata/ directly,
+// because the sync script copies cmd/knowledge/internal to internal/ and the
+// shared testdata tree to the mirror root. Walking for the artifact itself
+// survives both layouts and a package move, and fails loudly rather than
+// silently comparing against nothing.
+func sharedTestdataPath(t *testing.T, name string) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	require.NoError(t, err)
+	for {
+		if _, statErr := os.Stat(filepath.Join(dir, "go.mod")); statErr == nil {
+			candidate := filepath.Join(dir, "testdata", name)
+			if _, statErr := os.Stat(candidate); statErr == nil {
+				return candidate
+			}
+		}
+		parent := filepath.Dir(dir)
+		require.NotEqualf(t, parent, dir,
+			"walked to the filesystem root from the test working directory without finding testdata/%s beside a go.mod", name)
+		dir = parent
+	}
+}
+
 func loadVector(t *testing.T) vecDoc {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "..", "testdata", "contribution_hash_vector.json"))
+	raw, err := os.ReadFile(sharedTestdataPath(t, "contribution_hash_vector.json"))
 	require.NoError(t, err)
 	var doc vecDoc
 	require.NoError(t, json.Unmarshal(raw, &doc))

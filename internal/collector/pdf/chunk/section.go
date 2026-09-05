@@ -85,9 +85,22 @@ func buildSections(blocks []mergedBlock) []Chunk {
 	// Synthetic-root for orphans: prepended when orphans exist.
 	// When no headings exist at all, this is the sole top-level
 	// chunk and contains every block as a Child (ticket spec).
+	//
+	// Its PageRange is
+	// the union of the orphans it collects, because the node itself
+	// corresponds to no block and has no range of its own.
 	if len(orphans) > 0 {
+		first := orphans[0].c.PageRange[0]
+		last := orphans[0].c.PageRange[1]
+		for _, o := range orphans[1:] {
+			// Greatest, not last: continuity merging can widen a mid-run
+			// block's range past a later sibling's.
+			if o.c.PageRange[1] > last {
+				last = o.c.PageRange[1]
+			}
+		}
 		syntheticRoot := &sectionNode{
-			c:        Chunk{Kind: layout.BlockUnknown, Text: ""},
+			c:        Chunk{Kind: layout.BlockUnknown, Text: "", PageRange: [2]int{first, last}},
 			children: orphans,
 		}
 		roots = append([]*sectionNode{syntheticRoot}, roots...)

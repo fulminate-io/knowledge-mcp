@@ -16,6 +16,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 	"github.com/fulminate-io/knowledge-mcp/internal/paging"
+	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 )
 
 // bulkGc answers an Ids[] by-id read out of a node map, records the size of
@@ -64,7 +65,7 @@ func TestFetchNodesByIDs_PagedOneExecutePerPage(t *testing.T) {
 
 	t.Run("one Execute per page, every node returned", func(t *testing.T) {
 		gc := &bulkGc{nodes: nodes}
-		got, truncated, err := FetchNodesByIDs(context.Background(), gc, ids)
+		got, truncated, err := foundation.FetchNodesByIDs(context.Background(), gc, "", "", ids, foundation.IncludeTombstones)
 		require.NoError(t, err)
 
 		assert.False(t, truncated)
@@ -80,7 +81,7 @@ func TestFetchNodesByIDs_PagedOneExecutePerPage(t *testing.T) {
 
 	t.Run("an id with no node is simply absent from the map", func(t *testing.T) {
 		gc := &bulkGc{nodes: nodes}
-		got, _, err := FetchNodesByIDs(context.Background(), gc, []string{"n-0001", "nope"})
+		got, _, err := foundation.FetchNodesByIDs(context.Background(), gc, "", "", []string{"n-0001", "nope"}, foundation.IncludeTombstones)
 		require.NoError(t, err)
 		require.Len(t, got, 1)
 		assert.NotContains(t, got, "nope", "a missing id means not-found, the same thing FetchNode says with a nil node")
@@ -88,14 +89,14 @@ func TestFetchNodesByIDs_PagedOneExecutePerPage(t *testing.T) {
 
 	t.Run("the truncation verdict is carried out, not dropped", func(t *testing.T) {
 		gc := &bulkGc{nodes: nodes, truncate: true}
-		_, truncated, err := FetchNodesByIDs(context.Background(), gc, ids)
+		_, truncated, err := foundation.FetchNodesByIDs(context.Background(), gc, "", "", ids, foundation.IncludeTombstones)
 		require.NoError(t, err)
 		assert.True(t, truncated, "a clamped read must not render as a complete list")
 	})
 
 	t.Run("an empty id list costs no Execute at all", func(t *testing.T) {
 		gc := &bulkGc{nodes: nodes}
-		got, truncated, err := FetchNodesByIDs(context.Background(), gc, nil)
+		got, truncated, err := foundation.FetchNodesByIDs(context.Background(), gc, "", "", nil, foundation.IncludeTombstones)
 		require.NoError(t, err)
 		assert.Empty(t, got)
 		assert.False(t, truncated)

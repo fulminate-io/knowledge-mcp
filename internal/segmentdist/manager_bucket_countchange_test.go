@@ -68,6 +68,7 @@ func straddleFixture(t *testing.T, ctx context.Context, graphName string) (*Mana
 // expectation from it would make the assertion an identity that holds against the
 // defect as well as the fix.
 func TestReEmitAcrossACountChangeKeepsCorpusExact(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()
@@ -90,6 +91,7 @@ func TestReEmitAcrossACountChangeKeepsCorpusExact(t *testing.T) {
 // pure while membership is already inflated, because the duplicated copies sit in
 // two different segments that each belong to one partition. Both legs are required.
 func TestReEmitKeepsPartitionsPureAcrossACountChange(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()
@@ -119,6 +121,7 @@ func TestReEmitKeepsPartitionsPureAcrossACountChange(t *testing.T) {
 // therefore passes against the defect and is vacuous. The assertion that fires is
 // that a k-result search over a corpus larger than k returns exactly k ids.
 func TestSearchAcrossACountChangeReturnsKDistinct(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()
@@ -152,6 +155,7 @@ func TestSearchAcrossACountChangeReturnsKDistinct(t *testing.T) {
 // tick of a graph's life: a corpus of exactly one segment's worth derives one
 // partition, but the doubled figure derives two.
 func TestTickDerivesTheTrueCorpusCount(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()
@@ -219,6 +223,7 @@ func docsInBucket(t *testing.T, bucket, count, n int, prefix string) []searcheng
 // It asserts on replaceBucketGroups' published return rather than on a segment
 // count, because that return names precisely the partitions the call rebuilt.
 func TestClosureRebuildSetStaysBounded(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()
@@ -254,6 +259,7 @@ func TestClosureRebuildSetStaysBounded(t *testing.T) {
 // fresh engine for the absent id stays green through that, which is why this
 // asserts on total membership instead.
 func TestDeleteAcrossACountChangeKeepsCorpusExact(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()
@@ -295,6 +301,7 @@ func TestDeleteAcrossACountChangeKeepsCorpusExact(t *testing.T) {
 // documents a broken implementation loses depends on how ids distribute and is not
 // worth pinning; that it loses ANY is the whole signal.
 func TestPartialRebuildSetAcrossACountChangeLosesNothing(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

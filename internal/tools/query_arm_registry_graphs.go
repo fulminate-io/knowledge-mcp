@@ -8,7 +8,7 @@ package tools
 // stats, registered-custom search, logs, rules).
 //
 // THE RAW-GRAPH AND BUILT-IN STATS ARMS MOVED to the fourth sibling,
-// query_arm_registry_stats.go, when the checks/transformers stats arm pushed this
+// query_arm_registry_stats.go, when the checks stats arm pushed this
 // file past the cap. Same table, same rules, one more file — the split is a
 // file-length concern only, exactly as the three-way split already was.
 //
@@ -289,46 +289,6 @@ var queryGraphArmSpecs = map[armID]armSpec{
 				"ids", "type", "types", "status", "meta", "since",
 				"include_tombstones", "include_edges", "include_cross_links",
 				"query_vector",
-			),
-		),
-		deliberatelyIgnored: queryRenderIgnored(),
-	},
-
-	// The transformers/checks ranked-search refusal. It answers from a fixed
-	// message and reads nothing, so format/fields are deliberately ignored exactly
-	// as on the retired linkage arm above.
-	//
-	// ITS CONSUMED SET IS THE REGISTERED-GRAPH TWIN'S, NOT THE LINKAGE ONE, because
-	// InterceptQueryUnrankedBuiltin's gate is the twin's gate. Two consequences that
-	// a copy of the linkage row would have got wrong:
-	//
-	//   - id and ids are REJECTED, not consumed. The linkage arm dispatches on id
-	//     BEFORE its retired-search branch, so a by-id linkage read is genuinely
-	//     served there. This arm serves no by-id read at all — a checks/transformers
-	//     by-id read belongs to the engine dispatch arm, and claiming it here would
-	//     break the browse the refusal itself hands the caller.
-	//   - queries is REJECTED. The linkage list-graphs gate reads len(a.Queries);
-	//     this arm reads only a.Text, so a queries-only payload declines rather than
-	//     being answered, and declaring it consumed would assert a routing that does
-	//     not exist.
-	//
-	// `name` IS consumed, which is the one place this row diverges from the twin's
-	// reasoning rather than its shape. transformers is keyed by name
-	// (graphsel.InstanceField → FieldName; the recipe store is the "recipes"
-	// bucket), so a transformers search legitimately carries one and rejecting it
-	// would answer a routine payload with a param error instead of the refusal.
-	// checks is keyed by nothing (FieldNone) and simply never sends the key.
-	armUnrankedBuiltinSearchRefused: {
-		operation: "query",
-		handler:   "InterceptQueryUnrankedBuiltin transformers/checks search-unavailable",
-		consumed:  qparams(qkeys("graph", "name", "mode", "text")),
-		rejected: qparams(
-			qgPaging, qgCode, qgThought, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
-			qkeys(
-				"repo", "account", "language", "branch",
-				"id", "ids", "type", "types", "status", "meta", "since",
-				"include_tombstones", "include_edges", "include_cross_links",
-				"queries", "query_vector",
 			),
 		),
 		deliberatelyIgnored: queryRenderIgnored(),

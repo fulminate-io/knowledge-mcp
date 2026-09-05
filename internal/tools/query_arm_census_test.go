@@ -58,7 +58,6 @@ var queryClaimEntryPoints = []string{
 	"InterceptQueryRegisteredGraphSearch",
 	"InterceptQueryRules",
 	"InterceptQueryStats",
-	"InterceptQueryUnrankedBuiltin",
 	"InterceptThoughts",
 	"InterceptTopology",
 }

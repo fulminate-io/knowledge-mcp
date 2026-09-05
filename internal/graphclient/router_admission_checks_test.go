@@ -94,7 +94,10 @@ func TestWorkingSet_ChecksAdmissionReachesTheRealSet(t *testing.T) {
 	t.Parallel()
 
 	set := workingset.New()
-	r := &Router{}
+	// The succeeding backend is load-bearing: admission now follows a successful
+	// dispatch, so a backendless Router would admit nothing and the assertion
+	// below would fail for a reason unrelated to what it pins.
+	r := &Router{local: succeedingBackend(t)}
 	r.AttachWorkingSet(func(gt kgtypes.GraphType, name, reason string) {
 		set.Admit(gt, name, reason)
 	})

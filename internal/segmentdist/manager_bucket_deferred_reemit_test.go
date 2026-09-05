@@ -56,6 +56,7 @@ func maskSpanningPartitions(t *testing.T, bucketCount int) ([]searchengine.Exter
 // an id left behind in a partition that was re-emitted is trimmed by nothing and
 // re-offered on every tick forever — a lane that fires on the same cause indefinitely.
 func TestDeferredReEmitIDsServesWholePartitionsWithinTheBudget(t *testing.T) {
+	requireMeasurementRun(t)
 	ctx := context.Background()
 	gt := kgtypes.GraphCode
 	const name = "deferred-budget"
@@ -151,6 +152,7 @@ func persistedMask(t *testing.T, m *Manager, gt kgtypes.GraphType, name string) 
 // cannot tell a conjunction from a disjunction at all, which is why the second subtest
 // drives the predicate directly.
 func TestDeferredDrainTrimsExactlyThePartitionsItEmitted(t *testing.T) {
+	requireMeasurementRun(t)
 	ctx := context.Background()
 
 	t.Run("the drain discharges what it published and leaves what it did not reach", func(t *testing.T) {
@@ -227,6 +229,7 @@ func TestDeferredDrainTrimsExactlyThePartitionsItEmitted(t *testing.T) {
 // half is the one that matters: a lane that can fire forever on the same cause is a
 // defect wearing the shape of a handled condition, not a bounded background pass.
 func TestDeferredReEmitConvergesAndThenStops(t *testing.T) {
+	requireMeasurementRun(t)
 	ctx := context.Background()
 	const name = "deferred-converge"
 	mgr, gt, mask := deferredDrainFixture(t, name)
@@ -285,6 +288,7 @@ func captureDrainLog(t *testing.T, fn func()) string {
 // it, that single partition fits inside any budget, and a trim keyed on scheduling
 // empties the whole record. The next import then brings every deleted document back.
 func TestDrainOnAnUnloadedPoolLeavesTheDurableRecordUntouched(t *testing.T) {
+	requireMeasurementRun(t)
 	ctx := context.Background()
 	gt := kgtypes.GraphCode
 	const name = "deferred-unloaded"
@@ -324,6 +328,7 @@ func TestDrainOnAnUnloadedPoolLeavesTheDurableRecordUntouched(t *testing.T) {
 // other test on this step can see it: every one of them runs the success path, where a
 // trim placed before the persist and a trim placed after it are indistinguishable.
 func TestDeferredTrimDoesNotFireWhenTheDrainsPersistFails(t *testing.T) {
+	requireMeasurementRun(t)
 	ctx := context.Background()
 	mgr, gt, name, _, ic, docs := deleteRetryFixtureOfSize(t, "deferred-persistfail", twoPartitionFixtureN)
 
@@ -357,6 +362,7 @@ func TestDeferredTrimDoesNotFireWhenTheDrainsPersistFails(t *testing.T) {
 // is what makes every partition number in this file meaningful, and a change that
 // removes it would leave every other test here green.
 func TestDeferredSelectorDeclinesBelowTheResidencyFloor(t *testing.T) {
+	requireMeasurementRun(t)
 	ctx := context.Background()
 	gt := kgtypes.GraphCode
 	const name = "deferred-floor"
@@ -417,6 +423,7 @@ func TestDeferredSelectorDeclinesBelowTheResidencyFloor(t *testing.T) {
 // leak for a line per graph per tick on every converged graph in the process, which is
 // the noise that gets logging turned down and makes the DECLINE above invisible again.
 func TestDeferredReEmitSaysNothingAboutAConvergedGraph(t *testing.T) {
+	requireMeasurementRun(t)
 	ctx := context.Background()
 	gt := kgtypes.GraphCode
 	const name = "deferred-quiet"

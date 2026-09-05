@@ -64,7 +64,7 @@ intended. For the full field reference, run `help("create_plan")`.
 | `open_questions[].summary` | string |  |  | Required search-optimized one-line summary of the open question, max 500 chars. Over-cap values are clamped at a word boundary with a warning. (max length: 500) |
 | `pattern_ids` | array of string |  |  | Canonical pattern node IDs this plan extends. Wired as plan→pattern uses edges. Exactly one of pattern_ids, no_patterns_reason, or proposed_patterns must be supplied. Broken/unknown IDs produce a non-fatal warning surfaced in the response (under a `## Warnings` section), not an error — v1 tolerates patterns that have not yet been encoded. |
 | `pattern_ids[]` | string |  |  | Pattern node ID |
-| `phases` | array of object | yes |  | Ordered list of phases. Each phase REQUIRES name and summary; each step REQUIRES name, description, and summary (handler enforces); and each criterion REQUIRES description and summary (handler enforces). |
+| `phases` | array of object |  |  | Ordered list of phases. Each phase REQUIRES name and summary; each step REQUIRES name, description, and summary (handler enforces); and each criterion REQUIRES description and summary (handler enforces). |
 | `phases[]` | object |  |  | Phase object: {"name":"...","overview":"...","summary":"required search-optimized one-line summary, max 500 chars","steps":[{"name":"...","description":"...","summary":"required search-optimized one-line summary, max 500 chars","file_paths":"...","criteria":[{"description":"...","summary":"required search-optimized one-line summary, max 500 chars","command":"...","type":"automated\|manual"}]}]} |
 | `phases[].name` | string |  |  | Phase name (required) |
 | `phases[].overview` | string |  |  | Phase overview |
@@ -87,6 +87,12 @@ intended. For the full field reference, run `help("create_plan")`.
 | `proposed_patterns[].sketch` | string |  |  | Interface sketch / pseudocode describing the proposed pattern shape (optional) |
 | `proposed_patterns[].summary` | string |  |  | Required search-optimized one-line summary of the proposed pattern, max 500 chars. (max length: 500) |
 | `research_id` | string |  |  | Research project ID that informed this plan (optional — creates informed-by edge) |
+| `sections` | array of object |  |  | Ordered list of the parts of a CHUNKED plan. Each section REQUIRES name, body and summary (handler enforces). Ordered by array position; `position` may be supplied explicitly instead, in which case EVERY section must supply one and the values must be unique (gaps are allowed — a deleted section leaves a hole and closing it would mean rewriting every later section). Mutually exclusive with phases: supply exactly one of the two. |
+| `sections[]` | object |  |  | Section object: {"name":"...","body":"the section's full text","summary":"required search-optimized one-line summary, max 500 chars","position":0} |
+| `sections[].body` | string |  |  | The section's full text (required). This is the only place the section's prose lives — the plan root carries none of it. |
+| `sections[].name` | string |  |  | Section name (required) |
+| `sections[].position` | integer |  |  | Explicit zero-based position (optional). When any section supplies one, EVERY section must, and the values must be unique; gaps are allowed. |
+| `sections[].summary` | string |  |  | Required search-optimized one-line summary, max 500 chars (max length: 500) |
 | `summary` | string | yes |  | Required search-optimized one-line summary, max 500 chars (handler enforces). (max length: 500) |
 | `ticket_id` | string |  |  | Ticket node ID to link this plan under (optional) |
 <!-- END GENERATED: params -->

@@ -36,17 +36,16 @@ import (
 // so a missing entry degrades to the pre-enum behaviour rather than to a wrong
 // family.
 var familyOfType = map[kgtypes.GraphType]knowledgev1.GraphFamily{
-	kgtypes.GraphKnowledge:    knowledgev1.GraphFamily_GRAPH_FAMILY_KNOWLEDGE,
-	kgtypes.GraphCode:         knowledgev1.GraphFamily_GRAPH_FAMILY_CODE,
-	kgtypes.GraphCloud:        knowledgev1.GraphFamily_GRAPH_FAMILY_CLOUD,
-	kgtypes.GraphCICD:         knowledgev1.GraphFamily_GRAPH_FAMILY_CICD,
-	kgtypes.GraphPractice:     knowledgev1.GraphFamily_GRAPH_FAMILY_PRACTICE,
-	kgtypes.GraphLogs:         knowledgev1.GraphFamily_GRAPH_FAMILY_LOGS,
-	kgtypes.GraphWebRaw:       knowledgev1.GraphFamily_GRAPH_FAMILY_WEB,
-	kgtypes.GraphPDFRaw:       knowledgev1.GraphFamily_GRAPH_FAMILY_PDF,
-	kgtypes.GraphTransformers: knowledgev1.GraphFamily_GRAPH_FAMILY_TRANSFORMERS,
-	kgtypes.GraphLinkage:      knowledgev1.GraphFamily_GRAPH_FAMILY_LINKAGE,
-	kgtypes.GraphChecks:       knowledgev1.GraphFamily_GRAPH_FAMILY_CHECKS,
+	kgtypes.GraphKnowledge: knowledgev1.GraphFamily_GRAPH_FAMILY_KNOWLEDGE,
+	kgtypes.GraphCode:      knowledgev1.GraphFamily_GRAPH_FAMILY_CODE,
+	kgtypes.GraphCloud:     knowledgev1.GraphFamily_GRAPH_FAMILY_CLOUD,
+	kgtypes.GraphCICD:      knowledgev1.GraphFamily_GRAPH_FAMILY_CICD,
+	kgtypes.GraphPractice:  knowledgev1.GraphFamily_GRAPH_FAMILY_PRACTICE,
+	kgtypes.GraphLogs:      knowledgev1.GraphFamily_GRAPH_FAMILY_LOGS,
+	kgtypes.GraphWebRaw:    knowledgev1.GraphFamily_GRAPH_FAMILY_WEB,
+	kgtypes.GraphPDFRaw:    knowledgev1.GraphFamily_GRAPH_FAMILY_PDF,
+	kgtypes.GraphLinkage:   knowledgev1.GraphFamily_GRAPH_FAMILY_LINKAGE,
+	kgtypes.GraphChecks:    knowledgev1.GraphFamily_GRAPH_FAMILY_CHECKS,
 }
 
 // FamilyOf returns the wire enum for a graph type, or UNSPECIFIED when the type

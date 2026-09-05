@@ -385,7 +385,7 @@ func runExtraPartitionCell(t *testing.T, reposDir string, cell extraPartitionCel
 		t.Skipf("fixture repo %s is not present in the corpus", cell.repo)
 	}
 
-	files, _, err := discoverScopedFiles(context.Background(), repoDir, cell.lang, Scope{IncludeTests: true})
+	files, _, _, err := discoverScopedFiles(context.Background(), repoDir, cell.lang, Scope{IncludeTests: true})
 	require.NoError(t, err)
 	if len(files) == 0 {
 		t.Skipf("no %s files discovered under %s — nothing to partition", cell.lang, cell.repo)

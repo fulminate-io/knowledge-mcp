@@ -2,11 +2,15 @@
 
 // client_workingset.go — the *client's ownership of the interaction-earned
 // working set: the accessor every background loop gates on, the admission entry
-// point the routed-call recorder calls, and the collect-side recorder.
+// point the routed-call recorder calls, the collect-side recorder, and the
+// removal a drop performs.
 //
 // A graph enters the set only through a direct user interaction with THAT graph.
 // Nothing in this file re-admits a graph on its own behalf, and nothing ages a
-// member out: a process restart is the only thing that empties the set.
+// member out. A member leaves on exactly THREE events: the user DROPS that graph,
+// the pipeline scan gets a durable per-graph NOT_FOUND (the server reporting that
+// the graph does not exist), or the process restarts. The third is not permanent
+// — a later successful interaction re-admits through Admit.
 
 package bootstrap
 
@@ -58,6 +62,25 @@ func (c *client) InWorkingSet(gt kgtypes.GraphType, name string) bool {
 	return c.workingSet.Has(gt, name)
 }
 
+// RemoveFromWorkingSet forgets (gt, name) and reports whether it was a member.
+// It is InWorkingSet's write counterpart and the one thing in this file that
+// SHRINKS the set.
+//
+// THE FILE HEADER'S "nothing ages a member out" STILL HOLDS, and neither caller
+// contradicts it. Aging-out is the SET deciding on its own that a graph has gone
+// cold; both of these are someone else deciding. A member leaves on an explicit
+// drop of that exact graph, on a durable per-graph NOT_FOUND from the pipeline
+// scan — which is the SERVER reporting the graph absent, not the set guessing —
+// or on a process restart. The not-found eviction is not permanent: a later
+// successful interaction re-admits through Admit, which is what keeps it a repair
+// rather than a second denial mechanism.
+func (c *client) RemoveFromWorkingSet(gt kgtypes.GraphType, name string) bool {
+	if c == nil {
+		return false
+	}
+	return c.workingSet.Remove(gt, name)
+}
+
 // SegmentStalledSince reports when (gt, name) stopped being able to recover its
 // segment coverage, and 0 when it still can. It is the heal breaker's latch stamp.
 //
@@ -79,49 +102,6 @@ func (c *client) SegmentStalledSince(gt kgtypes.GraphType, name string) int64 {
 		return 0
 	}
 	return c.healBreaker.LatchedSince(gt, name)
-}
-
-// deferInstructionBootstrapUntilAdmitted runs the one-shot instruction bootstrap
-// on the first wake at which knowledge/default is admitted, instead of at boot.
-// It is a boot-time query plus a create_batch against the knowledge graph, which
-// makes it background work against a graph no interaction has earned yet.
-//
-// Spawned with `go` from the wiring path so the wait is awaited HERE, exiting
-// promptly on ctx.Done with no leak — the shape bootDelayReconcile uses.
-//
-// THE TRADE, stated rather than designed around: on a FRESH INSTALL the
-// bootstrap's job is to seed the agent and skill instruction nodes, and the most
-// likely first reader of those nodes is a query against the knowledge graph —
-// which is itself the admitting interaction. So the very first instruction read
-// after a fresh install can observe an unseeded graph, return empty, and only
-// then trigger the seeding a second read would find. The window is one call, it
-// is self-correcting, and no data is lost. Nothing here pre-seeds or otherwise
-// compensates for it.
-func (c *client) deferInstructionBootstrapUntilAdmitted(
-	ctx context.Context, gc instructionBootstrapGC, rootDir string,
-) {
-	// Register the waiter BEFORE the first membership check, and CHECK BEFORE
-	// WAITING. Both halves matter: this runs on a goroutine the caller spawned, so
-	// an admission can land before it is scheduled, and a plain wait-then-check
-	// would block for a wake that has already been delivered to nobody. Checking
-	// first catches that admission; registering first means any admission after
-	// the check is a signal this waiter receives. There is no gap between them.
-	wake := c.workingSet.Wake()
-	for {
-		if c.workingSet.Has(kgtypes.GraphKnowledge, "default") {
-			if err := runInstructionBootstrap(ctx, gc, rootDir); err != nil {
-				slog.Warn("instruction bootstrap failed; agent/skill nodes will not be seeded this session",
-					"error", err)
-			}
-			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-wake:
-			// A wake for some other graph: loop and re-check.
-		}
-	}
 }
 
 // admittingSink records the collect admission and delegates verbatim. It wraps

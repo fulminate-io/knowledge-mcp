@@ -11,11 +11,16 @@ package linear
 // (projectCreate / projectUpdate / projectArchive / issueCreate /
 // issueUpdate / issueArchive / issueLabelCreate).
 
-// teamWithStatesLabels is the shared inner-team type returned by both
-// teamByKey and teamByID — same shape, same fields, just keyed
-// differently. backend_write.go's resolveTeamByKey / resolveTeamByID
-// helpers normalize this into a *resolvedTeam (name → UUID maps).
-type teamWithStatesLabels struct {
+// teamWithStates is the shared inner-team type returned by both teamByKey
+// and teamByID — same shape, same fields, just keyed differently.
+// backend_write.go's resolveTeamByKey / resolveTeamByID helpers normalize
+// this into a *resolvedTeam (state name → UUID map).
+//
+// It carries NO labels. Labels are resolved one name at a time through
+// teamLabelByNameQuery instead of read in bulk: a team can hold more labels
+// than any single page returns, and a label past the page read looked absent
+// and was re-created, which Linear then rejected as a duplicate.
+type teamWithStates struct {
 	ID     string `json:"id"`
 	Key    string `json:"key"`
 	States struct {
@@ -24,36 +29,29 @@ type teamWithStatesLabels struct {
 			Name string `json:"name"`
 		} `json:"nodes"`
 	} `json:"states"`
-	Labels struct {
-		Nodes []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"nodes"`
-	} `json:"labels"`
 }
 
 // teamByKeyQuery resolves a group key (human-readable, e.g. "ABC") to the
-// team's UUID + workflow states + labels in one shot. Used by
-// CreateProject / CreateTicket where the caller supplies the group key
-// explicitly. Linear's Query.team only takes id; we use the filtered
-// teams() list with key={eq:...} to look up by key. Variable: {key: String!}.
+// team's UUID + workflow states. Used by CreateProject / CreateTicket where
+// the caller supplies the group key explicitly. Linear's Query.team only
+// takes id; we use the filtered teams() list with key={eq:...} to look up by
+// key. Variable: {key: String!}.
 const teamByKeyQuery = `query TeamByKey($key: String!) {
   teams(filter: {key: {eq: $key}}, first: 1) {
     nodes {
       id key
       states(first: 100) { nodes { id name } }
-      labels(first: 250) { nodes { id name } }
     }
   }
 }`
 
 type teamByKeyResponse struct {
 	Teams struct {
-		Nodes []teamWithStatesLabels `json:"nodes"`
+		Nodes []teamWithStates `json:"nodes"`
 	} `json:"teams"`
 }
 
-// teamByIDQuery resolves a team UUID to its workflow states + labels.
+// teamByIDQuery resolves a team UUID to its workflow states.
 // Used by UpdateTicket (after resolving teamID via issueByID) and
 // UpdateProject (after resolving teamID via projectByID). Variable:
 // {id: String!}.
@@ -61,12 +59,11 @@ const teamByIDQuery = `query TeamByID($id: String!) {
   team(id: $id) {
     id key
     states(first: 100) { nodes { id name } }
-    labels(first: 250) { nodes { id name } }
   }
 }`
 
 type teamByIDResponse struct {
-	Team *teamWithStatesLabels `json:"team"`
+	Team *teamWithStates `json:"team"`
 }
 
 // issueByIDQuery resolves an issue UUID to its team UUID + key. Used by
@@ -243,4 +240,67 @@ type issueLabelCreateResponse struct {
 			Name string `json:"name"`
 		} `json:"issueLabel"`
 	} `json:"issueLabelCreate"`
+}
+
+// teamLabelByNameQuery resolves ONE label name against ONE team, filtered by
+// the tracker. `eqIgnoreCase` is Linear's own case-insensitive string
+// comparator (IssueLabelFilter.name is a StringComparator), so the fold that
+// decides whether a label already exists is the SAME one Linear applies when
+// it rejects a duplicate — not one this adapter invents and can disagree
+// with. Team.labels spans both team-scoped and workspace-scoped labels, so
+// this one entry sees everything a create could collide with.
+//
+// `team { id key }` is selected on every node because one requested name can
+// match a team-scoped AND a workspace-scoped label; a refusal that named
+// those two by label name alone would print the same string twice and tell
+// the caller nothing. Linear returns team: null for a workspace-scoped label.
+//
+// `first: 10` bounds both the cost and how many matches an ambiguity refusal
+// can name. Two DIFFERENT measured figures apply and are easy to conflate:
+// the labels connection ALONE costs X-Complexity 7 at first: 2, 27 at
+// first: 10 and 131 at first: 50, while the WHOLE team(id:) lookup around it
+// costs 28 at first: 10 — against 422 for the bulk read this replaces. Ten is
+// far past any plausible duplicate count (the measured maximum across one
+// live team's 330 labels is one label per folded name) and is the page size
+// the live probes actually used.
+// pageInfo.hasNextPage is an HONESTY CHECK, not a cursor: it tells the
+// refusal when the matches it lists are not all of them. There is
+// deliberately no `after` variable and no drain arm — a lookup filtered to
+// one name has no page to walk.
+//
+// Variables: {id: String!, name: String!}.
+const teamLabelByNameQuery = `query TeamLabelByName($id: String!, $name: String!) {
+  team(id: $id) {
+    id key
+    labels(filter: {name: {eqIgnoreCase: $name}}, first: 10) {
+      pageInfo { hasNextPage }
+      nodes { id name team { id key } }
+    }
+  }
+}`
+
+// scopedLabelNode is one label the filtered lookup matched, carrying the
+// scope it lives at. Team is nil for a WORKSPACE-scoped label — the case that
+// makes a requested name ambiguous. Distinct from queries_read.go's labelNode,
+// which is the name-only element the sync read path joins.
+type scopedLabelNode struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Team *struct {
+		ID  string `json:"id"`
+		Key string `json:"key"`
+	} `json:"team"`
+}
+
+type teamLabelByNameResponse struct {
+	Team *struct {
+		ID     string `json:"id"`
+		Key    string `json:"key"`
+		Labels struct {
+			PageInfo struct {
+				HasNextPage bool `json:"hasNextPage"`
+			} `json:"pageInfo"`
+			Nodes []scopedLabelNode `json:"nodes"`
+		} `json:"labels"`
+	} `json:"team"`
 }

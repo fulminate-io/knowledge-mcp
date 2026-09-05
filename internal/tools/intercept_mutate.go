@@ -174,7 +174,7 @@ type findingReference struct {
 //
 // Returns (false, _) when:
 //   - The tool isn't `mutate`.
-//   - The graph isn't knowledge (practice / transformers fall through).
+//   - The graph isn't knowledge (practice / checks fall through).
 //   - A create the create dispatch does not claim: an empty type, or a
 //     non-finding/research/rule type supplying none of ticket_id/session/links.
 //   - A declared operation that reaches the dispatch default bucket and declines
@@ -219,9 +219,32 @@ func InterceptMutate(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 		return true, unknownOperationResult("mutate", a.Operation, mutateDeclaredOperations)
 	}
 
+	// SEVERITY COHERENCE, above every routing branch and needing no graph caller:
+	// an annotation's kind and tier live on the node AND on its relates-to edge,
+	// and no supported write may leave the two different. This arm refuses the
+	// shapes decidable from the payload; the link path, which needs a read, is
+	// guarded inside the link block below. See mutate_plan_annotation.go.
+	if err := guardAnnotationSeverityCoherence(a); err != nil {
+		return true, errorResult(err.Error())
+	}
+
 	gc := deps.GraphCaller()
 	if gc == nil {
 		return false, kgtools.ToolResult{}
+	}
+
+	// The create_batch half of severity coherence. It sits below the GraphCaller
+	// because an edge naming its source by from_id attaches an EXISTING
+	// annotation, which has to be read — the same read, for the same reason, that
+	// the link guard pays. A batch attaching only NEW annotations resolves them
+	// from its own payload and costs no read.
+	//
+	// The operation test lives inside the helper rather than here: nesting it
+	// under an `if` in this function is what put InterceptMutate over the
+	// cognitive-complexity gate, and this function's own precedent is to move a
+	// decision tree out rather than to raise the limit.
+	if claimed, res := claimIncoherentAnnotationBatch(ctx, gc, a); claimed {
+		return true, res
 	}
 
 	// Cross-graph link: the universal composer is reachable for ANY
@@ -236,6 +259,13 @@ func InterceptMutate(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 	// endpoints. Checked BEFORE the knowledge-graph guard below because a
 	// cross-graph link may carry graph:practice / a foreign endpoint.
 	if a.Operation == "link" {
+		// The severity-coherence half that needs a read: an existing annotation
+		// linked to a section must carry its own kind and tier onto that edge.
+		// Runs BEFORE the cross-graph composer so the rule holds whichever arm
+		// ends up claiming the link.
+		if err := guardAnnotationLinkSeverity(ctx, gc, a); err != nil {
+			return true, errorResult(err.Error())
+		}
 		// The composer runs FIRST and accounts its own arm on the paths it
 		// CLAIMS (gateCrossGraphLink). Accounting armLinkCrossGraph here instead
 		// would apply its stricter surface to every link before the claim is
@@ -254,15 +284,15 @@ func InterceptMutate(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 		}
 	}
 
-	// practice/transformers create/update/delete: with no
+	// practice/checks create/update/delete: with no
 	// link_graph these are engine-reducible (Phase-1 narrowed compileMutate to
 	// link_graph-only), lowering to a Target-routed MutationPlan
-	// (Target.Graph==practice/transformers). Route through engine.Dispatch so a
+	// (Target.Graph==practice/checks). Route through engine.Dispatch so a
 	// reducible op compiles→Execute→render, and a non-reducible one (e.g. a
 	// link_graph proxy op) falls back to legacy. The `link` op is intentionally
 	// excluded here — handleClientCrossGraphLink above owns the cross-graph link
 	// decision tree (intra-practice claim + proxy/link_graph fall-through). Runs
-	// BEFORE the knowledge-graph guard below so practice/transformers ops are not
+	// BEFORE the knowledge-graph guard below so practice/checks ops are not
 	// dropped to legacy.
 	if claimed, res := handleGraphPassthroughMutate(ctx, gc, a, params); claimed {
 		return true, res
@@ -290,8 +320,8 @@ func InterceptMutate(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 		}
 		// The check gate's second call site, and the one that closes the upsert
 		// bypass plus the two batch-update shapes — none of which reach the
-		// passthrough arm above. It self-filters on graph=="checks", so practice,
-		// transformers and every foreign graph pass straight through.
+		// passthrough arm above. It self-filters on graph=="checks", so practice
+		// and every foreign graph pass straight through.
 		if err := guardCorpusCheckWrite(ctx, gc, a); err != nil {
 			return true, errorResult(err.Error())
 		}

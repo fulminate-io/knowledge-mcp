@@ -11,6 +11,25 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
+// THE FIXTURE IDS ARE REAL CONTENT HASHES OF THEIR OWN BYTES. diskSegmentCache.Put
+// verifies that a segment's bytes hash to the id it is stored under, so the
+// readable placeholders these tests used ("constituent-1", "merged-xyz") are now
+// refused — correctly, since they are not addresses of anything in a
+// content-addressed store. The names are kept as VARIABLES so the assertions
+// still read as they did.
+var (
+	c1Bytes     = []byte("c1-bytes")
+	c2Bytes     = []byte("c2-bytes")
+	mergedBytes = []byte("merged-bytes")
+
+	constituent1 = sha256Hex(c1Bytes)
+	constituent2 = sha256Hex(c2Bytes)
+	mergedXYZ    = sha256Hex(mergedBytes)
+
+	mergedOnlyBytes = []byte("merged-only-bytes")
+	mergedOnly      = sha256Hex(mergedOnlyBytes)
+)
+
 // newReclaimManager wires a mock-engine distManager around an instrumentedCache so
 // reclaimMerged can be driven directly with synthetic MergeResults and its cache
 // op order inspected. The cache wraps a real *diskSegmentCache rooted at dir.
@@ -32,15 +51,15 @@ func TestReclaimMergedPutBeforeRemove(t *testing.T) {
 	dm, ic := newReclaimManager(t, t.TempDir())
 
 	// Seed the two constituents on disk (the pre-merge state).
-	dm.cache.Put("constituent-1", []byte("c1-bytes"))
-	dm.cache.Put("constituent-2", []byte("c2-bytes"))
+	dm.cache.Put(constituent1, c1Bytes)
+	dm.cache.Put(constituent2, c2Bytes)
 
 	dm.reclaimMerged(searchengine.MergeResult{
-		Removed: []searchengine.SegmentID{"constituent-1", "constituent-2"},
-		Merged:  searchengine.SegmentBlob{ID: "merged-xyz", Bytes: []byte("merged-bytes")},
+		Removed: []searchengine.SegmentID{constituent1, constituent2},
+		Merged:  searchengine.SegmentBlob{ID: mergedXYZ, Bytes: mergedBytes},
 	})
 
-	putIdx := ic.firstIndex("put", "merged-xyz")
+	putIdx := ic.firstIndex("put", mergedXYZ)
 	require.GreaterOrEqual(t, putIdx, 0, "the merged blob must be Put")
 	// EVERY remove op (regardless of id) must come AFTER the merged Put.
 	for i, op := range ic.opLog() {
@@ -51,9 +70,9 @@ func TestReclaimMergedPutBeforeRemove(t *testing.T) {
 	}
 
 	// Disk end-state: merged present, both constituents gone.
-	_, ok := dm.cache.Get("merged-xyz")
+	_, ok := dm.cache.Get(mergedXYZ)
 	require.True(t, ok, "merged blob must be present on disk after reclaim")
-	for _, id := range []string{"constituent-1", "constituent-2"} {
+	for _, id := range []string{constituent1, constituent2} {
 		_, ok := dm.cache.Get(id)
 		require.False(t, ok, "superseded constituent %s must be removed from disk", id)
 	}
@@ -67,16 +86,16 @@ func TestReclaimMergedEmptyIDSkipsRemoves(t *testing.T) {
 	t.Parallel()
 
 	dm, ic := newReclaimManager(t, t.TempDir())
-	dm.cache.Put("constituent-1", []byte("c1-bytes"))
+	dm.cache.Put(constituent1, c1Bytes)
 
 	dm.reclaimMerged(searchengine.MergeResult{
-		Removed: []searchengine.SegmentID{"constituent-1"},
+		Removed: []searchengine.SegmentID{constituent1},
 		Merged:  searchengine.SegmentBlob{ID: "", Bytes: nil},
 	})
 
 	// No reclaim op should have fired beyond the seeding Put.
 	require.Equal(t, -1, ic.firstIndex("remove", ""), "empty Merged.ID must fire ZERO Remove ops")
-	_, ok := dm.cache.Get("constituent-1")
+	_, ok := dm.cache.Get(constituent1)
 	require.True(t, ok, "constituent must survive when Merged.ID is empty (no Remove without a Put)")
 }
 
@@ -89,12 +108,12 @@ func TestReclaimMergedNoRemovedIsPutOnly(t *testing.T) {
 
 	dm.reclaimMerged(searchengine.MergeResult{
 		Removed: nil,
-		Merged:  searchengine.SegmentBlob{ID: "merged-only", Bytes: []byte("m")},
+		Merged:  searchengine.SegmentBlob{ID: mergedOnly, Bytes: mergedOnlyBytes},
 	})
 
-	require.GreaterOrEqual(t, ic.firstIndex("put", "merged-only"), 0, "merged blob must be Put")
+	require.GreaterOrEqual(t, ic.firstIndex("put", mergedOnly), 0, "merged blob must be Put")
 	require.Equal(t, -1, ic.firstIndex("remove", ""), "no Removed ids → ZERO Remove ops")
-	_, ok := dm.cache.Get("merged-only")
+	_, ok := dm.cache.Get(mergedOnly)
 	require.True(t, ok, "merged blob present on disk")
 }
 
@@ -116,18 +135,18 @@ func TestReclaimMergedLeavesResidencyUntouched(t *testing.T) {
 	// Seed non-empty residency so a stray mutation would be observable. Without this
 	// the "still resident" assertion would pass against an empty map.
 	dm.resMu.Lock()
-	dm.resident["constituent-1"] = residentSeg{mappedBytes: 8, format: "mock", generation: 3}
+	dm.resident[constituent1] = residentSeg{mappedBytes: 8, format: "mock", generation: 3}
 	dm.resident["unrelated-seg"] = residentSeg{mappedBytes: 4, format: "mock", generation: 3}
 	dm.resMu.Unlock()
 
-	require.NoError(t, dm.cache.Put("constituent-1", []byte("c1-bytes")))
+	require.NoError(t, dm.cache.Put(constituent1, c1Bytes))
 	dm.reclaimMerged(searchengine.MergeResult{
-		Removed: []searchengine.SegmentID{"constituent-1"},
-		Merged:  searchengine.SegmentBlob{ID: "merged-xyz", Bytes: []byte("m")},
+		Removed: []searchengine.SegmentID{constituent1},
+		Merged:  searchengine.SegmentBlob{ID: mergedXYZ, Bytes: mergedBytes},
 	})
 
 	dm.resMu.Lock()
-	_, stillResident := dm.resident["constituent-1"]
+	_, stillResident := dm.resident[constituent1]
 	_, unrelatedKept := dm.resident["unrelated-seg"]
 	residentLen := len(dm.resident)
 	dm.resMu.Unlock()
@@ -138,8 +157,8 @@ func TestReclaimMergedLeavesResidencyUntouched(t *testing.T) {
 
 	// KNOWN-POSITIVE: the reclaim DID act on disk, so "resident untouched" is a real
 	// restraint rather than the observation that reclaimMerged did nothing at all.
-	_, ok := dm.cache.Get("constituent-1")
+	_, ok := dm.cache.Get(constituent1)
 	require.False(t, ok, "the superseded constituent's L2 file IS reclaimed")
-	_, ok = dm.cache.Get("merged-xyz")
+	_, ok = dm.cache.Get(mergedXYZ)
 	require.True(t, ok, "and the merged blob is present on disk")
 }

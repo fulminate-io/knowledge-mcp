@@ -12,7 +12,7 @@ import (
 // and the shared skew line follows only when both stamps are known and differ.
 func TestRenderVersionOutput(t *testing.T) {
 	t.Run("skew line on differing stamps", func(t *testing.T) {
-		out := renderVersionOutput("dev", "v0.4.10", true)
+		out := renderVersionOutput("dev", "v0.4.10", true, "", false)
 		if !strings.Contains(out, "knowledge dev\n") {
 			t.Errorf("missing client line in %q", out)
 		}
@@ -28,7 +28,7 @@ func TestRenderVersionOutput(t *testing.T) {
 	})
 
 	t.Run("no skew line on equal stamps", func(t *testing.T) {
-		out := renderVersionOutput("v0.4.10", "v0.4.10", true)
+		out := renderVersionOutput("v0.4.10", "v0.4.10", true, "", false)
 		if !strings.Contains(out, "knowledge v0.4.10\n") {
 			t.Errorf("missing client line in %q", out)
 		}
@@ -41,7 +41,7 @@ func TestRenderVersionOutput(t *testing.T) {
 	})
 
 	t.Run("omits server + skew lines when daemon unknown", func(t *testing.T) {
-		out := renderVersionOutput("dev", "", false)
+		out := renderVersionOutput("dev", "", false, "", false)
 		if !strings.Contains(out, "knowledge dev\n") {
 			t.Errorf("missing client line in %q", out)
 		}

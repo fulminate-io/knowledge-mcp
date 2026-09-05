@@ -1,6 +1,10 @@
 package searchengine
 
-import "time"
+import (
+	"errors"
+	"log/slog"
+	"time"
+)
 
 // Metrics is a point-in-time snapshot of engine health.
 type Metrics struct {
@@ -120,6 +124,27 @@ func (e *SegmentedIndex[Q, S]) doMerge(chosen []*segmentEntry[Q, S]) {
 
 	entry, err := e.mergeEntry(segs, accept)
 	if err != nil {
+		// A FAILED MERGE USED TO VANISH HERE, and a CONTAINED corruption vanishing
+		// is worse than one that crashed: the merge loop re-selects the same
+		// constituents on its next tick, re-reads the same bad bytes, and repeats
+		// forever with nothing in the log to say why the corpus never consolidates.
+		// Containment turned a loud crash into an invisible spin.
+		//
+		// The corruption arm is routed to the OWNER as well as to the log, because
+		// the owner is what quarantines the file; without that the loop keeps its
+		// perfect record of failure and no disposition is ever taken. A merge that
+		// failed for any other reason — a full disk, a mapping refusal — is logged
+		// and left alone, because it is not a segment defect and there is nothing
+		// to quarantine.
+		if corrupt, ok := errors.AsType[*CorruptSegmentError](err); ok {
+			slog.Error("segment merge aborted by a corrupt constituent",
+				"error", err,
+				"constituents", len(segs),
+				"note", "these segments cannot consolidate until the corrupt one is quarantined and rebuilt")
+			e.reportCorrupt(corrupt)
+			return
+		}
+		slog.Warn("segment merge failed", "error", err, "constituents", len(segs))
 		return
 	}
 	// THE CONSOLIDATED SEGMENT REMEMBERS WHAT IT REPLACED, in its own STORED BYTES
@@ -153,6 +178,26 @@ func (e *SegmentedIndex[Q, S]) doMerge(chosen []*segmentEntry[Q, S]) {
 		}
 	}
 	e.mergeCnt.Add(1)
+	// AND THE SETTLE COUNTER IS ARMED HERE, ONE LINE AFTER THE PUBLISH COUNTER, so
+	// that from this point on every way out of this function counts the merge as
+	// settled: the hook fired and returned, the hook was skipped because OnMerge is
+	// nil, or the blobParts failure below returned without firing it at all. A
+	// counter incremented at each of those arms by hand would be one arm behind the
+	// next author who adds a fourth; a deferred increment registered at the publish
+	// cannot be.
+	//
+	// WHAT THE PAIR MEANS TO A READER: mergeCnt says a merge is VISIBLE (its
+	// segments are swapped in), settleCnt says a merge is FINISHED (nothing this
+	// function started is still running). Between them sits the reclaim window — the
+	// interval in which the consolidated segment is live and its owner has not yet
+	// written it to L2 — which is precisely what an observer that wants to inspect
+	// post-merge state has to wait out. Neither counter is read by the merge path.
+	//
+	// A PANICKING HOOK STILL SETTLES, because deferred calls run as a panic unwinds.
+	// That is the direction to fail in: the merger goroutine is dying either way,
+	// and an observer waiting on settle should be released to fail on its own
+	// assertions rather than hang until its deadline on a process that is going down.
+	defer e.settleCnt.Add(1)
 
 	// Surface the supersession event to the owner (when installed) so it can
 	// reclaim the superseded constituents' L2 disk files. Runs AFTER the publish,
@@ -232,6 +277,48 @@ func (e *SegmentedIndex[Q, S]) MergeCount() uint64 {
 // can confirm which variant it built, and a policy change that disarms the
 // automatic trigger can be distinguished from one that drops the callback.
 func (e *SegmentedIndex[Q, S]) HasMergeHook() bool { return e.opts.OnMerge != nil }
+
+// SettledMergeCount reports how many background merges have RUN TO COMPLETION,
+// where completion means doMerge returned — publish, plus the OnMerge hook on the
+// arms that fire it, plus the arms that legitimately skip it.
+//
+// IT IS THE OTHER HALF OF MergeCount, AND THE HALF AN OBSERVER USUALLY WANTS.
+// MergeCount increments at the CAS publish, BEFORE the hook that reclaims the
+// superseded segments' disk files runs, so a reader that treats a stable MergeCount
+// as "the merge is done" is reading a counter that moved one step too early: the
+// consolidated segment is live while its owner has not yet written it. When
+// SettledMergeCount equals MergeCount there is no merge whose completion work is
+// still in flight.
+//
+// IT IS NOT A TERMINAL-STATE PREDICATE ON ITS OWN. The merger returns to its select
+// between merges, so the two counters are equal in every lull of a chain that has
+// more merges to do. An observer that needs "nothing more will happen" pairs this
+// with MergeEligible, which answers whether another merge is about to start.
+//
+// Pure observability, in the same vein as MergeCount, Metrics and HasMergeHook: the
+// merge path never reads it.
+func (e *SegmentedIndex[Q, S]) SettledMergeCount() uint64 { return e.settleCnt.Load() }
+
+// MergeEligible reports whether the trigger policy would select something to merge
+// against the currently published set — that is, whether the background merger
+// would start a merge on its next tick if the corpus stayed exactly as it is.
+//
+// IT ASKS THE POLICY RATHER THAN RESTATING IT. The answer is pickMergeTargets over
+// the published set, the same call maybeMerge makes, so the predicate cannot drift
+// away from the trigger it claims to describe. The cost of that is one slice
+// allocation on the dead-ratio arm (pickMergeTargets appends the dirty entries);
+// the alternative, a second copy of the trigger conditions that answers without
+// allocating, buys that allocation back at the price of two definitions of "merge
+// eligible" that a future policy change would have to keep in step by hand.
+//
+// IT IS A SNAPSHOT, NOT A GUARANTEE, and a caller that needs "nothing more will
+// happen" also has to know that nothing is writing to the engine: any Add or Delete
+// can make an ineligible corpus eligible again the moment after this returns.
+//
+// Pure observability: the merge path never reads it.
+func (e *SegmentedIndex[Q, S]) MergeEligible() bool {
+	return len(e.pickMergeTargets(e.set.Load())) > 0
+}
 
 // Metrics returns a point-in-time health snapshot. DeadRatio is the
 // corpus-wide dead/total fraction.

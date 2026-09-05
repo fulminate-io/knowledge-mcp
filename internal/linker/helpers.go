@@ -261,6 +261,15 @@ func emitLink(ctx context.Context, gc GraphCaller, opts LinkOptions, from, to, r
 	if err != nil {
 		return fmt.Errorf("emitLink %s -[%s]-> %s: %w", from, relationship, to, err)
 	}
+	// The Stats seam is DERIVED FROM gc rather than taken as a parameter, which
+	// is what lets a pass redirect it: an entry point that wrapped its gc with
+	// withVocabCache gets the per-pass cached seam here for free, and this
+	// signature stays unchanged. Without that wrapper this is one Stats RPC per
+	// emitted edge, because every caller of emitLink sits in a per-item loop.
+	stats, serr := linkerStatsFnOf(gc)
+	if serr != nil {
+		return fmt.Errorf("emitLink %s -[%s]-> %s: %w", from, relationship, to, serr)
+	}
 	_, _, lerr := crossgraph.ResolveAndLink(ctx, gc, ex, crossgraph.LinkRequest{
 		From:          from,
 		To:            to,
@@ -270,6 +279,7 @@ func emitLink(ctx context.Context, gc GraphCaller, opts LinkOptions, from, to, r
 		Method:        method,
 		Evidence:      evidence,
 		LastValidated: time.Now().UTC().Format(time.RFC3339),
+		Stats:         stats,
 	})
 	if lerr != nil {
 		return fmt.Errorf("emitLink %s -[%s]-> %s: %w", from, relationship, to, lerr)

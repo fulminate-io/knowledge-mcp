@@ -27,14 +27,21 @@ func parseInline(t *testing.T, title, body string) *pageRecord {
 func TestParsePage_InlineRunBehaviour(t *testing.T) {
 	t.Parallel()
 
-	t.Run("link-only run emits links and no paragraph", func(t *testing.T) {
+	t.Run("link-only run is retained as a links_only record alongside its links", func(t *testing.T) {
 		t.Parallel()
 		got := collectRecords(parseInline(t, "Links", `<div><a href="/one">One</a> <a href="/two">Two</a></div>`))
 		if len(got.links) != 2 {
 			t.Errorf("got %d link records, want 2 (one per anchor)", len(got.links))
 		}
-		if len(got.paragraphs) != 0 {
-			t.Errorf("got %d paragraphs, want 0 — a run of nothing but links is a navigation strip: %v", len(got.paragraphs), paragraphTexts(got.paragraphs))
+		// A run of nothing but links is a navigation strip, and it is RETAINED
+		// rather than dropped: the record exists so a consumer can see the
+		// strip and decide about it. Dropping it lost the fact that the page
+		// carried navigation there at all.
+		if len(got.paragraphs) != 1 {
+			t.Fatalf("got %d paragraphs, want 1 — a link-only run is retained: %v", len(got.paragraphs), paragraphTexts(got.paragraphs))
+		}
+		if !got.paragraphs[0].LinksOnly {
+			t.Errorf("the retained navigation strip is not marked LinksOnly, so nothing distinguishes it from prose: %q", got.paragraphs[0].Text)
 		}
 	})
 

@@ -87,6 +87,7 @@ func TestPruneCacheForceLoad(t *testing.T) {
 // property. What must stay true is what an operator depends on: freshly rebuilt content
 // is live, never an orphan.
 func TestPruneCacheCoversTheRebuiltLayer(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()
@@ -154,6 +155,7 @@ func TestPruneCacheOnDisk(t *testing.T) {
 // TestPruneCacheDriverDryRun proves execute=false reports the planted orphan + its
 // bytes and DELETES NOTHING (the .seg still exists after).
 func TestPruneCacheDriverDryRun(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()
@@ -181,6 +183,7 @@ func TestPruneCacheDriverDryRun(t *testing.T) {
 // os.Remove of a file NOT in the cache index — the T2-1 regression), leaves the live
 // .seg untouched, and reports Removed/RemovedBytes. It exercises BOTH formats.
 func TestPruneCacheDriverExecute(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()
@@ -301,6 +304,7 @@ func TestPruneCacheNoOpEmptyGraph(t *testing.T) {
 // execute=true prune over a graph with a planted orphan, a live Search returns the
 // full shipped corpus (every live segment still searchable).
 func TestPruneCacheLiveSearchAfterPrune(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

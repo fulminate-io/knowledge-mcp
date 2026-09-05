@@ -51,18 +51,17 @@ const (
 type GraphFamily int32
 
 const (
-	GraphFamily_GRAPH_FAMILY_UNSPECIFIED  GraphFamily = 0
-	GraphFamily_GRAPH_FAMILY_KNOWLEDGE    GraphFamily = 1
-	GraphFamily_GRAPH_FAMILY_CODE         GraphFamily = 2
-	GraphFamily_GRAPH_FAMILY_CLOUD        GraphFamily = 3
-	GraphFamily_GRAPH_FAMILY_CICD         GraphFamily = 4
-	GraphFamily_GRAPH_FAMILY_PRACTICE     GraphFamily = 5
-	GraphFamily_GRAPH_FAMILY_LOGS         GraphFamily = 6
-	GraphFamily_GRAPH_FAMILY_WEB          GraphFamily = 7
-	GraphFamily_GRAPH_FAMILY_PDF          GraphFamily = 8
-	GraphFamily_GRAPH_FAMILY_TRANSFORMERS GraphFamily = 9
-	GraphFamily_GRAPH_FAMILY_LINKAGE      GraphFamily = 10
-	GraphFamily_GRAPH_FAMILY_CHECKS       GraphFamily = 11
+	GraphFamily_GRAPH_FAMILY_UNSPECIFIED GraphFamily = 0
+	GraphFamily_GRAPH_FAMILY_KNOWLEDGE   GraphFamily = 1
+	GraphFamily_GRAPH_FAMILY_CODE        GraphFamily = 2
+	GraphFamily_GRAPH_FAMILY_CLOUD       GraphFamily = 3
+	GraphFamily_GRAPH_FAMILY_CICD        GraphFamily = 4
+	GraphFamily_GRAPH_FAMILY_PRACTICE    GraphFamily = 5
+	GraphFamily_GRAPH_FAMILY_LOGS        GraphFamily = 6
+	GraphFamily_GRAPH_FAMILY_WEB         GraphFamily = 7
+	GraphFamily_GRAPH_FAMILY_PDF         GraphFamily = 8
+	GraphFamily_GRAPH_FAMILY_LINKAGE     GraphFamily = 10
+	GraphFamily_GRAPH_FAMILY_CHECKS      GraphFamily = 11
 )
 
 // Enum value maps for GraphFamily.
@@ -77,23 +76,21 @@ var (
 		6:  "GRAPH_FAMILY_LOGS",
 		7:  "GRAPH_FAMILY_WEB",
 		8:  "GRAPH_FAMILY_PDF",
-		9:  "GRAPH_FAMILY_TRANSFORMERS",
 		10: "GRAPH_FAMILY_LINKAGE",
 		11: "GRAPH_FAMILY_CHECKS",
 	}
 	GraphFamily_value = map[string]int32{
-		"GRAPH_FAMILY_UNSPECIFIED":  0,
-		"GRAPH_FAMILY_KNOWLEDGE":    1,
-		"GRAPH_FAMILY_CODE":         2,
-		"GRAPH_FAMILY_CLOUD":        3,
-		"GRAPH_FAMILY_CICD":         4,
-		"GRAPH_FAMILY_PRACTICE":     5,
-		"GRAPH_FAMILY_LOGS":         6,
-		"GRAPH_FAMILY_WEB":          7,
-		"GRAPH_FAMILY_PDF":          8,
-		"GRAPH_FAMILY_TRANSFORMERS": 9,
-		"GRAPH_FAMILY_LINKAGE":      10,
-		"GRAPH_FAMILY_CHECKS":       11,
+		"GRAPH_FAMILY_UNSPECIFIED": 0,
+		"GRAPH_FAMILY_KNOWLEDGE":   1,
+		"GRAPH_FAMILY_CODE":        2,
+		"GRAPH_FAMILY_CLOUD":       3,
+		"GRAPH_FAMILY_CICD":        4,
+		"GRAPH_FAMILY_PRACTICE":    5,
+		"GRAPH_FAMILY_LOGS":        6,
+		"GRAPH_FAMILY_WEB":         7,
+		"GRAPH_FAMILY_PDF":         8,
+		"GRAPH_FAMILY_LINKAGE":     10,
+		"GRAPH_FAMILY_CHECKS":      11,
 	}
 )
 
@@ -4107,7 +4104,8 @@ func (x *MigrateMetaReprSpec) GetTargetRepr() MigrateMetaReprSpec_TargetRepr {
 // UpdateItem is one row of the UPDATE_ITEMS arm — a per-item heterogeneous update
 // body. id is the target; summary/keywords/status are `optional` to express the
 // pointer "set vs unset" distinction (a present-but-empty value is a deliberate
-// clear, an absent value leaves the field untouched); binary_vector is the raw
+// clear, an absent value leaves the field untouched); description carries the
+// node body under that same contract; binary_vector is the raw
 // embedding at the target graph's recorded width; metadata is a per-key merge
 // map. At least one settable field must be present (validated server-side
 // before any txn).
@@ -4122,6 +4120,21 @@ type UpdateItem struct {
 	BinaryVector []byte            `protobuf:"bytes,4,opt,name=binary_vector,json=binaryVector,proto3" json:"binary_vector,omitempty"`
 	Metadata     map[string]string `protobuf:"bytes,5,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // per-key metadata merge
 	Status       *string           `protobuf:"bytes,6,opt,name=status,proto3,oneof" json:"status,omitempty"`                                                                         // store.NodeFields.Status (nil = untouched)
+	// description sets store.NodeFields.Description (nil = untouched), the same
+	// set/unset pointer contract summary, keywords and status carry.
+	//
+	// WHY IT IS HERE AT ALL. Without it an items[] entry naming a description
+	// decoded to nothing and the call RETURNED SUCCESS having written none of it:
+	// the caller was told the write happened and the node was unchanged. That was
+	// closed client-side by refusing the key, which is correct while there is no
+	// carrier and wrong once there is one — a refusal still denies the caller the
+	// write they asked for. The field is the carrier.
+	//
+	// IT IS BM25-INDEXABLE, which summary and keywords already were and status and
+	// metadata are not, so the apply arm must re-index an item that sets it. A
+	// description written without the re-index is stored and unsearchable, which is
+	// the one failure mode of adding it that no round-trip read would catch.
+	Description *string `protobuf:"bytes,8,opt,name=description,proto3,oneof" json:"description,omitempty"`
 	// embed_identity states the embedder that produced binary_vector, so a
 	// writeback under an identity the target graph did not record is REFUSED
 	// rather than stored.
@@ -4205,6 +4218,13 @@ func (x *UpdateItem) GetMetadata() map[string]string {
 func (x *UpdateItem) GetStatus() string {
 	if x != nil && x.Status != nil {
 		return *x.Status
+	}
+	return ""
+}
+
+func (x *UpdateItem) GetDescription() string {
+	if x != nil && x.Description != nil {
+		return *x.Description
 	}
 	return ""
 }
@@ -6094,7 +6114,7 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"TargetRepr\x12\x1b\n" +
 	"\x17TARGET_REPR_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12TARGET_REPR_SCALAR\x10\x01\x12\x14\n" +
-	"\x10TARGET_REPR_EDGE\x10\x02\"\x87\x03\n" +
+	"\x10TARGET_REPR_EDGE\x10\x02\"\xbe\x03\n" +
 	"\n" +
 	"UpdateItem\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
@@ -6102,7 +6122,8 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\bkeywords\x18\x03 \x01(\tH\x01R\bkeywords\x88\x01\x01\x12#\n" +
 	"\rbinary_vector\x18\x04 \x01(\fR\fbinaryVector\x12B\n" +
 	"\bmetadata\x18\x05 \x03(\v2&.knowledge.v1.UpdateItem.MetadataEntryR\bmetadata\x12\x1b\n" +
-	"\x06status\x18\x06 \x01(\tH\x02R\x06status\x88\x01\x01\x12B\n" +
+	"\x06status\x18\x06 \x01(\tH\x02R\x06status\x88\x01\x01\x12%\n" +
+	"\vdescription\x18\b \x01(\tH\x03R\vdescription\x88\x01\x01\x12B\n" +
 	"\x0eembed_identity\x18\a \x01(\v2\x1b.knowledge.v1.EmbedIdentityR\rembedIdentity\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
@@ -6110,7 +6131,8 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\n" +
 	"\b_summaryB\v\n" +
 	"\t_keywordsB\t\n" +
-	"\a_status\"\xc7\x02\n" +
+	"\a_statusB\x0e\n" +
+	"\f_description\"\xc7\x02\n" +
 	"\bNodeBody\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
@@ -6262,7 +6284,7 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\n" +
 	"pruned_ids\x18\x04 \x03(\tR\tprunedIds\x12\x18\n" +
 	"\awarning\x18\x05 \x01(\tR\awarning\x12#\n" +
-	"\rfreshness_gen\x18\x06 \x01(\x04R\ffreshnessGen*\xbd\x02\n" +
+	"\rfreshness_gen\x18\x06 \x01(\x04R\ffreshnessGen*\xbf\x02\n" +
 	"\vGraphFamily\x12\x1c\n" +
 	"\x18GRAPH_FAMILY_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16GRAPH_FAMILY_KNOWLEDGE\x10\x01\x12\x15\n" +
@@ -6272,11 +6294,10 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\x15GRAPH_FAMILY_PRACTICE\x10\x05\x12\x15\n" +
 	"\x11GRAPH_FAMILY_LOGS\x10\x06\x12\x14\n" +
 	"\x10GRAPH_FAMILY_WEB\x10\a\x12\x14\n" +
-	"\x10GRAPH_FAMILY_PDF\x10\b\x12\x1d\n" +
-	"\x19GRAPH_FAMILY_TRANSFORMERS\x10\t\x12\x18\n" +
+	"\x10GRAPH_FAMILY_PDF\x10\b\x12\x18\n" +
 	"\x14GRAPH_FAMILY_LINKAGE\x10\n" +
 	"\x12\x17\n" +
-	"\x13GRAPH_FAMILY_CHECKS\x10\v*p\n" +
+	"\x13GRAPH_FAMILY_CHECKS\x10\v\"\x04\b\t\x10\t*\x19GRAPH_FAMILY_TRANSFORMERS*p\n" +
 	"\n" +
 	"SearchMode\x12\x1b\n" +
 	"\x17SEARCH_MODE_UNSPECIFIED\x10\x00\x12\x16\n" +

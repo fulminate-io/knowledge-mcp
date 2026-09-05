@@ -26,7 +26,6 @@ func TestSyncEligible_PerType(t *testing.T) {
 		{GraphCICD, true},
 		{GraphPractice, true},
 		{GraphLinkage, true},
-		{GraphTransformers, true},
 		{GraphChecks, true},
 		{GraphLogs, false},
 		{GraphWebRaw, false},
@@ -40,8 +39,8 @@ func TestSyncEligible_PerType(t *testing.T) {
 }
 
 // TestSyncEligibleGraphTypes_OrderedSet asserts the eligible set is exactly the
-// 8-element ordered set {knowledge, code, cloud, cicd, practice, linkage,
-// transformers, checks}, excluding logs/web/pdf, in that order.
+// 7-element ordered set {knowledge, code, cloud, cicd, practice, linkage,
+// checks}, excluding logs/web/pdf, in that order.
 //
 // WHAT THE checks ROW ASSERTS. Both the mechanical state — SyncEligible is a
 // complement predicate and checks is absent from its {logs, web, pdf} exclusion
@@ -58,7 +57,6 @@ func TestSyncEligibleGraphTypes_OrderedSet(t *testing.T) {
 		GraphCICD,
 		GraphPractice,
 		GraphLinkage,
-		GraphTransformers,
 		GraphChecks,
 	}
 	got := SyncEligibleGraphTypes()
@@ -158,7 +156,7 @@ func TestSyncEligible_ChecksAreEligibleDeliberately(t *testing.T) {
 func TestBuiltinGraphTypeNames_IsTheFullVocabulary(t *testing.T) {
 	want := []string{
 		"knowledge", "code", "cloud", "cicd", "practice", "linkage",
-		"transformers", "checks", "logs", "web", "pdf",
+		"checks", "logs", "web", "pdf",
 	}
 	got := BuiltinGraphTypeNames()
 	if len(got) != len(want) {

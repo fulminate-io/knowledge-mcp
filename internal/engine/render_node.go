@@ -127,15 +127,23 @@ func nodeNotFoundMsg(nodeID, label string) string {
 // from an older binary (the doctrine render_json_truncated_test.go states for
 // every other envelope). Its value is the OR of the edge-summary and cross-link
 // peer-hydrate verdicts dispatchQueryByID already computes.
+//
+// NODE IS `any` SO A PROJECTED ROW CAN RIDE THE SAME ENVELOPE. A projection
+// yields a field map, not a *knowledgev1.Node, and giving the projection its own
+// envelope type would mean two declarations of the truncated contract — the one
+// key whose whole value is that it is emitted unconditionally by every arm. An
+// unprojected node marshals byte-identically through the `any` field, so the
+// legacy shape is unchanged.
 type byIDJSONEnvelope struct {
-	Node       *knowledgev1.Node `json:"node"`
-	Edges      []nodeEdgeInfo    `json:"edges,omitempty"`
-	CrossLinks []crossLink       `json:"cross_links,omitempty"`
-	Truncated  bool              `json:"truncated"`
+	Node       any            `json:"node"`
+	Edges      []nodeEdgeInfo `json:"edges,omitempty"`
+	CrossLinks []crossLink    `json:"cross_links,omitempty"`
+	Truncated  bool           `json:"truncated"`
 }
 
 // renderByIDResult picks the by-id render shape for the dispatchQueryByID
-// intercept: the format:"json" envelope above, or one of the two legacy bodies.
+// intercept: the PROJECTED envelope, the format:"json" envelope above, or one of
+// the two legacy bodies.
 //
 // THE JSON BRANCH PRECEDES BOTH LEGACY RETURNS, the ordering hazard
 // intercept_query_rules.go:113-115 documents: a shape decided after the prose
@@ -154,10 +162,37 @@ func renderByIDResult(
 	label string,
 	isKnowledge bool,
 	format string,
+	fields []string,
+	includeTombstones bool,
 	edges []nodeEdgeInfo,
 	links []crossLink,
 	truncated bool,
 ) kgtools.ToolResult {
+	// A PROJECTION OVERRIDES FORMAT, and it is checked FIRST for the ordering
+	// reason this file already states for the json branch: a shape decided after
+	// a prose return serializes some results as prose and breaks the caller's
+	// JSON.parse. A projected row IS a json object, so there is no text shape to
+	// render it into — the same override the plain by-id arm and the ids-hydrate
+	// arm already apply, and this arm is the one that used to drop the projection
+	// on the floor instead.
+	//
+	// THE ENVELOPE SURVIVES THE PROJECTION. The projected row rides under `node`
+	// with edges, cross_links and the unconditional `truncated` beside it: a
+	// caller who projects is asking for a smaller NODE, not for a read that stops
+	// disclosing whether it was complete.
+	//
+	// VALIDATION IS THE SHARED ValidateNodeProjection, so this arm and the plain
+	// by-id arm cannot drift into two vocabularies or two refusal messages. A
+	// caller-input refusal is a rendered error result rather than a transport
+	// error, matching the not-found shape.
+	if len(fields) > 0 {
+		if err := ValidateNodeProjection(fields, includeTombstones); err != nil {
+			return errorResult(err.Error())
+		}
+		return jsonResult(byIDJSONEnvelope{
+			Node: ProjectNodeJSON(n, fields), Edges: edges, CrossLinks: links, Truncated: truncated,
+		})
+	}
 	if format == "json" {
 		return jsonResult(byIDJSONEnvelope{Node: n, Edges: edges, CrossLinks: links, Truncated: truncated})
 	}

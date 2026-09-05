@@ -338,34 +338,28 @@ func TestReconcileSegmentCoverage_DegenerateNonCodeRebuilds(t *testing.T) {
 }
 
 // TestReconcileSegmentCoverage_SkipsNonEmbeddableBuiltins is the closed-gate side:
-// the walk skips kgtypes.GraphLinkage and kgtypes.GraphTransformers
-// (HasRebuildableSegments returns false), so even for an instance this client HAS
-// interacted with, the reconcile never probes or rebuilds it — they carry no
-// rebuildable segments.
+// the walk skips kgtypes.GraphLinkage (HasRebuildableSegments returns false), so
+// even for an instance this client HAS interacted with, the reconcile never
+// probes or rebuilds it — it carries no rebuildable segments.
 //
-// BOTH INSTANCES ARE ADMITTED ON PURPOSE. Membership is the other reason a graph can
-// be absent from the walk, so leaving them unadmitted would make the zeros below true
+// THE INSTANCE IS ADMITTED ON PURPOSE. Membership is the other reason a graph can
+// be absent from the walk, so leaving it unadmitted would make the zero below true
 // for that reason instead and this test would no longer touch the type gate it names.
 func TestReconcileSegmentCoverage_SkipsNonEmbeddableBuiltins(t *testing.T) {
 	c, eng := buildReconcileClient(t)
 	ctx := context.Background()
 
 	c.AdmitGraph(kgtypes.GraphLinkage, "lk", "search")
-	c.AdmitGraph(kgtypes.GraphTransformers, "recipes", "search")
 
-	// Register instances for the two non-embeddable sync-eligible builtins. If the
-	// type gate did NOT skip them, the loop would probe these names.
+	// Register an instance for the non-embeddable sync-eligible builtin. If the
+	// type gate did NOT skip it, the loop would probe this name.
 	eng.namesByType[string(kgtypes.GraphLinkage)] = []string{"lk"}
-	eng.namesByType[string(kgtypes.GraphTransformers)] = []string{"recipes"}
 	eng.scanItems["lk"] = makeReconcileScanPage("lk", 10)
-	eng.scanItems["recipes"] = makeReconcileScanPage("recipes", 10)
 
 	c.reconcileSegmentCoverage(ctx)
 
 	require.Equal(t, 0, eng.scanCallCount("lk"),
 		"linkage has no rebuildable segments — never enumerated/probed/rebuilt")
-	require.Equal(t, 0, eng.scanCallCount("recipes"),
-		"transformers has no rebuildable segments — never enumerated/probed/rebuilt")
 }
 
 // TestReconcileSegmentCoverage_TimeoutKeepsResidentNoRebuild WAS DELETED HERE. It

@@ -168,7 +168,7 @@ var linkArmSpecs = map[armID]armSpec{
 		},
 	},
 
-	// The practice/checks/transformers passthrough re-dispatches the caller's
+	// The practice/checks passthrough re-dispatches the caller's
 	// verbatim args through the engine, so it is OPERATION-POLYMORPHIC over create,
 	// create_batch, update and delete; `operation` below names one representative
 	// of that set. Its consumed set is the union of what those four engine arms
@@ -195,7 +195,7 @@ var linkArmSpecs = map[armID]armSpec{
 
 	// The non-knowledge fallthrough is defined by EXCLUSION and is reached by
 	// effectively the whole operation vocabulary with a different body surface
-	// each time — on a practice/transformers graph by every operation outside the
+	// each time — on a practice/checks graph by every operation outside the
 	// passthrough CRUD set, and on a genuinely foreign graph by every operation
 	// at all. `operation` below names one representative.
 	//

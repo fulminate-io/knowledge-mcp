@@ -3,6 +3,10 @@
 package tools
 
 import (
+	"slices"
+
+	"google.golang.org/protobuf/proto"
+
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
@@ -35,12 +39,18 @@ var excludedCodeSearchTypes = map[string]bool{
 // the request repo (the :311 a.Repo fix makes it non-empty). The CodeResolvedResult
 // boundary dropped the SearchResult.Graph/GraphInstance the hydrate funnel stamped,
 // so this is the re-stamp on the way into the json envelope.
-func flattenCodeResults(perQuery [][]engine.CodeResolvedResult) []engine.SearchResult {
+//
+// includeSource is the caller's include_source, and this is where the json branch
+// honors it: the renderer copies Content and Source unconditionally and
+// RenderForCaller takes no such flag, so the suppression has to happen on the way
+// IN. The text path's own gate lives in the formatter, which is why the two paths
+// read the same flag at different sites rather than sharing one.
+func flattenCodeResults(perQuery [][]engine.CodeResolvedResult, includeSource bool) []engine.SearchResult {
 	var out []engine.SearchResult
 	for _, results := range perQuery {
 		for _, r := range results {
 			out = append(out, engine.SearchResult{
-				Node:          r.Node,
+				Node:          bodyForRender(r.Node, includeSource),
 				Score:         r.Score,
 				Graph:         "code",
 				GraphInstance: r.Repo,
@@ -48,6 +58,46 @@ func flattenCodeResults(perQuery [][]engine.CodeResolvedResult) []engine.SearchR
 		}
 	}
 	return out
+}
+
+// bodyForRender returns the node to render: n itself when the caller wants the
+// source, and a CLONE with both body carriers cleared when it does not.
+//
+// THE CLONE IS THE POINT. CodeResolvedResult holds a *knowledgev1.Node that came
+// straight out of the hydrate, and the search result copies that pointer — so
+// clearing the body in place would blank the node for every other holder of the
+// same pointer, turning a presentation choice into a data mutation. Cloning is
+// also why this cannot live in the renderer, which is handed the results and not
+// the flag. It goes through proto.CloneOf rather than a struct copy, for the
+// reason nodeWithParentHeading records: a generated message carries internal
+// state that must not be copied by value, and `go vet` says so.
+//
+// BOTH carriers are cleared, not just Content. `content` and `source` are
+// separately persisted node fields (proto Node: content = 8, source = 12), and
+// include_source promises no source text in the row rather than in one key of it;
+// code symbol nodes populate only Content today, so clearing Source alone would
+// have been a no-op that looked like a fix.
+func bodyForRender(n *knowledgev1.Node, includeSource bool) *knowledgev1.Node {
+	if includeSource || n == nil {
+		return n
+	}
+	stripped := proto.CloneOf(n)
+	stripped.Content = ""
+	stripped.Source = ""
+	return stripped
+}
+
+// projectionNamesBody reports whether a caller's json projection names the key
+// that carries the node body. It backs composeCodeSearch's contradictory-input
+// refusal: naming `content` while passing include_source:false asks for the body
+// and for no body in one call.
+//
+// Only `content` counts, and that is the ticket's ruling rather than an
+// oversight: `source` is a separate node field that code symbols never populate,
+// so a projection naming it returns an empty string under either flag and states
+// nothing contradictory.
+func projectionNamesBody(fields []string) bool {
+	return slices.Contains(fields, "content")
 }
 
 // applyCodeResultFilters applies the default comment-exclusion + the test-flag

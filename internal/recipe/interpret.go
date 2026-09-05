@@ -11,14 +11,14 @@ import (
 // Interpret evaluates a parsed Recipe against the in-memory sourceView,
 // accumulating emissions into an in-memory Result. The caller (RunRecipe)
 // supplies the target spec and source slug so StableID + lineage edges land
-// deterministically, runs any Force cleanup BEFORE calling Interpret, and ships
-// the returned Result through the collector Sink afterwards.
+// deterministically, and ships the returned Result through the collector Sink
+// afterwards — subject to the write guard, which refuses the whole write when an
+// emitted id already names a differing row in the target.
 //
 // Unlike the former server interpreter, Interpret performs NO writes and opens
 // NO transaction: every emit/link/lookup is recorded into the Result buffers and
-// the in-run emitted set, never a target DB. DryRun therefore differs only in
-// what RunRecipe does with the Result (skip the Sink write) — the interpretation
-// itself is identical either way.
+// the in-run emitted set, never a target DB. Nothing downstream writes them
+// either — the Result is read back by the caller and discarded.
 func Interpret(
 	ctx context.Context,
 	recipe *Recipe,
@@ -30,18 +30,40 @@ func Interpret(
 	if recipe == nil {
 		return nil, fmt.Errorf("Interpret: nil recipe")
 	}
+	// EVERY VOCABULARY THE RECIPE NAMES IS CHECKED HERE, BEFORE THE CLOCK AND
+	// BEFORE ANY ROW. The validator needs the source graph's type and name only
+	// to render "<graphType>/<name>" in its refusals, and both travel on sv, so
+	// this file's diff is one insertion and Interpret's signature is unchanged.
+	compiledWhere, resolvedCompares, err := validateAgainstSource(recipe, sv)
+	if err != nil {
+		return nil, err
+	}
 
 	start := time.Now()
 	result := &Result{}
+	// EXTRACT MODE ALLOCATES ITS RESULT UP FRONT, unconditionally. A lazily
+	// allocated Extract is nil in exactly the state the disclosure exists to
+	// reveal — every row skipped for an empty identity — so the response could
+	// not tell "matched nothing" from "skipped everything". A nil Extract under
+	// extract mode is a lie about what ran.
+	if opts.Extract {
+		result.Extract = &ExtractResult{}
+	}
 	// emitted is the in-run set of target node IDs this run has produced. It
 	// gives evalLookup / evalLink their SAME-RUN scope: a lookup or link
 	// resolves only against nodes emitted earlier in THIS interpretation, never
 	// a cross-run read of the target graph (which the client cannot afford and
-	// the server's in-txn target DB happened to provide). DryRun and live runs
-	// populate it identically.
+	// the server's in-txn target DB happened to provide).
 	emitted := map[string]bool{}
 
 	env := newEnv()
+	// The validator compiled every where-tree regex for THIS run; the evaluator
+	// reads them from here rather than from the shared, cached tree.
+	env.whereRegexes = compiledWhere
+	// The validator resolved every compare leaf's operator and operand for THIS
+	// run, on the same terms: the evaluator reads them from here rather than
+	// writing them onto the shared, cached tree.
+	env.whereCompares = resolvedCompares
 	for _, rule := range recipe.Rules {
 		if err := dispatchRule(ctx, env, rule, sv, target, sourceSlug, opts, result, emitted); err != nil {
 			result.Stats.ElapsedMillis = time.Since(start).Milliseconds()
@@ -71,6 +93,8 @@ func dispatchRule(
 		return evalSelect(ctx, env, r, sv)
 	case RuleTraverse:
 		return evalTraverse(ctx, env, r, sv)
+	case RuleWalk:
+		return evalWalk(ctx, env, r, sv)
 	case RuleFilter:
 		return evalFilter(ctx, env, r, sv)
 	case RuleBind:

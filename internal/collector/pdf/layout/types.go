@@ -46,21 +46,71 @@ const (
 // and a dehyphenation flag for joins across a hyphenated line break.
 type Line struct {
 	// Runs holds the line's text runs in left-to-right reading order.
+	//
+	// COORDINATE FRAME, and it DEPENDS ON WHICH PRODUCER BUILT THE
+	// LINE. Read this before comparing a run's Y against anything.
+	//
+	//   - LinesFromRuns returns runs in the frame the CALLER supplied,
+	//     the same one its Line.BBox is in. It un-flips them on the way
+	//     out, because handing a caller coordinates in an internal
+	//     frame is a trap.
+	//   - ClusterWithParams un-flips its BBOXES ONLY. Its Line.Runs
+	//     keep the internal top-down frame the grouper works in, so a
+	//     run's Y there is NOT comparable with its own Line.BBox.
+	//
+	// The asymmetry is deliberate. Outside the layout package's own
+	// transforms, ONE production reader of a run's Y or Height
+	// survives: structtree's computeMCIDBBox, which derives an
+	// element's box from the runs it claimed, and which reads RAW page
+	// runs rather than any Line.Runs. A second reader, structtree's
+	// sameLine, is TEST-ONLY REACHABLE — its sole caller
+	// extractMCIDText has no production caller of its own, which is
+	// why the compiler's unused check stays quiet, and that dead
+	// production path is recorded for the cleanup ticket rather than
+	// removed here. Because no surviving reader reaches a Line,
+	// none can observe which frame a Line's runs are in, and making
+	// ClusterWithParams symmetric would change no behaviour any golden
+	// could verify.
+	//
+	// That is NOT the same as saying nothing depends on run geometry.
+	// structtree's ActualText test asserts the synthesized run's X and
+	// Y equal the element's BBox, and it passes only because
+	// LinesFromRuns un-flips its runs — the un-flipping path is load
+	// bearing and has a test that fails without it.
+	//
+	// An earlier version of this note claimed one reader rather than
+	// two. The census behind it excluded every line mentioning a bbox
+	// field in order to filter out box reads, and computeMCIDBBox
+	// compares run coordinates against bbox fields on the same lines,
+	// so the filter hid a genuine consumer. Widen before trusting a
+	// count like this.
+	//
+	// If a consumer ever does need run geometry off a Line, resolve the
+	// asymmetry rather than guessing which frame it got.
 	Runs []text.TextRun
 
 	// BBox is the line bounding box in user-space coordinates.
 	BBox Rect
 
-	// WasDehyphenated is true when the layout grouper merged a trailing
-	// hyphenated word onto the next line; T4 sets, downstream readers
-	// can use it to suppress the join hyphen if needed.
+	// WasDehyphenated is true when the layout grouper stripped this
+	// line's trailing hyphen because the next line continues the same
+	// word. Its production reader is the chunk package's
+	// normalizeBlockText, which suppresses the line-join space when the
+	// flag is set — the two halves are one word, so "sequen" and
+	// "tially" must concatenate rather than become "sequen tially".
 	WasDehyphenated bool
 }
 
 // Block is a layout-aware grouping of Lines that share role, font, and
-// reading-order continuity. T1 pins the 11-field surface; T4 fills the
-// geometric fields, T5 fills classify fields, T6 fills StructRole, T7
-// reads HeadingLevel + Metadata.
+// reading-order continuity. The layout grouper fills the geometric
+// fields, classify fills Kind / HeadingLevel / Metadata, and the
+// structure-tree reader fills StructRole on a tagged document.
+//
+// Column, IsHeader, IsFooter and IsFootnote used to sit here as
+// declared-but-inert flags with no writer anywhere in the tree. They
+// were removed alongside the header/footer skip leg they were meant to
+// feed: page chrome is identified by cross-page text repetition and
+// disclosed in Metadata, not by a boolean nobody set.
 type Block struct {
 	// Kind identifies the block role (heading, paragraph, code, etc).
 	// Empty BlockUnknown until T5 classifies.
@@ -81,25 +131,14 @@ type Block struct {
 	StructRole string
 
 	// HeadingLevel is the heading depth (1 = top-level, 2 = subsection,
-	// ...). Zero for non-heading blocks. Populated by T7's chunker (it
-	// uses Kind + StructRole + size hierarchy).
+	// ...). Zero for non-heading blocks.
+	//
+	// The level is a RANK of the DOCUMENT's distinct heading sizes,
+	// comparable across pages: classify.AssignHeadingLevelsDocument
+	// builds one size-to-level map over every page and applies it to
+	// all of them. A StructRole of "H1".."H6" on a tagged document is
+	// authoritative and is preserved rather than re-ranked.
 	HeadingLevel int
-
-	// Column is the 0-indexed column the block lives in (for
-	// multi-column page layouts). Populated by T5's column detector.
-	Column int
-
-	// IsHeader is true when the classifier determined the block is a
-	// page header (running title at the top of every page).
-	IsHeader bool
-
-	// IsFooter is true when the classifier determined the block is a
-	// page footer (running title / page number at the bottom).
-	IsFooter bool
-
-	// IsFootnote is true when the classifier determined the block is a
-	// footnote (smaller text below a separator line near the bottom).
-	IsFootnote bool
 
 	// Metadata is a free-form key/value map for any extra annotations
 	// the chunker may attach (e.g. caption→figure ref, list-marker

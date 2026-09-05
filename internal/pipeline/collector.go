@@ -70,6 +70,10 @@ type collector struct {
 	// embed-axis quiescence trigger no-ops when it is nil.
 	flush func(ctx context.Context) error
 
+	// evictOnDurableNotFound, when non-nil, drops this graph from the working
+	// set. Wired in RegisterGraph; the arm and its rationale are in collector_evict.go.
+	evictOnDurableNotFound func(reason string)
+
 	// healIfSegmentless, when non-nil, runs the auto-heal check for this
 	// graph: a CHEAP zero-shipped-segments probe and, ONLY on zero, an invocation
 	// of the rebuild driver (single-flight, shared with the manual rebuild_segments
@@ -259,7 +263,8 @@ const maxDrainSkips = 12
 // repeating. Four throttles keep remote (logged-in) scan volume bounded:
 //
 //	#1 idle-backoff   — an empty scan grows the sleep geometrically from baseTick
-//	                    toward idleTick; any work snaps it back to baseTick.
+//	                    toward idleTick; any work snaps it back to baseTick. Its
+//	                    step is nextScanInterval, in collector_loop_helpers.go.
 //	#2 drain-gate     — while items are still in flight, skip the scan (just keep
 //	                    draining) until the batch clears or maxDrainSkips forces one.
 //	#3 scan backoff   — a scan ERROR (e.g. a remote 429) backs off on the axis's
@@ -352,6 +357,9 @@ func (c *collector) runLoop(ctx context.Context, ax loopAxis) {
 
 		items, setComplete, err := c.discover(ctx, ax.axis, ax.lastGen)
 		if err != nil {
+			if c.endLaneOnDurableNotFound(ax.axis, err) {
+				return
+			}
 			// #3 scan-error backoff (insurance): a rate-limit / transient scan
 			// failure backs off on the axis gate rather than re-firing at the
 			// base cadence, so a limit can't re-trigger a storm. A remote 429
@@ -410,16 +418,8 @@ func (c *collector) runLoop(ctx context.Context, ax loopAxis) {
 		// axes' latest observations are in hand.
 		c.maybeBalanceAtQuiescence(ctx)
 
-		// #1 idle-backoff: work found → fast base cadence; empty → grow toward
-		// idleMax so a fully-drained graph costs ~one scan per idleMax. The idle
-		// sleep is the ONLY one a collect wake interrupts — a long idle interval
-		// should yield immediately to fresh work, but a rate-limit backoff (#3)
-		// and a drain-gate wait must run to completion.
-		if len(items) > 0 {
-			interval = base
-		} else {
-			interval = nextIdleInterval(interval, idleMax)
-		}
+		// #1 idle-backoff, whose step is nextScanInterval in collector_loop_helpers.go.
+		interval = nextScanInterval(len(items), base, interval, idleMax)
 		alive, byWake := c.sleepForWake(ctx, interval, ax.wake)
 		if !alive {
 			return

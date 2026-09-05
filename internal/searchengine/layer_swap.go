@@ -101,7 +101,8 @@ func (e *SegmentedIndex[Q, S]) BuildLayer(work []BucketWork) (*BuiltLayer[Q, S],
 			// a corpus simply may not populate every partition of its derived count.
 			continue
 		}
-		seg, err := e.format.Build(docs)
+		seg, rep, err := e.format.Build(docs)
+		e.reportDegrade(rep)
 		if err != nil {
 			return nil, fmt.Errorf("searchengine: building partition %d of the replacement layer: %w", w.Bucket, err)
 		}

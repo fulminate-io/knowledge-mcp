@@ -112,23 +112,6 @@ link $p --[relates-to]--> $rp`
 	assert.Zero(t, result.Stats.LinkMisses, "both endpoints were emitted, so no miss")
 }
 
-func TestInterpret_DryRun_SameResultNoWrite(t *testing.T) {
-	sv := twoSectionView()
-	body := `select section
-emit pattern {
-    type := "pattern"
-    name := section.symbol_name
-}`
-	recipe := parseOrFatal(t, body)
-	// DryRun is honored by RunRecipe (skip the Sink write), not by Interpret —
-	// the interpretation itself is identical either way. Assert the Result is
-	// fully populated under DryRun.
-	result, err := Interpret(context.Background(), recipe, sv, recipeTargetSpec(), "hohpe-eip", Options{DryRun: true})
-	require.NoError(t, err)
-	assert.Len(t, result.Nodes, 2)
-	assert.Len(t, result.Lineage, 2)
-}
-
 func TestInterpret_LinkMiss_WhenEndpointNotEmitted(t *testing.T) {
 	sv := twoSectionView()
 	// $rp is never emitted (no second emit), so the link has an unbound
@@ -156,13 +139,13 @@ func emittedNames(res *Result) []string {
 	return out
 }
 
-// TestInterpret_FilterRule_DropsRows pins evalFilter: a `~=` predicate keeps
+// TestInterpret_FilterRule_DropsRows pins evalFilter: a matches leaf keeps
 // exactly the rows whose field matches and drops the rest, asserted by surviving
 // node count AND name. A broken filter that keeps all or drops all fails here.
 func TestInterpret_FilterRule_DropsRows(t *testing.T) {
 	sv := twoSectionView() // "Message Router" + "Message Channel"
 	body := `select section
-filter section.symbol_name ~= /Router/
+filter {"matches": {"of": "section.symbol_name", "regex": "Router"}}
 emit pattern {
     name := section.symbol_name
 }`
@@ -298,11 +281,21 @@ emit pattern {
 // on env.Vars. A subsequent select repopulates rows, and the emit reads $x via
 // lookupVar's env fallback. Observed behavior (confirmed first-hand): both
 // emitted nodes carry name "ab" — the env-scope binding survives into the emit.
+//
+// THE EXPLICIT identity FIELD IS LOAD-BEARING — DO NOT REMOVE IT. This test's
+// subject is the env-scope binding reaching the emit, NOT identity. But name is
+// what emitIdentity falls back to when no identity is given, so with both rows
+// named "ab" both rows resolved ONE identity and collided on StableID. That
+// collision is now correctly REFUSED before anything ships, which would fail this
+// test for a reason that has nothing to do with what it pins. Keying identity on
+// section.symbol_name makes the two rows distinct while leaving both name
+// assertions below exactly as they were.
 func TestInterpret_BindRule_EmptyRows(t *testing.T) {
 	sv := twoSectionView()
 	body := `bind $x := concat("a", "b")
 select section
 emit pattern {
+    identity := section.symbol_name
     name := $x
 }`
 	recipe := parseOrFatal(t, body)
@@ -373,8 +366,12 @@ link $p --[relates-to]--> $q`
 // increments LookupMisses without computing a StableID.
 func TestInterpret_LookupRule_EmptyIdentity(t *testing.T) {
 	sv := oneSectionView()
-	// node.metadata.nope resolves to "" (the section has no metadata), so the
-	// lookup identity is empty.
+	// node.metadata.nope resolves to "" so the lookup identity is empty. The key
+	// is STAMPED ON THE FIXTURE WITH AN EMPTY VALUE rather than left absent: the
+	// source census refuses a key the graph never carried, and this test is about
+	// an identity that resolves empty at RUN time — a property of the data — not
+	// about a recipe naming a key that does not exist.
+	sv.byID["s1"].Metadata = map[string]string{"nope": ""}
 	body := `select section
 emit pattern {
     name := section.symbol_name

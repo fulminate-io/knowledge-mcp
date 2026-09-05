@@ -266,22 +266,9 @@ func runQueryDomainIntercepts(ctx context.Context, c *client, params kgtools.Cal
 	if handled, res := tools.InterceptQueryRegisteredGraphSearch(ctx, c, params); handled {
 		return true, res
 	}
-	// transformers/checks ranked text search: REFUSED by name. These two builtins
-	// carry no ranked index, and the arm directly above declines them for being
-	// builtin — the same ejection that left them unclaimed on the search rail. Left
-	// unclaimed here they reached tools.InterceptQuery, whose generic dispatch tail
-	// rendered server rows under a "_search mode: BM25-only_" footer for graphs that
-	// carry no BM25 segments, and two of the four published text modes fell past
-	// even that to the generic engine deny. Self-gates on the two graphs plus a
-	// text-search shape, so every index-free op on them (browse, by-id, stats,
-	// modules) still falls through to the path that serves it — which matters,
-	// because the refusal hands the caller exactly those browses.
-	if handled, res := tools.InterceptQueryUnrankedBuiltin(ctx, c, params); handled {
-		return true, res
-	}
-	// mode:stats for the two builtins that had no stats arm (checks, transformers),
-	// plus the vocabulary refusal for a graph value naming no graph at all. Both
-	// cases met the generic engine deny before this member, since "stats" is not an
+	// mode:stats for the builtin that had no stats arm (checks), plus the
+	// vocabulary refusal for a graph value naming no graph at all. Both cases met
+	// the generic engine deny before this member, since "stats" is not an
 	// engine-reducible mode. Self-gates on mode==stats AND its own graph set, so a
 	// real graph another arm owns is DECLINED rather than shadowed — which is why
 	// its position relative to the per-graph stats arms does not change behavior.

@@ -23,27 +23,21 @@ type TargetSpec struct {
 
 // Options carries the per-invocation knobs RunRecipe and the interpreter honor.
 // The client-side counterpart of the former server transformer.Options, narrowed
-// to the fields the client path actually uses (SourceManifest, Force, DryRun) —
-// the server's OnProgress was never consulted by the eval bodies and is dropped.
+// to the fields the client path actually uses — the server's OnProgress was never
+// consulted by the eval bodies and is dropped, and Force and DryRun are both
+// retired: a recipe run writes nothing at all, so there is neither a destructive
+// knob nor a write to skip.
 type Options struct {
 	// SourceManifest is the opaque context blob the collect layer builds,
 	// encoding the source slug + recipe name as `source=<slug>;recipe=<name>`
 	// (see FormatSourceManifest / ParseSourceManifest). RunRecipe parses it to
-	// obtain the source slug (used for translated-from Evidence + Force scoping)
-	// and the recipe name to load.
+	// obtain the source slug (stamped into translated-from Evidence for lineage)
+	// and the fixed inline recipe key.
 	SourceManifest string
-	// Force requests per-source overwrite: when true, RunRecipe deletes prior
-	// nodes in the target graph that carry a translated-from edge whose
-	// Evidence.source matches the current run's source slug BEFORE emitting new
-	// ones. Force=false is idempotent (same inputs → same deterministic IDs →
-	// no duplicates).
-	Force bool
-	// DryRun, when true, instructs the interpreter to compute its Result without
-	// writing anything: RunRecipe builds the Result but skips the Sink write.
-	DryRun bool
 
-	// Extract turns a run into EXTRACT MODE: nothing is written, and the emitted
-	// rows are captured onto Result.Extract for the caller to read.
+	// Extract turns a run into EXTRACT MODE: the emitted rows are captured onto
+	// Result.Extract for the caller to read. It is the only mode an admitted run
+	// has — nothing is ever written — and RunRecipe refuses a run without it.
 	Extract bool
 
 	// Body is an INLINE recipe body, used instead of loading a saved recipe by
@@ -60,11 +54,20 @@ type Options struct {
 	// direct caller setting it would be silently ignored while
 	// Result.Extract.Truncated reported on the row cap alone.
 	MaxRows int
+
+	// Offset is the zero-based index of the first MATCHED row returned: rows
+	// [Offset, Offset+MaxRows) are captured, and EVERY matched row is still
+	// counted whether or not it is captured. That is what lets page three
+	// report the full population behind it, so a caller can tell a cursor
+	// overshoot from an empty match.
+	//
+	// A NEGATIVE VALUE IS AN ERROR, not a clamp — see effectiveOffset.
+	Offset int
 }
 
-// Result carries the outputs of a recipe run. On the client EVERY run (DryRun or
-// not) accumulates its emissions into Nodes / Edges / Lineage in memory; RunRecipe
-// then ships them through the collector Sink on a non-DryRun run. This is the
+// Result carries the outputs of a recipe run. Every run accumulates its
+// emissions into Nodes / Edges / Lineage in memory and ships them NOWHERE: the
+// rows the caller reads come back on Extract. This is the
 // client-side counterpart of the former server transformer.Result, retyped onto
 // the wire node (*knowledgev1.Node) and the client edge build-carrier
 // (kgwire.BatchEdge).
@@ -100,11 +103,14 @@ type Stats struct {
 	NodesEmitted int
 	// SkippedChunks counts rows skipped for lacking an identity signal.
 	SkippedChunks int
+	// SkippedExisting counts emitted nodes the write guard dropped because the
+	// target already holds a byte-identical row under the same id. It is a
+	// SILENT, SUCCESSFUL outcome — distinct from a collision, which refuses the
+	// whole write — and it exists so a re-run that legitimately wrote nothing is
+	// distinguishable in the response from one that emitted nothing at all.
+	SkippedExisting int
 	// ElapsedMillis is wall-clock duration of the RunRecipe call.
 	ElapsedMillis int64
-	// ForceDeleted is the number of prior target-graph nodes removed by
-	// Force=true before any new emission wrote. Zero when Force=false.
-	ForceDeleted int
 	// LookupsResolved counts `lookup` rule invocations that found a matching
 	// node already emitted earlier in THIS run.
 	LookupsResolved int

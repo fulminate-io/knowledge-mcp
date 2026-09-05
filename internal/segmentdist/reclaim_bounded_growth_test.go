@@ -59,6 +59,7 @@ func segDirCount(t *testing.T, base string, gt kgtypes.GraphType, name, format s
 // asserts the transition it claims — the superseded constituent is warm in L2
 // before the merge and gone from it after.
 func TestReclaimBoundedGrowth(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

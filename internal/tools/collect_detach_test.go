@@ -38,9 +38,9 @@ func TestCollectWaitOrDetach_EarlyReturn(t *testing.T) {
 
 	done := make(chan kgtools.ToolResult, 1)
 	go func() {
-		done <- collectWaitOrDetach(rt, "code\x00/repo", "code /repo", "", detachSuccessText, func() (string, error) {
+		done <- collectWaitOrDetach(rt, "code", "code\x00/repo", "code /repo", kgtypes.GraphCode, "", detachSuccessText, "", func() (string, string, error) {
 			<-release
-			return "", nil
+			return "", "", nil
 		})
 	}()
 	select {
@@ -59,7 +59,7 @@ func TestCollectWaitOrDetach_EarlyReturn(t *testing.T) {
 func TestCollectWaitOrDetach_SubThresholdByteIdentical(t *testing.T) {
 	rt := NewCollectRuntime()
 	rt.detachAfter = time.Hour // completion always wins the race
-	res := collectWaitOrDetach(rt, "code\x00/repo", "code /repo", "", detachSuccessText, func() (string, error) { return "", nil })
+	res := collectWaitOrDetach(rt, "code", "code\x00/repo", "code /repo", kgtypes.GraphCode, "", detachSuccessText, "", func() (string, string, error) { return "", "", nil })
 	assert.False(t, res.IsError)
 	assert.Equal(t, detachSuccessText, resultText(res))
 }
@@ -69,8 +69,8 @@ func TestCollectWaitOrDetach_SubThresholdByteIdentical(t *testing.T) {
 func TestCollectWaitOrDetach_ErrorPassthrough(t *testing.T) {
 	rt := NewCollectRuntime()
 	rt.detachAfter = time.Hour
-	res := collectWaitOrDetach(rt, "code\x00/repo", "code /repo", "", detachSuccessText, func() (string, error) {
-		return "", errors.New("collect code: boom")
+	res := collectWaitOrDetach(rt, "code", "code\x00/repo", "code /repo", kgtypes.GraphCode, "", detachSuccessText, "", func() (string, string, error) {
+		return "", "", errors.New("collect code: boom")
 	})
 	assert.True(t, res.IsError)
 	assert.Contains(t, resultText(res), "collect code: boom")
@@ -88,9 +88,9 @@ func TestCollectWaitOrDetach_CoalesceMessage(t *testing.T) {
 	// it settles after release closes at test end.
 	firstDone := make(chan kgtools.ToolResult, 1)
 	go func() {
-		firstDone <- collectWaitOrDetach(rt, "code\x00/repo", "code /repo", "", detachSuccessText, func() (string, error) {
+		firstDone <- collectWaitOrDetach(rt, "code", "code\x00/repo", "code /repo", kgtypes.GraphCode, "", detachSuccessText, "", func() (string, string, error) {
 			<-release
-			return "", nil
+			return "", "", nil
 		})
 	}()
 	require.Eventually(t, func() bool {
@@ -98,7 +98,7 @@ func TestCollectWaitOrDetach_CoalesceMessage(t *testing.T) {
 		return len(snap) == 1 && snap[0].State == "running"
 	}, 2*time.Second, 5*time.Millisecond, "first run should register as running")
 
-	res := collectWaitOrDetach(rt, "code\x00/repo", "code /repo", "", detachSuccessText, func() (string, error) { return "", nil })
+	res := collectWaitOrDetach(rt, "code", "code\x00/repo", "code /repo", kgtypes.GraphCode, "", detachSuccessText, "", func() (string, string, error) { return "", "", nil })
 	body := resultText(res)
 	assert.Contains(t, body, "already running")
 	assert.Contains(t, body, "not starting a duplicate")
@@ -149,6 +149,7 @@ func (d *detachFullDeps) CollectRunSnapshot() []CollectRunStatus { return d.rt.S
 func (d *detachFullDeps) WakePipeline()                          { d.wake.Add(1) }
 func (d *detachFullDeps) LocalLiveness() LocalLiveness           { return nil }
 func (d *detachFullDeps) Sink() collector.Sink                   { return noopSink{} }
+func (d *detachFullDeps) SubgraphFetcher() CloudSubgraphFetcher  { return nil }
 func (d *detachFullDeps) RootDir() string                        { return "" }
 func (d *detachFullDeps) UsageAnalyzer() UsageAnalyzerAPI        { return nil }
 

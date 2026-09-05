@@ -153,6 +153,41 @@ func llmOnlyDisclosure(llmOnly []corpus.Check) foundation.Finding {
 	}
 }
 
+// testFilesDisclosure reports that this run's walk reached test files, and how
+// many, so a reader can tell a run that reached them from one that did not.
+//
+// IT IS A LEAD FINDING, emitted with the refusals and the llm_only disclosure
+// ahead of every match finding, because the render ceilings keep the FIRST k
+// findings: appended last, a bounded result would clip away the disclosure that
+// tells the reader what the run's scope was.
+//
+// EMITTED ONLY WHEN THE COUNT IS NON-ZERO, exactly as the llm_only lane is. A
+// run that reached no test file has nothing to disclose, and the verdict line
+// renders the zero from the fold either way — so a default run's finding set is
+// byte-for-byte what it was before this counter existed.
+//
+// THE LANGUAGE IS A PARAMETER because the sentence names it: "this language's
+// test files" is what the verdict field and the generated help both promise, and
+// what a test-file count means at all depends on whose convention decided which
+// files are tests. It is the run's language rather than anything read off a
+// check, since every check in a corpus shares it.
+//
+// THE COUNT IS THE LARGEST ANY ONE CHECK WALKED, not a sum across checks. Under
+// per-check scope two checks may walk different file sets, and summing would
+// report the same file several times and turn "five test files in this corpus"
+// into fifteen. It is a reach, not a corpus census.
+func testFilesDisclosure(language string, n int) foundation.Finding {
+	return foundation.Finding{
+		Algorithm: AnalyzerName,
+		Severity:  foundation.SeverityInfo,
+		Title:     DisclosureTitleTestFiles,
+		Summary: fmt.Sprintf("this run's walk reached %d %s test file(s) — the most any single check scanned, since a check may declare that its "+
+			"defect class lives in tests and walk wider than its neighbors. A run reporting zero here did not read your test code at all, "+
+			"which is a different answer from finding nothing in it.", n, language),
+		Metrics: map[string]float64{MetricTestFilesScanned: float64(n)},
+	}
+}
+
 // emptyCorpusError names the language rather than returning an empty findings
 // slice: a run that had nothing to execute must not read as a run that found
 // nothing.

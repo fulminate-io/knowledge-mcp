@@ -100,11 +100,10 @@ func (d *Document) PageCount() int {
 }
 
 // Page returns a Page handle for the 0-indexed page i. Cached:
-// chunk.Build's documentAdapter calls Page(i) up to three times per
-// page (PageBlocks, PageHeadersFooters, PageFootnotes), and each call
-// previously triggered a fresh pdfcpu page-tree walk in
-// internalpdf.Context.Page. The first construction caches the *Page
-// keyed by index; subsequent calls return the cached instance.
+// chunk.Build's documentAdapter can call Page(i) more than once per
+// page, and each call previously triggered a fresh pdfcpu page-tree
+// walk in internalpdf.Context.Page. The first construction caches the
+// *Page keyed by index; subsequent calls return the cached instance.
 func (d *Document) Page(i int) (*Page, error) {
 	if d == nil || d.ctx == nil {
 		return nil, errors.New("cmd/knowledge/internal/collector/pdf: nil document")
@@ -257,42 +256,39 @@ func (a documentAdapter) PageRuns(i int) (chunk.PageRuns, error) {
 	}, nil
 }
 
-func (a documentAdapter) PageHeadersFooters(i int) ([]Block, error) {
+// PageTaggedBlocks implements chunk.TaggedBlockProvider. It reports
+// ok=false — meaning "read this page from PageRuns instead" — unless
+// the document is tagged AND the caller prefers the structure-tree
+// read; otherwise it returns the structure-tree walk merged with its
+// clustered residue, in reading order.
+//
+// The runs it needs go through the DOCUMENT-scoped arena rather than a
+// private per-page one, so a tagged document costs the pool a single
+// acquire like an untagged one does.
+func (a documentAdapter) PageTaggedBlocks(i int) ([]Block, bool, error) {
+	if a.d == nil || !a.d.IsTagged() || !a.d.PreferStructTree() {
+		return nil, false, nil
+	}
 	p, err := a.d.Page(i)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	blocks, err := p.HeadersFooters()
-	return blocks, mapErrNotImplemented(err)
-}
-
-func (a documentAdapter) PageFootnotes(i int) ([]Block, error) {
-	p, err := a.d.Page(i)
+	if a.d.runArena == nil {
+		a.d.runArena = text.NewRunArenaForPages(a.d.PageCount())
+	}
+	blocks, err := p.blocksFromStructTreeInto(a.d.runArena)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	blocks, err := p.Footnotes()
-	return blocks, mapErrNotImplemented(err)
-}
-
-// mapErrNotImplemented translates the public pdf.ErrNotImplemented
-// onto the chunk-package-internal sentinel so chunk.Build's
-// errors.Is check fires (chunk can't import pdf — would cycle —
-// so it can't see pdf.ErrNotImplemented directly). Any other
-// error passes through verbatim.
-func mapErrNotImplemented(err error) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, ErrNotImplemented) {
-		return chunk.ErrPageMethodNotImplemented
-	}
-	return err
+	return blocks, true, nil
 }
 
 // Classify applies the default heading / list / code classifier to the
-// supplied layout blocks and returns them annotated. Mutates the input
-// slice in place and returns the same slice (zero-copy).
+// supplied layout blocks and returns them annotated. It annotates the
+// supplied blocks in place, but the RETURNED slice is not necessarily
+// the one passed in: the classifier stitches fragmented code blocks and
+// rejoins torn headings, so the result can be shorter. Use the return
+// value; do not assume the argument now holds the answer.
 func (d *Document) Classify(blocks []Block) []Block {
 	return classify.Classify(blocks)
 }

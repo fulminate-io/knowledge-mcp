@@ -52,10 +52,10 @@ func TestDuplicateMergeSurvivorIsDeterministic(t *testing.T) {
 			}
 		}
 		var err error
-		if a, err = f.Build(docsA); err != nil {
+		if a, _, err = f.Build(docsA); err != nil {
 			t.Fatalf("build A: %v", err)
 		}
-		if b, err = f.Build(docsB); err != nil {
+		if b, _, err = f.Build(docsB); err != nil {
 			t.Fatalf("build B: %v", err)
 		}
 		return a, b

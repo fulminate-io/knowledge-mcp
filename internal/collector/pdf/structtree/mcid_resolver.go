@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	internalpdf "github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/internal/pdfcpu"
+	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/layout"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/text"
 )
 
@@ -19,16 +20,33 @@ import (
 type pageRunIndex struct {
 	byMCID map[int][]int
 	runs   []text.TextRun
+
+	// pageInfo is the page's own frame — media box and rotation.
+	// It rides here rather than as another parameter threaded down
+	// the walk because every caller that needs it already holds a
+	// pageRunIndex, and the geometry is a property of the same page
+	// the runs came from.
+	pageInfo layout.PageInfo
 }
 
 // newPageRunIndex builds the MCID → []run-index map by scanning runs
 // in source order. Only runs with MCID > 0 are indexed — MCID == 0 is
 // the v1 contract for "outside any marked-content region" (untagged
 // content even within a tagged document; common in HybridFallback).
-func newPageRunIndex(runs []text.TextRun) *pageRunIndex {
+//
+// pageInfo IS STORED, and the assignment below is a repair rather than a
+// tidy-up: the parameter was accepted and then dropped, so idx.pageInfo stayed
+// the zero PageInfo for the life of every index this constructor built, and
+// walk_emit.go's layout.LinesFromRuns call read that zero — laying out a tagged
+// element with no media box and no rotation. unparam is what surfaced it,
+// reporting the parameter as unused; the finding was a real defect wearing a
+// style complaint's clothes, and the field's own doc comment already says the
+// geometry is meant to ride here.
+func newPageRunIndex(runs []text.TextRun, pageInfo layout.PageInfo) *pageRunIndex {
 	idx := &pageRunIndex{
-		byMCID: make(map[int][]int),
-		runs:   runs,
+		byMCID:   make(map[int][]int),
+		runs:     runs,
+		pageInfo: pageInfo,
 	}
 	for i := range runs {
 		mcid := runs[i].MCID
@@ -231,17 +249,17 @@ type runFor func(pageIndex int) (*pageRunIndex, error)
 // returns an error, the closure surfaces it to the caller without
 // caching, so a transient failure can be retried on a subsequent
 // call.
-func newRunFor(extractRuns func(pageIndex int) ([]text.TextRun, error)) runFor {
+func newRunFor(extractRuns func(pageIndex int) ([]text.TextRun, layout.PageInfo, error)) runFor {
 	cache := make(map[int]*pageRunIndex)
 	return func(pageIndex int) (*pageRunIndex, error) {
 		if idx, ok := cache[pageIndex]; ok {
 			return idx, nil
 		}
-		runs, err := extractRuns(pageIndex)
+		runs, pageInfo, err := extractRuns(pageIndex)
 		if err != nil {
 			return nil, err
 		}
-		idx := newPageRunIndex(runs)
+		idx := newPageRunIndex(runs, pageInfo)
 		cache[pageIndex] = idx
 		return idx, nil
 	}

@@ -34,6 +34,12 @@ type fakeBackend struct {
 	createProjectRef backends.RemoteRef
 	createProjectErr error
 	createProjectArg backends.ProjectCreateArgs
+	// createProjectCalls / groupsCalls make "the backend was never reached"
+	// observable. A validation that refuses BEFORE the backend branch must
+	// leave both at zero; a zero-valued createProjectArg cannot distinguish
+	// "not called" from "called with the zero args".
+	createProjectCalls int
+	groupsCalls        int
 
 	createTicketRef backends.RemoteRef
 	createTicketErr error
@@ -57,12 +63,14 @@ func (f *fakeBackend) Name() string {
 	return f.name
 }
 func (f *fakeBackend) Groups(_ context.Context) ([]backends.Group, error) {
+	f.groupsCalls++
 	return f.groupsResult, f.groupsErr
 }
 func (f *fakeBackend) SyncGroup(_ context.Context, _ string) (backends.Snapshot, error) {
 	return backends.Snapshot{}, nil
 }
 func (f *fakeBackend) CreateProject(_ context.Context, a backends.ProjectCreateArgs) (backends.RemoteRef, error) {
+	f.createProjectCalls++
 	f.createProjectArg = a
 	return f.createProjectRef, f.createProjectErr
 }
@@ -205,10 +213,11 @@ func (f fakeTensionsProvider) GetTensions() ([]clientthought.TensionReport, bool
 	return f.tensions, f.computed
 }
 
-func (d interceptTestDeps) LocalLiveness() LocalLiveness    { return nil }
-func (d interceptTestDeps) Sink() collector.Sink            { return nil }
-func (d interceptTestDeps) RootDir() string                 { return "" }
-func (d interceptTestDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+func (d interceptTestDeps) LocalLiveness() LocalLiveness          { return nil }
+func (d interceptTestDeps) Sink() collector.Sink                  { return nil }
+func (d interceptTestDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
+func (d interceptTestDeps) RootDir() string                       { return "" }
+func (d interceptTestDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
 
 func (d interceptTestDeps) PropReady() bool     { return !d.propNotReady }
 func (d interceptTestDeps) PipelineReady() bool { return true }

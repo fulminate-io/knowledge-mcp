@@ -52,10 +52,11 @@ type ppTriggerDeps struct {
 	gc   GraphCaller
 }
 
-func (d *ppTriggerDeps) LocalLiveness() LocalLiveness    { return nil }
-func (d *ppTriggerDeps) Sink() collector.Sink            { return d.sink }
-func (d *ppTriggerDeps) RootDir() string                 { return "" }
-func (d *ppTriggerDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+func (d *ppTriggerDeps) LocalLiveness() LocalLiveness          { return nil }
+func (d *ppTriggerDeps) Sink() collector.Sink                  { return d.sink }
+func (d *ppTriggerDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
+func (d *ppTriggerDeps) RootDir() string                       { return "" }
+func (d *ppTriggerDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
 
 func (d *ppTriggerDeps) PropReady() bool     { return true }
 func (d *ppTriggerDeps) PipelineReady() bool { return true }

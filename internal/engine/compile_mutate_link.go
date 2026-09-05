@@ -13,7 +13,7 @@ import (
 // Selection.Ids=[from], the edge is EdgeSpec{relationship, to_id, forward:true}
 // (the from node is the edge SOURCE). The cross-graph link_graph case was
 // already default-denied upstream (compileMutate); an intra-practice/
-// transformers direct link now Target-routes here (mutationRequest carries the
+// checks direct link now Target-routes here (mutationRequest carries the
 // graph). All three of from/to/relationship are required; a missing one falls
 // through to legacy.
 //
@@ -32,10 +32,12 @@ func compileMutateByIDLinkUnlink(a mutateArgs) (*knowledgev1.ExecuteRequest, boo
 		kind = knowledgev1.MutationPlan_MUTATION_KIND_UNLINK
 	}
 	spec := &knowledgev1.EdgeSpec{
-		// Client canonicalizes the per-graph relationship casing: the
-		// engine stores the relationship AS-GIVEN, so the client
-		// produces the canonical casing before it rides the wire.
-		Relationship: canonicalEdgeCasing(a.Graph, a.Relationship),
+		// Verbatim pass-through. The relationship was already RESOLVED against
+		// the target graph's own edge vocabulary in the Dispatch seam
+		// (edge_type_resolve.go) — adopting an existing stored spelling on a
+		// unique case-insensitive match, and admitted as a new family otherwise
+		// — and the engine stores it AS-GIVEN.
+		Relationship: a.Relationship,
 		ToId:         a.To,
 		Forward:      true,
 	}

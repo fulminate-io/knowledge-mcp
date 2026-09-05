@@ -69,7 +69,15 @@ func waitForMergers(want int, within time.Duration) int {
 // Staying sequential (no t.Parallel) does not close this: it keeps a CONCURRENT
 // sibling's engines out of the count, but says nothing about a PRECEDING one's
 // goroutines still unwinding.
-func settledMergerCount(within time.Duration) int {
+//
+// AN EXHAUSTED DEADLINE FAILS THE TEST INSTEAD OF RETURNING THE LAST SAMPLE. It
+// used to return prev, which is a single unvalidated read — the very thing this
+// helper exists to avoid — and the caller then measured its whole assertion
+// against it. A baseline that never settled is not a smaller baseline, it is an
+// unknown one, and a test that continues on an unknown number reports an outcome
+// it cannot justify either way.
+func settledMergerCount(t testing.TB, within time.Duration) int {
+	t.Helper()
 	deadline := time.Now().Add(within)
 	prev := mergerGoroutines()
 	for time.Now().Before(deadline) {
@@ -80,7 +88,10 @@ func settledMergerCount(within time.Duration) int {
 		}
 		prev = got
 	}
-	return prev
+	require.FailNowf(t, "the merger-goroutine census never settled",
+		"no two consecutive reads matched within %s (last sample %d) — a baseline nothing validated "+
+			"would make every count below a measurement against an unknown number", within, prev)
+	return 0 // unreachable: FailNowf does not return, but the signature needs a value
 }
 
 // TestManagerCloseStopsEveryEngineMerger pins the OTHER half of the two lazy
@@ -107,7 +118,7 @@ func TestManagerCloseStopsEveryEngineMerger(t *testing.T) {
 	// SETTLED, not sampled — see settledMergerCount. A preceding test's mergers may
 	// still be unwinding, and counting them into the baseline makes the rise below
 	// read short by exactly that many.
-	baseline := settledMergerCount(5 * time.Second)
+	baseline := settledMergerCount(t, 5*time.Second)
 
 	mgr := NewManager(t.TempDir(), 0)
 	for i := range graphs {

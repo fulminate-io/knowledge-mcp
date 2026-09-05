@@ -101,6 +101,12 @@ func (f *evictableCoverageFake) LiveResidentDocCount(kgtypes.GraphType, string) 
 	return f.liveCovered
 }
 
+// BM25DegradeCounts reports no drops: this fake exercises the coverage counts,
+// not the drop census.
+func (f *evictableCoverageFake) BM25DegradeCounts(kgtypes.GraphType, string) map[string]int {
+	return nil
+}
+
 // The rest of the seam is unread by this gate.
 func (f *evictableCoverageFake) ResidentDocCount(kgtypes.GraphType, string) int { return 0 }
 func (f *evictableCoverageFake) RepairVerification(kgtypes.GraphType, string) (RepairVerification, bool) {

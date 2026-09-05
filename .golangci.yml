@@ -5,7 +5,22 @@ version: "2"
 
 run:
   timeout: 15m
+  # MEASURED, not assumed; the two arms and their repeats are recorded beside the
+  # lint scripts in the source repository.
+  # The value was flipped 4 -> 16 as a quick lever and never measured; measuring it
+  # against a same-session control showed 16 is 2.2x SLOWER on the cold lap here —
+  # 349.2s/355.0s at -j 16 against 158.1s/159.8s at -j 4, both arms alternating,
+  # each repeat within 2% of its twin. This machine has 16 cores and runs many
+  # worktrees at once, so -j 16 oversubscribes an already-contended box; the same
+  # reasoning the Makefile's deliberate `go test -p 4` rests on.
   concurrency: 4
+  # Every golangci-lint start takes a per-user file lock at $TMPDIR/golangci-lint.lock
+  # unless this is set, so concurrent worktrees (and the sibling repo's hooks) serialize
+  # on one lock even though scripts/lint-matrix.sh already gives each tree its own
+  # GOLANGCI_LINT_CACHE. The lock guards a SHARED cache; with per-tree caches it only
+  # costs wall-clock. Any invocation outside lint-matrix.sh must set
+  # GOLANGCI_LINT_CACHE per tree too (scripts/quick-hygiene.sh does).
+  allow-parallel-runners: true
 
 formatters:
   enable:
@@ -81,11 +96,26 @@ linters:
         - G204  # Subprocess args validated (filepath.Clean + os.Stat) before use; exec.LookPath used for non-constant commands
         - G304  # File path taint (common in CLIs)
         - G404  # HNSW level-generation and test data use a PRNG seeded from crypto/rand; crypto/rand directly would be impractically slow
+        - G706  # Log injection taint - false positive: logged values are verified JWT claims / internal identifiers, and slog escapes value strings
 
     misspell:
       locale: US
       ignore-rules:
         - cancelled  # British spelling used consistently in codebase
+        # `behaviour` is a VOCABULARY VALUE, not prose: it is one of the six
+        # declared-conformance kinds, it is the suffix an IMPLEMENTS edge
+        # carries on Edge.Method, and it is the spelling Elixir itself uses for
+        # its `@behaviour` attribute. With --fix and stage_fixed the auto-fixer
+        # silently rewrote it at commit time and broke the gate pinning the
+        # vocabulary, so the word is exempted here rather than left to be
+        # re-Americanized by every future commit that touches those files.
+        - behaviour
+        # The PLURAL is exempted for the same reason and by the same evidence:
+        # a test name pinning the vocabulary reads `two_behaviours`, and the
+        # auto-fixer rewrote it at commit time, breaking the gate that greps it.
+        # Exempting only the singular left the plural to be re-Americanized on
+        # every commit touching those files.
+        - behaviours
 
     unparam:
       check-exported: false  # Skip exported funcs (interface impls)
@@ -119,6 +149,10 @@ linters:
       - cmd/knowledge/internal/bench
       - cmd/dead
       - cmd/smoke-llm
+      # Anchored: exclusion paths are regexes, and a bare `.claude` also matches
+      # every source file named claude*.go (e.g. internal/transcripts/claude.go),
+      # silently masking real issues.
+      - ^\.claude/
     rules:
       # Relax rules for test files
       - path: _test\.go
@@ -141,3 +175,10 @@ output:
     text:
       path: stdout
       colors: true
+
+issues:
+  # Complete enumerations, never truncated samples: the defaults (max-same-issues=3,
+  # max-issues-per-linter=50) silently cap duplicate findings, which turns a
+  # cleared-to-zero claim into a cleared-to-zero-of-the-visible claim.
+  max-issues-per-linter: 0
+  max-same-issues: 0

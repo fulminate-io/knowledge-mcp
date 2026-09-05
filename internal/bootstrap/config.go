@@ -118,9 +118,25 @@ type Config struct {
 	// appears in this list — it is NEVER widened to '*'. Populated from the
 	// --web-origin flag, defaulting to the canonical Fulminate agent hosts so a
 	// browser page served from those https origins can fetch the loopback daemon.
-	AllowedWebOrigins    []string
-	LogLevel             string
-	LogFile              string
+	AllowedWebOrigins []string
+	LogLevel          string
+	LogFile           string
+
+	// Log rotation for the --log-file sink. THE KEYS, DEFAULTS AND SEMANTICS ARE
+	// THE SERVER'S, deliberately: an operator who has learned one of these two
+	// binaries should not have to learn the other's log retention separately. The
+	// two cannot share the implementation — the only cross-module contract here is
+	// generated protobuf — so the flag names, the defaults and the meaning of zero
+	// are what is held identical.
+	//
+	// This matters more for the client than it looks: the daemon's log is the
+	// durable half of the both-sinks property, and a container that runs for weeks
+	// would otherwise grow it without bound inside the user's mounted volume.
+	LogRotateMaxSizeMB int
+	LogRotateMaxFiles  int
+	LogRotateMaxAgeDay int
+	LogRotateCompress  bool
+
 	NoPropagationRuntime bool
 	Pprof                bool
 	PprofPort            int
@@ -138,6 +154,12 @@ type Config struct {
 	// loops. maybeStartTranscriptUpload consults it to skip the background
 	// transcript-upload loops.
 	NoTranscriptUpload bool
+	// NoAutoUpdate turns the background update-check loop off. Populated from
+	// --no-auto-update, whose own default comes from KNOWLEDGE_NO_AUTO_UPDATE.
+	//
+	// It is only ONE of the two disable surfaces: the config file carries the
+	// other, and a disable from EITHER wins. See autoUpdateEnabled.
+	NoAutoUpdate bool
 
 	// LLM pipeline (lives client-side) worker-pool tuning.
 	NoLLMPipeline      bool
@@ -183,6 +205,12 @@ func registerConfigFlags(fs *flag.FlagSet, cfg *Config) {
 	fs.StringVar(&cfg.AuthToken, "auth-token", os.Getenv("KNOWLEDGE_AUTH_TOKEN"), "Opaque machine bearer token presented on every request, bypassing the interactive browser login and the platform keychain. Defaults to the KNOWLEDGE_AUTH_TOKEN environment variable; an explicit flag value wins. Empty leaves the interactive login path intact.")
 	fs.StringVar(&cfg.LogLevel, "log-level", "info", "Log level: debug, info, warn, error")
 	fs.StringVar(&cfg.LogFile, "log-file", "", "Log file path (logs to both stderr and file when set)")
+	// SAME NAMES, SAME DEFAULTS, SAME MEANING OF ZERO as knowledge-server's, so
+	// the two binaries' log retention is one thing an operator learns once.
+	fs.IntVar(&cfg.LogRotateMaxSizeMB, "log-rotate-max-size-mb", 50, "Log file size (MB) at which to rotate. Set to 0 to disable rotation entirely (write append-only forever).")
+	fs.IntVar(&cfg.LogRotateMaxFiles, "log-rotate-max-files", 3, "Max rotated log files to retain (in addition to the active one). Older files are deleted.")
+	fs.IntVar(&cfg.LogRotateMaxAgeDay, "log-rotate-max-age-days", 30, "Max age (days) of rotated files to retain. 0 disables age-based pruning.")
+	fs.BoolVar(&cfg.LogRotateCompress, "log-rotate-compress", true, "Gzip rotated log files. Default true — disk savings outweigh the ~10ms compression cost on rotation.")
 	// Pre-apply the default allow-list so the no-flag path (and the
 	// never-parsed doc sinks) carry the canonical origins; an explicit
 	// --web-origin replaces this list via csvOrigins.Set. Copy the package
@@ -195,8 +223,15 @@ func registerConfigFlags(fs *flag.FlagSet, cfg *Config) {
 	fs.IntVar(&cfg.PprofPort, "pprof-port", profiling.DefaultPort, "TCP port for this process's pprof profiling HTTP endpoint (loopback only). Applied when --pprof is set; the spawned knowledge-server serves its own /debug/pprof/ on --port instead.")
 	fs.BoolVar(&cfg.SkipLLMPrecheck, "skip-llm-precheck", false, "Skip the live-ping check that runs against every configured (provider, model) tuple at client startup. Use for offline development or CI sandboxes; default is to fail-fast at boot rather than at first tool call.")
 	fs.BoolVar(&cfg.NoLLMPipeline, "no-llm-pipeline", false, "Skip client-side LLM pipeline (summarize + embed) wiring. The MCP daemon and other tools continue to work; only background summarization/embedding stops.")
-	fs.BoolVar(&cfg.Headless, "headless", false, "Run as an embedded/supervisor-managed daemon: serve the loopback /mcp endpoint and resolve query embeddings, but skip every background content + coordination loop. Implies --no-propagation-runtime, --skip-llm-precheck and --no-llm-pipeline, and additionally disables the transcript upload loops. Still loads ~/.knowledge/config (so [credentials] resolve config-first) and still seeds .claude agents/skills. Does not change auth.")
+	fs.BoolVar(&cfg.Headless, "headless", false, "Run as an embedded/supervisor-managed daemon: serve the loopback /mcp endpoint and resolve query embeddings, but skip every background content + coordination loop. Implies --no-propagation-runtime, --skip-llm-precheck and --no-llm-pipeline, and additionally disables the transcript upload loops. Still loads ~/.knowledge/config (so [credentials] resolve config-first). Does not change auth.")
 	fs.BoolVar(&cfg.NoTranscriptUpload, "no-transcript-upload", false, "Skip the background transcript-upload loops, including their HOME-side transcript cache writes. Individually addressable form of one of the gates --headless implies — for daemons that need the LLM pipeline (which --headless disables) but must not run coordination loops (e.g. the bench harness's corpus-pull daemon).")
+	// The default comes from the environment so a supervisor-managed daemon
+	// that CAN carry an env var has a surface; an explicit flag wins. A
+	// malformed value is diagnosed by checkAutoUpdateEnv on every parse path —
+	// it cannot be reported from here, because registering a flag returns no
+	// error.
+	noAutoUpdateDefault, _ := noAutoUpdateFromEnv()
+	fs.BoolVar(&cfg.NoAutoUpdate, "no-auto-update", noAutoUpdateDefault, "Disable the background update-check loop, so this daemon never upgrades itself. Defaults to the KNOWLEDGE_NO_AUTO_UPDATE environment variable (accepted values: 1, t, T, true, TRUE, True, 0, f, F, false, FALSE, False; any other non-empty value is a startup error); an explicit flag value wins. The ~/.knowledge/config key auto_update = false is the third surface, and a disable from ANY of the three wins.")
 	fs.IntVar(&cfg.SummaryChannelSize, "summary-channel-size", 10000, "Client-side LLM pipeline: SummaryWork channel buffer size (full = collector blocks)")
 	fs.IntVar(&cfg.SummaryBatchSize, "summary-batch-size", 20, "Client-side LLM pipeline: items per summary worker batch")
 	fs.IntVar(&cfg.SummaryWorkers, "summary-workers", 25, "Client-side LLM pipeline: count of summary worker goroutines")
@@ -291,6 +326,9 @@ func ParseFlags(args []string) (Config, error) {
 	var cfg Config
 	registerConfigFlags(fs, &cfg)
 	if err := fs.Parse(args); err != nil {
+		return Config{}, err
+	}
+	if err := checkAutoUpdateEnv(); err != nil {
 		return Config{}, err
 	}
 	applyRootDirSet(fs, &cfg)

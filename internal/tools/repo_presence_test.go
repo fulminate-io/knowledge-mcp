@@ -158,9 +158,9 @@ func TestBuiltinCollectWork_RecordsRepoBeforeUpload(t *testing.T) {
 	sink := &orderAssertingSink{repo: repo}
 	deps := &tailRoutingDeps{routed: &fakeGraphCaller{}, local: &fakeGraphCaller{}}
 
-	_, err := builtinCollectWork(context.Background(), deps,
+	_, _, err := builtinCollectWork(context.Background(), deps,
 		collectArgs{Type: recordOrderStubType, ID: repoDir},
-		collector.CollectOptions{Sink: sink})
+		collector.CollectOptions{Sink: sink}, "")
 	require.NoError(t, err)
 
 	called, resolvedAtCall := sink.observed()
@@ -181,10 +181,10 @@ func TestBuiltinCollectWork_SkipsManifestForRelativePath(t *testing.T) {
 	recordOrderStubOnce.Do(func() { collector.Register(recordOrderStubCollector{}) })
 	m := withTestManifest(t)
 
-	_, _ = builtinCollectWork(context.Background(),
+	_, _, _ = builtinCollectWork(context.Background(),
 		&tailRoutingDeps{routed: &fakeGraphCaller{}, local: &fakeGraphCaller{}},
 		collectArgs{Type: recordOrderStubType, ID: "./relative-repo"},
-		collector.CollectOptions{Sink: &orderAssertingSink{repo: "relative-repo"}})
+		collector.CollectOptions{Sink: &orderAssertingSink{repo: "relative-repo"}}, "")
 
 	_, ok := m.Lookup("relative-repo")
 	assert.False(t, ok, "a relative id must not reach the manifest")
@@ -192,10 +192,10 @@ func TestBuiltinCollectWork_SkipsManifestForRelativePath(t *testing.T) {
 	// CONTROL, same manifest and same call path: an absolute id DOES land, so the
 	// absence above is the guard firing rather than the write being broken.
 	absDir := t.TempDir()
-	_, _ = builtinCollectWork(context.Background(),
+	_, _, _ = builtinCollectWork(context.Background(),
 		&tailRoutingDeps{routed: &fakeGraphCaller{}, local: &fakeGraphCaller{}},
 		collectArgs{Type: recordOrderStubType, ID: absDir},
-		collector.CollectOptions{Sink: &orderAssertingSink{repo: filepath.Base(absDir)}})
+		collector.CollectOptions{Sink: &orderAssertingSink{repo: filepath.Base(absDir)}}, "")
 	_, ok = m.Lookup(filepath.Base(absDir))
 	assert.True(t, ok, "control: an absolute id still records")
 }

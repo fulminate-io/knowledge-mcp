@@ -34,6 +34,38 @@ type PlanArgs struct {
 	// vigilance markers for the planner/reviewer. Optional and independent of
 	// the PatternIDs/NoPatternsReason/ProposedPatterns tristate.
 	LanguagePatterns []string
+
+	// Sections are the parts of a CHUNKED plan: one plan_section child node per
+	// part, joined to the root by a positioned contains edge, each body written
+	// and read alone so revising one part is one write against one node.
+	//
+	// SECTIONS AND PHASES ARE ALTERNATIVES, not a pair. A plan is either the
+	// phase/step/criterion shape or the sectioned one; supplying both is refused
+	// by the caller-facing validator rather than silently building two trees
+	// under one root.
+	Sections []SectionArgs
+}
+
+// SectionArgs is one part of a chunked plan.
+type SectionArgs struct {
+	Name    string
+	Body    string
+	Summary string
+
+	// Position is the section's zero-based index under the root, OPTIONAL. When
+	// no section supplies one the array order is used and positions run 0..N-1.
+	// When any section supplies one EVERY section must, and the values must be
+	// unique — a partially positioned list has no defensible reading, so it is
+	// refused rather than half-honored.
+	//
+	// A POINTER because 0 is a legal position: a plain int could not tell
+	// "position zero" from "no position supplied".
+	//
+	// A GAP IN THE SEQUENCE IS LEGAL. Deleting a section leaves a hole, and
+	// closing it would mean rewriting every later section's position — the
+	// whole-plan rewrite the chunked shape exists to remove. Ordering is
+	// ascending by the key, not by contiguity.
+	Position *int
 }
 
 // ProposedPatternArgs is a not-yet-cataloged pattern surfaced by a planner.

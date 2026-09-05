@@ -27,6 +27,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 
 	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
 )
@@ -221,7 +222,19 @@ func composeContextExpand(ctx context.Context, gc GraphCaller, seedIDs []string,
 	if len(peerIDs) > contextExpandCap {
 		peerIDs = peerIDs[:contextExpandCap]
 	}
-	byID := clientthought.FetchNodesByIDs(ctx, gc, peerIDs)
+	// The bulk hydrate is foundation's, the one implementation of this read in
+	// the binary. It was reached through a clientthought wrapper until that
+	// wrapper was deleted as a duplicate; the peer set is knowledge/default, so
+	// the graph pair is empty. The truncation verdict is dropped deliberately
+	// here: peerIDs is already capped at contextExpandCap above, well under the
+	// server's row ceiling, and this composer renders a short expansion as short.
+	// Tombstones are EXCLUDED: the context pack expands LIVE thoughts, and a
+	// deleted peer belongs in it no more than it belongs in a recall result.
+	byID, _, err := foundation.FetchNodesByIDs(ctx, gc, "", "", peerIDs, foundation.ExcludeTombstones)
+	if err != nil {
+		slog.Warn("thoughts context: peer hydrate failed", "err", err, "peers", len(peerIDs))
+		return nil
+	}
 	expand := make([]engine.SearchResult, 0, len(peerIDs))
 	for _, pid := range peerIDs {
 		if n, ok := byID[pid]; ok {

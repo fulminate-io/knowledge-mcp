@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // TestParse_BareHeadValidation proves the validator reaches EVERY expression
@@ -28,8 +29,8 @@ func TestParse_BareHeadValidation(t *testing.T) {
 		name string
 		body string
 	}{
-		{"select_where", "select section where page.symbol_name ~= /x/\nemit pattern {\n    name := section.symbol_name\n}"},
-		{"filter_pred", "select section\nfilter page.symbol_name ~= /x/\nemit pattern {\n    name := section.symbol_name\n}"},
+		{"select_where", "select section where {\"matches\":{\"of\":\"page.symbol_name\",\"regex\":\"x\"}}\nemit pattern {\n    name := section.symbol_name\n}"},
+		{"filter_pred", "select section\nfilter {\"matches\":{\"of\":\"page.symbol_name\",\"regex\":\"x\"}}\nemit pattern {\n    name := section.symbol_name\n}"},
 		{"bind_value", "select section\nbind $v := page.symbol_name\nemit pattern {\n    name := section.symbol_name\n}"},
 		{"group_by", "select section\ngroup_by page.symbol_name\nemit pattern {\n    name := section.symbol_name\n}"},
 		{"emit_field", "select section\nemit pattern {\n    name := page.symbol_name\n}"},
@@ -37,10 +38,12 @@ func TestParse_BareHeadValidation(t *testing.T) {
 		{"link_from", "select section\nemit pattern {\n    name := section.symbol_name\n} as $a\nlink page.symbol_name --[relates-to]--> $a"},
 		{"link_to", "select section\nemit pattern {\n    name := section.symbol_name\n} as $a\nlink $a --[relates-to]--> page.symbol_name"},
 		{"source_ref", "select section\nsource_ref page.id\nemit pattern {\n    name := section.symbol_name\n}"},
-		// The recursion cases: a bad head nested inside a call argument, and
-		// one on a regex left-hand side. Saved recipes write both shapes.
+		// The recursion cases: a bad head nested inside a call argument, and one
+		// nested two composers deep in a where-tree. Both shapes occur in real
+		// recipes, and each covers a DIFFERENT walker — func_arg the expression
+		// walker, nested_composer the where-tree one.
 		{"func_arg", "select section\nemit pattern {\n    name := concat(section.symbol_name, page.symbol_name)\n}"},
-		{"regex_lhs", "select section\nfilter page.symbol_name ~= /router/\nemit pattern {\n    name := section.symbol_name\n}"},
+		{"nested_composer", "select section\nfilter {\"not\":{\"all\":[{\"matches\":{\"of\":\"page.symbol_name\",\"regex\":\"x\"}}]}}\nemit pattern {\n    name := section.symbol_name\n}"},
 	}
 	for _, tc := range badSites {
 		t.Run(tc.name, func(t *testing.T) {
@@ -61,25 +64,60 @@ func TestParse_BareHeadValidation(t *testing.T) {
 		require.NotNil(t, r)
 	})
 
-	// The OTHER half of the decision: the reversal is HEADS ONLY. A legal head
-	// followed by a key nothing carries must parse cleanly AND evaluate to
-	// empty, never error.
-	t.Run("meta_soft", func(t *testing.T) {
+	// An unknown metadata KEY still PARSES, because this file has no source
+	// graph and cannot know which keys the corpus stamped. It is refused one
+	// layer later, against the census.
+	t.Run("meta_key_still_parses", func(t *testing.T) {
+		body := "select section\nemit pattern {\n    name := section.symbol_name\n    absent := section.metadata.no_such_key\n}"
+		_, err := Parse([]byte(body))
+		require.NoError(t, err, "head legality is decidable here; key legality is not")
+	})
+
+	// THE REVERSAL. The same body through Interpret against a metadata-free
+	// fixture is REFUSED, and the read is an EMIT field — which is why the
+	// validator censuses expression field paths and not only where-tree `of`
+	// values.
+	t.Run("meta_key_refused_at_interpret", func(t *testing.T) {
 		body := "select section\nemit pattern {\n    name := section.symbol_name\n    absent := section.metadata.no_such_key\n}"
 		r, err := Parse([]byte(body))
-		require.NoError(t, err, "an unknown metadata KEY stays fail-soft")
+		require.NoError(t, err)
 
-		// Parsing is only half of it — prove it evaluates to empty too.
 		n := &knowledgev1.Node{Id: "s1", Type: "section", SymbolName: "Router"}
 		sv := &sourceView{
-			byID:   map[string]*knowledgev1.Node{"s1": n},
-			byType: map[string][]*knowledgev1.Node{"section": {n}},
+			byID:      map[string]*knowledgev1.Node{"s1": n},
+			byType:    map[string][]*knowledgev1.Node{"section": {n}},
+			graphType: kgtypes.GraphPDFRaw,
+			name:      "doc",
+		}
+		_, err = Interpret(context.Background(), r, sv, recipeTargetSpec(), "eip", Options{})
+		require.Error(t, err, "an unknown metadata key is refused before the walk")
+		assert.Contains(t, err.Error(), "no_such_key", "the offending key is named")
+		assert.Contains(t, err.Error(), "(none)", "and the observed key vocabulary, which this fixture leaves empty")
+		assert.Contains(t, err.Error(), "pdf/doc", "and the graph it was checked against")
+	})
+
+	// THE DISCRIMINATING CONTROL. Without it, a validator that refused EVERY
+	// metadata read would pass the refusal subtest above.
+	t.Run("meta_key_present_resolves", func(t *testing.T) {
+		body := "select section\nemit pattern {\n    name := section.symbol_name\n    fam := section.metadata.family\n}"
+		r, err := Parse([]byte(body))
+		require.NoError(t, err)
+
+		n := &knowledgev1.Node{
+			Id: "s1", Type: "section", SymbolName: "Router",
+			Metadata: map[string]string{"family": "routing"},
+		}
+		sv := &sourceView{
+			byID:      map[string]*knowledgev1.Node{"s1": n},
+			byType:    map[string][]*knowledgev1.Node{"section": {n}},
+			graphType: kgtypes.GraphPDFRaw,
+			name:      "doc",
 		}
 		result, err := Interpret(context.Background(), r, sv, recipeTargetSpec(), "eip", Options{})
-		require.NoError(t, err)
+		require.NoError(t, err, "a key the graph carries is admitted")
 		require.Len(t, result.Nodes, 1)
-		assert.Equal(t, "Router", result.Nodes[0].SymbolName, "control: the legal head DID resolve")
-		assert.Empty(t, result.Nodes[0].Metadata["absent"], "an unknown metadata key evaluates to empty")
+		assert.Equal(t, "Router", result.Nodes[0].SymbolName)
+		assert.Equal(t, "routing", result.Nodes[0].Metadata["fam"], "and resolves to its value")
 	})
 
 	// The positive half, in both directions, so a validator that accepted
@@ -99,7 +137,7 @@ func TestParse_BareHeadValidation(t *testing.T) {
 	})
 
 	t.Run("head_before_any_select", func(t *testing.T) {
-		_, err := Parse([]byte("filter section.symbol_name ~= /x/\nselect section\nemit pattern {\n    name := section.symbol_name\n}"))
+		_, err := Parse([]byte("filter {\"matches\":{\"of\":\"section.symbol_name\",\"regex\":\"x\"}}\nselect section\nemit pattern {\n    name := section.symbol_name\n}"))
 		require.Error(t, err, "a bare head before any select has no row to read from")
 		assert.Contains(t, strings.ToLower(err.Error()), "select")
 	})

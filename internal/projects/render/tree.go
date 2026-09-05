@@ -37,12 +37,22 @@ type walkChild struct {
 // BuildChildIndex (an edge to an absent node, or a second edge to an
 // already-placed node, never enters childIndex), so this walk has no
 // per-child fetch to guard.
+//
+// annotations is an OPTIONAL per-node line, keyed by node id, composed by the
+// caller from a bounded read (render.AnnotationLine builds the text). It is
+// threaded exactly as dependsOn is, and a caller with nothing to say passes nil.
+// A NODE WITH NO ENTRY GETS NO LINE — not a zero line — because an
+// unconditional line would change the rendered bytes of every tree written
+// before annotations existed. Annotations are NOT tree children: they hang off
+// a section by relates-to, and the subtree traversal asks for contains alone, so
+// they cannot appear as nodes in this walk however many there are.
 func RenderTreeFromIndex(
 	sb *strings.Builder,
 	node *knowledgev1.Node,
 	depth, maxDepth int,
 	childIndex map[string][]*knowledgev1.Node,
 	dependsOn map[string]string,
+	annotations map[string]string,
 ) {
 	indent := strings.Repeat("  ", depth)
 	status := ""
@@ -57,6 +67,15 @@ func RenderTreeFromIndex(
 	}
 	if node.Description != "" && depth > 0 {
 		fmt.Fprintf(sb, "%s  %s\n", indent, truncate(node.Description, 120))
+	}
+	// THE ANNOTATION LINE IS OMITTED ENTIRELY FOR A NODE WITH NONE, never
+	// rendered as a zero. An unconditional count line would change the rendered
+	// bytes of every plan written before annotations existed, which the
+	// one-version-back rule forbids; and "zero annotations" versus "the read did
+	// not reach them" is carried by the read's own completeness disclosure, not
+	// by a per-node zero that cannot tell the two apart anyway.
+	if line := annotations[node.Id]; line != "" {
+		fmt.Fprintf(sb, "%s  %s\n", indent, line)
 	}
 	fmt.Fprintf(sb, "%s  ID: %s%s\n", indent, node.Id, updatedSuffix(node))
 
@@ -73,7 +92,7 @@ func RenderTreeFromIndex(
 	children = topoSort(children)
 
 	for _, c := range children {
-		RenderTreeFromIndex(sb, c.node, depth+1, maxDepth, childIndex, dependsOn)
+		RenderTreeFromIndex(sb, c.node, depth+1, maxDepth, childIndex, dependsOn, annotations)
 	}
 }
 

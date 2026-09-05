@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/clientver"
 )
 
 // ProtectedResourceMetadata mirrors the RFC 9728 OAuth Protected Resource
@@ -94,7 +96,8 @@ func Discover(
 // from the Fulminate endpoint. The path is fixed.
 func fetchProtectedResourceMetadata(ctx context.Context, fulminateEndpoint string) (*ProtectedResourceMetadata, error) {
 	u := strings.TrimRight(fulminateEndpoint, "/") + "/.well-known/oauth-protected-resource"
-	body, err := fetchWellKnown(ctx, u)
+	// OURS: stamped, per the call-path census disposition for this leg.
+	body, err := fetchWellKnown(ctx, u, true)
 	if err != nil {
 		return nil, fmt.Errorf("auth: fetch protected-resource metadata: %w", err)
 	}
@@ -110,7 +113,9 @@ func fetchProtectedResourceMetadata(ctx context.Context, fulminateEndpoint strin
 // the protected-resource metadata pointed at.
 func fetchAuthorizationServerMetadata(ctx context.Context, authServerURL string) (*AuthorizationServerMetadata, error) {
 	u := strings.TrimRight(authServerURL, "/") + "/.well-known/oauth-authorization-server"
-	body, err := fetchWellKnown(ctx, u)
+	// A THIRD PARTY: deliberately UNSTAMPED. A client-version header must never
+	// reach an authorization server we do not operate.
+	body, err := fetchWellKnown(ctx, u, false)
 	if err != nil {
 		return nil, fmt.Errorf("auth: fetch authorization-server metadata: %w", err)
 	}
@@ -124,12 +129,30 @@ func fetchAuthorizationServerMetadata(ctx context.Context, authServerURL string)
 // fetchWellKnown is the shared GET + read + status-check helper for the
 // two .well-known endpoints. Limits body size to 64 KB so a misconfigured
 // server can't OOM the CLI.
-func fetchWellKnown(ctx context.Context, fullURL string) ([]byte, error) {
+//
+// ONE HELPER, TWO TARGETS, AND ONLY ONE OF THEM IS OURS. The RFC 9728
+// protected-resource document is served by the Fulminate API and carries the
+// client-identity headers like every other call to it; the RFC 8414
+// authorization-server document is served by a THIRD-PARTY authorization
+// server and must carry NEITHER. Sending a third party a client-version header
+// tells it something about our users for no benefit we can name, and the
+// call-path census dispositions that leg as out of scope — a stamp there would
+// put the code and the manifest in disagreement, which is the exact thing that
+// census exists to prevent.
+//
+// THE DECISION IS THE CALLER'S, passed in explicitly, rather than a host
+// comparison inside this helper. A host-sniffing branch would re-derive the
+// census's classification in a second place, where it can drift from the
+// manifest silently.
+func fetchWellKnown(ctx context.Context, fullURL string, stampClientIdentity bool) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
+	if stampClientIdentity {
+		clientver.Stamp(req.Header)
+	}
 
 	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
@@ -138,6 +161,22 @@ func fetchWellKnown(ctx context.Context, fullURL string) ([]byte, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		// A version refusal on our own leg is routed through the shared
+		// classifier so it names the minimum, this client's version and the
+		// upgrade command rather than surfacing as a bare status.
+		if stampClientIdentity {
+			raw, readErr := io.ReadAll(io.LimitReader(resp.Body, MaxErrorBodyBytes))
+			if refusal, ok := LatchVersionRefusal(RefusalObservation{
+				Status:    resp.StatusCode,
+				Header:    resp.Header,
+				Body:      raw,
+				ReadErr:   readErr,
+				Transport: "oauth-discovery",
+				Path:      fullURL,
+			}); ok {
+				return nil, refusal
+			}
+		}
 		return nil, fmt.Errorf("upstream status %d", resp.StatusCode)
 	}
 	const max = 64 * 1024

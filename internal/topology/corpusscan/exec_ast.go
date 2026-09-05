@@ -19,31 +19,44 @@ import (
 )
 
 // executeAstCheck runs one ast_pattern check over req.RepoRoot and returns one
-// finding per match site.
+// finding per match site, plus the walk's own stats.
+//
+// THE TEST-FILE SCOPE IS PER CHECK, folded here from two independent inputs: the
+// run-wide knob the caller passed, and the check node's own declaration that its
+// defect class lives in test files. Either widens THIS walk; neither reaches any
+// other check in the run. That is what lets a check whose class is only ever
+// visible in test code fire on a default run while every other check in the same
+// corpus keeps its narrower scope.
+//
+// THE STATS ARE A RETURN VALUE RATHER THAN A DISCARD because the run-level scope
+// guard reads FilesScanned off them: a path_prefix that reached no file at all is
+// refused rather than reported as a clean corpus, and the walk is the only place
+// that fact exists. Restoring the bare underscore here silently re-opens that
+// hole. They are nil on every error return, where no walk produced any.
 //
 // Checks run SERIALLY by design. ast.Match already fans out across the machine's
 // cores inside a single walk, so N concurrent walks contend for the same worker
 // pool rather than adding throughput.
-func executeAstCheck(ctx context.Context, req foundation.Request, entry corpusEntry) ([]foundation.Finding, error) {
+func executeAstCheck(ctx context.Context, req foundation.Request, entry corpusEntry, opts scanOptions) ([]foundation.Finding, *ast.WalkStats, error) {
 	c := entry.Check
 	sev, err := checkSeverity(c)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	lang := c.Language
 	// A denied grammar can never execute a pattern, so a walk there is a
 	// guaranteed empty result masquerading as a clean one.
 	if ast.IsDeniedLanguage(lang) {
-		return nil, fmt.Errorf("topology/%s: check %q is written against %s=%q, which the ast engine denies — a walk there could only ever report clean",
+		return nil, nil, fmt.Errorf("topology/%s: check %q is written against %s=%q, which the ast engine denies — a walk there could only ever report clean",
 			AnalyzerName, c.ID, corpus.MetaLanguage, lang)
 	}
 	pat, err := ast.Parse(c.Pattern)
 	if err != nil {
-		return nil, fmt.Errorf("topology/%s: check %q: %s does not parse: %w", AnalyzerName, c.ID, corpus.MetaDSLPattern, err)
+		return nil, nil, fmt.Errorf("topology/%s: check %q: %s does not parse: %w", AnalyzerName, c.ID, corpus.MetaDSLPattern, err)
 	}
 	cp, err := ast.Compile(pat, lang, "")
 	if err != nil {
-		return nil, fmt.Errorf("topology/%s: check %q: %s does not compile for %s=%q: %w", AnalyzerName, c.ID, corpus.MetaDSLPattern, corpus.MetaLanguage, lang, err)
+		return nil, nil, fmt.Errorf("topology/%s: check %q: %s does not compile for %s=%q: %w", AnalyzerName, c.ID, corpus.MetaDSLPattern, corpus.MetaLanguage, lang, err)
 	}
 	defer cp.Close()
 
@@ -52,10 +65,10 @@ func executeAstCheck(ctx context.Context, req foundation.Request, entry corpusEn
 	// distinguishable from a clean zero.
 	where, err := ast.ParseWhere(c.Where)
 	if err != nil {
-		return nil, fmt.Errorf("topology/%s: check %q: %s does not parse: %w", AnalyzerName, c.ID, corpus.MetaCheckWhere, err)
+		return nil, nil, fmt.Errorf("topology/%s: check %q: %s does not parse: %w", AnalyzerName, c.ID, corpus.MetaCheckWhere, err)
 	}
 	if err := ast.ValidateWhereKinds(where, lang); err != nil {
-		return nil, fmt.Errorf("topology/%s: check %q: %s names a kind the %s=%q grammar does not have: %w", AnalyzerName, c.ID, corpus.MetaCheckWhere, corpus.MetaLanguage, lang, err)
+		return nil, nil, fmt.Errorf("topology/%s: check %q: %s names a kind the %s=%q grammar does not have: %w", AnalyzerName, c.ID, corpus.MetaCheckWhere, corpus.MetaLanguage, lang, err)
 	}
 
 	// THE PARSED where MUST REACH ast.Match, AND NO SOURCE GREP CAN SEE WHETHER
@@ -64,13 +77,13 @@ func executeAstCheck(ctx context.Context, req foundation.Request, entry corpusEn
 	// WIDER scan in which every where-carrying check over-reports. The only
 	// thing that catches it is a test comparing a narrowed check against its
 	// un-narrowed twin over the same tree.
-	matches, _, err := ast.Match(ctx, req.RepoRoot, lang, cp, where, ast.Scope{
-		Repo:            req.Name,
-		PackagePrefixes: checkPathPrefixes(req.PathPrefix),
-		IncludeTests:    false,
-	})
+	//
+	// THE SECOND RETURN IS BOUND, NOT DISCARDED: the run-level scope guard reads
+	// walk.FilesScanned to tell a prefix that narrowed the walk from one that
+	// reached nothing at all.
+	matches, walk, err := ast.Match(ctx, req.RepoRoot, lang, cp, where, checkScope(req, c, opts))
 	if err != nil {
-		return nil, fmt.Errorf("topology/%s: check %q: walk %s: %w", AnalyzerName, c.ID, req.Name, err)
+		return nil, nil, fmt.Errorf("topology/%s: check %q: walk %s: %w", AnalyzerName, c.ID, req.Name, err)
 	}
 
 	sites := make([]foundation.Finding, 0, len(matches))
@@ -78,7 +91,24 @@ func executeAstCheck(ctx context.Context, req foundation.Request, entry corpusEn
 		sites = append(sites, astSiteFinding(entry, sev, m))
 	}
 	sortSites(sites)
-	return sites, nil
+	return sites, &walk, nil
+}
+
+// checkScope is the ast scope ONE check walks under: the run's prefix, plus the
+// per-check test-file decision.
+//
+// IT IS A FUNCTION RATHER THAN TWO LITERALS because the scope is built twice —
+// once for the walk that runs and once for the zero-scan hint that has to
+// explain a walk that scanned nothing — and the two must be the SAME scope. When
+// they were two literals the hint reasoned about a narrower walk than the one
+// that ran, and told a caller their prefix matched nothing about files the walk's
+// own filter had taken.
+func checkScope(req foundation.Request, c corpus.Check, opts scanOptions) ast.Scope {
+	return ast.Scope{
+		Repo:            req.Name,
+		PackagePrefixes: checkPathPrefixes(req.PathPrefix),
+		IncludeTests:    opts.includeTests || c.AppliesToTests,
+	}
 }
 
 // astSiteFinding builds one finding for one match site.

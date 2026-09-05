@@ -1,214 +1,96 @@
 ---
 name: plan
-description: Create an implementation plan in the knowledge store. Researches the codebase first, then creates a structured phased plan with success criteria. Use when starting a new feature, refactor, or multi-step task.
-argument-hint: <description of what to plan>
+description: Produce and audit the prefill for a validated ticket — the implementer's preloaded context as a plan node with no steps. Gates on the ticket's validation stamp, spawns the planner, resolves every citation mechanically, spawns the prefill reviewer, and routes the verdict. Use after a ticket is validated and before any implementation.
+argument-hint: <validated ticket id or name>
 ---
 
-# Create Plan: $ARGUMENTS
+# Prefill: $ARGUMENTS
 
 <precedence>
 User input > Skill constraints > Trained defaults
 
-For universal orchestration discipline (background spawning, signal routing,
-reviewer gate semantics, auto-revise threshold, user touch points, drift
-detection), reference .claude/skills/orchestrate/SKILL.md — already loaded
-in your context when you reach this skill.
-
-This skill is plan-specific. Don't duplicate universal patterns here; reference them.
+For pipeline discipline (background spawns, one writer per artifact, verdict
+routing) reference /orchestrate. This skill is prefill-specific.
 </precedence>
 
 <mental-model>
-brainstorm = WHY, ticket = WHAT, plan = HOW, implement = WORK.
-
-Plan translates ticket's WHAT into sequenced HOW (files, names, ordering, criteria).
-Plan does NOT decide WHAT (brainstorm's job).
-Plan does NOT do the work (implementer's job).
-If planner finds itself making architectural calls, ticket was inadequate — route back upstream.
+ticket = what the user needs · prefill = the implementer's context ·
+review = the prefill's accuracy bar against the ticket.
+A prefill contains no steps and no criteria; the implementer chooses its own
+order and writes its own tests from the what-to-test list.
 </mental-model>
 
-<constraint id="ticket-pre-flight" severity="hard" phase="before-spawn">
+## Step 0: Gate on the ticket
 
-  <rule>
-    Verify ticket completeness BEFORE spawning the planner. Thin tickets produce
-    thin plans, which produce re-plan cycles.
-  </rule>
+Fetch the ticket by id with metadata. `metadata.validated` must be present and
+name a research node; without it, stop and route to /research. Read the
+ticket's open items: an undecided design the user owns is settled with the
+user before a planner spawns, never left for the planner.
 
-  <checks ordered="true">
-    <check id="index-freshness">
-      manage({ "operation": "status" }) — if behind HEAD, offer to reindex.
-      Planner needs accurate search results.
-    </check>
+`manage({"operation":"status"})`; collect if the index is behind the tree the
+ticket lands on.
 
-    <check id="clarify-goal">
-      If $ARGUMENTS is ambiguous, ask before spawning. Don't guess the end state.
-      (This IS a legitimate touch point — architectural clarification, not workflow permission.)
-    </check>
+## Step 1: Spawn the planner (background)
 
-    <check id="find-parent-ticket">
-      query({ "type": "ticket" }) or current project's ticket list.
-      Pass ticket_id to planner so create_plan links under it.
-    </check>
+One planner, one prefill. The brief carries the ticket id, the tree and branch
+to resolve at, sibling work in flight on the same branch with its touched
+files, the user's load-bearing rules verbatim, and the reads to stamp. It
+names no design and no mechanism.
 
-    <check id="pattern-context">
-      assemble({ id: ticket_id }) — check ## Patterns section.
-      If NEITHER pattern_ids NOR no_patterns_reason set, prompt user with options:
-      (a) Run /brainstorm to pick patterns
-      (b) Add no_patterns_reason via mutate (escape hatch for trivial work)
-      (c) Cancel
-      Do NOT auto-invoke /brainstorm — user picks.
-    </check>
+```
+Agent(subagent_type: "planner",
+      prompt: "Produce the prefill for ticket <id> at <tree> on <branch>, per the prefill rulebook: no steps, every line resolved by tool with its command, the what-to-test list covering every numbered requirement, the harnesses that reach each seam. Siblings in flight: <list or none>. Deliver the report to main.",
+      description: "Prefill: <ticket>",
+      run_in_background: true)
+```
 
-    <check id="ticket-thoroughness" severity="gate">
-      Verify ticket has:
-      - In Scope enumerating concrete code surfaces (files, packages, functions)
-      - Out of Scope explicitly naming temptations + adjacent work deliberately excluded
-      - Success criteria with testable invariants (named assertions; a criterion
-        asserting a SHAPE in source belongs in a corpus check, which cannot be
-        stored until it has fired on a bad fixture and stayed silent on a good one)
+## Step 1a: Settle open items before anything freezes
 
-      If ticket is thin, STOP:
-      "The ticket is too thin for direct planning — the architectural surface needs
-      to be enumerated first. Run /brainstorm against the ticket to do the
-      architectural walk + populate In Scope / Out of Scope concretely, then
-      re-run /plan."
+When the planner's report carries open items, settle every one the ticket,
+the user's rules or memory already answers, and route the rest to the user,
+before resolving citations. Each settlement goes back to the planner that
+raised it, idle with its context intact, to incorporate into the prefill. The
+prefill is not frozen for review until that planner has read the settlement
+back into the node. At reviewer spawn the ticket's `updated_at` is older than
+the prefill's, or the prefill goes back to the planner first. A ticket
+amendment after that point reopens the prefill, never the audit.
 
-      Do NOT spawn planner against thin ticket.
-    </check>
-  </checks>
+## Step 2: Resolve citations mechanically
 
-</constraint>
+Before any reviewer spawns, fetch the prefill's `citations` block and resolve
+each entry yourself with its recorded command at the named tree (a scratch
+copy or `git show <tree>:<path>`; never the shared checkout's working tree).
+A citation that fails to resolve returns the prefill to a fresh planner with
+the list attached; no reviewer audits a prefill with a dead citation. This is
+the cheap half of the audit and it runs without a model.
 
-<spawn id="planner" background="true">
+## Step 3: Spawn the prefill reviewer (background)
 
-  <reference>See orchestrate constraint id="dispatch" — every spawn is background.</reference>
+Fresh reviewer, no memory of any prior audit. The brief carries the ticket id,
+the prefill id, the tree, the user's rules verbatim, and the isolation rule.
 
-  <invocation>
-    Agent(
-      subagent_type: "planner",
-      prompt: "Create an implementation plan for: $ARGUMENTS\n\nParent ticket: &lt;ticket_id or 'none'&gt;",
-      description: "Plan: &lt;brief topic&gt;",
-      run_in_background: true
-    )
-  </invocation>
+```
+Agent(subagent_type: "plan-reviewer",
+      prompt: "Audit prefill <plan id> against ticket <ticket id> at <tree>: coverage of every numbered requirement, every citation resolved by its command, censuses re-run, seams both sides real on the named harness. Persist findings; deliver verdict and tier counts to main.",
+      description: "Audit prefill: <ticket>",
+      run_in_background: true)
+```
 
-  <brief-addendum id="census-scale-work" when="the ticket involves a sweep/migration/audit over a large or pattern-defined surface">
-    Add to the planner's prompt: "This ticket's work includes a census-scale
-    surface. Per your programmatic-census constraint: enumerate it with
-    ast/grep/script runs DURING planning — no hand counts anywhere in the plan;
-    steps consume census output by kind with per-file lists labeled as floors;
-    every sweep completion gate re-runs the census and asserts remainder = 0;
-    for multi-kind migrations prescribe a checked-in census script emitting a
-    machine-readable manifest [{file, line, kind, currentForm, targetForm}]."
-    Hand-enumerated sweep surfaces are the leading cause of plan-revise churn:
-    each review round finds the members the previous hand count missed, and the
-    loop does not converge.
-  </brief-addendum>
+## Step 4: Route the verdict
 
-</spawn>
+- `ship` → invoke /implement.
+- `revise` → a FRESH planner, once, with the findings attached and the
+  reviewer's report id in the brief. The second review is by a fresh reviewer.
+- A second `revise` on the same ticket is not a third round: stop, present
+  both audits to the user, and decide together whether the ticket, the
+  planner brief or the model is the problem.
+- A finding against the ticket's premises is not the planner's: route it to
+  /research and hold the prefill.
 
-<constraint id="warnings-gate" severity="hard" phase="after-spawn">
-
-  <rule>
-    After planner returns, check for ## Warnings section (unresolved pattern_ids).
-    If present, this is a legitimate user touch point — surface verbatim, do NOT auto-advance.
-  </rule>
-
-  <action>
-    Surface warnings verbatim to user.
-    Ask user to choose:
-    (a) revise pattern_ids and re-plan
-    (b) accept warnings and proceed to /implement (implementer's own warning check re-prompts)
-    (c) cancel
-  </action>
-
-  <do-not-strip>
-    This gate MUST NOT be stripped from this skill — future maintainers can't remove it.
-  </do-not-strip>
-
-</constraint>
-
-<after-return phase="planner-completed">
-
-  <step order="1">
-    Apply signal routing from orchestrate constraint id="signal-routing":
-    - TICKET-GAP → re-engage /brainstorm
-    - open_questions → honest-answer test → re-brief OR re-engage brainstorm
-      (each open_questions entry, like each proposed_patterns entry, carries a
-      required summary its author writes)
-    - plan-size → CEO direct
-  </step>
-
-  <step order="2">
-    Warnings gate (constraint above).
-  </step>
-
-  <step order="3">
-    Present plan structure (phases, steps, criteria, file links) to user as summary.
-    This is informational, not a permission-ask. Do NOT end with "ready to spawn reviewer?"
-  </step>
-
-  <step order="4">
-    Spawn the plan-reviewer. Per orchestrate constraint id="reviewer-gate" — universal pattern.
-    Plan-reviewer spawn:
-
-    Agent(
-      subagent_type: "plan-reviewer",
-      prompt: "Audit plan &lt;plan_id&gt;. Fresh audit — you have no memory of any prior audit of this plan. Phases already implemented (skip these): &lt;list or 'none'&gt;. User-locked decisions that are out of scope for critique: &lt;list or 'none'&gt;. Produce the structured four-tier audit report.",
-      description: "Audit plan: reuse + architecture + optimization + can-kicking",
-      run_in_background: true
-    )
-
-    No implementer spawns on unreviewed plan version (orchestrate blocking-discipline).
-  </step>
-
-  <step order="5">
-    On revise: spawn planner again with reviewer report as input. FRESH reviewer for re-audit.
-    Auto-revise per locked threshold — do NOT ask user permission.
-  </step>
-
-  <step order="6">
-    For non-revise changes: mutate(operation:"update", ...) in place.
-  </step>
-
-</after-return>
-
-<do-not-strip>
-The reviewer gate and the auto-revise threshold MUST NOT be stripped from this skill — both are locked by user direction.
-</do-not-strip>
-
-<constraint id="fallbacks-require-express-user-approval" severity="hard">
-  Fallbacks are covers for incorrect behavior. Any silently-degraded lane,
-  catch-and-continue, default-on-error, or graceful-degradation path requires
-  EXPRESS USER APPROVAL, recorded (ticket or decision) where the fallback lives —
-  no agent has discretion to classify one as legitimate. The default response to
-  an error state is to FAIL LOUDLY, naming the condition and what was dropped, at
-  the point of the mistake. CONVERGENCE TEST: a real fallback repairs the
-  condition it fires for and returns the system to its primary path; a lane that
-  can fire forever on the same cause is hiding a defect, not handling one — it
-  must be an error. An unticketed, unapproved fallback — in a plan, a design, a
-  changeset, or existing code you are changing — is a T2 finding raised to the
-  user; never wave one through, build one on your own authority, or soften one
-  to a note. Retired fallback code is REMOVED, never bypassed in place. The
-  instinct that produces fallbacks is sycophancy expressed as architecture —
-  treat your own urge to add one as the signal to raise it, not to build it.
-</constraint>
-
-<constraint id="deferral-is-a-user-decision" severity="hard">
-  Deferral is a USER decision — never yours. Never defer, postpone, descope, or
-  "leave for a follow-up" any surfaced defect, gap, or required disposition on
-  your own judgement, and never present deferral as an outcome you have chosen.
-  The only dispositions you may produce: DO the work, DISPROVE the need with
-  evidence, or SURFACE the item UNDECIDED to whoever holds the decision — with
-  the honest cost of doing it now. A brief that offers "defer" as one of your
-  answers does not make it yours. Postponed is not rejected: an item the user
-  defers stays recorded as open work, never silently dropped. Most deferral
-  impulses are work avoidance — if the item is in scope and tractable, do it.
-  COMPLETENESS IS THE DEFAULT DISPOSITION: a gap discovered in the surface under
-  work — a displayed approximation of a value the system can produce for real,
-  an unrouted capability the feature plainly needs, an unhandled reachable
-  state — is COMPLETION work. Report it as "incomplete without X; building X
-  costs Y", never as an optional extra ("available if you want it later",
-  "could be a fast-follow") — that framing inverts the decision by taxing the
-  user into demanding completeness, when incompleteness is what needs explicit
-  approval.
+<constraint id="plan-discipline" severity="hard">
+  Spawning a planner on a ticket without the validation stamp · a brief that
+  names a design · spawning a reviewer before the citations resolved · spawning
+  a reviewer against a ticket amended after the prefill froze · settling a
+  planner's open item on the ticket without sending it back to the planner ·
+  resuming a planner whose prefill is under review · a third planning round.
 </constraint>

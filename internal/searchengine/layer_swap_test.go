@@ -19,10 +19,10 @@ type buildFailFormat struct {
 	failAt int // 1-based Build call to fail; 0 disables
 }
 
-func (b *buildFailFormat) Build(docs []Document) (Segment[mockQuery, mockStats], error) {
+func (b *buildFailFormat) Build(docs []Document) (Segment[mockQuery, mockStats], BuildReport, error) {
 	b.calls++
 	if b.failAt == b.calls {
-		return nil, fmt.Errorf("injected build failure on call %d", b.calls)
+		return nil, BuildReport{}, fmt.Errorf("injected build failure on call %d", b.calls)
 	}
 	return b.mockFormat.Build(docs)
 }

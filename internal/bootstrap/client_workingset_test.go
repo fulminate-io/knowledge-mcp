@@ -23,14 +23,19 @@ import (
 
 // admissionWiredClient builds a *client wired exactly the way constructClient
 // wires the admission path: a real Router carrying the real working set, with
-// the recorder attached. The Router has NO local handle and is not logged in, so
-// every Execute short-circuits at pick() with ErrNoBackend and reaches no
-// network. That is deliberate: admission is recorded BEFORE dispatch, and these
-// tests are about what got admitted rather than what came back.
+// the recorder attached.
+//
+// THE LOCAL BACKEND IS LOAD-BEARING, NOT SCAFFOLDING. This helper used to pass
+// nil as the local client, because admission was recorded BEFORE dispatch so
+// every Execute short-circuited at pick() with ErrNoBackend and reached no
+// network. Admission now follows a SUCCESSFUL dispatch, so a backendless Router
+// admits nothing — and the ABSENCE assertion these tests exist for would start
+// passing for a reason that has nothing to do with the operation partition it
+// pins.
 func admissionWiredClient(t *testing.T) *client {
 	t.Helper()
 	authState := auth.NewAuthState(newFakeAuthStore(), time.Minute)
-	router := graphclient.NewRouter(nil, "http://cloud.invalid", staticTokenSource{tok: "tok"}, authState)
+	router := graphclient.NewRouter(localEngineBackend(t), "http://cloud.invalid", staticTokenSource{tok: "tok"}, authState)
 	c := &client{
 		router:     router,
 		authState:  authState,

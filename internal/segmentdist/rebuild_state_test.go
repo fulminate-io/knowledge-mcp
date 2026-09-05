@@ -85,6 +85,7 @@ func TestRebuildStateRoundTrip(t *testing.T) {
 // that answer. Here the second process holds only a sliver of the shipped corpus,
 // which is exactly the degenerate live set the gate exists to refuse.
 func TestFinalizeRebuildReportsCompletedSwap(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

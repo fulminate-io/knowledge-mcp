@@ -86,7 +86,7 @@ func TestEncodeStableAcrossManyBuilds(t *testing.T) {
 // serialized bytes, so corpus stats are not needed).
 func buildBM25(t *testing.T, docs []searchengine.Document) *mappedSegment {
 	t.Helper()
-	segIface, err := Format{}.Build(docs)
+	segIface, _, err := Format{}.Build(docs)
 	require.NoError(t, err)
 	return segIface.(*mappedSegment)
 }

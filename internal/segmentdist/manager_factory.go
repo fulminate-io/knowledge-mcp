@@ -116,6 +116,35 @@ func (m *Manager) managerFor(gt kgtypes.GraphType, name string) *distManager[[]b
 		MapBlob: newMapBlobHook(hnswReadAdvice),
 	}
 	opts.OnMerge = func(res searchengine.MergeResult) { dm.reclaimMerged(res) }
+	// Withdraw a segment whose stored bytes the format reports as unreadable. The
+	// engine has already contained the read and dropped the segment from its
+	// published set; these two calls are what withdraw it from everything else.
+	//
+	// NOTHING RE-FETCHES IT — an earlier version of this comment said the next
+	// read would, and there is no such path in this tree. The documents that
+	// segment held are unreachable until this graph's segments are rebuilt.
+	//
+	// BOTH CALLS ARE REQUIRED AND THEY DROP DIFFERENT THINGS. Quarantine moves the
+	// FILE aside and drops the L2 index entry; forgetQuarantined drops this
+	// pool's own residency bookkeeping. Without the second, the id stays in the
+	// resident map, the eviction gate asks L2 for bytes quarantine just removed,
+	// counts it missing and declines to evict the pool FOREVER — and the strict
+	// reload replays it and hard-fails, leaving the pool unsearchable.
+	opts.OnCorruptSegment = func(err *searchengine.CorruptSegmentError) {
+		// THE REFUSAL IS NOT DISCARDED. Quarantine refuses an unattributed id, and
+		// swallowing that returned a report of a withdrawal that never happened —
+		// the engine believed the segment was dealt with, nothing was, and the
+		// merge re-selected the same constituents on the next tick. A discarded
+		// error here is the difference between a disposition and the appearance of
+		// one.
+		if qErr := cache.Quarantine(err.ID, err); qErr != nil {
+			slog.Error("segmentdist: corrupt segment was NOT withdrawn",
+				"segment", err.ID, "corruption", err, "reason", qErr,
+				"consequence", "these bytes stay in service and the condition will repeat until the id is attributed or the graph is rebuilt")
+			return
+		}
+		dm.forgetQuarantined(err.ID)
+	}
 	engine := searchengine.New[[]byte, struct{}](hnswFormat, opts)
 	dm = newDistManager(engine, cache, target, hnswFormat.Name())
 	// Seed every import from the owner's live tombstone set, read at import time
@@ -187,7 +216,32 @@ func (m *Manager) bm25ManagerFor(gt kgtypes.GraphType, name string) *distManager
 		SegmentCountTarget: searchengine.MergeDisabledCountTarget,
 		DeletesPctAllowed:  searchengine.MergeDisabledDeadRatio,
 		OnMerge:            func(res searchengine.MergeResult) { dm.reclaimMerged(res) },
-		ScratchDir:         scratch,
+		// Same withdrawal as the HNSW engines — see the comment there. This is the
+		// format the incident actually struck, but the hazard is format-agnostic:
+		// any content-addressed segment whose bytes stop matching its name.
+		OnCorruptSegment: func(err *searchengine.CorruptSegmentError) {
+			// Same non-discard as the HNSW engines — see the comment there.
+			if qErr := cache.Quarantine(err.ID, err); qErr != nil {
+				slog.Error("segmentdist: corrupt segment was NOT withdrawn",
+					"segment", err.ID, "corruption", err, "reason", qErr,
+					"consequence", "these bytes stay in service and the condition will repeat until the id is attributed or the graph is rebuilt")
+				return
+			}
+			dm.forgetQuarantined(err.ID)
+		},
+		// THIS IS THE ONLY PLACE THE WIRING CAN LIVE: gt and name are in scope here
+		// and nowhere inside the engine, which is the whole reason the census rides
+		// an Options hook rather than a counter on the engine. Note the asymmetry
+		// with its two neighbors — they close over dm, which is assigned AFTER
+		// construction and is why they are var-before-assign; this one closes over
+		// m, gt and name, all already valid, so it needs no such dance.
+		//
+		// THE HNSW ENGINES ARE DELIBERATELY NOT WIRED. That format returns a zero
+		// report by construction, so a hook there could only ever observe nothing —
+		// and advertising a signal that cannot fire is the silent zero this census
+		// exists to remove.
+		OnBuildDegrade: func(rep searchengine.BuildReport) { m.RecordBuildDegrade(gt, name, rep) },
+		ScratchDir:     scratch,
 		// This format's own advice, for the reason managerFor records.
 		MapBlob: newMapBlobHook(bm25ReadAdvice),
 	})

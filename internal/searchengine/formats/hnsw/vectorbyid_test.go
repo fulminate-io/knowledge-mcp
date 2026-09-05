@@ -15,7 +15,7 @@ import (
 // case would read a wrong vector or panic.
 func TestVectorByIDPresentAndAbsent(t *testing.T) {
 	docs := vecDocs(64)
-	seg, err := Format{}.Build(docs)
+	seg, _, err := Format{}.Build(docs)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestVectorByIDPresentAndAbsent(t *testing.T) {
 // similar-search resolve actually reads from in practice.
 func TestVectorByIDSurvivesEncodeDecode(t *testing.T) {
 	docs := vecDocs(32)
-	seg, err := Format{}.Build(docs)
+	seg, _, err := Format{}.Build(docs)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

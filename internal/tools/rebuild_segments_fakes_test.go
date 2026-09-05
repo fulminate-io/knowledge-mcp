@@ -90,6 +90,58 @@ type fakeRebuildState struct {
 	// describes; bm25ResetErr scripts the failure the driver must abort on.
 	bm25Resets   int
 	bm25ResetErr error
+
+	// degradeCensus is a REAL census rather than a stub returning nil: the reset
+	// CLEARS this field and the read RETURNS it, so a test can observe the
+	// difference between a driver that cleared and one that did not.
+	degradeCensus map[string]int
+	// finalizeCensus is what THE FINALIZE'S OWN BUILDS drop, applied by
+	// applyFinalizeCensus. Modeling that is what makes the ordering assertion mean
+	// anything: production clears the record and the finalize's builds then fill
+	// it, so a fake that merely HELD a census would pass whether the driver cleared
+	// before or after the finalize.
+	finalizeCensus map[string]int
+	degradeResets  int
+}
+
+// ResetBM25DegradeCounts clears the drop census, as the durable reset does.
+func (s *fakeRebuildState) ResetBM25DegradeCounts(kgtypes.GraphType, string) error {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.degradeResets++
+	s.degradeCensus = nil
+	return nil
+}
+
+// BM25DegradeCounts returns a COPY, nil when empty — the seam's own contract.
+func (s *fakeRebuildState) BM25DegradeCounts(kgtypes.GraphType, string) map[string]int {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if len(s.degradeCensus) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(s.degradeCensus))
+	for class, n := range s.degradeCensus {
+		out[class] = n
+	}
+	return out
+}
+
+// applyFinalizeCensus models the finalize's builds populating the census. BOTH
+// shipper fakes call it from their FinalizeRebuild, which is what lets a test
+// script a STALE pre-existing census and prove the driver cleared it FIRST.
+func (s *fakeRebuildState) applyFinalizeCensus() {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if len(s.finalizeCensus) == 0 {
+		return
+	}
+	if s.degradeCensus == nil {
+		s.degradeCensus = make(map[string]int, len(s.finalizeCensus))
+	}
+	for class, n := range s.finalizeCensus {
+		s.degradeCensus[class] += n
+	}
 }
 
 // LoadMergeWatermark reports the delta-merge consumer's durable position.
@@ -262,6 +314,7 @@ func (s *fakeRebuildShipper) FinalizeRebuild(
 	s.stagesAtFinalize = s.stageCalls.Load()
 	s.bm25ResetsAtFinalize = s.resetCount()
 	s.mu.Unlock()
+	s.applyFinalizeCensus()
 	if s.finalizeErr != nil {
 		return RebuildFinalizeResult{}, s.finalizeErr
 	}
@@ -281,7 +334,7 @@ func (s *fakeRebuildShipper) InvalidateLocal(_ kgtypes.GraphType, _ string, ids 
 // ResidentSegmentCount models the engine's post-swap sealed-segment count.
 //
 // IT HAS NO ERROR PATH, AND THAT IS THE CONTRACT CHANGE RATHER THAN A SIMPLIFICATION
-// OF THE FAKE. Its predecessor modelled a manifest read back from the server, which
+// OF THE FAKE. Its predecessor modeled a manifest read back from the server, which
 // could fail; the real reader is now one atomic snapshot load and a slice length, so
 // a fake offering a failure mode would let tests exercise a branch production cannot
 // reach. manifestErr is gone for that reason.
@@ -292,7 +345,7 @@ func (s *fakeRebuildShipper) InvalidateLocal(_ kgtypes.GraphType, _ string, ids 
 //
 // AN UNSCRIPTED FAKE ANSWERS ZERO, deliberately. There is no longer an "unavailable"
 // reading for the driver to skip on, so a test that does not script a count is
-// modelling an engine that holds nothing — which the gate reads as a short set and
+// modeling an engine that holds nothing — which the gate reads as a short set and
 // WARNs about. A test that does not want that must script a count.
 func (s *fakeRebuildShipper) ResidentSegmentCount(_ kgtypes.GraphType, _, format string) int {
 	s.manifestReads.Add(1)

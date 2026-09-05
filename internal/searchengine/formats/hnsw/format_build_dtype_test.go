@@ -60,7 +60,7 @@ func TestFormatBuild_DtypeFromBatch(t *testing.T) {
 			float32Doc("c", axisVector(dim, 2, 1)),
 		}
 
-		seg, err := Format{}.Build(docs)
+		seg, _, err := Format{}.Build(docs)
 		require.NoError(t, err)
 		hs, ok := seg.(*hnswSegment)
 		require.True(t, ok)
@@ -97,7 +97,7 @@ func TestFormatBuild_DtypeFromBatch(t *testing.T) {
 			ubinaryDoc("c", defaultVecBytes, 90),
 		}
 
-		seg, err := Format{}.Build(docs)
+		seg, _, err := Format{}.Build(docs)
 		require.NoError(t, err)
 		hs, ok := seg.(*hnswSegment)
 		require.True(t, ok)
@@ -111,7 +111,7 @@ func TestFormatBuild_DtypeFromBatch(t *testing.T) {
 			{ID: "a", Vector: make([]byte, defaultVecBytes)},
 			{ID: "b", Vector: make([]byte, defaultVecBytes)},
 		}
-		useg, uerr := Format{}.Build(untagged)
+		useg, _, uerr := Format{}.Build(untagged)
 		require.NoError(t, uerr)
 		uhs, ok := useg.(*hnswSegment)
 		require.True(t, ok)
@@ -131,7 +131,7 @@ func TestFormatBuild_DtypeFromBatch(t *testing.T) {
 		require.Len(t, mixed[0].Vector, len(mixed[1].Vector),
 			"the fixture must be width-identical, or the width refusal masks the dtype one")
 
-		_, err := Format{}.Build(mixed)
+		_, _, err := Format{}.Build(mixed)
 		require.Error(t, err,
 			"a batch mixing representations must be REFUSED — sealing one tag over it silently "+
 				"reinterprets the other document's vectors")
@@ -145,7 +145,7 @@ func TestFormatBuild_DtypeFromBatch(t *testing.T) {
 		unknown := []searchengine.Document{
 			{ID: "a", Vector: make([]byte, 32), Dtype: "float16"},
 		}
-		_, uerr := Format{}.Build(unknown)
+		_, _, uerr := Format{}.Build(unknown)
 		require.Error(t, uerr, "an unrecognized dtype must be refused, never coerced to ubinary")
 		require.Contains(t, uerr.Error(), "float16", "the refusal names the value it did not recognize")
 	})

@@ -88,6 +88,7 @@ func newPinFixture(t *testing.T, name string) pinFixture {
 // one. There is one engine now, so the swap IS the hand-off and there is nothing to
 // arrange — which is exactly what makes the property structural rather than maintained.
 func TestEmbedDrainAfterRebuildDropsRetiredLayer(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

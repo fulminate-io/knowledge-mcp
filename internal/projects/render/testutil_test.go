@@ -163,7 +163,20 @@ func traversalResponseFor(
 			if e.FromId != cur.id || !admits(e.Type) {
 				continue // outgoing, admitted-type edges only
 			}
-			walkedEdges = append(walkedEdges, knowledgev1.Edge{FromId: e.FromId, ToId: e.ToId, Type: e.Type})
+			// The walked edge carries its metadata for the same reason the
+			// edgesFor arm above does: Evidence is where a positioned child's
+			// `position` rides, and a fixture that dropped it would make every
+			// sibling-order assertion vacuous.
+			walkedEdges = append(walkedEdges, knowledgev1.Edge{
+				FromId:        e.FromId,
+				ToId:          e.ToId,
+				Type:          e.Type,
+				Weight:        e.Weight,
+				Confidence:    e.Confidence,
+				Method:        e.Method,
+				Evidence:      e.Evidence,
+				LastValidated: e.LastValidated,
+			})
 			if visited[e.ToId] {
 				continue
 			}
@@ -203,9 +216,12 @@ func (g *fakeGcFixture) Call(_ context.Context, tool string, args json.RawMessag
 }
 
 // Execute satisfies render.Executor — the carrier seam every wire-fetch helper
-// takes: FetchNode / FetchNodeIn, FetchNodesByIDs / FetchNodesByIDsIn,
-// IterEdges / IterEdgesIn / IterEdgesFor, TraverseDescendantsWithEdges,
-// resolveAssembleByName and listPracticeGraphs. It resolves the target graph
+// takes: FetchNode / FetchNodeIn, IterEdges / IterEdgesIn / IterEdgesFor,
+// TraverseDescendantsWithEdges, resolveAssembleByName and listPracticeGraphs.
+// It also serves foundation.FetchNodesByIDs, the consolidated bulk hydrate this
+// package now calls instead of owning: the by-ids pair that used to live here
+// was deleted, and the same Ids[] arm below answers the foundation helper
+// unchanged, because both read the same typed Nodes carrier. It resolves the target graph
 // from the plan's GraphSelector (knowledge default, practice via language) and
 // answers RETURN_MODE_GRAPH_NAMES (practice list), RETURN_MODE_TRAVERSAL,
 // RETURN_MODE_EDGES, a bulk Ids[] hydrate, a type-browse and a single ByID from
@@ -253,7 +269,24 @@ func (g *fakeGcFixture) Execute(_ context.Context, req *knowledgev1.ExecuteReque
 				for i := range bucket {
 					e := &bucket[i]
 					if e.FromId == id {
-						out = append(out, knowledgev1.Edge{FromId: e.FromId, ToId: e.ToId, Type: e.Type})
+						// THE EDGE METADATA IS CARRIED, not just the three identity
+						// fields. This arm stands in for the wire, where
+						// engine.EdgesFromProto copies Evidence and Method verbatim —
+						// and Evidence is where a positioned child's `position` rides.
+						// A fixture that rebuilt the edge from FromId/ToId/Type would
+						// silently strip the ordering key, and every sibling-order
+						// assertion taken through it would read as "position ignored"
+						// and pass against a correct implementation.
+						out = append(out, knowledgev1.Edge{
+							FromId:        e.FromId,
+							ToId:          e.ToId,
+							Type:          e.Type,
+							Weight:        e.Weight,
+							Confidence:    e.Confidence,
+							Method:        e.Method,
+							Evidence:      e.Evidence,
+							LastValidated: e.LastValidated,
+						})
 					}
 				}
 				return out

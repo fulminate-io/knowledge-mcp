@@ -47,6 +47,7 @@ func (e *emitter) emitRawHTML(idx int) {
 			"html_base64":  e.page.RawHTMLBase64,
 			"html_bytes":   strconv.Itoa(decodedBase64Len(e.page.RawHTMLBase64)),
 			"content_hash": e.page.ContentHash,
+			"position":     strconv.Itoa(idx),
 		},
 	})
 	e.addContains(e.pageID, id, idx)

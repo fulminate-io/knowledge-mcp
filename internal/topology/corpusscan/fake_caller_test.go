@@ -303,7 +303,7 @@ func matchFindings(findings []foundation.Finding) []foundation.Finding {
 		if len(findingsByTitlePrefix([]foundation.Finding{f}, TruncationPrefixCheck)) > 0 {
 			continue
 		}
-		if f.Title == TruncationTitleRun || f.Title == DisclosureTitleLLMOnly {
+		if f.Title == TruncationTitleRun || f.Title == DisclosureTitleLLMOnly || f.Title == DisclosureTitleTestFiles {
 			continue
 		}
 		out = append(out, f)

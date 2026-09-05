@@ -2,8 +2,8 @@
 
 package tools
 
-// intercept_query_builtin_stats_test.go gates the checks / transformers stats arm
-// and the vocabulary refusal that shares its mode.
+// intercept_query_builtin_stats_test.go gates the checks stats arm and the
+// vocabulary refusal that shares its mode.
 
 import (
 	"context"
@@ -20,10 +20,9 @@ import (
 
 // statsCorpusKey is how the double keys a graph: EXACTLY the wire spelling a
 // selector carries. checks is a singleton whose selector policy admits no set
-// name, so its key carries an empty name; transformers carries its real bucket
-// name. A caller that canonicalized the wire Target — sending "default" where the
-// wire must carry "" — misses the key and reads an EMPTY corpus, which is the
-// silent zero this test is built to catch.
+// name, so its key carries an empty name. A caller that canonicalized the wire
+// Target — sending "default" where the wire must carry "" — misses the key and
+// reads an EMPTY corpus, which is the silent zero this test is built to catch.
 type statsCorpusKey struct{ graph, name string }
 
 // statsCorpusFake serves BOTH the Stats RPC and the type-browse Execute from ONE
@@ -68,13 +67,12 @@ func (f *statsCorpusFake) Execute(_ context.Context, req *knowledgev1.ExecuteReq
 	return resp, nil
 }
 
-// newStatsCorpusFake seeds the two served graphs plus the knowledge default, so
-// the both-directions leg has a real corpus to read too.
+// newStatsCorpusFake seeds the served graph plus the knowledge default, so the
+// both-directions leg has a real corpus to read too.
 func newStatsCorpusFake() *statsCorpusFake {
 	return &statsCorpusFake{corpus: map[statsCorpusKey]map[string]int64{
-		{graph: "checks", name: ""}:              {"finding": 6, "example": 12},
-		{graph: "transformers", name: "recipes"}: {"recipe": 10},
-		{graph: "", name: ""}:                    {"finding": 3},
+		{graph: "checks", name: ""}: {"finding": 6, "example": 12},
+		{graph: "", name: ""}:       {"finding": 3},
 	}}
 }
 
@@ -124,15 +122,21 @@ func nodesByType(t *testing.T, payload map[string]any) map[string]int64 {
 	return out
 }
 
-// TestStatsServedOnChecksAndTransformers (FAILS-WHEN-ABSENT) gates the SERVE path
-// and the refusal path together.
+// TestStatsServedOnChecks (FAILS-WHEN-ABSENT) gates the SERVE path and the
+// refusal path together.
+//
+// IT WAS TestStatsServedOnChecksAndTransformers AND WAS NARROWED, NOT RETIRED.
+// The arm served two graphs; one of them was the transformers family, which is
+// gone. The checks subtest below is the ONLY gate on this arm — including the
+// wire-spelling assertion that its Target carries an EMPTY name rather than the
+// internal default-instance key — so it stays exactly as it was.
 //
 // ITS CENTRAL LEG IS AN AGREEMENT, NOT A SUCCESS. A stats arm that keyed its wire
 // selector wrong returns a WELL-FORMED render reporting zero — the silent-zero
 // class a success-only assertion is green against. So the counts stats reports are
 // compared against the totals an independently-issued type-browse reports in the
 // SAME RUN, and both are read from the tree rather than pinned to a literal.
-func TestStatsServedOnChecksAndTransformers(t *testing.T) {
+func TestStatsServedOnChecks(t *testing.T) {
 	t.Run("checks stats agrees with an independent type browse", func(t *testing.T) {
 		f := newStatsCorpusFake()
 		handled, res := driveBuiltinStats(t, f, map[string]any{
@@ -161,29 +165,10 @@ func TestStatsServedOnChecksAndTransformers(t *testing.T) {
 			"the checks wire Target carries NO name — CanonicalInstanceName is an internal key, not a wire value")
 	})
 
-	t.Run("transformers stats agrees with an independent type browse", func(t *testing.T) {
-		f := newStatsCorpusFake()
-		handled, res := driveBuiltinStats(t, f, map[string]any{
-			"graph": "transformers", "name": "recipes", "mode": "stats", "format": "json",
-		})
-		require.True(t, handled)
-		require.False(t, res.IsError, "%s", textBodyTools(res))
-
-		want := browseTotal(t, f, "transformers", "recipes", "recipe")
-		require.Positive(t, want, "the fixture seeds a non-zero recipe corpus")
-		assert.Equal(t, want, nodesByType(t, statsJSON(t, res))["recipe"])
-		require.Len(t, f.statsTargets, 1)
-		assert.Equal(t, "recipes", f.statsTargets[0].GetName(), "the transformers Target carries its bucket name")
-	})
-
-	t.Run("the name rule runs both directions", func(t *testing.T) {
-		// Asserting BOTH directions in one place is what stops an implementer
-		// applying one graph's name policy to the other.
-		f := newStatsCorpusFake()
-		_, nameless := driveBuiltinStats(t, f, map[string]any{"graph": "transformers", "mode": "stats"})
-		require.True(t, nameless.IsError, "a nameless transformers stats is refused")
-		assert.Contains(t, textBodyTools(nameless), `mode:"modules"`, "and names the enumeration")
-
+	t.Run("the name rule holds for the singleton", func(t *testing.T) {
+		// IT RAN BOTH DIRECTIONS while the arm served two graphs with opposite name
+		// policies; only the singleton's direction is left. A nameless call must
+		// SUCCEED — requiring a name here would refuse every legal checks stats.
 		_, checks := driveBuiltinStats(t, newStatsCorpusFake(), map[string]any{"graph": "checks", "mode": "stats"})
 		assert.False(t, checks.IsError,
 			"checks is a SINGLETON whose selector policy rejects a set name, so a nameless call SUCCEEDS: %s",
@@ -211,7 +196,6 @@ func TestStatsServedOnChecksAndTransformers(t *testing.T) {
 		// merely reworded while still routing to the deny would satisfy those.
 		for _, args := range []map[string]any{
 			{"graph": "checks", "mode": "stats"},
-			{"graph": "transformers", "name": "recipes", "mode": "stats"},
 			{"graph": "all", "mode": "stats"},
 			{"graph": "nonsense-graph-xyz", "mode": "stats"},
 		} {

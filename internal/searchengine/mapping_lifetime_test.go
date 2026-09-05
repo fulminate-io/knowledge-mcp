@@ -205,7 +205,7 @@ func TestExportedBlobKeepsMappingAlive(t *testing.T) {
 	defer e.Close()
 
 	var released atomic.Int64
-	built, err := mockFormat{}.Build([]Document{doc("a", "alpha")})
+	built, _, err := mockFormat{}.Build([]Document{doc("a", "alpha")})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}

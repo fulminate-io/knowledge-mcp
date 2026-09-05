@@ -3,7 +3,6 @@
 package hnsw
 
 import (
-	"encoding/binary"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -14,14 +13,12 @@ import (
 )
 
 // serial.go carries the serialVersion-3 EMITTER: the sizing pass, the one fill,
-// the footer checksum and the small offset-addressed writer they go through. The
-// layout those bytes conform to — the version integers, the header field offsets
-// and the dtype tags — is in serial_layout.go.
-
-// serial_encode.go carries the serialVersion-3 EMITTER: the sizing pass, the one
-// fill, the footer checksum and the small offset-addressed writer they go
-// through. The layout those bytes conform to — the version integers, the header
-// field offsets and the dtype tags — is in serial.go.
+// the footer checksum and the sink adapter the Build path encodes through. The
+// offset-addressed writer those stores go through, and the coalescing windows
+// that keep the encode's syscall count proportional to flushes rather than to
+// encoded values, are in serial_writer.go. The layout the bytes conform to — the
+// version integers, the header field offsets and the dtype tags — is in
+// serial_layout.go.
 
 // v3Layout is every section offset a serialVersion-3 blob's emission depends on,
 // derived once by sizeGraphV3 and consumed by encodeGraphV3To.
@@ -169,7 +166,7 @@ func encodeGraphV3To(dst searchengine.MergeSink, h *binaryGraph) (int64, error) 
 	if err != nil {
 		return 0, err
 	}
-	w := &v3Writer{dst: dst}
+	w := newV3Writer(dst)
 
 	// --- header ------------------------------------------------------------
 	// THE VERSION IS SELECTED FROM THE DTYPE, never written as a constant: a
@@ -257,10 +254,19 @@ func encodeGraphV3To(dst searchengine.MergeSink, h *binaryGraph) (int64, error) 
 		w.put(layout.vectorsOff, h.vectors[:min(len(h.vectors), layout.crcOff-layout.vectorsOff)])
 	}
 
+	// EVERY WINDOW IS FLUSHED BEFORE THE HELD ERROR IS READ, and both halves of
+	// that sentence are load-bearing. checksumRange reads the SINK back rather
+	// than any buffer, so bytes still held in a window here would be invisible to
+	// the CRC and the footer would describe a blob nobody wrote. And the error is
+	// checked AFTER the flush so a failing flush lands in w.err and returns here,
+	// rather than being discovered after the checksum has already read a partial
+	// blob.
+	//
 	// The held error is checked ONCE here, before the checksum reads anything
 	// back: a partial encode is discarded whole, so the first failure is the only
 	// one that carries information, and checksumming a half-written blob would
 	// turn a write failure into a corrupt-looking success.
+	w.flushAll()
 	if w.err != nil {
 		return 0, w.err
 	}
@@ -271,6 +277,7 @@ func encodeGraphV3To(dst searchengine.MergeSink, h *binaryGraph) (int64, error) 
 		return 0, err
 	}
 	w.putU32(layout.crcOff, sum)
+	w.flushAll()
 	if w.err != nil {
 		return 0, w.err
 	}
@@ -292,53 +299,6 @@ func checksumRange(dst searchengine.MergeSink, n int) (uint32, error) {
 		off = end
 	}
 	return sum, nil
-}
-
-// v3Writer places fixed-width values at absolute blob offsets, holding the first
-// error rather than checking at every store. The discipline is bm25's
-// mergeWriter's: a partial blob is discarded whole, so only the first failure
-// carries information.
-type v3Writer struct {
-	dst searchengine.MergeSink
-	err error
-	// scratch backs the fixed-width stores so a putU32 in the per-neighbor inner
-	// loop does not allocate.
-	scratch [8]byte
-	// strBuf carries id bytes to WriteAt without a per-node conversion.
-	strBuf []byte
-}
-
-func (w *v3Writer) put(off int, b []byte) {
-	if w.err != nil {
-		return
-	}
-	if _, err := w.dst.WriteAt(b, int64(off)); err != nil {
-		w.err = fmt.Errorf("hnsw encode: writing %d bytes at %d: %w", len(b), off, err)
-	}
-}
-
-func (w *v3Writer) putString(off int, s string) {
-	// The id goes out through a reusable buffer, following bm25 mergeWriter's
-	// strBuf: ids are written one per node and in huge numbers, so a []byte(s) at
-	// each of them would allocate proportionally to the corpus — which is exactly
-	// the cost this emitter exists to avoid.
-	w.strBuf = append(w.strBuf[:0], s...)
-	w.put(off, w.strBuf)
-}
-
-func (w *v3Writer) putByte(off int, v byte) {
-	w.scratch[0] = v
-	w.put(off, w.scratch[:1])
-}
-
-func (w *v3Writer) putU16(off int, v uint16) {
-	binary.LittleEndian.PutUint16(w.scratch[:2], v)
-	w.put(off, w.scratch[:2])
-}
-
-func (w *v3Writer) putU32(off int, v uint32) {
-	binary.LittleEndian.PutUint32(w.scratch[:4], v)
-	w.put(off, w.scratch[:4])
 }
 
 // sliceSink adapts a byte slice to a MergeSink so the Build path shares the one

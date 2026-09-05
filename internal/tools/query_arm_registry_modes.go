@@ -183,14 +183,17 @@ var queryModeArmSpecs = map[armID]armSpec{
 
 	// The code search arm is the widest consumer on the query surface: it takes
 	// both query spellings, the caller-supplied vector, the repo set, the limit,
-	// and the whole code presentation group. `fields` is ignored because
-	// flattenCodeResults renders json with a nil projection.
+	// and the whole code presentation group. `fields` is CONSUMED: composeCodeSearch
+	// validates it on every call and threads it into RenderForCaller on the
+	// format:"json" branch, where a literal nil used to sit — the shared
+	// no-projection justification the cell used to carry was untrue for this arm,
+	// which takes exactly that render path.
 	armCodeSearch: {
 		operation: "query",
 		handler:   "InterceptQueryCodeSearch composeCodeSearch",
 		consumed: qparams(qgText,
 			qkeys(
-				"graph", "id", "repo", "repos", "branch", "limit", "format",
+				"graph", "id", "repo", "repos", "branch", "limit", "format", "fields",
 				"path_prefix", "group_by_file", "include_source",
 				"include_comments", "include_tests", "test_kinds",
 			)),
@@ -204,7 +207,6 @@ var queryModeArmSpecs = map[armID]armSpec{
 				"path_prefixes", "file_path", "file_paths", "caller_depth", "callee_depth",
 			),
 		),
-		deliberatelyIgnored: queryFieldsIgnored(),
 	},
 
 	// InterceptFileSymbols serves BOTH the standalone file_symbols tool and

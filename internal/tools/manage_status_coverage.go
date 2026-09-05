@@ -13,13 +13,16 @@ import (
 )
 
 // renderLLMCoverage renders the per-graph durable LLM-coverage table surfaced by
-// manage(status). For every sync-eligible graph instance it issues a Stats RPC
+// manage(status). For every builtin graph instance it issues a Stats RPC
 // WITH IncludeCoverage:true (the only caller that does — every other Stats path
 // stays O(1)) and tabulates total / summarized / embedded / failure counts.
 //
-// It enumerates kgtypes.SyncEligibleGraphTypes() (knowledge, code, cloud, cicd,
-// practice, linkage, transformers — the raw logs/web/pdf graphs that skip LLM
-// processing are already filtered out). The DEFAULT knowledge graph reports an
+// It enumerates EVERY BUILTIN graph type (coverageWalkTypes), which is a widening
+// from the sync-eligible set it used to walk: web and pdf are embed-only and carry
+// coverage worth reporting, and they are deliberately NOT sync-eligible, so a
+// sync-eligible walk skipped them and built no row for a collected document at all.
+// The claim that raw graphs "are already filtered out" was true only while they
+// skipped LLM processing entirely. The DEFAULT knowledge graph reports an
 // empty instance name, which listGraphNamesOfType drops, so the knowledge row is
 // emitted EXPLICITLY via an empty-name GraphSelector{Graph:""} and the knowledge
 // type is then skipped in the enumeration loop; all other types are enumerated
@@ -95,6 +98,16 @@ type CoverageRow struct {
 	// the opposite of the truth.
 	RebuildPosAgeNanos int64 `json:"-"`
 	MergePosAgeNanos   int64 `json:"-"`
+	// Degraded is THIS CLIENT'S accumulated per-class census of input its BM25
+	// builds dropped for this graph — documents that entered no count in this row,
+	// which is why no other field can stand in for it.
+	//
+	// It carries `json:"-"` for the reason its neighbors above do: the ten-key
+	// wire shape the Daemon Status web card types against is PINNED, and widening
+	// it is a separate decision from adding a cell to the table. Eleven existing
+	// fields already carry the tag, six of them citing that pinned shape by name;
+	// this is the twelfth.
+	Degraded map[string]int `json:"-"`
 	// StalledSinceNanos is 0 when this graph's coverage can still recover on its own,
 	// and otherwise the wall-clock nanos at which it stopped being able to: the heal
 	// breaker's latch. It is what the stuck band renders an age from.
@@ -341,10 +354,13 @@ func GraphCoverageCounts(ctx context.Context, gc GraphCaller, gt kgtypes.GraphTy
 // LIVE in-memory engine resident doc count for a row's graph via the nil-safe
 // SegmentCoverage seam. Segments exist for every graph kgtypes.HasRebuildableSegments
 // admits — the embeddable builtins (knowledge, code, cloud, cicd, practice,
-// checks) — the
+// checks) plus the raw graphs web and pdf, whose collected chunks carry vectors and
+// BM25 documents — the
 // SAME gate buildHealFactory and the manual rebuild_segments op use, so the status
-// column reports coverage for exactly the graph set the auto-heal arm services. A
-// graph with no rebuildable segments (linkage, transformers, and the raw graphs)
+// column reports coverage for exactly the graph set the auto-heal arm services.
+// Reporting coverage for a raw graph is what makes manage(status) answerable for
+// one, which is how an operator confirms a collected document is searchable. A
+// graph with no rebuildable segments (linkage, logs)
 // returns (0, 0, false) and the column renders "—". When the seam is unwired
 // (degraded headless mode) or the shipped probe errs, it also returns (0, 0, false)
 // — a placeholder, not a hard failure of the status table. The live resident read is

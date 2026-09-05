@@ -9,19 +9,28 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
-// mergeWait polls until at least one background merge completes or the deadline
-// passes, returning the final MergeCount. The searchengine package's own
+// mergeWait polls until at least one background merge completes, and FAILS the
+// test naming the deadline when none ever does. The searchengine package's own
 // waitForMerge is keyed to its mock query/stats types and is unexported, so this
 // hnsw-package test re-authors the tiny poll loop locally.
-func mergeWait(e *searchengine.SegmentedIndex[[]byte, struct{}]) uint64 {
+//
+// THE DEADLINE ARM FAILS HERE RATHER THAN RETURNING A COUNT FOR THE CALLER TO
+// CHECK. Both callers DID check the count this helper used to return, so this
+// file never carried the defect and the repair fixed nothing that was broken in
+// it. What the repair removes is the possibility that a LATER caller does not
+// check, which is how the same helper shape in the searchengine package let a
+// test sit through a whole dead wait and still pass.
+func mergeWait(t testing.TB, e *searchengine.SegmentedIndex[[]byte, struct{}]) {
+	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if e.MergeCount() >= 1 {
-			return e.MergeCount()
+			return
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	return e.MergeCount()
+	t.Fatalf("no background merge fired within 2s (MergeCount still %d) — "+
+		"the all-dead segment never tripped the dead-ratio trigger", e.MergeCount())
 }
 
 // allDeadMergedExport builds one sealed segment from N vecDocs, deletes every
@@ -48,9 +57,7 @@ func allDeadMergedExport(t *testing.T) []searchengine.SegmentBlob {
 		eng.Delete(d.ID)
 	}
 
-	if got := mergeWait(eng); got < 1 {
-		t.Fatalf("background merge of the all-dead segment never fired: MergeCount=%d", got)
-	}
+	mergeWait(t, eng)
 
 	blobs := eng.Export()
 	if len(blobs) == 0 {
@@ -64,8 +71,8 @@ func allDeadMergedExport(t *testing.T) []searchengine.SegmentBlob {
 // background merge consolidates it into a zero-member segment. Before the fix,
 // encode() wrote a v1 version byte for that empty graph and decodeGraph rejected
 // it on reload, so Importing the exported blobs into a fresh engine failed with
-// "unsupported binary hnsw serial version: 1". With the always-v2 fix the empty
-// segment encodes as a valid zero-node v2 blob, so the reload now succeeds and a
+// "unsupported binary hnsw serial version: 1". With that fix the empty segment
+// encodes as a valid zero-node v3 blob, so the reload now succeeds and a
 // search over a (now-gone) doc's vector returns an empty result set, not a crash.
 func TestAllDeadMergeReloadDecodes(t *testing.T) {
 	const n = 16
@@ -80,7 +87,7 @@ func TestAllDeadMergeReloadDecodes(t *testing.T) {
 	defer fresh.Close()
 
 	if err := fresh.Import(blobs, nil); err != nil {
-		t.Fatalf("Import of an all-dead-merged segment failed: %v (the empty graph must round-trip as a valid v2 blob)", err)
+		t.Fatalf("Import of an all-dead-merged segment failed: %v (the empty graph must round-trip as a valid v3 blob)", err)
 	}
 
 	// The reloaded engine loads cleanly; searching for a now-gone doc's vector
@@ -111,9 +118,7 @@ func TestAllDeadThenRecover(t *testing.T) {
 	for _, d := range docs {
 		eng.Delete(d.ID)
 	}
-	if got := mergeWait(eng); got < 1 {
-		t.Fatalf("background merge of the all-dead segment never fired: MergeCount=%d", got)
-	}
+	mergeWait(t, eng)
 
 	// Re-add a fresh, distinct batch (different seed + id prefix so it shares no id
 	// or vector with the dead set) — the engine must index and search it normally.
@@ -131,7 +136,7 @@ func TestAllDeadThenRecover(t *testing.T) {
 }
 
 // TestEmptyGraphRoundTrip pins the core format-layer guarantee: an empty HNSW
-// segment encodes to a valid 29-byte zero-node v2 blob that decodes cleanly to an
+// segment encodes to a valid 72-byte zero-node v3 blob that decodes cleanly to an
 // empty, searchable segment. This is the unit-level floor under the engine-level
 // all-dead repro — both empty-segment producers (Merge and Build) feed it.
 func TestEmptyGraphRoundTrip(t *testing.T) {
@@ -157,7 +162,7 @@ func TestEmptyGraphRoundTrip(t *testing.T) {
 
 	decoded, err := Format{}.Decode(blob)
 	if err != nil {
-		t.Fatalf("Decode of empty v2 blob: %v", err)
+		t.Fatalf("Decode of empty v3 blob: %v", err)
 	}
 	if ids := decoded.IDs(); len(ids) != 0 {
 		t.Fatalf("decoded empty segment IDs = %v, want empty", ids)
@@ -172,7 +177,7 @@ func TestEmptyGraphRoundTrip(t *testing.T) {
 // empty graph that must round-trip through Encode/Decode just like the merge
 // producer. Guards the Build/seal path the merge-only repro would miss.
 func TestBuildEmptyBatchRoundTrip(t *testing.T) {
-	seg, err := Format{}.Build([]searchengine.Document{{ID: "x"}, {ID: "y"}})
+	seg, _, err := Format{}.Build([]searchengine.Document{{ID: "x"}, {ID: "y"}})
 	if err != nil {
 		t.Fatalf("Build all-empty-vector batch: %v", err)
 	}

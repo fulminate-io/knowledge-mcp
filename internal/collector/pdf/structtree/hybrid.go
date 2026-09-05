@@ -32,20 +32,26 @@ import (
 //     contract) OR MCID > 0 but not in the reachable set (orphan;
 //     surfaces a debug warning).
 //  3. If residue is empty, return taggedBlocks unchanged.
-//  4. Cluster residue via layout.ClusterWithParams using
+//  4. Cluster residue via layout.BlocksFromRuns using
 //     layout.DefaultLayoutParams. Resulting blocks carry empty
 //     StructRole — that's the heuristic-origin marker.
 //  5. Tagged-wins overlap rule (open_question Q2 locked option a):
 //     drop any residue block whose bbox intersects any tagged block.
-//  6. Merge tagged + filtered residue by Y0 ascending; tie-break by
-//     X0 ascending. Return.
+//  6. Merge tagged + filtered residue into READING ORDER, keyed on
+//     each block's reading anchor transformed by the page's /Rotate:
+//     normalized y descending (down the page as a viewer sees it),
+//     tie-break normalized x ascending. Return.
 func HybridFallback(taggedBlocks []layout.Block, allRuns []text.TextRun, info layout.PageInfo) ([]layout.Block, error) {
 	reachable := reachableMCIDs(taggedBlocks)
 	residueRuns := partitionResidue(allRuns, reachable)
 	if len(residueRuns) == 0 {
 		return taggedBlocks, nil
 	}
-	residue, err := layout.ClusterWithParams(residueRuns, info, layout.DefaultLayoutParams)
+	// ELEMENT SCALE, not page scale. This residue is whatever no
+	// structure element claimed, which on a well-tagged page is one or
+	// two runs; the page-scale grouper would emit one block per run and
+	// split a two-run footer in half.
+	residue, err := layout.BlocksFromRuns(residueRuns, info, layout.DefaultLayoutParams)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +62,7 @@ func HybridFallback(taggedBlocks []layout.Block, allRuns []text.TextRun, info la
 	merged := make([]layout.Block, 0, len(taggedBlocks)+len(residue))
 	merged = append(merged, taggedBlocks...)
 	merged = append(merged, residue...)
-	mergeYAscending(merged)
+	sortReadingOrder(merged, info)
 	return merged, nil
 }
 
@@ -119,16 +125,69 @@ func dropOverlapping(residue, tagged []layout.Block) []layout.Block {
 	return out
 }
 
-// mergeYAscending stable-sorts blocks by Y0 ascending; tie-breaks by
-// X0 ascending. Mirrors layout/blocks.go's groupLinesToBlocks final
-// stable-sort. Stable-sort preserves emission order for ties.
-func mergeYAscending(blocks []layout.Block) {
-	sort.SliceStable(blocks, func(i, j int) bool {
-		if blocks[i].BBox.Y0 != blocks[j].BBox.Y0 {
-			return blocks[i].BBox.Y0 < blocks[j].BBox.Y0
+// sortReadingOrder stable-sorts blocks into reading order: down the
+// page first, then left to right. The key is each block's READING
+// ANCHOR — its natural-frame top-left corner, (BBox.X0, BBox.Y1) —
+// transformed by the page's /Rotate through layout.NormalizePoint.
+//
+// COORDINATE FRAME, stated because getting it wrong is invisible until
+// a whole document comes back upside down. BOTH inputs arrive in the
+// page's natural, unrotated user-space frame, where +y points UP:
+// residue comes from layout.BlocksFromRuns, whose clusterAtScale
+// un-flips and denormalizes back before returning, and tagged bboxes
+// are computed by computeMCIDBBox over raw run coordinates that were
+// never flipped or normalized. The two sets are consistent, which is
+// why ONE transform applied uniformly is correct.
+//
+// WHY THE ROTATION TERM. In that natural frame "higher on the page"
+// is a larger y only when the page is displayed unrotated. A page
+// carrying /Rotate 90 or 180 is read along a different axis, and a
+// comparator with no rotation term emits its sections and paragraphs
+// in the unrotated order — the defect this key exists to fix.
+// NormalizePoint maps the anchor into the frame a viewer actually
+// reads, and the comparator below is unchanged from the one that was
+// already here; only the coordinates it reads moved frame. At
+// /Rotate 0 the transform is the identity, so unrotated ordering is
+// byte-identical by construction rather than by measurement.
+//
+// WHY AN ANCHOR POINT AND NOT THE BBOX. Normalizing the whole
+// rectangle rotates its EXTENT too, so a normalized corner's
+// coordinates shift by the block's ORIGINAL width and no single
+// corner is a stable key at all four rotations — measured: a
+// bbox-normalizing implementation orders 0, 90 and 180 correctly and
+// gets 270 wrong. A point has no extent to rotate.
+//
+// Y1 rather than Y0 because Y1 is the TOP edge of the box, which is
+// what "higher on the page" means for two blocks of different height:
+// a tall paragraph and the short heading above it can share a Y0
+// ordering that puts the paragraph first. Stable-sort preserves
+// emission order for exact ties.
+//
+// The keys are precomputed and an index permutation is sorted, so the
+// transform runs once per block rather than once per comparison.
+func sortReadingOrder(blocks []layout.Block, info layout.PageInfo) {
+	type readingAnchor struct{ x, y float64 }
+	keys := make([]readingAnchor, len(blocks))
+	for i, b := range blocks {
+		x, y := layout.NormalizePoint(b.BBox.X0, b.BBox.Y1, info.Rotation, info.MediaBox)
+		keys[i] = readingAnchor{x: x, y: y}
+	}
+	order := make([]int, len(blocks))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		a, b := keys[order[i]], keys[order[j]]
+		if a.y != b.y {
+			return a.y > b.y
 		}
-		return blocks[i].BBox.X0 < blocks[j].BBox.X0
+		return a.x < b.x
 	})
+	sorted := make([]layout.Block, len(blocks))
+	for i, idx := range order {
+		sorted[i] = blocks[idx]
+	}
+	copy(blocks, sorted)
 }
 
 // bboxIntersects reports whether two axis-aligned rectangles overlap.

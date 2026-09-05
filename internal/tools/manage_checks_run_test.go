@@ -266,14 +266,14 @@ func TestManageChecks_RunVerdictIsNotCleanWhenTruncated(t *testing.T) {
 	// rather than the struct sees the same answer.
 	line := renderRunVerdict(corpusscan.ClassifyRun([]foundation.Finding{
 		verdictFinding(corpusscan.TruncationTitleRun),
-	}))
+	}), 1, 1)
 	assert.Contains(t, line, "truncated=true")
 	assert.Contains(t, line, VerdictInconclusive)
 	assert.NotContains(t, line, VerdictClean)
 
 	// KNOWN POSITIVE on the same renderer: an untruncated run renders the flag
 	// false and the clean token, so the assertions above are about this input.
-	clean := renderRunVerdict(corpusscan.ClassifyRun(nil))
+	clean := renderRunVerdict(corpusscan.ClassifyRun(nil), 0, 0)
 	assert.Contains(t, clean, "truncated=false")
 	assert.Contains(t, clean, VerdictClean)
 }

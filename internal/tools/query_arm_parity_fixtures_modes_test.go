@@ -150,10 +150,14 @@ func queryParityModeFixtures() map[armID]queryParityFixture {
 			// The presentation group shapes the RENDER of rows the fake returns none
 			// of; the caller vector is broadcast into the per-query vector slice
 			// rather than onto a plan; and the limit bounds a client-side engine
-			// search.
+			// search. `fields` projects only on the json render path this probe does
+			// not take — this base carries no format, so the probe's distinctive
+			// could not appear whatever the arm does with it. What the arm DOES with
+			// it is proven instead by the seam tests, which drive both entry points
+			// with a real projection and assert the rendered key set.
 			opaque: map[string]bool{
 				"query_vector": true, "limit": true,
-				"path_prefix": true, "test_kinds": true,
+				"path_prefix": true, "test_kinds": true, "fields": true,
 			},
 		},
 

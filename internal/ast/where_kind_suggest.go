@@ -32,10 +32,28 @@ const maxSuggestionDistance = 3
 // operation=list_node_kinds.
 const maxKindSuggestions = 3
 
-// closestKinds returns up to maxKindSuggestions vocabulary entries within
+// ClosestVocabulary returns up to maxKindSuggestions vocabulary entries within
 // maxSuggestionDistance edits of name, nearest first and ties broken
 // alphabetically so an error message is deterministic across runs.
-func closestKinds(name string, vocabulary []string) []string {
+//
+// IT IS A SHARED NEAR-MISS SUGGESTER OVER ANY STRING VOCABULARY, and it has two
+// callers whose definitions of a VALID VALUE are OPPOSITE. This package's kind
+// validator checks a name against a tree-sitter GRAMMAR's symbol table: the
+// vocabulary is every kind the grammar can produce, whether or not any file in
+// the tree uses it. The recipe validator checks a value against a CENSUS OF A
+// LOADED SOURCE GRAPH: the vocabulary is every value the corpus actually
+// carries, and a value the schema permits but the graph never stamped is
+// correctly refused.
+//
+// THAT IS WHY THE TWO VALIDATORS CANNOT MERGE, and this sentence is the only
+// place in either package that says so. Someone who later notices two
+// near-identical "unknown X, did you mean Y" validators and unifies them
+// destroys one of the two meanings: grammar membership answered from a corpus
+// refuses legal-but-unused kinds, and corpus membership answered from a grammar
+// re-opens exactly the silent-empty-result class the recipe validator exists to
+// close. Only the SUGGESTER is shared, because ranking strings by edit distance
+// means the same thing on both sides.
+func ClosestVocabulary(name string, vocabulary []string) []string {
 	type scored struct {
 		kind string
 		dist int

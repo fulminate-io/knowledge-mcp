@@ -66,9 +66,9 @@ func TestBuiltinCollectWork_ReportsCompositionFailureAfterTail(t *testing.T) {
 	rt := NewCollectRuntime()
 	deps := &detachFullDeps{rt: rt, gc: &fakeGraphCaller{}}
 
-	composition, err := builtinCollectWork(context.Background(), deps,
+	composition, _, err := builtinCollectWork(context.Background(), deps,
 		collectArgs{Type: compFailStubType, ID: "verdict-id"},
-		collector.CollectOptions{Sink: noopSink{}})
+		collector.CollectOptions{Sink: noopSink{}}, "")
 
 	require.Error(t, err, "a refused composition must make the collect report failure")
 	assert.Contains(t, err.Error(), "harvest captured nothing usable")
@@ -93,9 +93,9 @@ func TestBuiltinCollectWork_ReportsCompositionFailureAfterTail(t *testing.T) {
 	detachStubStarted = make(chan struct{})
 	detachStubRelease = make(chan struct{})
 	close(detachStubRelease)
-	okComposition, okErr := builtinCollectWork(context.Background(), deps,
+	okComposition, _, okErr := builtinCollectWork(context.Background(), deps,
 		collectArgs{Type: detachFullPathType, ID: "no-invariant-id"},
-		collector.CollectOptions{Sink: noopSink{}})
+		collector.CollectOptions{Sink: noopSink{}}, "")
 	require.NoError(t, okErr, "a collector declaring no invariant must still report success")
 	assert.Equal(t, "nodes 0, edges 0", okComposition)
 }

@@ -116,10 +116,11 @@ func Count(
 		return CountTally{}, stats, errMatchNilPattern
 	}
 
-	files, report, err := discoverScopedFiles(ctx, repoDir, lang, scope)
+	files, report, tests, err := discoverScopedFiles(ctx, repoDir, lang, scope)
 	if err != nil {
 		return CountTally{}, stats, err
 	}
+	tests.applyTo(&stats)
 	stats.ExcludedByRule = report.ExcludedByRule
 	stats.ExcludedSamples = report.ExcludedSamples
 	stats.ExcludedTruncated = report.ExcludedTruncated

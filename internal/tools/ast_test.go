@@ -37,11 +37,12 @@ type astTestDeps struct {
 	rootDirSet bool
 }
 
-func (d astTestDeps) LocalLiveness() LocalLiveness    { return nil }
-func (d astTestDeps) Sink() collector.Sink            { return nil }
-func (d astTestDeps) RootDir() string                 { return d.rootDir }
-func (d astTestDeps) RootDirSet() bool                { return d.rootDirSet }
-func (d astTestDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+func (d astTestDeps) LocalLiveness() LocalLiveness          { return nil }
+func (d astTestDeps) Sink() collector.Sink                  { return nil }
+func (d astTestDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
+func (d astTestDeps) RootDir() string                       { return d.rootDir }
+func (d astTestDeps) RootDirSet() bool                      { return d.rootDirSet }
+func (d astTestDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
 
 func (d astTestDeps) PropReady() bool     { return true }
 func (d astTestDeps) PipelineReady() bool { return true }

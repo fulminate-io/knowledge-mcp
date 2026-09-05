@@ -28,7 +28,7 @@ func mergeInputs(t *testing.T, docs []searchengine.Document, n int) []*mappedSeg
 	per := (len(docs) + n - 1) / n
 	var ins []*mappedSegment
 	for i := 0; i < len(docs); i += per {
-		seg, err := Format{}.Build(docs[i:min(i+per, len(docs))])
+		seg, _, err := Format{}.Build(docs[i:min(i+per, len(docs))])
 		require.NoError(t, err)
 		ins = append(ins, seg.(*mappedSegment))
 	}

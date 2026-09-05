@@ -52,11 +52,12 @@ type Rule interface {
 }
 
 // RuleSelect opens a rule sequence with a node-type selection. Where
-// is the optional predicate expression applied per candidate node; a
-// nil Where means "every node of NodeType".
+// is the optional where-tree applied per candidate node; a nil Where
+// means "every node of NodeType", which is what an omitted `where`
+// clause parses to.
 type RuleSelect struct {
 	NodeType string
-	Where    Expr
+	Where    *WhereNode
 	Pos      Position
 }
 
@@ -77,12 +78,37 @@ type RuleTraverse struct {
 func (r RuleTraverse) isRule()            {}
 func (r RuleTraverse) Position() Position { return r.Pos }
 
-// RuleFilter drops every row for which Pred evaluates to an empty
-// string (the interpreter treats "" as false, any non-empty value as
-// true — consistent with the has_edge and regex operators' output).
+// RuleWalk descends a node's SUBTREE along EdgeType and replaces the rowset with
+// every reachable descendant, in document reading order, binding each under the
+// name As (without the leading "$") when one is given.
+//
+// It is not a repeated traverse. A traverse expands one level and replaces the
+// rowset with that level, so an outline needs one rule per level and returns
+// them in blocks; a walk returns the whole subtree interleaved as the document
+// reads, with walk.depth on every row saying which level it came from.
+//
+// THERE IS NO DEPTH CLAUSE. Narrowing by level is a filter on walk.depth, and
+// the rowset is bounded by the in-memory source graph exactly as select's is.
+type RuleWalk struct {
+	EdgeType string
+	As       string
+	Pos      Position
+}
+
+func (r RuleWalk) isRule()            {}
+func (r RuleWalk) Position() Position { return r.Pos }
+
+// RuleFilter drops every row whose Where tree evaluates false.
+//
+// A NIL Where IS IMPOSSIBLE, because the parser requires the tree: `filter`
+// with no brace-delimited where-tree is a parse error. That is worth stating
+// here rather than defending against, because the defensive branch a later
+// reader would add — `if r.Where == nil { keep the row }` — is dead code that
+// silently converts a parser bug into a filter matching everything, which is
+// exactly the class this grammar replaced.
 type RuleFilter struct {
-	Pred Expr
-	Pos  Position
+	Where *WhereNode
+	Pos   Position
 }
 
 func (r RuleFilter) isRule()            {}
@@ -189,7 +215,7 @@ type Expr interface {
 	Position() Position
 }
 
-// ExprField is a dotted-path field reference like section.heading or
+// ExprField is a dotted-path field reference like section.name or
 // $var.metadata.key. Path is pre-split on ".", with a leading "$" on
 // the first segment preserved so the evaluator can detect var-prefixed
 // references without re-parsing.

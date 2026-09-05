@@ -10,44 +10,84 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // intercept_query_webpdf.go serves the query tool's web/pdf arms: the ranked
-// text read, composed client-side, and the graph stats read.
+// read and the graph stats read.
 //
-// WHY THE RANKING IS CLIENT-SIDE AND BM25-ONLY. Raw web and pdf graphs skip LLM
-// processing, so they are never embedded and never ship search segments — there
-// is nothing on the vector arm to search and no server-side ranked index to ask.
-// What they carry is text, and BM25 over the drained text answers the question a
-// reader actually has about a collected document: which parts of it mention the
-// thing they are looking for.
+// WHY THE RANKING IS SEGMENT-BACKED. Raw web and pdf graphs are enrolled
+// EMBED-ONLY: the collector already extracted the searchable text, so nothing is
+// summarized, but every admitted chunk carries a vector AND a BM25 document and
+// the client ships segments for the graph like any other. So the ranked read
+// simply asks the segment engine, on both arms, and a raw document is hybrid
+// searchable — which is what makes it possible to FIND the passages worth
+// extracting instead of walking the whole document.
+//
+// It used to drain the entire graph over the wire and rank it in memory on every
+// query, because the graphs were never embedded and shipped no segments. That
+// path is gone, not left beside this one; composeRawGraphSegmentSearch
+// (raw_graph_segment_search.go) replaces it at a fixed four round trips.
 
-// routeWebPDFClient claims the web/pdf ranked-text and stats shapes, and passes
-// every remaining index-free op through unhandled.
+// routeWebPDFClient claims the web/pdf ranked-text, stats and modules shapes,
+// and passes every remaining index-free op through unhandled.
 //
-// A ranked text read (text or queries[], no id, no specialized mode) is served
-// by composeRawGraphSearch. mode=stats is served by renderGraphStatsBody — it
+// A ranked text read is served by composeRawGraphSegmentSearch. WHICH SHAPES
+// COUNT AS ONE IS NOT DECIDED HERE: the rule is segmentSearchClaimMode
+// (search_mode_contract.go), the SAME predicate the knowledge and
+// registered-custom arms claim through, so the three surfaces cannot drift about
+// what a caller's mode means. That is a widening — this arm used to restrict
+// itself to mode empty or text, so query(graph:"pdf", mode:"hybrid") fell through
+// to a generic deny while the search tool served the same call by silently
+// running BM25. The two surfaces disagreeing about one feature was the defect.
+//
+// mode:"vector" STILL FALLS THROUGH on the QUERY rail, and that is inherited
+// rather than chosen here: segmentSearchClaimMode deliberately does not claim it,
+// and its own doc says why. The search tool routes by graph rather than through
+// the predicate, so search(graph:"pdf", mode:"vector") IS served — the same
+// asymmetry registered custom graphs already ship.
+//
+// mode=stats is served by renderGraphStatsBody — it
 // reached nothing before, because no intercept claimed it and "stats" is not an
-// engine-reducible mode, so it met the generic deny. Everything else — by-id
-// getNode, type-browse, mode=modules — returns (false, _) so the engineDispatch
-// path serves it, since compileQuery lowers those to ById/Match/GRAPH_NAMES and
-// never to a server search.
+// engine-reducible mode, so it met the generic deny. mode=modules is served by
+// webPDFModules: it IS engine-reducible, so it previously fell through and
+// rendered the bare GRAPH_NAMES envelope, whose sync_time comes from a
+// different stamper than the collect and therefore cannot answer how stale a
+// raw graph is. Everything else — by-id getNode, type-browse — still returns
+// (false, _) so the engineDispatch path serves it, since compileQuery lowers
+// those to ById/Match and never to a server search.
 func routeWebPDFClient(ctx context.Context, deps ClientDeps, a queryArgs, raw json.RawMessage) (bool, kgtools.ToolResult) {
 	if a.Mode == "stats" {
 		return true, webPDFStats(ctx, deps, a, raw)
 	}
-	isRankedText := (a.Text != "" || len(a.Queries) > 0) &&
-		a.ID == "" &&
-		(a.Mode == "" || a.Mode == "text")
-	if !isRankedText {
+	if a.Mode == "modules" {
+		return true, webPDFModules(ctx, deps, a, raw)
+	}
+	// THE ID SIGNAL IS THE SINGULAR ONE, AND THE DIVERGENCE FROM THE
+	// REGISTERED-CUSTOM SIBLING IS DELIBERATE — do not "align" it. That arm passes
+	// `a.ID != "" || len(a.IDs) > 0`. Folding ids[] into the lookup signal here
+	// would make a text+ids payload stop being CLAIMED, so it would reach the
+	// by-ids path and the search text would be silently dropped: a caller reading
+	// rows back has no way to tell their query was never run. A plural ids[] payload
+	// must stay claimed precisely so accountQueryParams refuses it BY NAME —
+	// armWebPDFSearch declares ids REJECTED in the query-arm registry, and
+	// TestQueryArmParity/armWebPDFSearch/ids is the fence that proves it.
+	mode, claimed := segmentSearchClaimMode(a.Mode, a.Text != "" || len(a.Queries) > 0, a.ID != "")
+	if !claimed {
 		return false, kgtools.ToolResult{} // index-free op → engineDispatch serves it.
 	}
 	if err := accountQueryParams(armWebPDFSearch, raw); err != nil {
 		return true, errorResult(err.Error())
 	}
-	return true, composeRawGraphSearch(ctx, deps, a.Graph, a.Name, practiceQueryText(a), a.Format, a.Fields, int(a.Limit))
+	return true, composeRawGraphSegmentSearch(ctx, deps, deps.SegmentManager(),
+		kgtypes.GraphType(a.Graph), a.Name, segmentSearchArgs{
+			Query:  practiceQueryText(a),
+			Limit:  int(a.Limit),
+			Format: a.Format,
+			Fields: a.Fields,
+			Mode:   mode,
+		})
 }
 
 // webPDFStats serves query(graph:web|pdf, mode:"stats").
@@ -71,96 +111,12 @@ func webPDFStats(ctx context.Context, deps ClientDeps, a queryArgs, raw json.Raw
 	if a.Graph == "pdf" {
 		header = "## PDF Graph: " + a.Name
 	}
-	return renderGraphStatsBody(ctx, sc, &knowledgev1.GraphSelector{Graph: a.Graph, Name: a.Name}, header, a)
-}
-
-// composeRawGraphSearch runs the whole ranked read: drain the graph, rank it in
-// memory, resolve each hit's containing heading, render.
-//
-// THERE IS DELIBERATELY NO PipelineReady GATE AND NO nil-Manager GATE HERE. The
-// segment-backed arms carry those because they dereference the segment Manager;
-// this path never touches it, so such a gate would assert a precondition this
-// code has no use for. Do not "restore" one.
-//
-// A MISSING GRAPH IS AN ERROR, NOT AN EMPTY RESULT. A graph name that does not
-// resolve fails at the server's source-name lookup, the drain's first read
-// returns that error, and it is propagated as an error result. The only clean
-// zero this path produces is the narrow one it should: a graph that resolves and
-// holds nodes, none of which match the query. Nothing here catches a resolve
-// failure and continues — that would turn "this graph is not collected" into
-// "this document says nothing about your query", which are the two answers a
-// reader most needs told apart.
-func composeRawGraphSearch(
-	ctx context.Context,
-	deps ClientDeps,
-	graph, name, query, format string,
-	fields []string,
-	limit int,
-) kgtools.ToolResult {
-	gc := deps.GraphCaller()
-	if gc == nil {
-		return errorResult(graph + " discovery search: graph client unavailable")
+	sel := &knowledgev1.GraphSelector{Graph: a.Graph, Name: a.Name}
+	extra := map[string]string{
+		"collector_schema_version": rawGraphRootStamps(
+			ctx, statsExecOf(sc), sel, rawGraphRootType(a.Graph)).schemaVersion,
 	}
-	if name == "" {
-		return errorResult(graph + ` discovery search: name is required (the source slug the graph was collected under); use mode:"modules" to list the collected graphs`)
-	}
-	target := &knowledgev1.GraphSelector{Graph: graph, Name: name}
-
-	nodes, err := drainRawGraphNodes(ctx, gc.Execute, target, rawDiscoveryNodeScanCap)
-	if err != nil {
-		return errorResult(err.Error())
-	}
-
-	k := limit
-	if k <= 0 {
-		k = knowledgeSearchDefaultLimit
-	}
-	hits, err := rankRawGraphNodes(nodes, query, k)
-	if err != nil {
-		return errorResult(err.Error())
-	}
-
-	byID := make(map[string]*knowledgev1.Node, len(nodes))
-	for _, n := range nodes {
-		byID[n.GetId()] = n
-	}
-	hitIDs := make([]string, 0, len(hits))
-	for _, h := range hits {
-		hitIDs = append(hitIDs, h.ID)
-	}
-	headings, err := rawGraphParentHeadings(ctx, gc.Execute, target, hitIDs, byID)
-	if err != nil {
-		return errorResult(err.Error())
-	}
-
-	rawHits := make([]engine.RawGraphHit, 0, len(hits))
-	for _, h := range hits {
-		node := byID[h.ID]
-		if node == nil {
-			continue
-		}
-		heading := headings[h.ID]
-		rawHits = append(rawHits, engine.RawGraphHit{
-			Result: engine.SearchResult{
-				Node: nodeWithParentHeading(node, heading),
-				// Graph and GraphInstance are what let the shared renderer name
-				// the source of a hit; an unstamped result renders anonymously.
-				Score:         h.Score,
-				Graph:         graph,
-				GraphInstance: name,
-			},
-			ParentHeading: heading,
-		})
-	}
-
-	if format == "json" {
-		results := make([]engine.SearchResult, 0, len(rawHits))
-		for _, h := range rawHits {
-			results = append(results, h.Result)
-		}
-		return engine.RenderForCaller(query, results, "json", fields, segmentSearchModeLabel(true, false))
-	}
-	return engine.RenderRawGraphResults(graph, name, query, rawHits)
+	return renderGraphStatsBody(ctx, sc, sel, header, a, extra)
 }
 
 // nodeWithParentHeading returns n with the resolved heading stamped under the
@@ -212,14 +168,24 @@ func searchRawGraphArm(
 	if err := json.Unmarshal(raw, &seg); err != nil {
 		return errorResult(graph + " search: decode args: " + err.Error())
 	}
-	// A raw graph is never embedded, so a vector search CANNOT run. Refusing
-	// loudly is the point: serving zero rows would read as "no matches" when the
-	// truth is "this graph has no semantic index at all". Every other mode —
-	// text, hybrid, recent — is served through the BM25 path, and the render's
-	// footer discloses which arm actually ran.
-	if normalizeSegmentSearchMode(seg.Mode) == "vector" {
-		return errorResult(graph + " search: mode:vector needs a query embedding, " +
-			"but raw web and pdf graphs are never embedded (zero-LLM) — use mode:text or omit mode")
+	// THE mode:vector REFUSAL IS GONE FROM HERE, AND ITS PROPERTY IS NOT DROPPED.
+	// It refused on the grounds that "raw web and pdf graphs are never embedded
+	// (zero-LLM)", which the embed-only enrollment makes a falsehood — these graphs
+	// DO carry vectors now, so a vector search is a legitimate request to serve.
+	// What survives is the narrower and still-true refusal: a vector search with no
+	// EMBEDDER configured must say so rather than serve zero rows, and that check
+	// now lives in composeRawGraphSegmentSearch beside the arm resolution, where it
+	// fires before the engine is asked.
+	seg.Query = query
+	if seg.Format == "" {
+		seg.Format = a.Format
 	}
-	return composeRawGraphSearch(ctx, deps, graph, named.Name, query, a.Format, a.Fields, int(a.Limit))
+	if len(seg.Fields) == 0 {
+		seg.Fields = a.Fields
+	}
+	if seg.Limit <= 0 {
+		seg.Limit = int(a.Limit)
+	}
+	return composeRawGraphSegmentSearch(ctx, deps, deps.SegmentManager(),
+		kgtypes.GraphType(graph), named.Name, seg)
 }

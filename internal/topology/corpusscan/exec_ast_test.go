@@ -344,12 +344,12 @@ func TestCorpusScan_UnexecutableCheckTypeRefusedLoudly(t *testing.T) {
 // denies is refused rather than walked to a guaranteed-empty result.
 func TestCorpusScan_AstDeniedLanguageRefusesTheRun(t *testing.T) {
 	// CONTROL: go is not denied, so the guard discriminates.
-	if _, err := executeAstCheck(context.Background(), scanRequest(newFakeCaller(), "repo", t.TempDir()),
-		corpusEntry{Check: corpus.Check{ID: "chk-go", Severity: foundation.SeverityWarning, Language: "go", Pattern: "defer $X.Close()"}, Node: &knowledgev1.Node{}}); err != nil {
+	if _, _, err := executeAstCheck(context.Background(), scanRequest(newFakeCaller(), "repo", t.TempDir()),
+		corpusEntry{Check: corpus.Check{ID: "chk-go", Severity: foundation.SeverityWarning, Language: "go", Pattern: "defer $X.Close()"}, Node: &knowledgev1.Node{}}, scanOptions{}); err != nil {
 		t.Fatalf("control: a non-denied language must execute, got %v", err)
 	}
-	_, err := executeAstCheck(context.Background(), scanRequest(newFakeCaller(), "repo", t.TempDir()),
-		corpusEntry{Check: corpus.Check{ID: "chk-json", Severity: foundation.SeverityWarning, Language: "json", Pattern: "$X"}, Node: &knowledgev1.Node{}})
+	_, _, err := executeAstCheck(context.Background(), scanRequest(newFakeCaller(), "repo", t.TempDir()),
+		corpusEntry{Check: corpus.Check{ID: "chk-json", Severity: foundation.SeverityWarning, Language: "json", Pattern: "$X"}, Node: &knowledgev1.Node{}}, scanOptions{})
 	if err == nil {
 		t.Fatal("a denied grammar must refuse the check rather than report clean")
 	}

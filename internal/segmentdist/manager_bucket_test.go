@@ -197,6 +197,7 @@ func replacedCount(before, after map[searchengine.SegmentID]struct{}) int {
 // deliberately NARROW batch pinned to three partitions, which is the only shape
 // where "at most one rebuild per dirty partition" can fail.
 func TestEmbedDrainCoalescesMergesOntoReconcileTick(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

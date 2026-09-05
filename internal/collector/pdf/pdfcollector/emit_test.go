@@ -3,15 +3,62 @@
 package pdfcollector
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 )
 
 const fixturePath = "/abs/path/Designing-Data.pdf"
+
+// mustEmit runs the emitter and FAILS THE TEST on its loud-error return,
+// rather than discarding it into a blank identifier at sixteen call sites.
+//
+// emit's error reports a condition no correct build reaches — the marshal
+// branch that used to drop an edge's evidence in silence. Discarding it here
+// would put these tests in exactly the posture the fix removed from the
+// production code: a failure that happened, and nothing that says so. Its
+// counterpart in the web collector is mustEmitFromPage, and this helper exists
+// for the same reason.
+//
+// The pdf path is not a parameter: every caller in this package emits against
+// the one fixturePath constant, and a parameter only ever handed one value is a
+// generality nothing exercises.
+func mustEmit(t *testing.T, meta pdf.Metadata, chunks []pdf.Chunk, collectedAt time.Time) ([]*knowledgev1.Node, []kgwire.BatchEdge) {
+	t.Helper()
+	nodes, edges, err := emit(meta, fixturePath, chunks, collectedAt)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	return nodes, edges
+}
+
+// edgeMeta decodes an EdgeContains Evidence blob into its string map.
+func edgeMeta(t *testing.T, raw string) map[string]string {
+	t.Helper()
+	m := map[string]string{}
+	if strings.TrimSpace(raw) == "" {
+		return m
+	}
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatalf("edge evidence not JSON: %q (%v)", raw, err)
+	}
+	return m
+}
+
+// indexNodes keys emitted nodes by ID for edge-target lookups.
+func indexNodes(nodes []*knowledgev1.Node) map[string]*knowledgev1.Node {
+	m := make(map[string]*knowledgev1.Node, len(nodes))
+	for _, n := range nodes {
+		m[n.Id] = n
+	}
+	return m
+}
 
 // TestEmit_HeadingPlusParagraphs covers the canonical happy path:
 // one section heading with two paragraph children. Asserts the
@@ -29,7 +76,7 @@ func TestEmit_HeadingPlusParagraphs(t *testing.T) {
 			},
 		},
 	}
-	nodes, edges := emit(pdf.Metadata{Title: "DDIA"}, fixturePath, chunks)
+	nodes, edges := mustEmit(t, pdf.Metadata{Title: "DDIA"}, chunks, time.Time{})
 
 	if len(nodes) != 4 {
 		t.Fatalf("nodes len = %d, want 4 (1 doc + 1 section + 2 paragraph)", len(nodes))
@@ -74,6 +121,70 @@ func TestEmit_HeadingPlusParagraphs(t *testing.T) {
 	}
 }
 
+// TestEmit_PositionMetadataOnEveryContainedNode asserts the node-level half
+// of document order: EVERY node that is the target of a CONTAINS edge carries
+// a `position` metadata key equal to that edge's Evidence position, and the
+// parentless document root carries none.
+//
+// The fixture nests a section whose children sit at differing indices AND
+// places a second chunk at top-level index 1, so a constant-zero or
+// top-level-only implementation is rejected.
+func TestEmit_PositionMetadataOnEveryContainedNode(t *testing.T) {
+	t.Parallel()
+	chunks := []pdf.Chunk{
+		{
+			Kind: pdf.BlockHeading, Text: "Reliability", HeadingLevel: 1,
+			PageRange: [2]int{0, 0},
+			Children: []pdf.Chunk{
+				{Kind: pdf.BlockParagraph, Text: "p0", PageRange: [2]int{0, 0}},
+				{
+					Kind: pdf.BlockHeading, Text: "Nested", HeadingLevel: 2,
+					PageRange: [2]int{1, 1},
+					Children: []pdf.Chunk{
+						{Kind: pdf.BlockParagraph, Text: "n0", PageRange: [2]int{1, 1}},
+						{Kind: pdf.BlockCode, Text: "n1", PageRange: [2]int{1, 1}},
+					},
+				},
+			},
+		},
+		{Kind: pdf.BlockParagraph, Text: "top-level at index 1", PageRange: [2]int{2, 2}},
+	}
+	nodes, edges := mustEmit(t, pdf.Metadata{Title: "DDIA"}, chunks, time.Time{})
+	byID := indexNodes(nodes)
+
+	walked := 0
+	for _, e := range edges {
+		if e.Type != kgtypes.EdgeContains {
+			continue
+		}
+		walked++
+		md := edgeMeta(t, e.Evidence)
+		child := byID[e.ToID]
+		if child == nil {
+			t.Fatalf("contains edge %s→%s: no such node", e.FromID, e.ToID)
+		}
+		got, ok := child.Metadata["position"]
+		if !ok {
+			t.Errorf("node %s (type %s) has NO position metadata; edge position=%q",
+				child.Id, child.Type, md["position"])
+			continue
+		}
+		if got != md["position"] {
+			t.Errorf("node %s (type %s): position=%q, want %q (its CONTAINS edge position)",
+				child.Id, child.Type, got, md["position"])
+		}
+	}
+	// Guard: a fixture or edge-type mistake must not let this pass vacuously.
+	if walked == 0 {
+		t.Fatal("walked 0 CONTAINS edges — the assertion never ran")
+	}
+
+	if _, ok := nodes[0].Metadata["position"]; ok {
+		t.Errorf("document root %s carries a position key %q; a parentless root has no edge position to mirror",
+			nodes[0].Id, nodes[0].Metadata["position"])
+	}
+}
+
 // TestEmit_AllChunkKinds asserts every BlockKind round-trips to its
 // bare-name node type: heading→section, paragraph→paragraph,
 // code→code_block, list_item→list_item, table→table, unknown→block.
@@ -87,7 +198,7 @@ func TestEmit_AllChunkKinds(t *testing.T) {
 		{Kind: pdf.BlockTable, Text: "row1", PageRange: [2]int{0, 0}},
 		{Kind: pdf.BlockUnknown, Text: "stuff", PageRange: [2]int{0, 0}},
 	}
-	nodes, _ := emit(pdf.Metadata{}, fixturePath, chunks)
+	nodes, _ := mustEmit(t, pdf.Metadata{}, chunks, time.Time{})
 	want := []string{"document", "section", "paragraph", "code_block", "list_item", "table", "block"}
 	if len(nodes) != len(want) {
 		t.Fatalf("nodes len = %d, want %d", len(nodes), len(want))
@@ -100,6 +211,37 @@ func TestEmit_AllChunkKinds(t *testing.T) {
 		// source-agnostic — locked Q2.
 		if nodes[i].Metadata["source"] != "pdf" {
 			t.Errorf("nodes[%d].Metadata[source] = %q, want pdf", i, nodes[i].Metadata["source"])
+		}
+	}
+}
+
+// TestEmit_PageNumbersAreOneIndexed asserts the emitted page keys carry the
+// PRINTED page number, not the zero-indexed internal page index. Two distinct
+// ranges are asserted so an implementation that converts only one key, or
+// hardcodes "1", is rejected.
+func TestEmit_PageNumbersAreOneIndexed(t *testing.T) {
+	t.Parallel()
+	chunks := []pdf.Chunk{
+		{Kind: pdf.BlockParagraph, Text: "first page body", PageRange: [2]int{0, 0}},
+		{Kind: pdf.BlockParagraph, Text: "spans pages", PageRange: [2]int{4, 6}},
+	}
+	nodes, _ := mustEmit(t, pdf.Metadata{Title: "X"}, chunks, time.Time{})
+	if len(nodes) != 3 {
+		t.Fatalf("nodes len = %d, want 3 (1 doc + 2 paragraphs)", len(nodes))
+	}
+	cases := []struct {
+		node                *knowledgev1.Node
+		wantFirst, wantLast string
+	}{
+		{nodes[1], "1", "1"},
+		{nodes[2], "5", "7"},
+	}
+	for i, c := range cases {
+		if got := c.node.Metadata["page_first"]; got != c.wantFirst {
+			t.Errorf("chunk %d page_first = %q, want %q (one-indexed)", i, got, c.wantFirst)
+		}
+		if got := c.node.Metadata["page_last"]; got != c.wantLast {
+			t.Errorf("chunk %d page_last = %q, want %q (one-indexed)", i, got, c.wantLast)
 		}
 	}
 }
@@ -122,7 +264,7 @@ func TestEmit_DocumentMetadata(t *testing.T) {
 		CreationDate: tCreate,
 		ModDate:      tMod,
 	}
-	nodes, _ := emit(meta, fixturePath, nil)
+	nodes, _ := mustEmit(t, meta, nil, time.Time{})
 	if len(nodes) != 1 {
 		t.Fatalf("nodes len = %d, want 1 doc-only", len(nodes))
 	}
@@ -144,10 +286,93 @@ func TestEmit_DocumentMetadata(t *testing.T) {
 			t.Errorf("doc.Metadata[%q] = %q, want %q", k, got, want)
 		}
 	}
-	// Description should weave the high-signal fields together.
-	if !strings.Contains(doc.Description, meta.Title) || !strings.Contains(doc.Description, meta.Author) {
-		t.Errorf("doc.Description = %q, want title + author woven in", doc.Description)
+	// The blurb weaves the high-signal fields together, and it lives in
+	// Content: every raw node's searchable text does, the root included.
+	if !strings.Contains(doc.Content, meta.Title) || !strings.Contains(doc.Content, meta.Author) {
+		t.Errorf("doc.Content = %q, want title + author woven in", doc.Content)
 	}
+	if doc.Description != "" {
+		t.Errorf("doc.Description = %q, want empty — the blurb moved to Content", doc.Description)
+	}
+}
+
+// TestEmit_ChunkBodyLandsInContent pins the field rule: EVERY raw node's
+// searchable text lands in Content. A leaf's Content is its body, a
+// section's Content is its heading, and the document root's Content is
+// the Info-dict blurb. A section ALSO keeps its heading in SymbolName,
+// because that is the label the read surface renders a hit with, and no
+// node uses Description at all. The Description assertions are what
+// reject a partial move that leaves one kind's text behind.
+//
+// The two language subtests are a SCOPE FENCE, not a gate on new behaviour:
+// no pdf pipeline stage sets a language, so the absent case is what goes red
+// if a future author invents a guessed default or an "unknown" placeholder.
+func TestEmit_ChunkBodyLandsInContent(t *testing.T) {
+	t.Parallel()
+	chunks := []pdf.Chunk{
+		{
+			Kind: pdf.BlockHeading, Text: "Reliability", HeadingLevel: 1,
+			PageRange: [2]int{0, 0},
+			Children: []pdf.Chunk{
+				{Kind: pdf.BlockParagraph, Text: "First paragraph body.", PageRange: [2]int{0, 0}},
+				{Kind: pdf.BlockCode, Text: "SELECT 1;", PageRange: [2]int{0, 0}},
+			},
+		},
+	}
+	nodes, _ := mustEmit(t, pdf.Metadata{Title: "DDIA", Author: "MK"}, chunks, time.Time{})
+	if len(nodes) != 4 {
+		t.Fatalf("nodes len = %d, want 4 (doc + section + paragraph + code_block)", len(nodes))
+	}
+	doc, section, para, code := nodes[0], nodes[1], nodes[2], nodes[3]
+
+	for _, leaf := range []*knowledgev1.Node{para, code} {
+		if leaf.Content == "" {
+			t.Errorf("%s: Content is empty, want the body text", leaf.Type)
+		}
+		if leaf.Description != "" {
+			t.Errorf("%s: Description = %q, want empty (body text lives in Content)", leaf.Type, leaf.Description)
+		}
+		if leaf.SymbolName != "" {
+			t.Errorf("%s: SymbolName = %q, want empty on a leaf", leaf.Type, leaf.SymbolName)
+		}
+	}
+	if section.SymbolName != "Reliability" {
+		t.Errorf("section SymbolName = %q, want the heading", section.SymbolName)
+	}
+	if section.Content != "Reliability" {
+		t.Errorf("section Content = %q, want the heading — a section's own text IS its heading", section.Content)
+	}
+	if section.Description != "" {
+		t.Errorf("section Description = %q, want empty", section.Description)
+	}
+	if !strings.Contains(doc.Content, "DDIA") {
+		t.Errorf("document root Content = %q, want the metadata blurb", doc.Content)
+	}
+	if doc.Description != "" {
+		t.Errorf("document root Description = %q, want empty — the blurb lives in Content", doc.Description)
+	}
+
+	t.Run("code_block_language_passes_through", func(t *testing.T) {
+		n, _ := mustEmit(t, pdf.Metadata{}, []pdf.Chunk{
+			{Kind: pdf.BlockCode, Text: "SELECT 1;", PageRange: [2]int{0, 0},
+				Metadata: map[string]string{"language": "sql"}},
+		}, time.Time{})
+		if got := n[1].Metadata["language"]; got != "sql" {
+			t.Errorf("metadata[language] = %q, want sql (generic per-chunk copy)", got)
+		}
+	})
+
+	t.Run("code_block_language_absent_when_unset", func(t *testing.T) {
+		n, _ := mustEmit(t, pdf.Metadata{}, []pdf.Chunk{
+			{Kind: pdf.BlockCode, Text: "SELECT 1;", PageRange: [2]int{0, 0}},
+		}, time.Time{})
+		if got, ok := n[1].Metadata["language"]; ok {
+			t.Errorf("metadata[language] = %q, want ABSENT — no stage produces one and no default is invented", got)
+		}
+		if n[1].Language != "" {
+			t.Errorf("Node.Language = %q, want empty", n[1].Language)
+		}
+	})
 }
 
 // TestEmit_StableIDs asserts node IDs are deterministic — re-running
@@ -161,8 +386,8 @@ func TestEmit_StableIDs(t *testing.T) {
 				{Kind: pdf.BlockParagraph, Text: "p", PageRange: [2]int{0, 0}},
 			}},
 	}
-	first, _ := emit(pdf.Metadata{Title: "X"}, fixturePath, chunks)
-	second, _ := emit(pdf.Metadata{Title: "X"}, fixturePath, chunks)
+	first, _ := mustEmit(t, pdf.Metadata{Title: "X"}, chunks, time.Time{})
+	second, _ := mustEmit(t, pdf.Metadata{Title: "X"}, chunks, time.Time{})
 	if len(first) != len(second) {
 		t.Fatalf("len mismatch: %d vs %d", len(first), len(second))
 	}
@@ -173,12 +398,52 @@ func TestEmit_StableIDs(t *testing.T) {
 	}
 }
 
+// TestEmit_StampsCollectorSchemaVersion asserts the version stamp lands on the
+// document ROOT and on no child node. The negative half is what rejects an
+// implementation that stamps every node.
+//
+// THE EXPECTED VALUE IS A LITERAL, deliberately. Comparing the emitted stamp
+// against the package constant makes the test value-BLIND: it passes for any
+// value the constant happens to hold, so reverting the constant leaves this and
+// every other package green while collected graphs go out labeled with a shape
+// they are not. The constant documents itself as bumped in the same change as
+// any alteration to what this collector emits; a literal here is what makes that
+// obligatory, because a shape change then has to move the constant AND this
+// number together. The separate `<= 0` assertion stays: it rejects a zero, which
+// cannot be told from unstamped, independently of what the literal says.
+func TestEmit_StampsCollectorSchemaVersion(t *testing.T) {
+	t.Parallel()
+	if collectorSchemaVersion <= 0 {
+		t.Fatalf("collectorSchemaVersion = %d, want > 0 — zero cannot be told from unstamped", collectorSchemaVersion)
+	}
+	chunks := []pdf.Chunk{
+		{Kind: pdf.BlockHeading, Text: "H", HeadingLevel: 1, PageRange: [2]int{0, 0},
+			Children: []pdf.Chunk{
+				{Kind: pdf.BlockParagraph, Text: "p", PageRange: [2]int{0, 0}},
+			}},
+	}
+	nodes, _ := mustEmit(t, pdf.Metadata{Title: "X"}, chunks, time.Time{})
+	if len(nodes) != 3 {
+		t.Fatalf("nodes len = %d, want 3 (doc + section + paragraph)", len(nodes))
+	}
+	const want = "3"
+	if got := nodes[0].Metadata["collector_schema_version"]; got != want {
+		t.Errorf("document root collector_schema_version = %q, want %q - the emitted shape and the stamp have diverged", got, want)
+	}
+	for _, n := range nodes[1:] {
+		if got, ok := n.Metadata["collector_schema_version"]; ok {
+			t.Errorf("%s node %s carries collector_schema_version=%q; the stamp belongs on the root only",
+				n.Type, n.Id, got)
+		}
+	}
+}
+
 // TestEmit_NoChunksDocOnly covers the zero-chunks edge case: emit
 // produces a single document node and zero edges. Asserts the
 // collector handles empty/early-failure inputs without panicking.
 func TestEmit_NoChunksDocOnly(t *testing.T) {
 	t.Parallel()
-	nodes, edges := emit(pdf.Metadata{Title: "Empty"}, fixturePath, nil)
+	nodes, edges := mustEmit(t, pdf.Metadata{Title: "Empty"}, nil, time.Time{})
 	if len(nodes) != 1 {
 		t.Errorf("nodes len = %d, want 1 (doc-only)", len(nodes))
 	}
@@ -207,7 +472,7 @@ func TestEmit_SourceMetaOnEveryNode(t *testing.T) {
 				{Kind: pdf.BlockUnknown, Text: "u", PageRange: [2]int{0, 0}},
 			}},
 	}
-	nodes, _ := emit(pdf.Metadata{Title: "X"}, fixturePath, chunks)
+	nodes, _ := mustEmit(t, pdf.Metadata{Title: "X"}, chunks, time.Time{})
 	for i, n := range nodes {
 		if n.Metadata["source"] != "pdf" {
 			t.Errorf("nodes[%d] (Type=%q): Metadata[source] = %q, want pdf", i, n.Type, n.Metadata["source"])

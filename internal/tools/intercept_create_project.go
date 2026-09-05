@@ -67,7 +67,11 @@ func InterceptCreateProject(ctx context.Context, deps ClientDeps, params kgtools
 	if err := rejectUndeclaredParams("create_project", "", CreateProjectToolDef().InputSchema.Properties, params.Arguments); err != nil {
 		return true, errorResult(err.Error())
 	}
-	if err := validate.Name("create_project", a.Name); err != nil {
+	// ProjectName is Name plus the tracker's 80-rune project-name cap. It runs
+	// HERE, before the backend branch below, so an over-cap name is refused
+	// identically with and without a backend configured — and before any remote
+	// project or local node could exist to clean up.
+	if err := validate.ProjectName("create_project", a.Name); err != nil {
 		return true, errorResult(err.Error())
 	}
 	// Clamp an over-cap author summary (with a warning) BEFORE the backend

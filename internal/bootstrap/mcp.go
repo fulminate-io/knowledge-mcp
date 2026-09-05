@@ -45,8 +45,12 @@ func maybeSpawnLocalServer(c *client, f Config) {
 // daemon bootstrap (serve) stays import-clean of the higher-level
 // cmd/knowledge/internal tool packages (the func-field injection mirrors
 // InterceptChain).
+//
+// The router supplies BOTH seams: Execute for the compiled plan, and Stats for
+// the edge-type resolution that runs before it. Router.Stats is the same
+// per-call-routed forwarder the per-graph stats arms already reach.
 func (c *client) engineDispatch(ctx context.Context, tool string, args json.RawMessage) (kgtools.ToolResult, error) {
-	return engine.Dispatch(ctx, c.router.Execute, tool, args)
+	return engine.Dispatch(ctx, c.router.Execute, c.router.Stats, tool, args)
 }
 
 // handleToolsList answers a tools/list JSON-RPC request from the cached

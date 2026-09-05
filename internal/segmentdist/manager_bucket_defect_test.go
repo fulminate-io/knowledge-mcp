@@ -46,6 +46,7 @@ func spanningSegments[Q, S any](dm *distManager[Q, S], bucketCount int) map[sear
 // does — later partitions read pre-swap snapshots and copy the same members into
 // several outputs at once, which is what leg 2 catches.
 func TestReEmitKeepsPartitionsPure(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

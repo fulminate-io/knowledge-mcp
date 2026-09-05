@@ -32,17 +32,47 @@ func compFrom(name string, byType map[string]int) collector.CollectComposition {
 }
 
 // TestWebCollector_AssertComposition_FiresWhenNoSubstantiveContent drives the
-// MEASURED CWE composition — the harvest this ticket exists for. Both zero terms
-// are stated explicitly, because the predicate is paragraph+code_block == 0 and a
-// fixture that left either implicit would not say which term it exercises.
+// MEASURED CWE composition — the harvest this ticket exists for. Every zero term
+// is stated explicitly, because the predicate is a sum over webContentTypes and a
+// fixture that left a term implicit would not say which one it exercises.
+//
+// THE SYNTHETIC CENSUS HAS TO SAY WHAT KIND OF TABLE THESE TWELVE ARE AND WHAT
+// KIND OF LIST ITEM THESE TWENTY-FOUR ARE, because both types are now members of
+// the substantive sum. While that sum was paragraph plus code_block, a census
+// could hold tables and list items and stay silent about them; now that a data
+// table's cells are the sole carrier of their text and a list item's label is
+// the sole carrier of its own, twelve tables are either twelve chunks of content
+// or twelve pieces of scaffolding, twenty-four list items are either
+// twenty-four bullets of prose or twenty-four menu entries, and the arithmetic
+// differs in both cases. This census models all twelve tables as LAYOUT tables
+// and all twenty-four list items as NAV-LIST items, and that is a SYNTHETIC
+// shape chosen for what it drives rather than a shape measured off a crawl:
+// twelve-of-twelve layout plus twenty-four-of-twenty-four nav is what takes the
+// retained-chrome subtraction to exactly zero, which is what still fires this
+// leg on a sum that now includes both types. The checked-in CWE fixture is NOT
+// that shape in its tables — measured through classifyTable,
+// testdata/cwe_table_layout.html emits four tables of which exactly one, the
+// table#MainPane layout wrapper, is layout; the other three are data tables, one
+// of them the Nature/Type/ID/Name relationship table assertTaxonomyTable pins by
+// name in parse_dom_tablelayout_test.go. So the real CWE harvest correctly no
+// longer fires this leg. Its LISTS do match the modeled shape: the SiteMenu and
+// FooterMenu lists in that fixture are bare anchors end to end. A census whose
+// twelve tables were data tables is a different harvest and correctly does not
+// fire this leg; that direction is covered by a real crawl in
+// TestCollect_DataTableOnlyHarvest_IsSubstantiveButChromeStillFails, and the
+// list-side directions by TestCollect_ListOnlyHarvest_IsSubstantiveButNavListStillFails.
 func TestWebCollector_AssertComposition_FiresWhenNoSubstantiveContent(t *testing.T) {
 	c := &WebCollector{}
 
 	cwe := compFrom("cwe", map[string]int{
 		"page": 4, "section": 4, "list_item": 24, "link": 16, "table": 12, "list": 4,
 	})
+	cwe.NonSubstantiveNodes = 36
 	require.Equal(t, 0, cwe.NodesByType["paragraph"], "the measured CWE harvest has zero paragraph")
 	require.Equal(t, 0, cwe.NodesByType["code_block"], "the measured CWE harvest has zero code_block")
+	require.Equal(t, 0, cwe.NodesByType["blockquote"], "the measured CWE harvest has zero blockquote")
+	require.Equal(t, cwe.NodesByType["table"]+cwe.NodesByType["list_item"], cwe.NonSubstantiveNodes,
+		"every table in this census is modeled as layout scaffolding and every list_item as a nav-list entry, or the leg below would be asserting the wrong thing")
 
 	err := c.AssertComposition(cwe)
 	require.Error(t, err)

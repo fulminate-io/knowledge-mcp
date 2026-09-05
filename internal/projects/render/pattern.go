@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -111,11 +112,12 @@ func renderNodeMetadata(node *knowledgev1.Node) string {
 // truncation verdict.
 //
 // Targets are resolved against the pattern's OWN SOURCE GRAPH — practice/<lang>,
-// not the knowledge graph — which is why this uses the cross-graph
-// FetchNodesByIDsIn rather than the knowledge-graph FetchNodesByIDs. Unresolved
-// targets are skipped silently, the same broken-link tolerance the ticket
-// renderer applies; with a bulk hydrate that skip is a miss in the map rather
-// than a per-target fetch error.
+// not the knowledge graph — which is why this passes a real (graphType,
+// graphName) to foundation.FetchNodesByIDs where every other caller in this
+// package passes the empty pair for knowledge/default. Unresolved targets are
+// skipped silently, the same broken-link tolerance the ticket renderer applies;
+// with a bulk hydrate that skip is a miss in the map rather than a per-target
+// fetch error.
 //
 // Ported from tools_assemble_containers_pattern.go:104 with the
 // store.DB parameter replaced by (graphType, graphName) and the per-target
@@ -131,7 +133,7 @@ func bucketPatternChildrenIn(
 	for _, e := range outEdges {
 		targetIDs = append(targetIDs, e.ToId)
 	}
-	children, truncated, _ := FetchNodesByIDsIn(ctx, gc, targetIDs, graphType, graphName)
+	children, truncated, _ := foundation.FetchNodesByIDs(ctx, gc, kgtypes.GraphType(graphType), graphName, targetIDs, foundation.IncludeTombstones)
 	for _, e := range outEdges {
 		n, ok := children[e.ToId]
 		if !ok {

@@ -105,6 +105,31 @@ func TestAssemble_RPCCountConstant(t *testing.T) {
 			simple(kgtypes.NodePattern, kgtypes.NodeExample, kgtypes.NodeExample, kgtypes.EdgeReferences, kgtypes.NodeReference), byID},
 		{"fallback", kgtypes.NodeType("document"),
 			simple(kgtypes.NodeType("document"), kgtypes.NodeFinding, kgtypes.NodeFinding, kgtypes.EdgeRelatesTo, kgtypes.NodeFinding), byID},
+		// plan_section's width axis is its ANNOTATIONS, which arrive on INCOMING
+		// relates-to edges rather than on the contains tree — so it cannot use
+		// `simple`, whose peers point outward from the root. Its cost must be
+		// invariant under annotation count: one by-id resolve, one set-form edge
+		// drain, one bulk hydrate, whatever the annotation count.
+		{"plan_section", kgtypes.NodePlanSection,
+			func(n int) *graphFixture {
+				f := newGraphFixture()
+				f.addKnowledgeNode(&knowledgev1.Node{
+					Id: "root", Type: string(kgtypes.NodePlanSection), SymbolName: "the-section",
+					Description: "the section body", Status: kgtypes.StatusActive,
+				})
+				for i := range n {
+					a := fmt.Sprintf("a-%02d", i)
+					an := &knowledgev1.Node{
+						Id: a, Type: string(kgtypes.NodePlanAnnotation),
+						SymbolName: "annotation-" + a, Summary: "summary-" + a,
+					}
+					kgtypes.SetValue(an, kgtypes.AnnotationKindKey, kgtypes.AnnotationKindFinding)
+					kgtypes.SetValue(an, kgtypes.AnnotationTierKey, "T2")
+					f.addKnowledgeNode(an)
+					f.addKnowledgeEdge(a, "root", kgtypes.EdgeRelatesTo)
+				}
+				return f
+			}, byID},
 		{"json", kgtypes.NodePlan,
 			simple(kgtypes.NodePlan, kgtypes.NodePhase, kgtypes.NodeStep, kgtypes.EdgeInformedBy, kgtypes.NodeResearch),
 			func() map[string]any { return map[string]any{"id": "root", "format": "json"} }},

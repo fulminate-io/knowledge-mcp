@@ -133,7 +133,7 @@ func TestRunLocalTopology_RepoRootResolvesTheNamedRepo(t *testing.T) {
 // when the walk root is wrong: the requested subtree simply does not exist under
 // the wrong root, discovery scans nothing, and the analyzer reports a clean zero.
 func TestCorpusScan_AgreesWithTheAstEngineOverThreeRepoShapes(t *testing.T) {
-	repoRoot := repoRootUnderTest(t)
+	repoRoot := moduleRootUnderTest(t)
 	m := withTestManifest(t)
 	const bareName = "corpusscan-walkroot-target"
 	require.NoError(t, m.Record(bareName, repoRoot))
@@ -160,7 +160,9 @@ func TestCorpusScan_AgreesWithTheAstEngineOverThreeRepoShapes(t *testing.T) {
 	}{
 		{"repo as a bare name", bareName, ""},
 		{"repo as an absolute path", repoRoot, ""},
-		{"repo as an absolute path plus path_prefix", repoRoot, "cmd/knowledge/internal/tools"},
+		// MODULE-relative, paired with the module-root anchor above: this
+		// package is internal/tools relative to its own module in both layouts.
+		{"repo as an absolute path plus path_prefix", repoRoot, "internal/tools"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			args := map[string]any{
@@ -251,24 +253,27 @@ func astCountForCheck(t *testing.T, c corpus.Check, repoRoot, prefix string) ast
 	return tally
 }
 
-// repoRootUnderTest walks up from the test's working directory to the checkout
-// root — the directory holding .git, which is a file in a worktree and a
-// directory in a primary checkout, so a plain Stat answers both.
+// moduleRootUnderTest walks up from the test's working directory to the MODULE
+// root — the first directory above this package holding a go.mod.
 //
-// The checkout root rather than the nearest go.mod: the path_prefix shape below
-// is a REPO-RELATIVE prefix, and this repo nests a second module under
-// cmd/knowledge, so rooting the walk at the module would make that prefix name a
-// path that does not exist.
-func repoRootUnderTest(t *testing.T) string {
+// THE ANCHOR AND THE PREFIX ARE ONE SHAPE, and this is the pairing the ast
+// package's own variant test records as the invariant: the module can live at a
+// repo subpath or at a repo root, and MODULE-RELATIVE prefixes are the one
+// spelling that names these packages in both layouts. An earlier form walked to
+// the checkout root and paired it with a repo-relative prefix; that pair names a
+// real tree in this repository and NOTHING in the published mirror, where the
+// module root IS the checkout root and cmd/knowledge does not exist — so the
+// prefix arm below scanned no file there and the analyzer refused the run.
+func moduleRootUnderTest(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
 	require.NoError(t, err)
 	for {
-		if _, statErr := os.Stat(filepath.Join(dir, ".git")); statErr == nil {
+		if _, statErr := os.Stat(filepath.Join(dir, "go.mod")); statErr == nil {
 			return dir
 		}
 		parent := filepath.Dir(dir)
-		require.NotEqual(t, dir, parent, "walked past the filesystem root without finding a checkout")
+		require.NotEqual(t, dir, parent, "walked past the filesystem root without finding a module root")
 		dir = parent
 	}
 }

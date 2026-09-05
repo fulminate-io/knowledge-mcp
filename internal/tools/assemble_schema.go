@@ -22,6 +22,12 @@ func AssembleToolDef() kgtools.MCPTool {
 				"new_run":     {Type: "boolean", Description: "For test_plan: create a new run session with pending test_run nodes"},
 				"run_session": {Type: "string", Description: "For test_plan: filter assembled test_runs by this run session UUID"},
 				"format":      {Type: "string", Description: "Output format: 'text' (default) or 'json' (structured)"},
+				// DECLARED HERE OR REFUSED AT THE DOOR: intercept_assemble.go runs
+				// rejectUndeclaredParams against this property set, so a param the
+				// handler reads but the schema does not declare is rejected before
+				// the handler ever sees it.
+				"section_start": {Type: "integer", Description: "For a chunked plan: the first section index to return, zero-based and inclusive. Omit to start at the first section. An out-of-bounds, negative or inverted range errors naming the bound — it is never clamped."},
+				"section_end":   {Type: "integer", Description: "For a chunked plan: the last section index to return, zero-based and inclusive. Omit to run to the last section. Supplying either bound returns the section BODIES in that range with their annotations; supplying neither returns the plan's index and tree alone, IN BOTH FORMATS — a text read shows each section's first 120 characters in the tree, and a json read omits the body and marks it body_omitted with its body_bytes, so neither default returns a whole plan. A range on a node that is not a plan is refused in both formats, and so is a range on a plan that HAS no sections — a phase-and-step plan has nothing to page."},
 			},
 		},
 	}

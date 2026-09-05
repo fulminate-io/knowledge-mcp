@@ -9,9 +9,9 @@ package tools
 // 500-line file convention, which is the split rule query_arm_registry.go's own
 // header states.
 //
-// ALL THREE FOLLOW ONE SHAPE, taken from transformersSearchUnavailableResult
-// (intercept_search_reducible_graph.go): say what the graph IS, say what is not on
-// offer, and NAME THE CALL THAT WORKS. The generic accounting tail — "drop it or
+// ALL THREE FOLLOW ONE SHAPE, the same one rankedSearchRetiredResult
+// (intercept_search_reducible_graph.go) uses: say what the graph IS, say what is
+// not on offer, and NAME THE CALL THAT WORKS. The generic accounting tail — "drop it or
 // issue a separate call that does" — is true and useless here, because the caller
 // does not know that supplying `language` IS the separate call.
 
@@ -48,7 +48,7 @@ const practiceByIDNeedsLanguage = "graph:\"practice\" keys its instance by langu
 // search fan-out, and an empty-text ranked search cannot return anything, so the
 // zero it answered with was vacuous — a confident empty result from a scatter-
 // gather that read every loaded practice graph. That is the same silent-zero class
-// the transformers refusal was written to prevent.
+// the no-index refusals were written to prevent.
 const practiceFanOutNeedsText = "query(graph:\"practice\", language:\"all\") is the ranked-search fan-out " +
 	"across every loaded practice graph, and a ranked search with no text has nothing to rank — it would " +
 	"answer with a confident zero rather than an empty corpus. Supply text to search " +

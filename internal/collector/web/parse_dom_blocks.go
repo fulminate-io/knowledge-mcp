@@ -180,8 +180,29 @@ func tableCellHasBlock(t *html.Node) bool {
 	return false
 }
 
-// isLayoutTable reports whether n is page furniture rather than tabular
-// data. The rules are evaluated IN ORDER and the order is load-bearing:
+// tableSignals is one table's VERDICT TOGETHER WITH THE MEASUREMENTS THAT
+// PRODUCED IT. Every field is an observation of the table, not an
+// interpretation of it: Role is the raw role attribute lowercased and trimmed,
+// HeaderSignal / RowCount / Uniform / CellHasBlock are the four readings the
+// ordered rules consult, and Layout is the verdict they reached.
+//
+// Carrying the readings is the whole point. The predecessor answered "layout"
+// or "data" and threw away every number behind the answer, so a consumer could
+// not tell a table declared role=presentation by its author from one inferred
+// to be layout because a cell held a paragraph.
+type tableSignals struct {
+	Layout       bool
+	Role         string
+	HeaderSignal bool
+	RowCount     int
+	Uniform      bool
+	CellHasBlock bool
+}
+
+// classifyTable decides whether n is page furniture rather than tabular data,
+// and returns that verdict alongside every measurement it consulted.
+//
+// THE RULES ARE EVALUATED IN ORDER AND THE ORDER IS LOAD-BEARING:
 //
 //  1. role=presentation or role=none  -> LAYOUT (explicit author declaration, WAI-ARIA)
 //  2. tableHasHeaderSignal            -> DATA
@@ -190,20 +211,35 @@ func tableCellHasBlock(t *html.Node) bool {
 //  5. otherwise                       -> DATA
 //
 // Uniformity must be tested BEFORE cellHasBlock: the header-less label-value
-// grids described on tableRowShape have block content in their value cells,
-// so rule 4 alone reads them as layout and destroys their pairings.
-func isLayoutTable(n *html.Node) bool {
-	switch strings.ToLower(strings.TrimSpace(getAttr(n, "role"))) {
-	case "presentation", "none":
-		return true
+// grids described on tableRowShape have block content in their value cells, so
+// rule 4 alone reads them as layout and destroys their pairings.
+//
+// IT COMPUTES ALL FOUR MEASUREMENTS UNCONDITIONALLY, where a verdict-only
+// classifier would short-circuit after the first rule that decided. That is
+// deliberate and it is the contract: the measurements are what the emitted node
+// carries, so short-circuiting would leave a role=presentation table reporting
+// a row count of zero and a header signal of false — figures that describe the
+// classifier's laziness rather than the table. The cost is bounded by one
+// table's own scope, which stops at a nested table.
+func classifyTable(n *html.Node) tableSignals {
+	sig := tableSignals{
+		Role:         strings.ToLower(strings.TrimSpace(getAttr(n, "role"))),
+		HeaderSignal: tableHasHeaderSignal(n),
+		CellHasBlock: tableCellHasBlock(n),
 	}
-	if tableHasHeaderSignal(n) {
-		return false
+	sig.RowCount, sig.Uniform = tableRowShape(n)
+
+	switch {
+	case sig.Role == "presentation" || sig.Role == "none":
+		sig.Layout = true
+	case sig.HeaderSignal:
+		sig.Layout = false
+	case sig.Uniform:
+		sig.Layout = false
+	default:
+		sig.Layout = sig.CellHasBlock
 	}
-	if _, uniform := tableRowShape(n); uniform {
-		return false
-	}
-	return tableCellHasBlock(n)
+	return sig
 }
 
 // isBlockLevel is the memoised form of isBlockLevelNode, scoped to one page
@@ -269,15 +305,24 @@ func (w *walker) walkChildren(n *html.Node) {
 // anchor's node. recordLinks is deliberately NOT called here: handleAnchor
 // already performs makeLink plus classifyLink, and classifyLink dedups the
 // InternalLinks side, so a second pass would be redundant work with no
-// effect. runHasNonAnchorText gates ONLY the paragraph, never the links.
+// effect.
+//
+// EVERY NON-EMPTY RUN IS RETAINED, INCLUDING A RUN OF NOTHING BUT LINKS.
+// runHasNonAnchorText no longer decides whether the record exists; it decides
+// what the record IS. A run with no text outside its anchors is a navigation
+// strip, and it is emitted as a record carrying LinksOnly so a consumer can
+// see the strip and decide about it — dropping it lost the fact that the page
+// had navigation there at all, which no downstream reader could recover.
 //
 // The paragraph is appended BEFORE the link records so document order reads
 // text-then-links deterministically.
 //
-// Attrs come from nearestAttrSource rather than from parent: a run has no
-// element of its own and its immediate parent is frequently unclassed, so
-// taking attrs from the bare parent yields empty class and id on exactly the
-// records a recipe needs to classify.
+// Attrs come from runAttrs, which splits their provenance: tag and dom_depth
+// describe the run's immediate containing element, while class/id/role/data
+// are climbed to the nearest classed ancestor because the immediate parent is
+// frequently unclassed and taking attrs from it yields empty class and id on
+// exactly the records a recipe needs to classify. When the two differ the
+// climb is recorded on the record rather than left implicit.
 //
 // WHY STYLED-DIV CODE EXAMPLES ARE EMITTED AS PARAGRAPHS AND NOT AS
 // code_block. There is no generic signal to key on: the pages that carry
@@ -306,10 +351,11 @@ func (w *walker) flushInlineRun(parent *html.Node, run []*html.Node) {
 	for _, n := range run {
 		emitProseText(&sb, n)
 	}
-	if text := collapseProseLines(sb.String()); text != "" && runHasNonAnchorText(run) {
+	if text := collapseProseLines(sb.String()); text != "" {
 		w.append(paragraphRecord{
-			Text:  text,
-			Attrs: extractCommonAttrs(nearestAttrSource(parent)),
+			Text:      text,
+			LinksOnly: !runHasNonAnchorText(run),
+			Attrs:     runAttrs(parent),
 		})
 	}
 	for _, anchor := range anchorsIn(run) {
@@ -318,8 +364,8 @@ func (w *walker) flushInlineRun(parent *html.Node, run []*html.Node) {
 }
 
 // runHasNonAnchorText reports whether the run carries any non-whitespace
-// text OUTSIDE an anchor. A run of nothing but links is a navigation strip,
-// not prose, so it yields link records and no paragraph.
+// text OUTSIDE an anchor. A run of nothing but links is a navigation strip
+// rather than prose, so its record is marked LinksOnly.
 func runHasNonAnchorText(run []*html.Node) bool {
 	return slices.ContainsFunc(run, hasNonAnchorText)
 }

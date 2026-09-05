@@ -12,6 +12,14 @@
 // Consuming the frozen artifact rather than hardcoding the post-change keys is
 // what keeps the gate honest — a hardcoded set would assert the new behavior
 // against itself.
+//
+// THE ARTIFACT HAS BEEN EXTENDED SINCE IT WAS FROZEN, and a reader must not
+// take it for untouched: test_files_scanned and test_files_excluded were added
+// when the walk learned to count what its own test-file filter did, because
+// count builds its metrics map BY HAND and a counter absent from that map is
+// invisible to every count caller while match reports it. That was a deliberate
+// addition disclosed here, not drift — which is exactly the distinction this
+// gate exists to force somebody to write down.
 
 package tools
 

@@ -40,7 +40,7 @@ func assembleTestPlan(
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "# Test Plan: %s\n\n", node.SymbolName)
 	childIndex, byID, dependsOn, truncated := AssembleSubtree(ctx, gc, node.Id, 3)
-	RenderTreeFromIndex(&sb, node, 0, 3, childIndex, dependsOn)
+	RenderTreeFromIndex(&sb, node, 0, 3, childIndex, dependsOn, nil)
 
 	// Collect steps. They are the plan's contains children, already hydrated by
 	// the traversal above.

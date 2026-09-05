@@ -71,16 +71,18 @@ transport and security model, and a worked register → collect example.
 | `auth_type` | string |  |  | Logs only: auth mechanism (bearer, basic, aws_profile, api_key, service_account, kubeconfig). |
 | `backend` | string |  |  | Logs only: name of a configured log_backend node. |
 | `credential` | string |  |  | Logs only: credential value when passing provider inline. |
-| `dry_run` | boolean |  |  | Web/PDF only, transformer="recipe" only: compute emissions but write nothing. |
+| `dry_run` | boolean |  |  | REFUSED with transformer="recipe". It meant "compute the projection but skip the write"; a recipe run writes nothing, so there is no write to skip. Pass extract=true to read the rows back. |
 | `end` | string |  |  | Logs only: RFC3339 end timestamp. |
-| `extract` | boolean |  |  | Web/PDF only, transformer="recipe" only: EXTRACT MODE — write nothing and return the emitted rows for inspection. Bounded by max_rows and max_bytes, with any truncation disclosed in the response. |
+| `extract` | boolean |  |  | Web/PDF only, transformer="recipe" only, and REQUIRED there: return the emitted rows for inspection. It is the only mode a recipe run has — every run writes nothing. Bounded by max_rows and max_bytes, with any truncation disclosed in the response. |
 | `filters` | object |  |  | Logs only: exact-match label filters applied to log entries. |
 | `follow_patterns` | array of string |  |  | Web only: regex allowlist for internal links. |
 | `follow_patterns[]` | string |  |  |  |
-| `force` | boolean |  |  | Skip safety check for existing indexed graphs. |
-| `id` | string |  |  | Opaque identifier parsed by the collector (path, account:region, web source slug, absolute path to a .pdf, etc.). Optional for type="logs". |
+| `force` | boolean |  |  | Skip the safety check for existing indexed graphs — the code collector's bypass, and shared by every collect type EXCEPT one. REFUSED with transformer="recipe": a recipe run returns rows and writes nothing, so there is nothing for force to bypass. |
+| `id` | string |  |  | Opaque identifier parsed by the collector (path, account:region, web source slug, absolute path to a .pdf, etc.). A pdf graph is NAMED AFTER THE FILE — the sanitized basename with no suffix — so for type="pdf" the id is the absolute path to the document, not the graph name. Optional for type="logs", and optional for type="web" when seed_urls is supplied: the graph is then named after the first seed URL's host, with a leading www. stripped and dots mapped to hyphens (www.Go101.org becomes go101-org). A collect into an existing raw graph that was collected from a DIFFERENT source is refused, naming both sources, rather than merged into it. |
 | `kube_context` | string |  |  | Logs only: kubeconfig context name. |
+| `materialize_github` | boolean |  |  | Web only: OPT IN to materializing github repository seeds into the graph. Off by default — without it a github URL is fetched not at all and is reported in the collect response as a follow-up candidate for you to decide about. Refused when set with no github repository URL among the seeds. |
 | `max_bytes` | integer |  |  | Web/PDF only, transformer="recipe" only, extract mode: cap on the rendered response size in bytes. 0 selects the default (65536). Truncation is stated in the response rather than applied silently. |
+| `max_concurrency` | integer |  |  | Web only: number of crawl workers. 0 selects the default (8) and a value above 32 is REFUSED, naming the value and the cap, rather than clamped. Per-host politeness does NOT serialize same-host fetches — it enforces a minimum spacing between request STARTS to one host, so same-host parallelism is bounded by roughly ceil(request_latency / politeness_ms) and capped by max_concurrency, while cross-host parallelism is bounded by max_concurrency alone. |
 | `max_depth` | integer |  |  | Web only: BFS depth bound from a seed URL. |
 | `max_download_bytes` | integer |  |  | Web only: per-(owner,repo,ref) cap on github materialization downloads. 0=default (50 MiB), -1=unlimited, >0=explicit cap (uncompressed bytes). |
 | `max_entries` | integer |  |  | Logs only: cap on entries pulled from the provider. |
@@ -88,13 +90,14 @@ transport and security model, and a worked register → collect example.
 | `max_pages_per_host` | integer |  |  | Web only: cap on pages fetched from any single host within the crawl, independent of max_pages. 0 = off (no per-host cap). When both fire, the crawl stops for a host once either cap hits first. |
 | `max_path_segments` | integer |  |  | Web only: cap on the number of non-empty URL path segments a followed link may have; catches recursive-path traps like /a/b/a/b/.... 0 = off (unbounded), the default. |
 | `max_rows` | integer |  |  | Web/PDF only, transformer="recipe" only, extract mode: cap on rows returned. 0 selects the default (200); the response reports rows matched alongside rows returned, so a truncated extract is never mistaken for a short one. |
+| `offset` | integer |  |  | Web/PDF only, transformer="recipe" only, extract mode: zero-based index of the first MATCHED row to return, for paging a document larger than one response. Every matched row is still counted, so the header's matched total names the whole population behind the page; the truncation line names the next offset to resume from, and a page starting past the end says so rather than looking like an empty match. Negative values are refused. |
 | `params` | object |  |  | Registered custom_collector types only: opaque param object forwarded to the external collector binary, validated against its param_schema before exec. Built-in types ignore it. |
 | `politeness_ms` | integer |  |  | Web only: per-host request delay in milliseconds. |
 | `promote` | boolean |  |  | Code only: promote this branch to the base graph — land in base regardless of the recorded default branch, overwrite the recorded default branch to the collected branch, and delete the now-redundant same-name overlay. No effect for non-code collectors. |
 | `provider` | string |  |  | Logs only: provider identifier (e.g., cloudwatch, loki, stackdriver, k8s). |
 | `raw_query` | string |  |  | Logs only: provider-native query overriding structured fields. |
-| `recipe` | string |  |  | Web/PDF only, transformer="recipe" only: name of a recipe node. The recipe's source_graph_type metadata must match `type`. |
-| `recipe_body` | string |  |  | Web/PDF only, transformer="recipe" only: an INLINE recipe body to run instead of a saved recipe named by `recipe`. Requires extract=true — a write target comes from a saved recipe node, so to freeze an extraction save the same body as a recipe node and run it by name. Mutually exclusive with `recipe`. |
+| `recipe` | string |  |  | REFUSED. It named a SAVED recipe node, which is removed along with the transformers graph family — recipes are ephemeral inline bodies now. Pass the body as `recipe_body` with extract=true instead. The param is still declared so the refusal can name what you sent. |
+| `recipe_body` | string |  |  | Web/PDF only, transformer="recipe" only, and REQUIRED there: the inline recipe body to run. Requires extract=true — a recipe run returns rows and writes nothing, so there is no other mode. See help("recipes") for worked bodies to copy. |
 | `seed_urls` | array of string |  |  | Web only: starting URL(s) for the crawl. |
 | `seed_urls[]` | string |  |  |  |
 | `severity_min` | string |  |  | Logs only: minimum severity to include (DEBUG\|INFO\|WARN\|ERROR). |

@@ -15,8 +15,23 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 )
 
-// BuildPlanGraph assembles the full node/edge graph for a plan
-// (project → phases → steps → criteria + open questions + patterns).
+// BuildPlanGraph assembles the full node/edge graph for a plan, in either of
+// the two plan shapes:
+//
+//   - PHASES: plan → phases → steps → criteria, chained by depends-on edges.
+//   - SECTIONS: plan → plan_section children on POSITIONED contains edges, with
+//     no chaining, so a planner revising one part writes one node and every
+//     other node is byte-identical.
+//
+// Open questions and pattern wiring hang off the root in both shapes. The two
+// shapes are alternatives: the caller-facing validator refuses a plan that
+// supplies both, so at most one of the two loops below ever runs.
+//
+// IT RETURNS AN ERROR because a section's position evidence is marshaled here,
+// and a failed marshal must fail the build rather than yield an edge with empty
+// Evidence — which is the shape an UNPOSITIONED edge has, so absorbing the
+// failure would silently produce a plan whose sections render in arrival order.
+// Nothing else in this builder can fail, so the error is nil on every other path.
 //
 // unresolvedPatternIDs is the list of pattern IDs that ValidatePatternFields
 // flagged as missing or wrong-type. They are persisted on the plan node as
@@ -29,7 +44,7 @@ import (
 // unresolved_language_patterns metadata key. Language-pattern wiring is
 // independent of architectural pattern wiring — both can co-exist on the
 // same plan.
-func BuildPlanGraph(plan PlanArgs, unresolvedPatternIDs []string, unresolvedLanguagePatternIDs []string) ([]*knowledgev1.Node, []kgwire.BatchEdge) {
+func BuildPlanGraph(plan PlanArgs, unresolvedPatternIDs []string, unresolvedLanguagePatternIDs []string) ([]*knowledgev1.Node, []kgwire.BatchEdge, error) {
 	var nodes []*knowledgev1.Node
 	var edges []kgwire.BatchEdge
 
@@ -78,6 +93,14 @@ func BuildPlanGraph(plan PlanArgs, unresolvedPatternIDs []string, unresolvedLang
 		nodes, edges, prevPhaseIdx = appendPhaseSubtree(projectIdx, prevPhaseIdx, phase, nodes, edges)
 	}
 
+	for i, section := range plan.Sections {
+		var serr error
+		nodes, edges, serr = appendSectionSubtree(projectIdx, i, section, nodes, edges)
+		if serr != nil {
+			return nil, nil, serr
+		}
+	}
+
 	for _, q := range plan.OpenQuestions {
 		qIdx := len(nodes)
 		nodes = append(nodes, &knowledgev1.Node{
@@ -90,7 +113,7 @@ func BuildPlanGraph(plan PlanArgs, unresolvedPatternIDs []string, unresolvedLang
 		})
 		edges = append(edges, kgwire.BatchEdge{FromIdx: projectIdx, ToIdx: qIdx, Type: kgtypes.EdgeKGContains})
 	}
-	return nodes, edges
+	return nodes, edges, nil
 }
 
 // wirePatternEdges adds plan→pattern EdgeUses edges for each PatternID and

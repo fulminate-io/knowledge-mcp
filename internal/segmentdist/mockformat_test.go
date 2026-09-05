@@ -31,12 +31,12 @@ type mockFormat struct{}
 
 func (mockFormat) Name() string { return "mock" }
 
-func (mockFormat) Build(docs []searchengine.Document) (searchengine.Segment[mockQuery, mockStats], error) {
+func (mockFormat) Build(docs []searchengine.Document) (searchengine.Segment[mockQuery, mockStats], searchengine.BuildReport, error) {
 	rows := make([]mockRow, 0, len(docs))
 	for _, d := range docs {
 		rows = append(rows, mockRow{ID: d.ID, Content: d.Fields[searchengine.FieldContent]})
 	}
-	return &mockSegment{rows: rows}, nil
+	return &mockSegment{rows: rows}, searchengine.BuildReport{}, nil
 }
 
 func (mockFormat) Decode(blob []byte) (searchengine.Segment[mockQuery, mockStats], error) {

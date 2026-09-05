@@ -133,6 +133,19 @@ ENV HOME=/data
 # this same image, so it inherits the setting with no user action.
 ENV KNOWLEDGE_LOGIN_VIA_FRONTEND=1
 
+# Marks this install as externally managed, which turns the daemon's background
+# self-updater OFF. It is needed because a tag-built image looks like an
+# ordinary release install to every other guard: it carries a RELEASE version
+# stamp, so the dev-build guard passes it through, and it has neither launchd
+# nor brew, so the brew guard passes it through too — while this runtime stage
+# runs as a nonroot uid over a filesystem it cannot write, so every install
+# attempt would fail, daily, forever, escalating the updater's failure streak
+# for a machine whose upgrade path is pulling a new image.
+#
+# The client reads ANY non-empty value, not this literal, so a distro package or
+# an internal deployment can set it and opt out the same way.
+ENV KNOWLEDGE_MANAGED_INSTALL=container
+
 # The client's --root defaults to ".", so this is where a user mounts a repo.
 WORKDIR /workspace
 

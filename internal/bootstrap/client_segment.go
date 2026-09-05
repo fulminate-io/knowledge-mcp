@@ -178,58 +178,6 @@ func (c *client) SegmentCoverage() tools.SegmentCoverageReader {
 	return segmentCoverageAdapter{mgr: c.segmentMgr}
 }
 
-// segmentCoverageAdapter is the ONE place the backstop's record crosses from the
-// segment package into the tools carrier.
-//
-// IT EXISTS BECAUSE THE IMPORT CANNOT GO THE OTHER WAY: the segment package's own
-// in-package tests import tools, so tools may not import the segment package in
-// production, and therefore cannot name segmentdist.RepairState. bootstrap is the
-// composition root and already imports both, so the conversion belongs here rather
-// than inverting either layer. Every other method is a straight pass-through.
-type segmentCoverageAdapter struct{ mgr *segmentdist.Manager }
-
-func (a segmentCoverageAdapter) ShippedSegmentDocCount(
-	ctx context.Context, gt kgtypes.GraphType, name string,
-) (int, error) {
-	return a.mgr.ShippedSegmentDocCount(ctx, gt, name)
-}
-
-func (a segmentCoverageAdapter) ResidentDocCount(gt kgtypes.GraphType, name string) int {
-	return a.mgr.ResidentDocCount(gt, name)
-}
-
-// LoadRebuildState / LoadMergeWatermark forward this client's own consumer
-// positions, which the status row renders as "how long since each advanced".
-// Both are local record reads on the Manager — no RPC.
-func (a segmentCoverageAdapter) LoadRebuildState(
-	gt kgtypes.GraphType, name string,
-) (int64, []searchengine.ExternalID, error) {
-	return a.mgr.LoadRebuildState(gt, name)
-}
-
-func (a segmentCoverageAdapter) LoadMergeWatermark(gt kgtypes.GraphType, name string) (int64, error) {
-	return a.mgr.LoadMergeWatermark(gt, name)
-}
-
-func (a segmentCoverageAdapter) LiveResidentDocCount(gt kgtypes.GraphType, name string) int {
-	return a.mgr.LiveResidentDocCount(gt, name)
-}
-
-func (a segmentCoverageAdapter) RepairVerification(
-	gt kgtypes.GraphType, name string,
-) (tools.RepairVerification, bool) {
-	st, ok := a.mgr.RepairStateCached(gt, name)
-	if !ok {
-		return tools.RepairVerification{}, false
-	}
-	return tools.RepairVerification{
-		Residue:         st.Residue,
-		Converged:       st.Converged,
-		Scanned:         st.Scanned,
-		VerifiedAtNanos: st.VerifiedAtNanos,
-	}, true
-}
-
 // SegmentShipper returns the SAME *segmentdist.Manager as the stage-then-finalize SHIP
 // surface the rebuild_segments driver drives (StageRebuildPartition / FinalizeRebuild /
 // InvalidateLocal). Returns an UNTYPED nil
@@ -389,12 +337,13 @@ func (c *client) ClearHealLatch(gt kgtypes.GraphType, name string) {
 // pipeline→tools import cycle (tools already imports pipeline).
 //
 // The returned factory yields, per (gt, name), a per-collector heal closure (or
-// nil for any graph with no rebuildable segments). Auto-heal is scoped to the
-// embeddable builtins kgtypes.HasRebuildableSegments admits — knowledge, code,
-// cloud, cicd, practice, checks — the SAME gate the manual rebuild_segments op
-// uses (handleClientRebuildSegments), so the auto-heal arm and the manual rebuild
-// gate cannot drift; the non-embeddable builtins (linkage, transformers) and the
-// raw graphs (logs, web, pdf) have no segments to heal and get a nil closure. The
+// nil for any graph with no rebuildable segments). Auto-heal is scoped to what
+// kgtypes.HasRebuildableSegments admits — knowledge, code, cloud, cicd, practice,
+// checks, and the raw graphs web and pdf, whose chunks carry vectors and BM25
+// documents and so can lose segments like any other — the SAME gate the manual
+// rebuild_segments op uses (handleClientRebuildSegments), so the auto-heal arm and
+// the manual rebuild gate cannot drift; linkage and logs have no
+// segments to heal and get a nil closure. The
 // closure runs on the armed embed drain edge: a CHEAP presence + coverage probe
 // and, when a from-scratch rebuild is genuinely needed, the rebuild driver
 // (single-flight, shared with the manual rebuild_segments op). A healthy graph
@@ -433,13 +382,12 @@ func (c *client) ClearHealLatch(gt kgtypes.GraphType, name string) {
 // pre-doc_count sentinel, so there is no unknown state left to be conservative about.
 func (c *client) buildHealFactory() func(kgtypes.GraphType, string) func(context.Context) error {
 	return func(gt kgtypes.GraphType, name string) func(context.Context) error {
-		// Rebuildable-segments gate FIRST — the auto-heal closure is built only for
-		// graphs that carry rebuildable segments (the embeddable builtins: knowledge,
-		// code, cloud, cicd, practice, checks). This is the SAME kgtypes.HasRebuildableSegments
-		// predicate handleClientRebuildSegments gates the manual rebuild_segments op
-		// on, so the auto-heal arm and the manual rebuild gate cannot drift. The
-		// non-embeddable builtins (linkage, transformers) and raw graphs (logs, web,
-		// pdf) have no segments to heal and return a nil closure.
+		// Rebuildable-segments gate FIRST — the closure is built only for the graphs
+		// kgtypes.HasRebuildableSegments admits (knowledge, code, cloud, cicd,
+		// practice, checks, web, pdf). This is the SAME predicate
+		// handleClientRebuildSegments gates the manual rebuild_segments op on, so the
+		// auto-heal arm and the manual rebuild gate cannot drift; linkage,
+		// linkage and logs have no segments to heal and return a nil closure.
 		if !kgtypes.HasRebuildableSegments(gt) {
 			return nil
 		}

@@ -5,10 +5,10 @@ package crossgraph
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/projects/render"
 )
@@ -27,6 +27,14 @@ type LinkRequest struct {
 	Weight, Confidence     float64
 	Method, Evidence       string
 	LastValidated          string
+
+	// Stats is the seam the relationship is RESOLVED through, against the
+	// target graph's own edge vocabulary. It is REQUIRED, not optional: without
+	// it the composer cannot tell a new edge family from a mis-cased spelling
+	// of an existing one, and guessing between those two is the defect this
+	// resolution exists to remove. A nil Stats makes the link REFUSE loudly
+	// rather than fall back to writing the caller's spelling unchecked.
+	Stats engine.StatsFn
 }
 
 // ResolveAndLink is the SINGLE owner of the generic cross-graph resolve+link tail:
@@ -84,26 +92,26 @@ func ResolveAndLink(ctx context.Context, gc GraphCaller, ex render.Executor, req
 		return false, kgtools.ToolResult{}, nil // guard: unresolvable knowledge TO → legacy.
 	}
 
+	// Resolve the relationship ONCE, against the TARGET graph's own edge
+	// vocabulary, after the endpoints resolve and before the write. Assigning
+	// it back onto req is what makes the write and the confirmation below share
+	// a single spelling — a second resolution, or a render off the caller's
+	// original spelling, could name something other than what was stored.
+	//
+	// This is the DECLARATION path: an unknown spelling is admitted as a new
+	// edge family, which is what keeps a fresh linkage graph able to receive
+	// its first BUILDS.
+	res, rerr := engine.ResolveEdgeTypeDeclaration(ctx, req.Stats,
+		&knowledgev1.GraphSelector{Graph: target}, []string{req.Relationship})
+	if rerr != nil {
+		return true, kgtools.ErrorResult("crossgraph: resolve relationship: " + rerr.Error()), rerr
+	}
+	req.Relationship = res.Types[0]
+
 	if lerr := linkInGraph(ctx, ex, target, fromID, toID, req); lerr != nil {
 		return true, kgtools.ErrorResult("crossgraph: link to foreign proxy failed: " + lerr.Error()), lerr
 	}
-	rel := canonicalEdgeCasing(target, req.Relationship)
-	return true, kgtools.TextResult(fmt.Sprintf("Linked %s -[%s]-> %s in %s", fromID, rel, toID, target)), nil
-}
-
-// canonicalEdgeCasing canonicalizes an edge type to the target graph's casing:
-// UPPERCASE for linkage/code/cloud/cicd/logs, lowercase for knowledge/practice
-// (and the empty=knowledge default). Mirrors the engine's canonicalEdgeCasing
-// (compile.go) — duplicated per Go package boundary (crossgraph cannot import the
-// unexported engine helper), the same design-locked transitional duplication the
-// engine copy documents.
-func canonicalEdgeCasing(graph, t string) string {
-	switch graph {
-	case "code", "cloud", "cicd", "linkage", "logs":
-		return strings.ToUpper(t)
-	default:
-		return strings.ToLower(t)
-	}
+	return true, kgtools.TextResult(fmt.Sprintf("Linked %s -[%s]-> %s in %s", fromID, req.Relationship, toID, target)), nil
 }
 
 // resolveEndpoint resolves one link endpoint to the id it should reference in the
@@ -139,15 +147,14 @@ func resolveEndpoint(ctx context.Context, gc GraphCaller, ex render.Executor, ta
 
 // linkInGraph writes the from→to LINK into targetGraph carrying the EdgeSpec
 // edge-metadata AS-GIVEN. The plan is built DIRECTLY (not via engine.Compile) so
-// it can set both the explicit Target and the metadata carriers; the edge type is
-// canonicalized to the target graph's casing (UPPERCASE for linkage/code/cloud/
-// cicd/logs, lowercase for knowledge/practice) so subsequent canonical-casing
-// traversals can see it. LastValidated (RFC3339) is parsed to unix nanos; an
-// empty value is unset (0).
+// it can set both the explicit Target and the metadata carriers. The edge type
+// arrives already RESOLVED against the target graph's own edge vocabulary —
+// ResolveAndLink does that once, above, and assigns it back onto req — so this
+// writes req.Relationship verbatim. LastValidated (RFC3339) is parsed to unix
+// nanos; an empty value is unset (0).
 func linkInGraph(ctx context.Context, ex render.Executor, targetGraph, fromID, toID string, req LinkRequest) error {
-	rel := canonicalEdgeCasing(targetGraph, req.Relationship)
 	spec := &knowledgev1.EdgeSpec{
-		Relationship: rel,
+		Relationship: req.Relationship,
 		ToId:         toID,
 		Forward:      true,
 		Weight:       req.Weight,

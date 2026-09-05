@@ -170,8 +170,15 @@ func constructClient(f Config) *client {
 	// It is WRAPPED so a collect of any graph family admits the graph it just
 	// produced. DefaultSinkFactory below closes over c.sink, so wrapping here
 	// covers the handler that forgets opts.Sink too.
+	//
+	// The uploader is hoisted into its own local so c.subgraphFetcher and the
+	// wrapper's inner sink hold the SAME instance: the logs collector reads the
+	// cloud subgraph through the named accessor while every write still passes
+	// through the admitting wrapper.
+	uploader := remote.NewUploadSinkFunc(c.router.IngestClient)
+	c.subgraphFetcher = uploader
 	c.sink = admittingSink{
-		inner: remote.NewUploadSinkFunc(c.router.IngestClient),
+		inner: uploader,
 		admit: func(gt kgtypes.GraphType, name string) { c.AdmitGraph(gt, name, "collect") },
 	}
 	// Wire the graph-type CRUD client through the login-aware Router so a

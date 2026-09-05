@@ -94,7 +94,7 @@ func newUnmanagedCountedCoverageRow(t coverageTarget, st *knowledgev1.GraphStats
 // keeps the [unmanaged] band derivable without a load. kgtypes.HasRebuildableSegments
 // is a pure function of the graph TYPE, so it answers "could this family have a
 // segment pool at all" without asking whether this instance does. The band
-// classifier then runs its existing arms unchanged: a linkage or transformers row
+// classifier then runs its existing arms unchanged: a linkage row
 // still falls to the bare dash on the no-segments arm, and everything else reaches
 // the unmanaged arm below it.
 //

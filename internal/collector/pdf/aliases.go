@@ -52,3 +52,11 @@ const (
 	ChunkModeParagraph = chunk.ModeParagraph
 	ChunkModeSection   = chunk.ModeSection
 )
+
+// IsPageChrome re-exports the chunk package's one copy of the
+// running-chrome rule, so a top-level consumer can ask "is this chunk
+// page furniture?" of a chunk's Metadata without importing the
+// sub-package. The chunker STAMPS chrome rather than deleting it, so
+// answering that question is now the caller's job — and there is
+// exactly one implementation of the answer.
+var IsPageChrome = chunk.IsPageChrome

@@ -13,7 +13,7 @@ import (
 )
 
 // TestCompileMutate_PracticeTransformers asserts the Phase-1 guard narrowing:
-// a practice/transformers create/update/delete with NO link_graph compiles to a
+// a practice create/update/delete with NO link_graph compiles to a
 // Target-routed MutationPlan (Target.Graph == the requested graph,
 // Target.Language == a.Language); a link_graph!="" op still falls through to
 // legacy. This is the positive complement to the deny cases moved out
@@ -47,12 +47,12 @@ func TestCompileMutate_PracticeTransformers(t *testing.T) {
 		assert.Equal(t, "practice", req.GetTarget().GetGraph())
 	})
 
-	t.Run("transformers create → CREATE, Target transformers", func(t *testing.T) {
+	t.Run("checks create → CREATE, Target checks", func(t *testing.T) {
 		req, ok := compileMutate(json.RawMessage(
-			`{"operation":"create","graph":"transformers","type":"recipe","name":"r","summary":"s"}`))
-		require.True(t, ok, "transformers create (no link_graph) must compile")
+			`{"operation":"create","graph":"checks","type":"example","name":"r","summary":"s"}`))
+		require.True(t, ok, "checks create (no link_graph) must compile")
 		assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_CREATE, req.GetMutation().GetKind())
-		assert.Equal(t, "transformers", req.GetTarget().GetGraph())
+		assert.Equal(t, "checks", req.GetTarget().GetGraph())
 	})
 
 	t.Run("link_graph linkage → ok=false (legacy)", func(t *testing.T) {
@@ -63,73 +63,6 @@ func TestCompileMutate_PracticeTransformers(t *testing.T) {
 	})
 }
 
-// TestCompileMutate_TransformersRecipeBucketRouting is the FAILS-WHEN-ABSENT
-// regression guard: a transformers recipe mutation must route to the
-// canonical "recipes" bucket (Target.Name == "recipes"), NEVER to a per-name
-// transformers instance derived from the recipe name. The recipe name must keep
-// flowing to the node SymbolName (createPayload maps a.Name → NodeBody.Name) so
-// loadRecipeByName can find it. Without the pin, mutationRequest threaded a.Name
-// as the Target instance, scattering each new recipe into its own instance and
-// making it unrunnable. The pre-existing transformers tests asserted only
-// Target.GetGraph() — that gap is why this regressed.
-func TestCompileMutate_TransformersRecipeBucketRouting(t *testing.T) {
-	t.Run("create with arbitrary recipe name → Target.Name=='recipes', SymbolName keeps the recipe name", func(t *testing.T) {
-		req, ok := compileMutate(json.RawMessage(
-			`{"operation":"create","graph":"transformers","type":"recipe","name":"postgres-docs-to-postgres-best-practices","content":"select x emit y","summary":"s"}`))
-		require.True(t, ok, "transformers recipe create must compile")
-		assert.Equal(t, "transformers", req.GetTarget().GetGraph())
-		assert.Equal(t, "recipes", req.GetTarget().GetName(),
-			"the Target instance MUST be the 'recipes' bucket, NOT the recipe name")
-
-		bodies := req.GetMutation().GetNodeBodies()
-		require.Len(t, bodies, 1, "one recipe node body")
-		assert.Equal(t, "postgres-docs-to-postgres-best-practices", bodies[0].GetName(),
-			"the recipe name MUST still flow to the node SymbolName so the loader finds it")
-	})
-
-	t.Run("by-id update → Target.Name=='recipes' (explicit pin, was empty default)", func(t *testing.T) {
-		req, ok := compileMutate(json.RawMessage(
-			`{"operation":"update","graph":"transformers","id":"abc","status":"x"}`))
-		require.True(t, ok, "transformers by-id update must compile")
-		assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_UPDATE, req.GetMutation().GetKind())
-		assert.Equal(t, "recipes", req.GetTarget().GetName(),
-			"by-id update routes to the 'recipes' bucket")
-	})
-
-	t.Run("delete-by-ids → Target.Name=='recipes'", func(t *testing.T) {
-		req, ok := compileMutate(json.RawMessage(
-			`{"operation":"delete","graph":"transformers","ids":["abc"]}`))
-		require.True(t, ok, "transformers delete-by-ids must compile")
-		assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_DELETE, req.GetMutation().GetKind())
-		assert.Equal(t, "recipes", req.GetTarget().GetName(),
-			"delete routes to the 'recipes' bucket")
-	})
-
-	// The two batch arms (update_batch/bulk_metadata) build their Target inline
-	// (compile_mutate_batch.go), bypassing mutationRequest — these subtests lock
-	// the inline-arm pin so a future transformers caller of either arm cannot
-	// scatter the write into a per-name instance off an arbitrary name.
-	t.Run("update_batch with arbitrary name → Target.Name=='recipes' (inline-arm pin)", func(t *testing.T) {
-		req, ok := compileMutate(json.RawMessage(
-			`{"operation":"update_batch","graph":"transformers","name":"some-recipe-name","items":[{"id":"abc","status":"x"}]}`))
-		require.True(t, ok, "transformers update_batch must compile")
-		assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_UPDATE_ITEMS, req.GetMutation().GetKind())
-		assert.Equal(t, "recipes", req.GetTarget().GetName(),
-			"update_batch routes to the 'recipes' bucket, NOT the supplied name")
-	})
-
-	t.Run("bulk_update_metadata with arbitrary name → Target.Name=='recipes' (inline-arm pin)", func(t *testing.T) {
-		req, ok := compileMutate(json.RawMessage(
-			`{"operation":"bulk_update_metadata","graph":"transformers","name":"some-recipe-name","updates":[{"id":"abc","metadata":{"k":"v"}}]}`))
-		require.True(t, ok, "transformers bulk_update_metadata must compile")
-		assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_UPDATE_ITEMS, req.GetMutation().GetKind())
-		assert.Equal(t, "recipes", req.GetTarget().GetName(),
-			"bulk_update_metadata routes to the 'recipes' bucket, NOT the supplied name")
-	})
-}
-
-// TestCompileDelete_ByIDs asserts the by-ids delete shape is unchanged: a
-// {ids:[...]} delete → Selection.Ids with NO FieldPredicate.
 func TestCompileDelete_ByIDs(t *testing.T) {
 	req, ok := Compile("delete", json.RawMessage(`{"ids":["a","b"]}`))
 	require.True(t, ok, "by-ids delete must compile")

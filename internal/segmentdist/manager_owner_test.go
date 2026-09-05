@@ -39,6 +39,7 @@ func hnswVecDocs(n int) []searchengine.Document {
 // ships NOTHING (Export-diff no-op for the already-shipped content hash).
 // Criterion: Phase 3 Step 1.
 func TestManagerAddAndMarkDirtySealsOneBlob(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()
@@ -134,6 +135,7 @@ func TestManagerFlushSealsSubThresholdTail(t *testing.T) {
 // TestManagerRoutesPerGraph asserts two distinct graphs get distinct engines and
 // independent ship state.
 func TestManagerRoutesPerGraph(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()
@@ -284,6 +286,7 @@ func TestGraphCacheDirsAreFormatDistinct(t *testing.T) {
 // the underlying engine's ResidentDocCount reports (the in-memory searchable
 // coverage), and a graph that was never added/loaded returns 0.
 func TestManagerResidentDocCount(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

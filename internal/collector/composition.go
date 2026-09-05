@@ -34,6 +34,23 @@ type CollectComposition struct {
 	TotalNodes  int
 	TotalEdges  int
 	NodesByType map[string]int
+	// NonSubstantiveNodes is carried through verbatim from the result the
+	// producing collector built: how many nodes carry a content type while
+	// being retained chrome. It is READ ONLY BY THE PRODUCING COLLECTOR'S OWN
+	// INVARIANT, which knows what the class means; nothing generic here
+	// interprets it, and Render does not name it, because it is a correction
+	// to one collector's arithmetic rather than a fact about the census.
+	NonSubstantiveNodes int
+	// Degraded is the producing collector's per-class census of dropped work,
+	// carried through verbatim and RENDERED, so a caller reading the collect
+	// response sees what the harvest lost rather than only what it captured.
+	Degraded map[string]int
+	// GithubFollowUps / GithubFollowUpSample carry the producing collector's
+	// follow-up inventory through to the rendered response. See the fields of
+	// the same name on collectorwire.CollectResult for why this is not a
+	// degrade.
+	GithubFollowUps      int
+	GithubFollowUpSample []string
 }
 
 // NewCollectComposition censuses a collect result by node Type.
@@ -58,11 +75,16 @@ func NewCollectComposition(result *collectorwire.CollectResult) CollectCompositi
 		byType[n.Type]++
 	}
 	return CollectComposition{
-		GraphType:   result.GraphType,
-		GraphName:   result.GraphName,
-		TotalNodes:  len(result.Nodes),
-		TotalEdges:  len(result.Edges),
-		NodesByType: byType,
+		GraphType:           result.GraphType,
+		GraphName:           result.GraphName,
+		TotalNodes:          len(result.Nodes),
+		TotalEdges:          len(result.Edges),
+		NodesByType:         byType,
+		NonSubstantiveNodes: result.NonSubstantiveNodes,
+		Degraded:            result.Degraded,
+
+		GithubFollowUps:      result.GithubFollowUps,
+		GithubFollowUpSample: result.GithubFollowUpSample,
 	}
 }
 
@@ -113,7 +135,75 @@ func (c CollectComposition) Render() string {
 	if omitted > 0 {
 		list += fmt.Sprintf(", +%d more types", omitted)
 	}
-	return fmt.Sprintf("nodes %d (%s), edges %d", c.TotalNodes, list, c.TotalEdges)
+	return fmt.Sprintf("nodes %d (%s), edges %d", c.TotalNodes, list, c.TotalEdges) +
+		c.renderDegraded() + c.renderGithubFollowUps()
+}
+
+// renderGithubFollowUps formats the follow-up inventory as a suffix:
+//
+//	, github follow-ups 5 (https://a, https://b, https://c, +2 more)
+//
+// A HARVEST THAT MET NO GITHUB LINK RENDERS NOTHING, on the same reasoning as
+// the degrade suffix: a line printed on every collect is a line nobody reads.
+//
+// THE COUNT IS EXACT AND THE SAMPLE IS CAPPED. The "+K more" states how many
+// URLs were omitted, so the sample can never be mistaken for the whole
+// inventory — which is the failure a silently truncated list would produce.
+func (c CollectComposition) renderGithubFollowUps() string {
+	if c.GithubFollowUps == 0 {
+		return ""
+	}
+	out := fmt.Sprintf(", github follow-ups %d", c.GithubFollowUps)
+	if len(c.GithubFollowUpSample) == 0 {
+		return out
+	}
+	sample := strings.Join(c.GithubFollowUpSample, ", ")
+	if omitted := c.GithubFollowUps - len(c.GithubFollowUpSample); omitted > 0 {
+		sample += fmt.Sprintf(", +%d more", omitted)
+	}
+	return out + " (" + sample + ")"
+}
+
+// renderDegraded formats the per-class degrade census as a suffix:
+//
+//	, degraded (fetch_failed 20, content_alias 1)
+//
+// A COMPOSITION WITH NO DEGRADATIONS RENDERS NOTHING EXTRA, so a clean
+// harvest's response is byte-identical to what it was before the census
+// existed. That is deliberate: a "degraded (none)" suffix on every successful
+// collect would train a reader to skip the line that matters.
+//
+// The ordering is count-descending then name-ascending — the same rule the
+// node-type list above uses, so one response does not carry two orderings.
+func (c CollectComposition) renderDegraded() string {
+	if len(c.Degraded) == 0 {
+		return ""
+	}
+	type row struct {
+		name  string
+		count int
+	}
+	rows := make([]row, 0, len(c.Degraded))
+	for name, n := range c.Degraded {
+		if n <= 0 {
+			continue
+		}
+		rows = append(rows, row{name: name, count: n})
+	}
+	if len(rows) == 0 {
+		return ""
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].count != rows[j].count {
+			return rows[i].count > rows[j].count
+		}
+		return rows[i].name < rows[j].name
+	})
+	parts := make([]string, 0, len(rows))
+	for _, r := range rows {
+		parts = append(parts, fmt.Sprintf("%s %d", r.name, r.count))
+	}
+	return ", degraded (" + strings.Join(parts, ", ") + ")"
 }
 
 // CompositionAsserter is the OPTIONAL per-collector capability declaring what a

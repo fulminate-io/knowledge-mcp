@@ -50,6 +50,7 @@ import (
 // (TestDeleteSurfacesAnAbortedMergeReclaim). Two partitions give the hook one blob
 // and persistResident the other, which is what this retry is for.
 func TestDeleteAbsorbsATransientL2WriteFailure(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()
@@ -286,10 +287,10 @@ type flakyRebuildFormat struct {
 	failed *atomic.Int64
 }
 
-func (f flakyRebuildFormat) Build(docs []searchengine.Document) (searchengine.Segment[mockQuery, mockStats], error) {
+func (f flakyRebuildFormat) Build(docs []searchengine.Document) (searchengine.Segment[mockQuery, mockStats], searchengine.BuildReport, error) {
 	if f.fail.Load() {
 		f.failed.Add(1)
-		return nil, errInjectedRebuildFailure
+		return nil, searchengine.BuildReport{}, errInjectedRebuildFailure
 	}
 	return f.mockFormat.Build(docs)
 }

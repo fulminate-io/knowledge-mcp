@@ -34,6 +34,7 @@ func TestDispatch_DeleteByIDsDryRun_PreviewsNeverDeletes(t *testing.T) {
 
 	out, err := Dispatch(context.Background(),
 		s.fn(),
+		nil,
 		"delete", json.RawMessage(`{"ids":["a","b"],"dry_run":true}`))
 	require.NoError(t, err)
 	require.False(t, out.IsError, "dry-run preview renders cleanly: %s", out.Content[0].Text)
@@ -66,6 +67,7 @@ func TestDispatch_DeleteByIDsRealDelete_StillDeletes(t *testing.T) {
 
 	out, err := Dispatch(context.Background(),
 		s.fn(),
+		nil,
 		"delete", json.RawMessage(`{"ids":["a","b"]}`))
 	require.NoError(t, err)
 	require.False(t, out.IsError)
@@ -89,6 +91,7 @@ func TestDispatch_DeleteDryRunJSON_ReportsWouldDelete(t *testing.T) {
 
 	out, err := Dispatch(context.Background(),
 		s.fn(),
+		nil,
 		"delete", json.RawMessage(`{"ids":["a"],"dry_run":true,"format":"json"}`))
 	require.NoError(t, err)
 	require.False(t, out.IsError)

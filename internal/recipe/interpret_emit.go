@@ -13,15 +13,16 @@ import (
 
 // evalEmit records a target-graph node per current row into the in-memory
 // Result. The node's ID is computed via StableID so re-runs against the same
-// source produce identical IDs (making Force=false idempotent). Each emit also
-// stamps a translated-from edge back to the source row's node (or the
-// env.SourceRef override), enabling Force=true cleanup to filter by source.
+// source produce identical IDs — which is what makes a re-run idempotent, and
+// equally what makes the write guard's id-scoped pre-read able to recognize a
+// resident row as this recipe's own. Each emit also stamps a translated-from
+// edge back to the source row's node (or the env.SourceRef override), recording
+// provenance.
 //
 // On the client, EVERY run accumulates Nodes + TranslatedFrom edges into
 // result.Nodes / result.Lineage and records the new ID in the in-run emitted
-// set — there is no target DB write here; RunRecipe ships the Result through the
-// collector Sink afterwards (skipping the write on DryRun). DryRun itself is
-// honored by RunRecipe rather than here.
+// set. There is no target DB write here and none afterwards: a recipe run
+// returns rows and ships nothing.
 //
 // EXTRACT MODE CHANGES NOTHING ABOUT EMIT. Nodes, Lineage and every Stats
 // counter accumulate exactly as they always have; extract only ALSO captures
@@ -40,6 +41,12 @@ func evalEmit(
 ) error {
 	targetKey := TargetKey(target)
 	rowCap := effectiveMaxRows(opts)
+	// Resolved once per run rather than per row, which keeps the refusal on the
+	// run and out of the hot loop.
+	rowOffset, err := effectiveOffset(opts)
+	if err != nil {
+		return err
+	}
 	for i := range env.Rows {
 		row := &env.Rows[i]
 		fields, err := evalEmitFields(ctx, env, row, r.Fields, sv)
@@ -58,6 +65,26 @@ func evalEmit(
 		}
 		identity := emitIdentity(row, fields)
 		nodeID := StableID(targetKey, sourceSlug, r.NodeType, identity)
+		// DUPLICATE-IDENTITY REFUSAL, at the FIRST collision and while the source
+		// row is still in hand. Two rows resolving to one identity used to ship two
+		// nodes under one id and fail in the database with a raw SQLSTATE — a
+		// recipe-AUTHORING mistake surfacing as a storage error the author cannot
+		// act on.
+		//
+		// THE PLACEMENT IS THE MESSAGE. Only here is the offending row available, so
+		// only here can the error name the rule, its position, the identity and the
+		// row that collided. A scan of the assembled node list at the end of the run
+		// refuses the same emission sets but can name nothing but an id.
+		//
+		// It reads the SAME run-scoped map this loop already writes below — one map
+		// read per row, no new allocation and no second pass, so the loop stays
+		// LINEAR. A per-row scan of result.Nodes would be correct and quadratic.
+		if emitted[nodeID] {
+			return fmt.Errorf(
+				"recipe: emit %q at %d:%d produced identity %q twice (source row %q, colliding node id %s) — key the identity on a field that is unique per row",
+				r.NodeType, r.Pos.Line, r.Pos.Col, identity, row.NodeID, nodeID,
+			)
+		}
 		node := assembleEmittedNode(nodeID, r.NodeType, fields, sourceSlug)
 
 		anchor := env.SourceRef
@@ -71,12 +98,15 @@ func evalEmit(
 		emitted[nodeID] = true
 
 		if opts.Extract {
-			if result.Extract == nil {
-				result.Extract = &ExtractResult{}
-			}
+			// Extract is allocated unconditionally by Interpret under extract mode.
+			// It used to be allocated HERE, lazily, which meant it stayed nil in
+			// exactly the state the disclosure exists to reveal: a run whose every
+			// row was skipped above never reached this line, so the renderer's
+			// nil branch printed rows=0/0 and the skipped count vanished.
+			//
 			// The SAME anchor the lineage edge above uses, so an extract row and
 			// the translated-from edge a real run would write name one source node.
-			recordExtractRow(result.Extract, rowCap, r.NodeType, anchor, fields)
+			recordExtractRow(result.Extract, rowOffset, rowCap, r.NodeType, anchor, fields)
 		}
 
 		result.Stats.NodesEmitted++
@@ -250,10 +280,13 @@ func emitIdentity(row *Row, fields map[string]string) string {
 }
 
 // assembleEmittedNode folds the field map into a *knowledgev1.Node. Top-level
-// keys (type, name, summary, description, content, source) land on the named
-// Node fields; everything else lands in Metadata. Source defaults to
-// "recipe:" + sourceSlug so downstream audits can tell recipe-emitted nodes
-// apart from manual authoring.
+// keys land on the named Node fields and everything else lands in Metadata. The
+// switch below is the authority; the keys it handles are type, name (with
+// symbol_name as an accepted spelling of the same field), summary, description,
+// content, source, status, and identity — which feeds StableID rather than a
+// Node field and is therefore consumed here rather than passed through to
+// Metadata. Source defaults to "recipe:" + sourceSlug so downstream audits can
+// tell recipe-emitted nodes apart from manual authoring.
 func assembleEmittedNode(
 	nodeID, fallbackType string,
 	fields map[string]string,
@@ -319,22 +352,4 @@ func resolveLinkEndpoint(
 	sv *sourceView,
 ) (string, error) {
 	return evalExpr(ctx, env, row, e, sv)
-}
-
-// collectEmitTypes walks a Recipe and returns the set of node types
-// every RuleEmit targets. Used by RunRecipe to scope the Force=true
-// cleanup so it only iterates the types the recipe could have emitted.
-func collectEmitTypes(r *Recipe) []string {
-	seen := map[string]struct{}{}
-	var types []string
-	for _, rule := range r.Rules {
-		if emit, ok := rule.(RuleEmit); ok {
-			if _, dup := seen[emit.NodeType]; dup {
-				continue
-			}
-			seen[emit.NodeType] = struct{}{}
-			types = append(types, emit.NodeType)
-		}
-	}
-	return types
 }

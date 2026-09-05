@@ -121,8 +121,7 @@ func unconfigured(provider config.EmbedProvider, key, baseURL string) bool {
 // http_<code>, so the classification reads that rather than re-deriving it
 // from a raw HTTP response.
 func axisPingError(axis string, provider config.EmbedProvider, elapsed time.Duration, err error) error {
-	var llmErr *llm.LLMError
-	if errors.As(err, &llmErr) {
+	if llmErr, ok := errors.AsType[*llm.LLMError](err); ok {
 		switch llmErr.Reason {
 		case "http_401", "http_403":
 			return fmt.Errorf("%s precheck: %s rejected the API key (%s): the key may be invalid, revoked, or out of credits — %w", axis, provider, llmErr.Reason, err)

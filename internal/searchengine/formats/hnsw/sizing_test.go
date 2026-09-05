@@ -123,7 +123,7 @@ func TestMergeRespectsPerDtypeSealTarget(t *testing.T) {
 		for i, id := range ids {
 			docs[i] = searchengine.Document{ID: id, Vector: items[i].vec}
 		}
-		seg, err := Format{}.Build(docs)
+		seg, _, err := Format{}.Build(docs)
 		require.NoError(t, err)
 		return seg
 	}

@@ -54,8 +54,22 @@ func (e *SegmentedIndex[Q, S]) mergeEntry(segs []Segment[Q, S], accept []func(Ex
 		}
 	}()
 
-	n, err := e.format.MergeTo(f, segs, accept)
-	if err != nil {
+	// THE MERGE READS EVERY CONSTITUENT'S PER-DOCUMENT DATA, so it reaches the
+	// same accessors a query does and can raise the same corruption — hnsw's
+	// MergeTo walks rangeVectors, resolving each node's id and vector. Raised on
+	// the merger's own goroutine with nothing above it, that ends the process.
+	//
+	// THE ID IS EMPTY DELIBERATELY: a merge drains several inputs interleaved and
+	// this boundary cannot say which one raised. Naming the wrong constituent
+	// would be worse than naming none — the owner would quarantine a healthy
+	// segment. The census is what identifies the bad file; this boundary's job is
+	// to keep the daemon alive and fail the merge.
+	var n int64
+	if err := e.containCorrupt("", func() error {
+		var mergeErr error
+		n, mergeErr = e.format.MergeTo(f, segs, accept)
+		return mergeErr
+	}); err != nil {
 		return nil, err
 	}
 	// THE TRUNCATE IS THE ENGINE'S, and it is required rather than tidy: a format
@@ -79,13 +93,27 @@ func (e *SegmentedIndex[Q, S]) mergeEntry(segs []Segment[Q, S], accept []func(Ex
 		return nil, fmt.Errorf("searchengine: unlinking merge scratch %s: %w", path, err)
 	}
 
-	seg, err := e.format.Decode(data)
-	if err != nil {
-		releaseUnattached(release)
-		return nil, fmt.Errorf("searchengine: decoding merged segment: %w", err)
-	}
-	entry, err := e.newEntry(seg, nil)
-	if err != nil {
+	// THE OUTPUT IS READ BACK UNDER THE SAME BOUNDARY THE INPUTS WERE. Decode and
+	// newEntry resolve the merged artifact's own per-document data — newEntry
+	// calls IDs(), which walks the member table — so an artifact this merge just
+	// wrote inconsistently raises HERE, on the merger's goroutine, with nothing
+	// above it. The containment above covered only MergeTo and stopped one line
+	// short of the read-back, which left the crash loop alive for ENGINE-WRITTEN
+	// output: the same merge is re-attempted after every restart, and the file it
+	// dies on is one this process produced rather than one it was handed.
+	var entry *segmentEntry[Q, S]
+	if err := e.containCorrupt("", func() error {
+		seg, decErr := e.format.Decode(data)
+		if decErr != nil {
+			return fmt.Errorf("searchengine: decoding merged segment: %w", decErr)
+		}
+		built, entErr := e.newEntry(seg, nil)
+		if entErr != nil {
+			return entErr
+		}
+		entry = built
+		return nil
+	}); err != nil {
 		releaseUnattached(release)
 		return nil, err
 	}

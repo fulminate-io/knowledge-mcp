@@ -13,26 +13,26 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
-// intercept_query_builtin_stats.go serves query(mode:"stats") for the two
-// built-in graphs that had no stats arm — checks and transformers — and refuses a
-// graph VALUE that names no graph at all.
+// intercept_query_builtin_stats.go serves query(mode:"stats") for the built-in
+// graph that had no stats arm — checks — and refuses a graph VALUE that names no
+// graph at all.
 //
 // BEFORE THIS ARM both cases met the same generic engine deny: "stats" is not an
-// engine-reducible mode, and no intercept claimed either graph, so a caller
-// asking for real stats and a caller making a typo got one indiscriminate
-// message. mode:stats now works uniformly.
+// engine-reducible mode, and no intercept claimed the graph, so a caller asking
+// for real stats and a caller making a typo got one indiscriminate message.
+// mode:stats now works uniformly.
 //
 // TWO CASES, DELIBERATELY DISTINCT:
-//   - the graph is REAL but had no stats arm (checks, transformers) → SERVED;
-//   - the graph value names NO graph ("all", a typo) → refused naming the value
-//     AND the accepted vocabulary, per BAD INPUT ALWAYS ERRORS.
+//   - the graph is REAL but had no stats arm (checks) → SERVED;
+//   - the graph value names NO graph ("all", a typo, a RETIRED family) → refused
+//     naming the value AND the accepted vocabulary, per BAD INPUT ALWAYS ERRORS.
 //
 // A real graph belonging to another arm is DECLINED, not refused: the per-graph
 // stats arms (knowledge, practice, cloud/cicd, code, web/pdf) own their own
 // shapes and this arm must never shadow them.
 
-// InterceptQueryBuiltinStats claims query(mode:"stats") for checks and
-// transformers, and refuses an unknown graph value on the same mode.
+// InterceptQueryBuiltinStats claims query(mode:"stats") for checks, and refuses
+// an unknown graph value on the same mode.
 func InterceptQueryBuiltinStats(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
@@ -48,7 +48,7 @@ func InterceptQueryBuiltinStats(ctx context.Context, deps ClientDeps, params kgt
 	// precedent: a graph admitted here without a body cannot exist, because the
 	// body IS the case arm.
 	switch a.Graph {
-	case string(kgtypes.GraphChecks), string(kgtypes.GraphTransformers):
+	case string(kgtypes.GraphChecks):
 		return true, builtinGraphStats(ctx, deps, a, params.Arguments)
 	}
 	if res, unknown := unknownGraphVocabularyRefusal(ctx, deps, a.Graph); unknown {
@@ -57,7 +57,7 @@ func InterceptQueryBuiltinStats(ctx context.Context, deps ClientDeps, params kgt
 	return false, kgtools.ToolResult{} // a real graph another arm owns.
 }
 
-// builtinGraphStats serves the checks / transformers stats read.
+// builtinGraphStats serves the checks stats read.
 //
 // THE SELECTOR CARRIES THE WIRE SPELLING, NOT THE INTERNAL KEY. renderGraphStatsBody
 // issues a wire Stats RPC and its sample enrichment issues wire Execute reads
@@ -68,17 +68,10 @@ func InterceptQueryBuiltinStats(ctx context.Context, deps ClientDeps, params kgt
 // checks, which is exactly the confident-zero seam the two-names rule was written
 // to close. Apply it only where a client-side keyed map is being read.
 func builtinGraphStats(ctx context.Context, deps ClientDeps, a queryArgs, raw json.RawMessage) kgtools.ToolResult {
-	// THE TWO GRAPHS DIFFER ON `name`, and the difference is the selector policy
-	// rather than a special case. checks is a SINGLETON whose policy carries no
-	// instance field and rejects a set name, so "" is the only spelling a reader
-	// can send and the arm must not require one. transformers carries a REAL
-	// instance name, so a nameless call is refused pointing at the enumeration —
-	// the same answer, in the same words, the served web/pdf arm already gives.
-	if a.Graph == string(kgtypes.GraphTransformers) && a.Name == "" {
-		return errorResult(a.Graph + ` stats: name is required — a transformers graph is keyed by its ` +
-			`bucket name and has no default instance; use mode:"modules" to list the available ` +
-			a.Graph + ` graphs`)
-	}
+	// NO `name` RULE RUNS HERE ANY MORE. This arm served two graphs and only one
+	// of them carried a real instance name; checks is a SINGLETON whose selector
+	// policy carries no instance field and rejects a set name, so "" is the only
+	// spelling a reader can send and requiring one would refuse every legal call.
 	sc, res, ok := statsSeamFor(deps, a.Graph)
 	if !ok {
 		return res
@@ -87,18 +80,15 @@ func builtinGraphStats(ctx context.Context, deps ClientDeps, a queryArgs, raw js
 		return errorResult(err.Error())
 	}
 	return renderGraphStatsBody(ctx, sc, &knowledgev1.GraphSelector{Graph: a.Graph, Name: a.Name},
-		builtinStatsHeader(a.Graph, a.Name), a)
+		builtinStatsHeader(), a, nil)
 }
 
-// builtinStatsHeader is the markdown heading each served graph opens with.
-// checks renders as a bare family name because it is a singleton — "One graph,
-// so the family name IS the instance name", the same rule queryGraphLabelFor
-// applies to its label.
-func builtinStatsHeader(graph, name string) string {
-	if graph == string(kgtypes.GraphChecks) {
-		return "## Checks Graph"
-	}
-	return "## Transformers Graph: " + name
+// builtinStatsHeader is the markdown heading the served graph opens with. checks
+// renders as a bare family name because it is a singleton — "One graph, so the
+// family name IS the instance name", the same rule queryGraphLabelFor applies to
+// its label. It takes no arguments because the arm serves exactly one graph.
+func builtinStatsHeader() string {
+	return "## Checks Graph"
 }
 
 // unknownGraphVocabularyRefusal reports whether the graph value names no graph at
@@ -119,6 +109,13 @@ func builtinStatsHeader(graph, name string) string {
 func unknownGraphVocabularyRefusal(ctx context.Context, deps ClientDeps, graph string) (kgtools.ToolResult, bool) {
 	if graph == "" || kgtypes.IsBuiltinGraphType(graph) {
 		return kgtools.ToolResult{}, false
+	}
+	// A RETIRED FAMILY IS NOT AN UNKNOWN TYPO. It was a valid graph in an earlier
+	// release, so the refusal names the removal rather than reporting a name that
+	// never existed. It sits ahead of the registry read because the answer needs
+	// no registry.
+	if reason, retired := kgtypes.RetiredGraphTypeReason(graph); retired {
+		return errorResult(fmt.Sprintf("query(stats): graph type %q is retired: %s", graph, reason)), true
 	}
 	registered, err := registeredGraphTypeNames(ctx, deps)
 	if err != nil {

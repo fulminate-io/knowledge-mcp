@@ -152,7 +152,7 @@ func TestEmbedderProfiles(t *testing.T) {
 		_, err = cfg.ResolveEmbedProfileForFamily("linkage")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "linkage")
-		assert.Contains(t, err.Error(), "transformers", "the refusal lists the accepted families")
+		assert.Contains(t, err.Error(), "practice", "the refusal lists the accepted families")
 
 		_, err = Parse([]byte("[embedder.family.nope]\nprofile = \"default\"\n"))
 		require.Error(t, err)

@@ -216,14 +216,14 @@ func TestClosestKinds_RanksNearestFirstAndBounds(t *testing.T) {
 	vocabulary, ok := NodeKinds(treesitter.LangGo)
 	require.True(t, ok)
 
-	hits := closestKinds("identifierr", vocabulary)
+	hits := ClosestVocabulary("identifierr", vocabulary)
 	require.NotEmpty(t, hits)
 	assert.Equal(t, "identifier", hits[0], "the nearest candidate leads")
 	assert.LessOrEqual(t, len(hits), maxKindSuggestions, "the list is bounded")
-	assert.Equal(t, hits, closestKinds("identifierr", vocabulary),
+	assert.Equal(t, hits, ClosestVocabulary("identifierr", vocabulary),
 		"and is deterministic, so the error message does not vary run to run")
 
-	assert.Empty(t, closestKinds("zzqqxxwwvv", vocabulary),
+	assert.Empty(t, ClosestVocabulary("zzqqxxwwvv", vocabulary),
 		"nothing within the distance bound yields no suggestion rather than a far one")
 
 	assert.Equal(t, []int{0, 3, 3, 1},

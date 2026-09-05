@@ -132,6 +132,7 @@ func raceResetAgainstAConcurrentPublish(
 // assertion in the gate below is satisfiable by a fixture in which nothing survived
 // the swap and there was never anything to absorb.
 func TestResetSwapPreservesBuildWindowSurvivorsAsDuplicates(t *testing.T) {
+	requireMeasurementRun(t)
 	dm, _, published, _ := raceResetAgainstAConcurrentPublish(t)
 
 	resident := dm.engine.ResidentSegmentIDs()
@@ -155,6 +156,7 @@ func TestResetSwapPreservesBuildWindowSurvivorsAsDuplicates(t *testing.T) {
 // defect is real is the characterization test above, which observes the duplicated
 // state directly.
 func TestResetSwapAbsorbsBuildWindowSurvivors(t *testing.T) {
+	requireMeasurementRun(t)
 	dm, base, published, concurrent := raceResetAgainstAConcurrentPublish(t)
 
 	// FIXTURE CONTROL FOR THE DISCRIMINATION CLAIM, asserted BEFORE the absorb consumes

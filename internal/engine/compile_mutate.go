@@ -178,9 +178,15 @@ func (e *edgeBody) UnmarshalJSON(data []byte) error {
 // per-item body because it is a claim ABOUT that item's vector: an identity on
 // an item carrying no vector claims nothing and is ignored server-side.
 type batchItem struct {
-	ID            string                     `json:"id"`
-	Summary       *string                    `json:"summary"`
-	Keywords      *string                    `json:"keywords"`
+	ID       string  `json:"id"`
+	Summary  *string `json:"summary"`
+	Keywords *string `json:"keywords"`
+	// Description carries the node BODY, under the same set/unset pointer
+	// contract as its siblings. It was the one field a caller could name here
+	// and lose: with no proto carrier the key died at json.Unmarshal, the item
+	// compiled to the id alone, and the call returned success having written
+	// none of it.
+	Description   *string                    `json:"description"`
 	BinaryVector  []byte                     `json:"binary_vector"`
 	Metadata      map[string]string          `json:"metadata"`
 	Status        *string                    `json:"status"`
@@ -188,7 +194,7 @@ type batchItem struct {
 }
 
 // compileMutate translates a reducible `mutate` op into a MutationPlan. Returns
-// ok=false (default-deny → legacy) for graph=practice/transformers, cross-graph
+// ok=false (default-deny → legacy) for graph=practice/checks, cross-graph
 // practice link, thought/charge creates, heterogeneous update_batch, and the
 // non-reducible ops (upsert/bulk_update_metadata/answer/prune-by-age).
 func compileMutate(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
@@ -200,11 +206,11 @@ func compileMutate(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 	// The cross-graph practice link (link_graph set) is SPECIALIZED
 	// (handleClientCrossGraphLink — proxy creation, legacy). The engine
 	// targets a single graph; the cross-graph LINK is its own surface, so it
-	// stays the residual deny. A practice/transformers create/update/delete/link/
+	// stays the residual deny. A practice/checks create/update/delete/link/
 	// upsert with NO link_graph now compiles to a Target-routed MutationPlan
 	// (Target.Graph == the requested graph, Target.Language == a.Language) via
 	// the op switch below + mutationRequest/buildTarget — the engine is a generic
-	// single-graph parametric mutator (1ad493da), so practice/transformers need
+	// single-graph parametric mutator (1ad493da), so practice/checks need
 	// no special server arm.
 	if a.LinkGraph != "" {
 		return nil, false
@@ -406,21 +412,11 @@ func nodeBodyToProto(n nodeBody) *knowledgev1.NodeBody {
 	}
 }
 
-// transformersBucketName is the single flat bucket every transformers (recipe)
-// mutation must route to. The recipe NAME flows to the node SymbolName
-// (createPayload maps a.Name → nodeBody.Name), NOT to the Target instance — so
-// the Target instance is pinned to this bucket, never the recipe name. Must
-// match the server's TransformersBucketName
-// (cmd/knowledge-server/internal/tools/tools_graph_routing.go:285); the client
-// cannot import that const (no shared packages outside gen/ proto), hence the
-// duplicated literal.
-const transformersBucketName = "recipes"
-
 // mutationRequest wraps a MutationPlan in an ExecuteRequest with the target
 // graph selector. An empty graph targets the knowledge graph (the engine's
-// graph=="" default); a practice/transformers graph routes the mutation to that
+// graph=="" default); a practice/checks graph routes the mutation to that
 // graph via buildTarget (the guard now denies only the cross-graph link_graph
-// case upstream, so practice/transformers ops reach here Target-routed).
+// case upstream, so practice/checks ops reach here Target-routed).
 //
 // Repo/Account are threaded onto the Target so a named-graph write routes to the
 // right per-graph backing: the server resolves graph=code by Target.Repo and
@@ -443,12 +439,7 @@ const transformersBucketName = "recipes"
 // a node name — a typed create, a criterion description update (whose name is
 // DERIVED from the description), a log-backend upsert — failed with
 // "graph=knowledge holds ONE graph: name= is a label, not a selector".
-//
-// transformersBucketName is the one Target name that is a LITERAL rather than
-// caller input: the server resolves transformers by Target.Name, and every recipe
-// belongs in the single canonical "recipes" bucket RunRecipe's loader reads. The
-// recipe's own name rides the node body (createPayload maps a.Name →
-// nodeBody.Name), never the selector.
+
 func mutationRequest(plan *knowledgev1.MutationPlan, a mutateArgs) *knowledgev1.ExecuteRequest {
 	return &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},

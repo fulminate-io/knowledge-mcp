@@ -88,7 +88,7 @@ func dispatchGraphWideJSON(ctx context.Context, exec ExecuteFn, a traverseArgs, 
 	if err != nil {
 		return renderEngineError(err), true
 	}
-	edges, err := graphWideEdgeUnion(ctx, exec, nodeIDsOf(nodes), a.EdgeTypes, a.Graph, target)
+	edges, err := graphWideEdgeUnion(ctx, exec, nodeIDsOf(nodes), a.EdgeTypes, target)
 	if err != nil {
 		return renderEngineError(err), true
 	}
@@ -126,7 +126,7 @@ func dispatchGraphWideText(ctx context.Context, exec ExecuteFn, a traverseArgs, 
 		return renderEngineError(err), true
 	}
 
-	edges, uerr := graphWideEdgeUnion(ctx, exec, ids, a.EdgeTypes, a.Graph, target)
+	edges, uerr := graphWideEdgeUnion(ctx, exec, ids, a.EdgeTypes, target)
 	if uerr != nil {
 		return renderEngineError(uerr), true
 	}
@@ -169,15 +169,21 @@ func nodeIDsOf(nodes []*knowledgev1.Node) []string {
 // read whose cost scales with the whole edge table is precisely the surface this
 // must no longer expose. An empty id set still skips the read entirely, keeping
 // the empty-graph shape unchanged. The renderers apply the source-membership
-// check (nodeIDSet). edge_types are canonicalized per-graph client-side.
+// check (nodeIDSet). edge_types arrive already RESOLVED against this graph's
+// own edge vocabulary (the Dispatch seam runs before this arm), which is why
+// this helper no longer takes the graph name: there is nothing left here that
+// depends on the graph FAMILY, only on what the graph actually stores.
 //
 // The per-page Limit and the drain's edgeCap are deliberately the same number:
 // one is what the server enforces, the other is what the drain uses to notice it.
-func graphWideEdgeUnion(ctx context.Context, exec ExecuteFn, ids []string, edgeTypes []string, graph string, target *knowledgev1.GraphSelector) ([]knowledgev1.Edge, error) {
+func graphWideEdgeUnion(ctx context.Context, exec ExecuteFn, ids []string, edgeTypes []string, target *knowledgev1.GraphSelector) ([]knowledgev1.Edge, error) {
 	return paging.DrainPivotEdges(ids, paging.EdgePivotPageSize, CorrelationsEdgeScanCap, func(idPage []string, fromIDGte, fromIDLt string) ([]knowledgev1.Edge, bool, error) {
 		sel := &knowledgev1.Selection{}
 		if len(edgeTypes) > 0 {
-			sel.EdgeTypes = canonicalEdgeCasings(graph, edgeTypes)
+			// Verbatim pass-through: these spellings were resolved against this
+			// graph's own edge vocabulary in the Dispatch seam before the
+			// start-less arm was entered.
+			sel.EdgeTypes = edgeTypes
 		}
 		edgesPlan := &knowledgev1.QueryPlan{
 			Ids:          idPage,

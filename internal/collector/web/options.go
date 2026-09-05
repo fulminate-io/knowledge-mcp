@@ -29,12 +29,43 @@ type CrawlOptions struct {
 	PolitenessMs   int
 	UserAgent      string
 
-	// MaxConcurrency caps the number of worker goroutines that pop from
-	// the BFS queue in parallel. Zero selects the package default. Each
-	// worker fetches/parses/enqueues independently; per-host politeness is
-	// enforced by fetchClient.waitForPoliteness (which serializes fetches
-	// to the same host), so cross-host parallelism is safe to stack.
+	// MaxConcurrency caps the number of worker goroutines that pop from the
+	// BFS queue in parallel. Zero selects the package default. Each worker
+	// fetches/parses/enqueues independently.
+	//
+	// PER-HOST POLITENESS DOES NOT SERIALIZE SAME-HOST FETCHES, and the
+	// correction is measured rather than reasoned: waitForPoliteness takes the
+	// per-host mutex, sleeps out the remaining floor, stamps lastFetch and
+	// releases it in its defer — all BEFORE the request is issued. It
+	// therefore enforces a minimum SPACING between request STARTS to one host,
+	// not one request at a time. Same-host parallelism is bounded by roughly
+	// ceil(request_latency / politeness_ms) and capped by MaxConcurrency;
+	// cross-host parallelism is bounded by MaxConcurrency alone. Measured: 8
+	// simultaneous same-host requests in flight at politeness 0, and 2 at the
+	// 50ms default.
+	//
+	// A VALUE ABOVE maxAllowedConcurrency IS REFUSED BY ValidateCrawlOptions
+	// RATHER THAN CLAMPED. A clamped crawl runs a configuration its caller did
+	// not ask for and never learns that it did; see that constant for why this
+	// knob carries a ceiling when the other budget knobs do not.
 	MaxConcurrency int
+
+	// MaterializeGithub opts IN to seed-time github materialization. It is
+	// OFF by default, which is the behavioral change: without it a github
+	// seed is treated exactly as a github link found on a page — no tarball is
+	// fetched, no repository nodes are emitted, and the URL is reported to the
+	// caller as a follow-up candidate.
+	//
+	// THE RULING BEHIND IT, in the user's words: "github links are things the
+	// user would decide to follow up on, its not a failure at all", and on
+	// whether the collector should materialize them by itself, "Gate behind an
+	// explicit opt-in". Fetching and unpacking a whole repository is a large,
+	// slow, caller-visible act; it happens when the caller asks for it.
+	//
+	// ValidateCrawlOptions REFUSES it when no seed URL is a github repository
+	// URL, so an opt-in that could never fire is a loud error rather than a
+	// silently inert flag.
+	MaterializeGithub bool
 
 	// MaxPathSegments caps the number of non-empty path segments a
 	// followed URL may have. Catches recursive-path traps like
@@ -74,16 +105,41 @@ type CrawlOptions struct {
 // queue drains, so unbounded-by-default is safe for the well-behaved
 // sites we target.
 //
-// PolitenessMs=50 is a low-but-polite default. Per-host politeness is
-// enforced by fetchClient.waitForPoliteness — concurrent fetches to the
-// same host serialize through a per-host mutex so MaxConcurrency never
-// breaks the 50ms floor. Multi-host crawls get full MaxConcurrency
-// throughput.
+// PolitenessMs=50 is a low-but-polite default, enforced per host by
+// fetchClient.waitForPoliteness.
+//
+// IT IS A FLOOR ON THE SPACING BETWEEN REQUEST STARTS, NOT A SERIALIZATION.
+// waitForPoliteness releases the per-host mutex before the request is issued,
+// so several requests to one host can be in flight at once — measured at 8 at
+// politeness 0 and 2 at this 50ms default with 8 workers. What the floor
+// guarantees is that no two requests to the same host START closer together
+// than PolitenessMs. Multi-host crawls are bounded by MaxConcurrency alone.
 const (
 	defaultPolitenessMs     = 50
 	defaultMaxConcurrency   = 8
 	defaultMaxDownloadBytes = 50 << 20 // 50 MiB per (owner, repo, ref) materialization
 )
+
+// maxAllowedConcurrency is the largest MaxConcurrency ValidateCrawlOptions will
+// accept. A larger value is REFUSED, never clamped.
+//
+// WHY THIS KNOB HAS A CEILING WHEN ITS SIBLINGS DO NOT. MaxDepth, MaxPages,
+// MaxPathSegments and MaxPagesPerHost bound the crawl's OWN budget: a bigger
+// number costs this process more work and costs nobody else anything, and
+// ApplyDefaults deliberately leaves the first two unbounded because silent
+// truncation at an arbitrary cap hid catalog-size bugs. MaxConcurrency is a
+// different quantity — it is the count of worker goroutines issuing
+// SIMULTANEOUS REQUESTS at hosts that never consented to the number — so the
+// cost of a large value is borne by a third party, and the validator is the
+// only place that can say no.
+//
+// WHY 32. Four times the default of 8, and above every configuration this repo
+// runs (the default, plus the 1 and 6 the concurrency tests drive), so genuine
+// multi-host crawls keep room to breathe. Same-host parallelism is bounded well
+// below it in any case by per-host politeness, which spaces request STARTS —
+// measured at 2 in flight against one host at the 50ms default; see the
+// CrawlOptions.MaxConcurrency doc.
+const maxAllowedConcurrency = 32
 
 // ApplyDefaults returns a copy of opts with zero-valued MaxDepth, MaxPages,
 // PolitenessMs, and UserAgent fields replaced by the package defaults.
@@ -148,10 +204,34 @@ func ValidateCrawlOptions(opts CrawlOptions) error {
 	if opts.MaxConcurrency < 0 {
 		return fmt.Errorf("crawl options: MaxConcurrency must be >= 0 (got %d)", opts.MaxConcurrency)
 	}
+	if opts.MaxConcurrency > maxAllowedConcurrency {
+		return fmt.Errorf("crawl options: MaxConcurrency %d exceeds the maximum of %d — reduce it and re-run; the crawler will not spawn that many workers against a host", opts.MaxConcurrency, maxAllowedConcurrency)
+	}
 	if opts.MaxDownloadBytes < -1 {
 		return fmt.Errorf("crawl options: MaxDownloadBytes must be >= -1 (got %d)", opts.MaxDownloadBytes)
 	}
+	// AN OPT-IN THAT COULD NEVER FIRE IS BAD INPUT, and bad input errors
+	// rather than being ignored: a caller who asked for materialization and
+	// seeded no repository has made a mistake that a silent no-op would hide
+	// until they went looking for nodes that were never going to exist.
+	//
+	// The recognizer is the collector's OWN parseGitHubURL, so "a github URL"
+	// has exactly one definition here and in the materializer that acts on it.
+	if opts.MaterializeGithub && !anySeedIsGithub(opts.SeedURLs) {
+		return fmt.Errorf("crawl options: MaterializeGithub was set but no seed URL is a github repository URL")
+	}
 	return nil
+}
+
+// anySeedIsGithub reports whether any seed parses as a github repository URL,
+// by the same recognizer the materializer dispatches on.
+func anySeedIsGithub(seeds []string) bool {
+	for _, seed := range seeds {
+		if _, ok := parseGitHubURL(seed); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // ParseFollowPatterns compiles every raw regex in patterns. Returns the

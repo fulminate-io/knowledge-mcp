@@ -171,8 +171,13 @@ func TestIsInvalidEnumError(t *testing.T) {
 // TestNormalizeTeam — sanity-check the wire-shape → name-map flatten
 // inside resolveTeamByKey/ByID. Direct unit on the helper avoids
 // going through HTTP for the trivial case.
+//
+// The label legs are gone with the label map: the team queries no longer
+// select labels, and ensureLabels resolves each name against the tracker
+// instead. The reuse coverage that replaced them is in
+// backend_write_labels_test.go.
 func TestNormalizeTeam(t *testing.T) {
-	wire := &teamWithStatesLabels{
+	wire := &teamWithStates{
 		ID:  "team_uuid_1",
 		Key: "ABC",
 	}
@@ -183,20 +188,11 @@ func TestNormalizeTeam(t *testing.T) {
 		{ID: "state_uuid_1", Name: "Todo"},
 		{ID: "state_uuid_2", Name: "Done"},
 	}
-	wire.Labels.Nodes = []struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-	}{
-		{ID: "label_uuid_1", Name: "bug"},
-	}
 	got := normalizeTeam(wire)
 	if got.ID != "team_uuid_1" || got.Key != "ABC" {
 		t.Errorf("got.{ID,Key} = %q,%q, want team_uuid_1,ABC", got.ID, got.Key)
 	}
 	if got.States["Todo"] != "state_uuid_1" || got.States["Done"] != "state_uuid_2" {
 		t.Errorf("States map mismatch: %+v", got.States)
-	}
-	if got.Labels["bug"] != "label_uuid_1" {
-		t.Errorf("Labels map mismatch: %+v", got.Labels)
 	}
 }

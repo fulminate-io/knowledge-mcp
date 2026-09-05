@@ -55,7 +55,7 @@ func TestMergeConverges(t *testing.T) {
 
 	build := func(docs []searchengine.Document) searchengine.Segment[[]byte, struct{}] {
 		t.Helper()
-		seg, err := Format{}.Build(docs)
+		seg, _, err := Format{}.Build(docs)
 		if err != nil {
 			t.Fatalf("Build: %v", err)
 		}

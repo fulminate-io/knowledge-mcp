@@ -114,12 +114,12 @@ func interceptSearchArms(ctx context.Context, deps ClientDeps, params kgtools.Ca
 	}
 	// For completeness: the SEARCH tool is a SEPARATE client
 	// compile path from the query tool. engine.compileSearch is reducible for
-	// practice/cloud/cicd/linkage/web/pdf/transformers/checks and would dispatch
+	// practice/cloud/cicd/linkage/web/pdf/checks and would dispatch
 	// RETURN_MODE_SEARCH to the server. Claim each of those reducible graphs there
 	// (intercept_search_reducible_graph.go) — practice/cloud/cicd served by the
 	// client segment engine, web/pdf by the client-computed BM25 read over the
-	// drained raw graph, and linkage/transformers/checks refused by name because
-	// they carry no ranked index — so the SEARCH tool emits no RETURN_MODE_SEARCH
+	// drained raw graph, checks by its own served arm, and linkage refused by name
+	// because it carries no ranked index — so the SEARCH tool emits no RETURN_MODE_SEARCH
 	// for ANY reducible graph. Only the knowledge/default arm (and graph=logs/code
 	// above) flows past this point.
 	if handled, res := interceptSearchReducibleGraph(ctx, deps, sniff.Graph, params.Arguments); handled {

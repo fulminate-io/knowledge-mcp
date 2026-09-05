@@ -30,6 +30,7 @@ import (
 //
 // TWO LEGS. Without the second, a seed that copied NOTHING at all would pass.
 func TestBranchSeedDoesNotResurrectRetiredDocs(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

@@ -43,6 +43,16 @@ type TaggedPageSpec struct {
 	Fonts      []FontSpec
 	Body       string
 	StructTree StructElemSpec
+
+	// Rotation is the page /Rotate value (one of 0, 90, 180, 270) and
+	// carries the same contract as PageSpec.Rotation on the untagged
+	// writer: zero — the default — emits no /Rotate entry at all.
+	//
+	// It exists so one fixture set can put the SAME content through the
+	// tagged and the untagged path under the SAME page frame. That pair is
+	// what makes a reading-order assertion discriminating: the untagged leg
+	// is a control whose order the structure-tree walk cannot influence.
+	Rotation int
 }
 
 // WriteTaggedPDF emits a single-page tagged PDF synthesizing
@@ -60,6 +70,12 @@ type TaggedPageSpec struct {
 //     indirect ref.
 //  5. Insert /StructTreeRoot into the Catalog and /MarkInfo with
 //     /Marked = true so pdfcpu's validation flags the PDF as Tagged.
+//  6. Stamp /Rotate on the page dict when spec.Rotation is non-zero.
+//     AddPageTreeWithSamplePage builds the page dict itself, so the entry
+//     is inserted afterwards through the page's indirect ref rather than
+//     at construction — the same /Rotate key buildPageDict writes for the
+//     untagged writer, on the same page dict, reached the only way this
+//     construction path allows.
 func WriteTaggedPDF(dst string, spec TaggedPageSpec) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", filepath.Dir(dst), err)
@@ -85,6 +101,13 @@ func WriteTaggedPDF(dst string, spec TaggedPageSpec) error {
 	pageIndRef, err := firstPageIndRef(xRefTable, rootDict)
 	if err != nil {
 		return fmt.Errorf("locate first page: %w", err)
+	}
+	if spec.Rotation != 0 {
+		pageDict, err := xRefTable.DereferenceDict(*pageIndRef)
+		if err != nil {
+			return fmt.Errorf("dereference first page dict: %w", err)
+		}
+		pageDict.InsertInt("Rotate", spec.Rotation)
 	}
 
 	rootStructIR, err := buildStructTreeRoot(xRefTable, &spec.StructTree, *pageIndRef)

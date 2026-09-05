@@ -141,7 +141,7 @@ func (c *client) reconcileSegmentCoverageScoped(ctx context.Context, deltaScope 
 // The kgtypes.HasRebuildableSegments gate survives unchanged and still mirrors
 // segCoveredFor's matching gate (manage_status_coverage.go), so the reconcile probes
 // exactly the graph set manage(status) reports as segment-bearing — linkage +
-// transformers (sync-eligible but non-embeddable) are skipped, they carry no
+// linkage (sync-eligible but non-embeddable) is skipped, it carries no
 // rebuildable segments.
 //
 // IT IS A SHARED HELPER ON PURPOSE. The periodic reconcile pass and the
@@ -155,7 +155,7 @@ func (c *client) segmentBearingGraphs() []segmentGraphRef {
 	graphs := make([]segmentGraphRef, 0, len(members))
 	for _, m := range members {
 		if !kgtypes.HasRebuildableSegments(m.GraphType) {
-			continue // linkage / transformers — no rebuildable segments.
+			continue // linkage — no rebuildable segments.
 		}
 		if !c.graphLocallyPresent(m.GraphType, m.Name) {
 			continue // code graph whose checkout this machine does not hold.

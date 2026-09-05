@@ -25,6 +25,7 @@ import (
 // mechanism is absent, not weakened. What survives is the ordering above, which is
 // genuinely local and was previously buried inside the roleA arm.
 func TestRebuildSwapReclaimsThenInvalidateLocalBackstops(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

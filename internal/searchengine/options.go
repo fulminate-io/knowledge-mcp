@@ -44,6 +44,42 @@ type Options struct {
 	// without this field gets the prior behavior. withDefaults value-copies the
 	// func field unchanged and never substitutes a default.
 	OnMerge OnMergeFunc
+	// OnCorruptSegment, when non-nil, is invoked when a segment's stored bytes
+	// are found to violate an invariant its own format guarantees. The engine has
+	// already CONTAINED the violation — the query that hit it lost only that
+	// segment's contribution and every other segment answered normally — so this
+	// hook is the owner's chance to quarantine the stored file and re-fetch it.
+	//
+	// Called from the SEARCH FAN-OUT GOROUTINE holding no engine lock, on the
+	// same terms as OnMerge: the owner must not call back into the engine in a
+	// way that re-enters the read path. It may fire repeatedly for the same id,
+	// because every concurrent query touching that segment finds the same
+	// violation until the owner acts, so implementations must be idempotent.
+	//
+	// nil (the default) is a no-op and withDefaults value-copies the func field
+	// unchanged. A nil hook still CONTAINS the panic; it only means nobody is
+	// told which file to quarantine.
+	OnCorruptSegment func(*CorruptSegmentError)
+	// OnBuildDegrade, when non-nil, is invoked when a format reports that a build
+	// CONTAINED a loss — it indexed what it could and dropped the rest. The
+	// segment it produced is valid and published; this hook is the owner's chance
+	// to RECORD what never made it in, which nothing else can observe: a dropped
+	// document is indistinguishable downstream from a document with no indexable
+	// content.
+	//
+	// IT FIRES ONLY FOR A NON-EMPTY CENSUS. An engine that fired on every build
+	// would train an owner to ignore the hook, which is the same failure a
+	// "degraded (none)" suffix on every clean response would cause.
+	//
+	// Called on WHICHEVER GOROUTINE DROVE THE BUILD — which may be one of
+	// ReplaceBucketGroup's bounded harvest workers, several at once — so an
+	// implementation must be safe for concurrent use, on the same terms as
+	// OnMerge and OnCorruptSegment.
+	//
+	// nil (the default) is a no-op and withDefaults value-copies the func field
+	// unchanged. A nil hook does not suppress the drop; it only means nobody is
+	// told about it.
+	OnBuildDegrade func(BuildReport)
 	// ScratchDir is the directory the engine creates merge scratch files in. A
 	// merge writes its output to a file here, maps it, decodes over the mapping
 	// and unlinks it, so the directory holds one file per in-flight merge and

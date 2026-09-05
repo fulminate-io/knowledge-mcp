@@ -13,10 +13,14 @@
 // Performance: two-phase. Phase A serializes pdfcpu access (one
 // PageRuns call per page; pdfcpu's XRefTable mutates internal state on
 // dereference and is not thread-safe). Phase B fans the pure-Go
-// layout.Cluster + classify pass across runtime.NumCPU() workers —
-// this is where the parallel speedup comes from. Phase C (chrome
-// strip + cross-page merge + section build) is inherently serial
-// because it consumes adjacent-page ordering.
+// layout.Cluster pass and then the classify pass across
+// runtime.NumCPU() workers — this is where the parallel speedup comes
+// from. Between those two parallel stages sits one serial walk,
+// classify.CalibrateDocument, because the body-size reference the
+// classifier compares against is a property of the whole document;
+// classify.AssignHeadingLevelsDocument closes the phase for the same
+// reason. Phase C (chrome stamp + cross-page merge + section build) is
+// inherently serial because it consumes adjacent-page ordering.
 
 package chunk
 
@@ -39,9 +43,8 @@ import (
 // Two-phase pipeline: PageRuns is the only pdfcpu-touching method (text
 // extraction + font decoding). Build calls PageRuns serially so the
 // underlying pdfcpu XRefTable stays single-threaded, then runs
-// layout.Cluster + classify across pages in parallel using runtime.NumCPU
-// workers. HeadersFooters / Footnotes are also adapter-side reads —
-// stubbed to ErrPageMethodNotImplemented in v1, so Build no-ops them.
+// layout.Cluster and classify across pages in parallel using
+// runtime.NumCPU workers.
 type Document interface {
 	// PageCount returns the number of pages in the source document.
 	PageCount() int
@@ -51,16 +54,6 @@ type Document interface {
 	// pdfcpu-touching half of per-page work; Build owns the cluster +
 	// classify pass for parallelism.
 	PageRuns(i int) (PageRuns, error)
-
-	// PageHeadersFooters returns the page's header/footer blocks for
-	// 0-indexed page i. May return ErrPageMethodNotImplemented when
-	// the underlying source has not implemented this path yet —
-	// Build treats that as "no headers/footers" and continues.
-	PageHeadersFooters(i int) ([]layout.Block, error)
-
-	// PageFootnotes returns the page's footnote blocks. Same
-	// ErrPageMethodNotImplemented semantics as PageHeadersFooters.
-	PageFootnotes(i int) ([]layout.Block, error)
 }
 
 // PageRuns is the per-page extraction handoff: the decoded text runs
@@ -96,14 +89,29 @@ type BlockProvider interface {
 	PageBlocks(i int) ([]layout.Block, error)
 }
 
-// ErrPageMethodNotImplemented is the boundary sentinel adapters use
-// to signal "the upstream source returned its own not-implemented
-// error". Build honors this for SkipHeadersFooters and SkipFootnotes
-// — both degrade to no-op when the underlying page method has not
-// been wired up yet (T5 owns HeadersFooters / Footnotes; until T5
-// ships, the public package's stub returns pdf.ErrNotImplemented and
-// the adapter translates it to this sentinel).
-var ErrPageMethodNotImplemented = errors.New("collector/pdf/chunk: page method not implemented")
+// TaggedBlockProvider is the optional interface a source implements
+// when it can read blocks from the document's own STRUCTURE TREE — the
+// author's declaration of what each region is, which beats every
+// heuristic when it is present, and is the only way a table is
+// recognizable at all.
+//
+// PageTaggedBlocks returns (blocks, true, nil) when page i was read
+// from the structure tree, and (nil, false, nil) when it was not — an
+// untagged document, or a caller that has asked not to prefer the
+// tagged read. The bool is what lets Build fall through to PageRuns
+// per page rather than per document.
+//
+// This is a THIRD source method rather than a reuse of BlockProvider,
+// and the difference is the whole point: BlockProvider's branch bypasses
+// classification entirely, on the assumption that a test fixture
+// injects blocks that are already classified. Structure-tree blocks are
+// not. They carry a StructRole and nothing else, and they need the same
+// classification pass every other block gets — which is safe, because
+// the classifier skips a block whose Kind is already set and treats
+// StructRole as authoritative when it is not.
+type TaggedBlockProvider interface {
+	PageTaggedBlocks(i int) ([]layout.Block, bool, error)
+}
 
 // DefaultOptions holds the recommended Build configuration. Mode
 // defaults to ModeSection (deliberately flipped from the ticket-
@@ -113,24 +121,21 @@ var ErrPageMethodNotImplemented = errors.New("collector/pdf/chunk: page method n
 // want paragraph granularity can walk Children of section chunks, or
 // override Mode explicitly.
 var DefaultOptions = Options{
-	Mode:               ModeSection,
-	LayoutParams:       layout.DefaultLayoutParams,
-	ClassifyParams:     classify.DefaultClassifyParams,
-	SkipHeadersFooters: true,
-	SkipFootnotes:      false,
-	MinChunkChars:      0,
+	Mode:           ModeSection,
+	LayoutParams:   layout.DefaultLayoutParams,
+	ClassifyParams: classify.DefaultClassifyParams,
+	MinChunkChars:  0,
 }
 
 // Build runs the chunker over d. ModeParagraph emits a flat ordered
-// slice (one Chunk per non-skipped block, post-merge); ModeSection
-// emits a heading hierarchy with body blocks nested as Children of
-// their enclosing heading.
+// slice (one Chunk per block, post-merge); ModeSection emits a heading
+// hierarchy with body blocks nested as Children of their enclosing
+// heading.
 //
-// Headers/footers/footnotes filtering is best-effort — when the
-// underlying Document.PageHeadersFooters or Document.PageFootnotes
-// returns ErrPageMethodNotImplemented (T5 not yet shipped), Build
-// silently treats the page as having no headers/footers/footnotes
-// and continues. Locked Q1 / option (a): silent no-op until T5 ships.
+// Nothing is dropped. Running page chrome is STAMPED with the signals
+// that identify it (chunk/chrome.go) and emitted like any other block,
+// so a consumer that wants it gone filters on those signals and one
+// that wants it kept simply keeps it.
 //
 // MinChunkChars semantics (locked Q4): chunks below the threshold
 // are dropped entirely; merging into the next chunk is rejected
@@ -146,15 +151,17 @@ func Build(d Document, opts Options) ([]Chunk, error) {
 
 	pageCount := d.PageCount()
 	bp, hasBlockProvider := d.(BlockProvider)
+	tp, hasTaggedProvider := d.(TaggedBlockProvider)
 
 	// Phase A — serial pdfcpu work (or BlockProvider direct fetch for
-	// tests). Pull every page's runs + (stub) headers/footers/footnotes
-	// while the pdfcpu XRefTable stays single-threaded.
+	// tests). Pull every page's runs, or its structure-tree blocks,
+	// while the pdfcpu XRefTable stays single-threaded. The tagged read
+	// belongs here for the same reason PageRuns does: it touches pdfcpu.
 	type pageInput struct {
-		runs           PageRuns
-		preClustered   []layout.Block // populated when source is BlockProvider
-		headersFooters []layout.Block
-		footnotes      []layout.Block
+		runs         PageRuns
+		preClustered []layout.Block // populated when source is BlockProvider
+		tagged       []layout.Block // populated when the page was read from the structure tree
+		isTagged     bool
 	}
 	inputs := make([]pageInput, pageCount)
 
@@ -176,85 +183,78 @@ func Build(d Document, opts Options) ([]Chunk, error) {
 				return nil, fmt.Errorf("collector/pdf/chunk: PageBlocks(%d): %w", i, err)
 			}
 			inputs[i].preClustered = blocks
-		} else {
-			runs, err := d.PageRuns(i)
+			continue
+		}
+		if hasTaggedProvider {
+			blocks, ok, err := tp.PageTaggedBlocks(i)
 			if err != nil {
-				return nil, fmt.Errorf("collector/pdf/chunk: PageRuns(%d): %w", i, err)
+				return nil, fmt.Errorf("collector/pdf/chunk: PageTaggedBlocks(%d): %w", i, err)
 			}
-			inputs[i].runs = runs
-		}
-		if opts.SkipHeadersFooters {
-			hf, err := d.PageHeadersFooters(i)
-			if err == nil {
-				inputs[i].headersFooters = hf
-			} else if !errors.Is(err, ErrPageMethodNotImplemented) {
-				return nil, fmt.Errorf("collector/pdf/chunk: PageHeadersFooters(%d): %w", i, err)
+			if ok {
+				inputs[i].tagged = blocks
+				inputs[i].isTagged = true
+				continue
 			}
 		}
-		if opts.SkipFootnotes {
-			fn, err := d.PageFootnotes(i)
-			if err == nil {
-				inputs[i].footnotes = fn
-			} else if !errors.Is(err, ErrPageMethodNotImplemented) {
-				return nil, fmt.Errorf("collector/pdf/chunk: PageFootnotes(%d): %w", i, err)
-			}
+		runs, err := d.PageRuns(i)
+		if err != nil {
+			return nil, fmt.Errorf("collector/pdf/chunk: PageRuns(%d): %w", i, err)
 		}
+		inputs[i].runs = runs
 	}
 
-	// Phase B — parallel pure-Go cluster + classify per page. Workers
-	// scale to runtime.NumCPU() but cap at pageCount for tiny docs.
-	// BlockProvider sources skip the cluster + classify steps and feed
-	// pre-clustered blocks directly.
+	// Phase B — parallel pure-Go cluster per page, then a serial
+	// document-wide calibration, then a parallel per-page classify, then
+	// the document-wide heading rank. Workers scale to runtime.NumCPU()
+	// but cap at pageCount for tiny docs. BlockProvider sources skip the
+	// cluster step and feed pre-clustered blocks directly.
+	//
+	// The calibration sits BETWEEN the two parallel stages because the
+	// classifier's body-size reference is a property of the whole
+	// document, not of one page: an 8pt page inside a 10pt book must be
+	// classified against 10pt or its 9pt captions read as headings. It
+	// is a single serial O(total runs) walk.
 	perPage := make([][]layout.Block, pageCount)
 	clusterErrs := make([]error, pageCount)
-	workers := runtime.NumCPU()
-	if workers > pageCount {
-		workers = pageCount
-	}
-	if workers < 1 {
-		workers = 1
-	}
-	jobs := make(chan int, pageCount)
-	var wg sync.WaitGroup
-	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := range jobs {
-				var blocks []layout.Block
-				if hasBlockProvider {
-					blocks = inputs[i].preClustered
-				} else {
-					b, err := layout.ClusterWithParams(inputs[i].runs.Runs, inputs[i].runs.PageInfo, opts.LayoutParams)
-					if err != nil {
-						clusterErrs[i] = err
-						continue
-					}
-					blocks = classify.ClassifyWithParams(b, opts.ClassifyParams)
-				}
-				if len(inputs[i].headersFooters) > 0 {
-					blocks = subtractBlocks(blocks, inputs[i].headersFooters)
-				}
-				if len(inputs[i].footnotes) > 0 {
-					blocks = subtractBlocks(blocks, inputs[i].footnotes)
-				}
-				perPage[i] = blocks
+	runPerPage(pageCount, func(i int) {
+		switch {
+		case hasBlockProvider:
+			perPage[i] = inputs[i].preClustered
+		case inputs[i].isTagged:
+			// The structure-tree read already did its own residue
+			// clustering inside HybridFallback, and re-clustering would
+			// discard the roles it recovered. Classification still runs
+			// over these below, like every other block.
+			perPage[i] = inputs[i].tagged
+		default:
+			b, err := layout.ClusterWithParams(inputs[i].runs.Runs, inputs[i].runs.PageInfo, opts.LayoutParams)
+			if err != nil {
+				clusterErrs[i] = err
+				return
 			}
-		}()
-	}
-	for i := range pageCount {
-		jobs <- i
-	}
-	close(jobs)
-	wg.Wait()
+			perPage[i] = b
+		}
+	})
 	for i, err := range clusterErrs {
 		if err != nil {
 			return nil, fmt.Errorf("collector/pdf/chunk: cluster page %d: %w", i, err)
 		}
 	}
 
-	if opts.SkipHeadersFooters {
-		perPage = stripRepeatedChrome(perPage)
+	// Stamp repeated chrome BEFORE classification: the stamp is an
+	// input to the two stages below — the code merge refuses to absorb a
+	// stamped block, and the document heading rank excludes stamped
+	// headings from its ranking population. Its position relative to
+	// clustering does not change the fingerprint index, which is
+	// computed from block text.
+	stampRepeatedChrome(perPage)
+
+	if !hasBlockProvider {
+		dc := classify.CalibrateDocument(perPage)
+		runPerPage(pageCount, func(i int) {
+			perPage[i] = classify.ClassifyPage(perPage[i], opts.ClassifyParams, dc)
+		})
+		classify.AssignHeadingLevelsDocument(perPage)
 	}
 
 	merged := mergeAcrossPages(perPage)
@@ -273,33 +273,36 @@ func Build(d Document, opts Options) ([]Chunk, error) {
 	return chunks, nil
 }
 
-// subtractBlocks returns body with any Block whose BBox+PageIndex
-// matches a Block in skip removed. O(|body| × |skip|); typical skip
-// count is 0..3 per page so the inner loop is trivial.
-//
-// PERF NOTE: if profiling shows |skip| growing >10 (multi-page
-// running headers + footers + footnote section), swap to a
-// map[layout.Rect]bool lookup for O(|body| + |skip|). Until then the
-// linear inner loop wins (no map alloc per page, cache-friendly
-// access pattern over a small slice).
-func subtractBlocks(body, skip []layout.Block) []layout.Block {
-	if len(skip) == 0 {
-		return body
+// runPerPage fans fn across runtime.NumCPU() workers, one call per
+// page index, and returns once every page has been visited. Workers
+// cap at pageCount so a two-page document does not spawn a worker per
+// core. This is the pool shape Phase B's cluster stage and classify
+// stage share; fn is responsible for its own per-index writes (each
+// call touches only index i, so no locking is needed).
+func runPerPage(pageCount int, fn func(i int)) {
+	workers := runtime.NumCPU()
+	if workers > pageCount {
+		workers = pageCount
 	}
-	out := body[:0]
-	for _, b := range body {
-		drop := false
-		for _, s := range skip {
-			if b.PageIndex == s.PageIndex && b.BBox == s.BBox {
-				drop = true
-				break
+	if workers < 1 {
+		workers = 1
+	}
+	jobs := make(chan int, pageCount)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				fn(i)
 			}
-		}
-		if !drop {
-			out = append(out, b)
-		}
+		}()
 	}
-	return out
+	for i := range pageCount {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
 }
 
 // filterByMinChars drops chunks whose Text length is below n.

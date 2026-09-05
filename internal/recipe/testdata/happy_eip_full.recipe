@@ -1,13 +1,13 @@
 # eip-to-design-patterns: Hohpe EIP → practice/design-patterns
-select section where section.heading ~= /Router/
-filter has_edge("references", "out")
-bind $slug := lower(trim(section.heading))
+select section where {"matches": {"of": "section.name", "regex": "Router"}}
+filter {"descendant": {"edge": "references"}}
+bind $slug := lower(trim(section.name))
 traverse references out as $target
 group_by $slug
 source_ref section.id
 emit pattern {
     type := "pattern"
-    name := section.heading
+    name := section.name
     content := section.content
 } as $pat
 emit use_case {

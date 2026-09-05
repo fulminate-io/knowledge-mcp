@@ -16,10 +16,23 @@ import (
 )
 
 // maxAssetBytes caps any single asset download to defend against
-// runaway responses. 200 MiB is well above the largest release
-// archive (server binaries are ~50 MiB compressed) and well below
-// anything that would exhaust memory on a developer machine.
-const maxAssetBytes = 200 << 20
+// runaway responses. The client archive is ~65–75 MiB compressed
+// (v0.8.3, all platforms) and the server ~15 MiB; 512 MiB clears both
+// with room to grow while staying far from memory-exhausting territory.
+// The decompressed size is bounded separately by maxExtractedBytes.
+//
+// IT IS A VAR RATHER THAN A CONST SO THE BOUND CAN BE DRIVEN END TO END, on the
+// seam this package already uses for httpClient just below: a package value a
+// test helper swaps and restores on cleanup. NOTHING IN PRODUCTION ASSIGNS IT —
+// the only writer is withAssetCap in install_asset_cap_test.go.
+//
+// The alternative was leaving it const, and the cost of that was measured rather
+// than argued: reaching downloadAsset's undeclared-length bound through 512 MiB
+// means streaming 512 MiB into the test, at 1.3 GB of resident memory, so the
+// bound shipped with its production callsite unobserved. Replacing that callsite
+// with an unbounded io.ReadAll — reintroducing exactly the vulnerability the
+// bound exists to prevent — left the whole package green.
+var maxAssetBytes int64 = 512 << 20
 
 // httpClient is a package-level seam so install_test.go can swap in
 // an httptest.Server's client without re-plumbing every call site.
@@ -112,12 +125,46 @@ func downloadAsset(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("get %s: HTTP %d: %s", url, resp.StatusCode, string(body))
 	}
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAssetBytes+1))
+	// THE DECLARED LENGTH IS CHECKED BEFORE A BYTE IS READ, the same ordering the
+	// archive extractor applies to a tar header's Size and a zip entry's
+	// UncompressedSize64, and for the same reason: refusing an over-cap asset must
+	// not first allocate the cap to find out. Reading cap+1 bytes to discover the
+	// overage cost about 1.3 GB, and it cost it on every run of this package's
+	// enforcement test as well as on a real hostile response.
+	//
+	// ContentLength IS -1 WHEN THE LENGTH IS UNKNOWN (a chunked response declares
+	// none), and -1 is not greater than the cap, so an undeclared body falls
+	// through to the read bound below rather than being refused on a length
+	// nobody stated.
+	if resp.ContentLength > maxAssetBytes {
+		return nil, fmt.Errorf("asset %s exceeds %d-byte cap", url, maxAssetBytes)
+	}
+
+	return readCapped(resp.Body, maxAssetBytes, url)
+}
+
+// readCapped reads r into memory, refusing at cap bytes.
+//
+// IT IS THE ONLY THING BOUNDING A RESPONSE THAT DECLARED NO LENGTH AT ALL, which
+// is what makes it load-bearing rather than belt and braces: net/http truncates a
+// body to a declared Content-Length, so a server that understates one cannot
+// deliver more than it declared, but a CHUNKED response declares nothing and can
+// stream without limit. The caller's Content-Length pre-check cannot see that
+// case (ContentLength is -1), and this is what stops it.
+//
+// THE CAP IS A PARAMETER SO THE ARM CAN BE DRIVEN AT A SANE SIZE. Enforcing it
+// against the 512 MiB constant inline meant the only way to observe this bound
+// was to stream 512 MiB into a test, which cost 1.3 GB of resident memory and was
+// therefore left untested — a security bound shipped unobserved on a cost that
+// this parameter removes. Production passes maxAssetBytes and is unchanged; a
+// test passes a few kilobytes and drives the identical refusal.
+func readCapped(r io.Reader, cap int64, url string) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, cap+1))
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", url, err)
 	}
-	if int64(len(data)) > maxAssetBytes {
-		return nil, fmt.Errorf("asset %s exceeds %d-byte cap", url, maxAssetBytes)
+	if int64(len(data)) > cap {
+		return nil, fmt.Errorf("asset %s exceeds %d-byte cap", url, cap)
 	}
 	return data, nil
 }

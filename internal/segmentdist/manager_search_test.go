@@ -62,6 +62,7 @@ func searchCorpus(targetIdx int) (docs []searchengine.Document, targetID string,
 // Run under -race (the criterion requires the concurrent two-engine fan-out be
 // race-clean); `make test` / `go test -race ./...` exercise that.
 func TestManagerSearchFusesBothEngines(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()
@@ -90,6 +91,7 @@ func TestManagerSearchFusesBothEngines(t *testing.T) {
 // BM25 arm (the HNSW arm is skipped on empty queryVec) and still returns the
 // unique-term doc as the top fused hit. Proves the single-modality degrade path.
 func TestManagerSearchTextOnlyArm(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

@@ -129,7 +129,7 @@ package tools
 // arm returns store.StoreForContext and states outright that sel.Name is not
 // consulted; linkage passes a hardcoded "default"; code keys on Repo; cloud and
 // cicd key on Account; practice keys on Language. Only logs, web, pdf,
-// transformers and registered-custom genuinely read sel.Name. So `name` is
+// web, pdf and registered-custom genuinely read sel.Name. So `name` is
 // CONSUMED only on the arms that can target those families, and REJECTED
 // elsewhere. `branch` is read by exactly one resolver (resolveCode, at the
 // repo@branch overlay Scope), so it is REJECTED on every arm that does not
@@ -333,7 +333,7 @@ const (
 	armCloudCICDSearch     armID = "armCloudCICDSearch"
 	armCloudCICDBrowse     armID = "armCloudCICDBrowse"
 
-	// InterceptQueryPracticeLinkage — 11 arms (locked floor 8).
+	// InterceptQueryPracticeLinkage — 12 arms (locked floor 8).
 	armPracticeListGraphs   armID = "armPracticeListGraphs"
 	armPracticeStats        armID = "armPracticeStats"
 	armPracticeBrowse       armID = "armPracticeBrowse"
@@ -345,6 +345,7 @@ const (
 	armLinkageSearchRetired armID = "armLinkageSearchRetired"
 	armWebPDFSearch         armID = "armWebPDFSearch"
 	armWebPDFStats          armID = "armWebPDFStats"
+	armWebPDFModules        armID = "armWebPDFModules"
 
 	// InterceptQueryKnowledgeSearch — 2 arms (locked floor 2).
 	armKnowledgeRecentBrowse armID = "armKnowledgeRecentBrowse"
@@ -355,18 +356,10 @@ const (
 	armRegisteredGraphSearch armID = "armRegisteredGraphSearch"
 	armLogsQuery             armID = "armLogsQuery"
 	armRules                 armID = "armRules"
-	// armUnrankedBuiltinSearchRefused covers BOTH transformers and checks. One
-	// arm, not two, because an armID names a CLAIM POINT in the chain rather than
-	// a graph: InterceptQueryUnrankedBuiltin is a single gate whose two branches
-	// differ only in which fixed message they return, and splitting it would
-	// declare two arms against one accountQueryParams call — the exact
-	// registry/wiring mismatch the bijection test exists to catch.
-	armUnrankedBuiltinSearchRefused armID = "armUnrankedBuiltinSearchRefused"
-	// armBuiltinGraphStats covers BOTH checks and transformers, for the same
-	// reason armUnrankedBuiltinSearchRefused does: InterceptQueryBuiltinStats is a
-	// single gate whose two branches share one read set (the selector-driven stats
-	// body) and differ only in their header and their `name` policy. Two armIDs
-	// against one accountQueryParams call is the mismatch the bijection catches.
+	// armBuiltinGraphStats is the checks stats arm. An armID names a CLAIM POINT
+	// in the chain rather than a graph, so a single gate gets a single armID: two
+	// armIDs against one accountQueryParams call is exactly the registry/wiring
+	// mismatch the bijection test exists to catch.
 	armBuiltinGraphStats armID = "armBuiltinGraphStats"
 
 	// InterceptQueryCorrelationsPivot / InterceptQueryExplainTimeline — 2 each.

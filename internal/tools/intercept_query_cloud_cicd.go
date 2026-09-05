@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 
@@ -176,27 +175,10 @@ func listResourceGraphs(ctx context.Context, deps ClientDeps, kind resourceGraph
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "%s graphs (%d):\n\n", kind.listLabel, len(names))
 	for _, name := range names {
-		nodes, edges := graphCounts(ctx, sc, kind.graph, name)
-		fmt.Fprintf(&sb, "- **%s** — %d nodes, %d edges\n", name, nodes, edges)
+		sb.WriteString(graphCountRow(ctx, sc, kind.graph, name))
 	}
 	sb.WriteString(kind.browseHint)
 	return textResult(sb.String())
-}
-
-// graphCounts fetches the node/edge counts for one named graph via the Stats
-// RPC. A failed fetch degrades to zeros (the listing still names the graph).
-func graphCounts(ctx context.Context, gc statsRPC, graph, name string) (int, int) {
-	resp, err := gc.Stats(ctx, &knowledgev1.StatsRequest{
-		// Route the instance name into the right selector field per graph family
-		// (practice→Language, cloud/cicd→Account, else→Name) — resourceTarget is
-		// Account-only and silently zeroed practice/other counts.
-		Target: graphsel.GraphSelectorFor(kgtypes.GraphType(graph), name, false),
-	})
-	if err != nil {
-		return 0, 0
-	}
-	stats := resp.GetGraphStats()
-	return int(stats.GetNodeCount()), int(stats.GetEdgeCount())
 }
 
 // resourceStats renders the per-account stats body: Stats RPC → decodeGraphStats

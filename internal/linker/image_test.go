@@ -45,6 +45,20 @@ type fakeGraphCaller struct {
 	// Execute seam rather than a raw mutate(link) Call). Each entry is the
 	// (target-graph, from, to, relationship, edge-metadata) of the composed edge.
 	capturedLinks []capturedLink
+
+	// edgesByType is the linkage graph's edge VOCABULARY, read through the
+	// StatsFn seam before an edge type is declared. An empty map is the
+	// BOOTSTRAP case — a linkage graph holding no edges yet — which is what
+	// every linker test here drives: the pass declares the graph's first
+	// BUILDS/DEPLOYS, and a write with no matching stored family admits the
+	// caller's spelling.
+	edgesByType map[string]int64
+
+	// statsCalls counts vocabulary reads across one linker pass. It is not
+	// decoration: it is the ONLY observable the per-pass cost gate has. A cache
+	// read once per PASS and the per-edge N+1 it replaces emit byte-identical
+	// edges, so nothing in the captured links can tell them apart.
+	statsCalls int
 }
 
 // capturedLink is one composed LINK ExecuteRequest's salient fields.
@@ -66,6 +80,20 @@ func (f *fakeGraphCaller) Call(_ context.Context, tool string, rawArgs json.RawM
 		return kgtools.ToolResult{Content: []kgtools.ContentBlock{{Type: "text", Text: `{}`}}}, nil
 	}
 	return f.respond(tool, args)
+}
+
+// Stats serves the linkage graph's edge vocabulary through the StatsFn seam the
+// per-pass vocabulary cache consumes, counting every read.
+//
+// The COUNT is the point. A nil edgesByType answers an empty vocabulary, which
+// is the bootstrap case a write admits — so the emitted edges are the same
+// whether the vocabulary is read once or once per edge, and only statsCalls
+// separates the two.
+func (f *fakeGraphCaller) Stats(_ context.Context, _ *knowledgev1.StatsRequest) (*knowledgev1.StatsResponse, error) {
+	f.statsCalls++
+	return &knowledgev1.StatsResponse{
+		GraphStats: &knowledgev1.GraphStats{EdgesByType: f.edgesByType},
+	}, nil
 }
 
 // seedNode registers a node for by-id resolution in the named graph (used by the

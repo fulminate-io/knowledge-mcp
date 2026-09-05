@@ -4,12 +4,42 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// guidePath is the shipped configuration guide, relative to this package.
-const guidePath = "../../../../docs/guides/config.md"
+// guidePath resolves the shipped configuration guide by walking up from this
+// package's directory to the first ancestor carrying BOTH a go.mod and
+// docs/guides/config.md.
+//
+// NO FIXED ".." COUNT IS CORRECT IN BOTH LAYOUTS, which is why this walks. The
+// guides tree sits beside the ROOT go.mod here and beside the MODULE go.mod in
+// the published mirror, where the sync script copies cmd/knowledge/internal to
+// internal/ — four path segments become one and any fixed count overshoots by
+// two. Walking for the artifact itself also survives a package move, and fails
+// loudly rather than silently comparing against nothing.
+func guidePath(t testing.TB) string {
+	t.Helper()
+	const rel = "docs/guides/config.md"
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for {
+		if _, statErr := os.Stat(filepath.Join(dir, "go.mod")); statErr == nil {
+			candidate := filepath.Join(dir, filepath.FromSlash(rel))
+			if _, statErr := os.Stat(candidate); statErr == nil {
+				return candidate
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatalf("walked to the filesystem root from the test working directory without finding %s beside a go.mod", rel)
+		}
+		dir = parent
+	}
+}
 
 // wantGuideTOMLBlocks is an EXTERNAL expectation, hand-pinned rather than
 // derived from the same walk that produces the observation — a count compared
@@ -44,7 +74,7 @@ func TestGuideTOMLExamplesParse(t *testing.T) {
 
 	if len(blocks) != wantGuideTOMLBlocks {
 		t.Fatalf("extracted %d toml blocks from %s; want %d — if you added or removed a guide example, update wantGuideTOMLBlocks in the same change",
-			len(blocks), guidePath, wantGuideTOMLBlocks)
+			len(blocks), guidePath(t), wantGuideTOMLBlocks)
 	}
 
 	for i, block := range blocks {
@@ -84,9 +114,10 @@ func (b guideTOMLBlock) String() string { return b.body }
 // tomlBlocksFromGuide extracts every ```toml fenced block from the guide.
 func tomlBlocksFromGuide(t *testing.T) []guideTOMLBlock {
 	t.Helper()
-	data, err := os.ReadFile(guidePath)
+	path := guidePath(t)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read %s: %v", guidePath, err)
+		t.Fatalf("read %s: %v", path, err)
 	}
 	var (
 		out     []guideTOMLBlock
@@ -106,7 +137,7 @@ func tomlBlocksFromGuide(t *testing.T) []guideTOMLBlock {
 		}
 	}
 	if inBlock {
-		t.Fatalf("%s: unterminated ```toml fence starting at line %d", guidePath, start)
+		t.Fatalf("%s: unterminated ```toml fence starting at line %d", path, start)
 	}
 	return out
 }

@@ -44,6 +44,12 @@ var pathRules = []pathRule{
 	{mirror: "internal/", internal: "cmd/knowledge/internal/", isPrefix: true},
 	{mirror: "gen/", internal: "gen/", isPrefix: true},
 	{mirror: "docs/guides/", internal: "docs/guides/", isPrefix: true},
+	// The SHARED test vectors. They sit at the repo root here because a test in
+	// each module reads them, and the sync script places them at the mirror root
+	// under the same name. Anchored at the root by the leading segment: a package
+	// fixture directory like internal/collector/pdf/testdata/ matches the
+	// internal/ rule above, never this one.
+	{mirror: "testdata/", internal: "testdata/", isPrefix: true},
 	{mirror: "main.go", internal: "cmd/knowledge/main.go"},
 	{mirror: "go.mod", internal: "cmd/knowledge/go.mod"},
 	{mirror: "go.sum", internal: "cmd/knowledge/go.sum"},
@@ -52,6 +58,10 @@ var pathRules = []pathRule{
 	// The source file carries NO leading dot; the sync script adds it on copy.
 	{mirror: ".dockerignore", internal: "cmd/knowledge/dockerignore"},
 	{mirror: ".claude/KNOWLEDGE_TOOLS.md", internal: ".claude/KNOWLEDGE_TOOLS.md"},
+	// The lint config, placed at the mirror root under the same name. EXACT, not
+	// a prefix: the mirror's lint job reads the root file alone, and a suffix or
+	// basename match would claim a counterpart for any file named like it.
+	{mirror: ".golangci.yml", internal: ".golangci.yml"},
 }
 
 // MapMirrorPath maps a repo-relative MIRROR path to its counterpart in this
@@ -117,15 +127,30 @@ func MapInternalPath(internal string) (mirror string, class PathClass, err error
 }
 
 // isClaudeAsset reports whether p is one of the agent or skill definitions the
-// sync script copies at identical paths. These are globs rather than fixed
-// names, so they are matched here instead of sitting in the rule table.
+// sync script copies at identical paths. The first two are globs rather than
+// fixed names, so they are matched here instead of sitting in the rule table;
+// the governance file is a single FLAT file at the root of the skills tree and
+// is matched by equality.
+//
+// The governance arm is not redundant with the skills glob: "*" in path.Match
+// does not span separators, so ".claude/skills/*/SKILL.md" matches only files
+// one directory down. Equality rather than a ".claude/skills/*.md" glob is
+// deliberate — the sync script ships exactly this one flat file, and a
+// directory-wide glob would classify an unshipped sibling as mapped.
 func isClaudeAsset(p string) bool {
+	if p == claudeGovernancePath {
+		return true
+	}
 	if ok, _ := path.Match(".claude/agents/*.md", p); ok {
 		return true
 	}
 	ok, _ := path.Match(".claude/skills/*/SKILL.md", p)
 	return ok
 }
+
+// claudeGovernancePath is the flat cross-agent governance file, shipped at an
+// identical path by the sync script's own named cp line.
+const claudeGovernancePath = ".claude/skills/GOVERNANCE.md"
 
 // checkRepoRelative enforces the repo-relative precondition. Both messages name
 // the offending value and say what the accepted vocabulary is, so a caller

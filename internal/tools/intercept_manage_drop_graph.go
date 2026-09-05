@@ -41,7 +41,7 @@ import (
 // dropGraphFamilies names the graph families the server dropGraphTarget arm
 // accepts (engine_mutate_exec.go:217-271), surfaced verbatim in the gate
 // errors so the client message matches the server's accepted set.
-const dropGraphFamilies = "knowledge, code, cloud, cicd, practice, web, pdf, transformers, linkage, or a registered custom type"
+const dropGraphFamilies = "knowledge, code, cloud, cicd, practice, web, pdf, checks, linkage, or a registered custom type"
 
 // handleClientDropGraph tears down a whole non-logs graph. It requires a
 // non-empty graph, rejects graph=="logs" (manage(discard_logs) owns that
@@ -109,8 +109,28 @@ func handleClientDropGraph(ctx context.Context, deps ClientDeps, a manageArgs) k
 // There is deliberately no PipelineReady() gate (unlike manage(prune-cache), which
 // errors during the bind-first startup window): a nil dropper degrades to an honest
 // "not inspected" line rather than failing a completed drop.
+//
+// THE WORKING-SET REMOVAL IS THE FIRST STATEMENT, AHEAD OF THE NIL-DROPPER RETURN,
+// and the position is load-bearing rather than tidy. That return sits above the
+// line resolving the cache target, so a removal placed beside the cache teardown
+// is skipped ENTIRELY on a client with no segment engine — a client that has
+// still taken the server-side drop and must still stop wanting the graph. Placed
+// here it runs on every path that reaches this function.
+//
+// ORDERING IS THE CRASH-WINDOW ARGUMENT. Forgetting membership BEFORE tearing the
+// cache down means a crash between the two leaves a graph the client no longer
+// wants beside a cache the existing prune path can still reach. The reverse order
+// leaves a WANTED graph with no cache, which pays a full-layer CorpusDelta walk
+// every tick. Both are recoverable; only one is silent work.
+//
+// IT CANNOT REACH THE DRY-RUN BRANCH. handleClientDropGraph returns inside its
+// DryRun branch well above the Execute, and this function has exactly one
+// production call site, on the success path after that Execute succeeded.
 func dropGraphAck(deps ClientDeps, a manageArgs) string {
 	label := dropGraphLabel(a)
+	gt, cacheName := dropGraphCacheTarget(a)
+	removeFromWorkingSetFor(deps, gt, cacheName)
+
 	dropper := deps.SegmentCacheDropper()
 	if dropper == nil {
 		return fmt.Sprintf(
@@ -118,7 +138,6 @@ func dropGraphAck(deps ClientDeps, a manageArgs) string {
 				"local segment cache not inspected (segment engine not wired).", label)
 	}
 
-	gt, cacheName := dropGraphCacheTarget(a)
 	report, derr := dropper.DropGraphCache(gt, cacheName)
 	if derr != nil {
 		return fmt.Sprintf(

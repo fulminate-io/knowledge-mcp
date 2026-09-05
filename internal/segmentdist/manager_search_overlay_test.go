@@ -251,6 +251,7 @@ func TestSearchOverlayFallsBackWhenOverlayPoolEmpty(t *testing.T) {
 // can place it in the fused list. The nil-vector negative control is what
 // distinguishes a working HNSW merge from a BM25 coincidence.
 func TestSearchOverlayFusesHNSWArmAcrossPools(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

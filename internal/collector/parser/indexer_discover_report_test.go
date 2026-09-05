@@ -3,20 +3,53 @@
 package parser
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
+// hermeticGitEnv returns os.Environ() with every GIT_* entry stripped, then
+// re-adds GIT_TERMINAL_PROMPT=0. Test fixtures that spawn git subprocesses MUST
+// use this instead of raw os.Environ(): inside a worktree or a git hook, git
+// exports GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE / etc. into child processes,
+// and those override `git -C <dir>` and cmd.Dir — so a fixture's `git init`
+// would re-init the host worktree gitdir (flipping core.bare=true) and its
+// commits would land on the host branch. Scrubbing GIT_* makes the fixture
+// operate only in its own temp dir regardless of the ambient env. Intentionally
+// duplicated from the coderun package: the no-shared-packages-outside-gen-proto
+// invariant (AGENTS.md) forbids a hand-written shared test-helper package
+// between these internal packages.
+func hermeticGitEnv() []string {
+	base := os.Environ()
+	out := make([]string, 0, len(base)+1)
+	for _, kv := range base {
+		if strings.HasPrefix(kv, "GIT_") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "GIT_TERMINAL_PROMPT=0")
+}
+
 // gitInit makes dir a git repo so discovery takes the git path. No commit is
 // needed: `git ls-files --others --exclude-standard` lists untracked files, so
 // an initialized repo with files in it is enough, and the test needs no
 // committer identity.
+//
+// REASON THIS TEST SPAWNS GIT (approved site, see the git-in-tests allowlist
+// under scripts/testdata/): the subject under test is discovery's git path and
+// its per-rule decline attribution, which differs from the filesystem-walk
+// fallback — the same file can be charged to a different rule on each path, so a
+// fixture without a real repository would report the wrong decomposition. dir is
+// a t.TempDir and the command runs under hermeticGitEnv, so a leaked GIT_DIR
+// cannot redirect this `git init` at the host gitdir.
 func gitInit(t *testing.T, dir string) {
 	t.Helper()
 	cmd := exec.Command("git", "init", "--quiet")
 	cmd.Dir = dir
+	cmd.Env = hermeticGitEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Skipf("git init unavailable: %v: %s", err, out)
 	}

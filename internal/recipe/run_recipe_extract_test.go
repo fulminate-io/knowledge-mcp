@@ -52,8 +52,7 @@ func extractOpts(body string) Options {
 // the source anchor and the evaluated fields.
 func TestRunRecipe_ExtractRows(t *testing.T) {
 	caller := extractSourceCaller(3)
-	sink := &captureSink{}
-	res, err := RunRecipe(context.Background(), caller, sink, "doc", kgtypes.GraphWebRaw, extractOpts(extractBody))
+	res, err := RunRecipe(context.Background(), caller, "doc", kgtypes.GraphWebRaw, extractOpts(extractBody))
 	require.NoError(t, err)
 	require.NotNil(t, res.Extract, "extract mode must populate Extract")
 
@@ -82,7 +81,7 @@ func TestRunRecipe_ExtractRowCapTruncates(t *testing.T) {
 	opts := extractOpts(extractBody)
 	opts.MaxRows = cap
 
-	res, err := RunRecipe(context.Background(), caller, &captureSink{}, "doc", kgtypes.GraphWebRaw, opts)
+	res, err := RunRecipe(context.Background(), caller, "doc", kgtypes.GraphWebRaw, opts)
 	require.NoError(t, err)
 	require.NotNil(t, res.Extract)
 
@@ -99,18 +98,20 @@ func TestRunRecipe_ExtractRowCapTruncates(t *testing.T) {
 	assert.Len(t, res.Nodes, sourceRows)
 }
 
-// TestRunRecipe_ExtractInline_NoWrite proves the inline path neither writes nor
-// deletes, and — because the fake serves no recipe bucket — that the inline
-// preamble supplies its own recipe key and source type.
+// TestRunRecipe_ExtractInline_NoWrite proves the run neither writes nor deletes,
+// and — because the fake serves no recipe bucket — that the inline preamble
+// supplies its own recipe key and source type.
+//
+// THE MUTATION ASSERTION IS THE WHOLE WRITE CHECK NOW. The sink is gone with the
+// write path, so the only channel that could still reach a graph is a mutation
+// on the caller, and that is what the fake records.
 func TestRunRecipe_ExtractInline_NoWrite(t *testing.T) {
 	caller := extractSourceCaller(2)
-	sink := &captureSink{}
-	res, err := RunRecipe(context.Background(), caller, sink, "doc", kgtypes.GraphWebRaw, extractOpts(extractBody))
+	res, err := RunRecipe(context.Background(), caller, "doc", kgtypes.GraphWebRaw, extractOpts(extractBody))
 	require.NoError(t, err)
 	require.NotNil(t, res.Extract)
 
-	assert.Zero(t, sink.calls, "extract must not ship a result through the sink")
-	assert.Empty(t, caller.mutations, "extract must issue no mutation, delete included")
+	assert.Empty(t, caller.mutations, "a recipe run must issue no mutation, delete included")
 	assert.NotEmpty(t, res.Extract.Rows, "control: the run really did produce rows")
 }
 
@@ -128,11 +129,9 @@ emit pattern {
     marker_b := "only-in-b"
 } as $p`
 
-	resA, err := RunRecipe(context.Background(), extractSourceCaller(1), &captureSink{},
-		"doc", kgtypes.GraphWebRaw, extractOpts(bodyA))
+	resA, err := RunRecipe(context.Background(), extractSourceCaller(1), "doc", kgtypes.GraphWebRaw, extractOpts(bodyA))
 	require.NoError(t, err)
-	resB, err := RunRecipe(context.Background(), extractSourceCaller(1), &captureSink{},
-		"doc", kgtypes.GraphWebRaw, extractOpts(bodyB))
+	resB, err := RunRecipe(context.Background(), extractSourceCaller(1), "doc", kgtypes.GraphWebRaw, extractOpts(bodyB))
 	require.NoError(t, err)
 
 	require.Len(t, resA.Extract.Rows, 1)
@@ -143,32 +142,25 @@ emit pattern {
 		"body B executed body A's rules — the AST cache key is not content-derived")
 }
 
-// TestRunRecipe_ExtractRefusesForce asserts the refusal, and that no delete was
-// issued on the refused path.
-func TestRunRecipe_ExtractRefusesForce(t *testing.T) {
-	caller := extractSourceCaller(2)
-	opts := extractOpts(extractBody)
-	opts.Force = true
-
-	_, err := RunRecipe(context.Background(), caller, &captureSink{}, "doc", kgtypes.GraphWebRaw, opts)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "force")
-	assert.Contains(t, err.Error(), "extract")
-	assert.Empty(t, caller.mutations, "the refusal must precede any delete")
-}
-
 // TestRunRecipe_ExtractInline_NeedsExtract asserts an inline body without
-// extract mode is refused, and that the error names the freeze path so the
-// caller learns what to do instead.
+// extract mode is refused, and that the error names EXTRACT MODE — the thing
+// that does work — so the caller learns what to do instead. The NotContains
+// leg is the ratchet: the refusal used to prescribe saving the body to freeze
+// the extraction, recipes are ephemeral and nothing is frozen, and this stops
+// that retired workflow coming back into a runtime error string.
 func TestRunRecipe_ExtractInline_NeedsExtract(t *testing.T) {
 	caller := extractSourceCaller(2)
 	opts := extractOpts(extractBody)
 	opts.Extract = false
 
-	_, err := RunRecipe(context.Background(), caller, &captureSink{}, "doc", kgtypes.GraphWebRaw, opts)
+	_, err := RunRecipe(context.Background(), caller, "doc", kgtypes.GraphWebRaw, opts)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "extract mode")
-	assert.Contains(t, err.Error(), "save", "the error must name the save-to-freeze path")
+	assert.Contains(t, err.Error(), "extract:true",
+		"the refusal names the parameter that makes the run legal")
+	assert.Contains(t, err.Error(), "writes nothing",
+		"and states the mechanical reason: there is no other mode because there is no write")
+	assert.NotContains(t, err.Error(), "freeze",
+		"the refusal must not prescribe the retired freeze-by-saving workflow")
 	assert.Empty(t, caller.mutations)
 }
 
@@ -176,8 +168,7 @@ func TestRunRecipe_ExtractInline_NeedsExtract(t *testing.T) {
 // precondition: without a source graph type there is no document to read, and
 // guessing one would read the wrong graph.
 func TestRunRecipe_ExtractInline_NeedsSourceType(t *testing.T) {
-	_, err := RunRecipe(context.Background(), extractSourceCaller(2), &captureSink{},
-		"doc", "", extractOpts(extractBody))
+	_, err := RunRecipe(context.Background(), extractSourceCaller(2), "doc", "", extractOpts(extractBody))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "type")
 }

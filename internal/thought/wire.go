@@ -12,6 +12,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/paging"
+	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 	"github.com/fulminate-io/knowledge-mcp/internal/topology/graph"
 )
 
@@ -223,41 +224,52 @@ func fetchChargesUncached(ctx context.Context, gc Caller, thoughtIDs []string, s
 	return out, nil
 }
 
-// fetchNodesByIDs hydrates a slice of node IDs in one Execute round-trip
-// (query{ids:} → the typed Nodes carrier). Returns a map; missing IDs are absent.
-// Best-effort: a failed read is logged and yields an empty map. A caller that must
-// tell a FAILED read from a genuinely absent id — the per-pass memo, which must
-// never memoize a failure — takes fetchNodesByIDsErr instead.
+// fetchNodesByIDs hydrates a slice of node IDs and returns them keyed by id;
+// missing IDs are absent. Best-effort: a failed read is logged and yields an
+// empty map. A caller that must tell a FAILED read from a genuinely absent id —
+// the per-pass memo, which must never memoize a failure — takes
+// fetchNodesByIDsErr instead.
+//
+// THIS IS THE ONE-RETURN CONVENTION FIFTEEN IN-PACKAGE CALLERS USE, which is why
+// it survives the consolidation as an adapter rather than being deleted: the
+// implementation moved to foundation, the call convention stayed here.
 func fetchNodesByIDs(ctx context.Context, gc Caller, ids []string) map[string]*knowledgev1.Node {
 	out, _ := fetchNodesByIDsErr(ctx, gc, ids)
 	return out
 }
 
-// fetchNodesByIDsErr is fetchNodesByIDs' error-surfacing core: the same single
-// Execute round-trip, with the failure the wrapper swallows returned alongside the
-// (empty) map.
+// fetchNodesByIDsErr is fetchNodesByIDs' error-surfacing core, and it is now a
+// DELEGATING ADAPTER over foundation.FetchNodesByIDs rather than a second
+// implementation of the same read.
+//
+// THE DELEGATION REPAIRS A LATENT FAIL-OPEN. This function previously issued ONE
+// UNPAGED Execute and dropped the response's truncation verdict on the floor.
+// The server flags truncation off the REQUEST — an id list longer than its row
+// ceiling is clamped before any row is read — so any id set over that ceiling
+// came back short, with the missing nodes silently absent, no error and no
+// counter. The foundation helper pages at the shared page size, so no request
+// can exceed the ceiling, and it RETURNS the verdict instead of discarding it.
+//
+// A truncation that survives paging is logged rather than returned as an error,
+// because this package's contract with its fifteen callers is best-effort and
+// erroring here would change error handling across a package this change does
+// not otherwise touch. It is disclosed, never silent.
+//
+// TOMBSTONES ARE EXCLUDED, and that is this package's own policy rather than the
+// helper's default. A deleted thought is gone here: recall's hydrate gap is what
+// drops one that was deleted between rank and hydrate, and corpusCache.MergeDelta
+// evicts tombstoned items from the resident snapshot outright. Passing
+// IncludeTombstones would put deleted thoughts back into recall results and make
+// the two halves of the corpus hydrate disagree about the same node.
 func fetchNodesByIDsErr(ctx context.Context, gc Caller, ids []string) (map[string]*knowledgev1.Node, error) {
-	out := map[string]*knowledgev1.Node{}
-	if gc == nil || len(ids) == 0 {
-		return out, nil
-	}
-	raw, err := json.Marshal(map[string]any{"ids": ids})
+	out, truncated, err := foundation.FetchNodesByIDs(ctx, gc, "", "", ids, foundation.ExcludeTombstones)
 	if err != nil {
-		slog.Warn("thought: fetchNodesByIDs: marshal failed", "err", err)
-		return out, err
+		slog.Warn("thought: fetchNodesByIDs: bulk hydrate failed", "err", err)
+		return map[string]*knowledgev1.Node{}, err
 	}
-	resp, err := executeViaEngine(ctx, gc, "query", raw)
-	if err != nil {
-		slog.Warn("thought: fetchNodesByIDs: execute failed", "err", err)
-		return out, err
-	}
-	nodes, derr := engine.DecodeNodes(resp)
-	if derr != nil {
-		slog.Warn("thought: fetchNodesByIDs: decode failed", "err", derr)
-		return out, derr
-	}
-	for _, n := range nodes {
-		out[n.Id] = n
+	if truncated {
+		slog.Warn("thought: fetchNodesByIDs: read was clamped by the server row ceiling; the result is short",
+			"requested", len(ids), "returned", len(out))
 	}
 	return out, nil
 }
@@ -294,13 +306,6 @@ func FetchChargesFor(ctx context.Context, gc Caller, thoughtIDs []string) map[st
 // the unexported helper.
 func FetchEdgesForNodeSet(ctx context.Context, gc Caller, ids []string, edgeTypes []kgtypes.EdgeType) ([]knowledgev1.Edge, error) {
 	return fetchEdgesForNodeSet(ctx, gc, ids, edgeTypes)
-}
-
-// FetchNodesByIDs is the exported bulk-hydrate wrapper around fetchNodesByIDs
-// for cmd/knowledge/internal/tools/ — the context-pack composer needs the
-// one-Execute ids[] hydrate to turn collected peer IDs into nodes.
-func FetchNodesByIDs(ctx context.Context, gc Caller, ids []string) map[string]*knowledgev1.Node {
-	return fetchNodesByIDs(ctx, gc, ids)
 }
 
 // fetchOutgoingTargets returns peer IDs reachable from nodeID over any

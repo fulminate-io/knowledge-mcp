@@ -89,20 +89,39 @@ var censusSkipDirs = map[string]bool{
 // stays readable.
 //
 // Roots: KNOWLEDGE_CALLEE_CENSUS_ROOT names a single directory to walk when
-// set — that is how a foreign corpus is measured — and otherwise the two
-// internal trees of this repo.
+// set — that is how a foreign corpus is measured — and otherwise THIS MODULE's
+// tree, resolved by repoRoot: cmd/knowledge in this repository, the mirror root
+// in the published one, so the same call names this module's whole source in
+// both layouts.
+//
+// THE SERVER MODULE IS THE OTHER HALF'S CORPUS. The invariant is
+// corpus-independent — every emitted callee is nameable, whatever tree it came
+// from — so splitting the corpus by module preserves the assertion exactly and
+// the two halves together walk what the single test walked.
+// chunker_callee_whitespace_server_test.go carries that half and the sync script
+// removes it from the published tree, which has no server module to walk.
 func TestCalleeNamesCarryNoWhitespace(t *testing.T) {
 	var roots []string
+	// FLOORS ARE MEASURED-THEN-ROUNDED-DOWN LITERALS, never tree-derived counts,
+	// so ordinary drift cannot false-fail them. Measured at this tree:
+	// cmd/knowledge walks 118,888 call edges and the staged mirror layout 119,726,
+	// so 50,000 sits well below both.
+	floor := 50000
 	envRoot := os.Getenv("KNOWLEDGE_CALLEE_CENSUS_ROOT")
 	if envRoot != "" {
 		roots = []string{envRoot}
+		floor = 1000
 	} else {
-		root := repoRootForCensus(t)
-		roots = []string{
-			filepath.Join(root, "cmd", "knowledge"),
-			filepath.Join(root, "cmd", "knowledge-server"),
-		}
+		roots = []string{repoRoot(t)}
 	}
+	calleeCensusOverRoots(t, roots, floor)
+}
+
+// calleeCensusOverRoots runs the census over the roots given and asserts the two
+// invariants at zero. It is the ONE body both halves of the split share, so the
+// server half cannot drift into asserting something different from this one.
+func calleeCensusOverRoots(t *testing.T, roots []string, floor int) {
+	t.Helper()
 
 	chunker := NewChunker()
 	defer chunker.Close()
@@ -196,14 +215,8 @@ func TestCalleeNamesCarryNoWhitespace(t *testing.T) {
 	}
 
 	// KNOWN-POSITIVE CONTROL, without which a walk that found nothing would
-	// pass as a clean census. These floors are PLAN-MANDATED literals chosen
-	// well below the measured populations (134,156 at census scope, 203,925 on
-	// the agent corpus), never tree-derived counts, so ordinary tree drift
-	// cannot false-fail them.
-	floor := 50000
-	if envRoot != "" {
-		floor = 1000
-	}
+	// pass as a clean census. The floor is chosen by each caller, well below its
+	// own measured population, and is a literal rather than a tree-derived count.
 	require.GreaterOrEqualf(t, total, floor,
 		"the census walked %d call edges over %v, below the known-positive floor — it measured nothing",
 		total, roots)

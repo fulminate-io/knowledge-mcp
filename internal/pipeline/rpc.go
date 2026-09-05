@@ -148,7 +148,6 @@ var pipelineEligibleGraphTypes = []kgtypes.GraphType{
 	kgtypes.GraphPractice,
 	kgtypes.GraphCloud,
 	kgtypes.GraphCICD,
-	kgtypes.GraphTransformers,
 	// GraphChecks rides the ranked-search cutover: check nodes are summarized at
 	// authoring time and embed-eligible on the server (fixtures excluded there),
 	// so the client must drain the graph or every check node sits at embedded=0
@@ -157,13 +156,27 @@ var pipelineEligibleGraphTypes = []kgtypes.GraphType{
 	// contract shape kgtypes.SyncEligible documents — so a server-side
 	// eligibility change for a builtin type MUST be reflected here too.
 	kgtypes.GraphChecks,
+	// GraphWebRaw and GraphPDFRaw ride the raw-graph search cutover, and they carry
+	// the SAME obligation the GraphChecks entry above states. Both are enrolled
+	// EMBED-ONLY on the server: the collector already extracted the searchable text,
+	// so nothing summarizes, but every admitted chunk is embed-eligible. Without
+	// these two entries the server opens embed gaps that no client ever drains, and
+	// every raw node sits at embedded=0 with nothing reporting it — the identical
+	// measured failure the checks entry was added to fix. This list stays a
+	// deliberate client-side DUPLICATE of server eligibility across the module
+	// boundary, so the enrollment in the server's graphTypeSettings and this entry
+	// MUST move together.
+	kgtypes.GraphWebRaw,
+	kgtypes.GraphPDFRaw,
 }
 
 // pipelineDrainsType reports whether the pipeline enriches graphs of type gt.
 //
 // Two admitting cases. A BUILTIN type qualifies only by being listed in
 // pipelineEligibleGraphTypes above, which keeps builtins the pipeline does not
-// enrich (linkage, logs, and the raw ingest types) out. A NON-builtin type is a
+// enrich (linkage and logs) out. THE RAW INGEST TYPES ARE NO LONGER AMONG THEM:
+// web and pdf are drained for their embed axis, and a raw graph the pipeline
+// stopped draining would sit at embedded=0 with nothing reporting it. A NON-builtin type is a
 // registered custom GraphTypeDef and qualifies unconditionally: the server's
 // per-axis gap shims no-op a both-false custom type cheaply, so the client
 // applies no behavior gate and lets the server honor the registered

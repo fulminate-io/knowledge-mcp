@@ -22,7 +22,7 @@ import (
 func TestConstructClient_SharedCloudTokenSource(t *testing.T) {
 	dialer := func(int) *graphclient.GraphClient {
 		gc := graphclient.NewGraphClientForURL("http://local.invalid")
-		t.Cleanup(gc.CloseIdleConnections)
+		t.Cleanup(gc.Close)
 		return gc
 	}
 

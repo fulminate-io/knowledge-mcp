@@ -292,9 +292,10 @@ func TestRebuildSegments_RegisteredCustomGraph(t *testing.T) {
 
 	t.Run("non-embeddable builtin is rejected", func(t *testing.T) {
 		deps := rebuildClientDeps{scanner: &fakeRebuildScanner{}, shipper: &fakeRebuildShipper{}, crud: crud}
-		// transformers is a builtin but NOT embeddable — it carries no rebuildable
-		// segments, so the gate rejects it (HasRebuildableSegments == false).
-		res := handleClientRebuildSegments(context.Background(), deps, manageArgs{Graph: string(kgtypes.GraphTransformers), Name: "recipes"})
+		// linkage is a builtin but NOT embeddable — it holds proxy edges and no
+		// text, so it carries no rebuildable segments and the gate rejects it
+		// (HasRebuildableSegments == false).
+		res := handleClientRebuildSegments(context.Background(), deps, manageArgs{Graph: string(kgtypes.GraphLinkage), Name: "default"})
 		require.True(t, res.IsError, "a non-embeddable builtin graph has no rebuildable segments and must be rejected")
 		require.Contains(t, res.Content[0].Text, "no rebuildable segments",
 			"the rejection names the no-rebuildable-segments boundary")
@@ -307,7 +308,7 @@ func TestRebuildSegments_RegisteredCustomGraph(t *testing.T) {
 	})
 }
 
-// blockingScanner blocks on the first PipelineScan until released, signalling
+// blockingScanner blocks on the first PipelineScan until released, signaling
 // `entered` so the test knows the single-flight slot is claimed.
 type blockingScanner struct {
 	entered chan struct{}
@@ -339,10 +340,11 @@ type rebuildClientDeps struct {
 	pipelineNotReady bool
 }
 
-func (rebuildClientDeps) LocalLiveness() LocalLiveness    { return nil }
-func (rebuildClientDeps) Sink() collector.Sink            { return nil }
-func (rebuildClientDeps) RootDir() string                 { return "" }
-func (rebuildClientDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+func (rebuildClientDeps) LocalLiveness() LocalLiveness          { return nil }
+func (rebuildClientDeps) Sink() collector.Sink                  { return nil }
+func (rebuildClientDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
+func (rebuildClientDeps) RootDir() string                       { return "" }
+func (rebuildClientDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
 
 func (rebuildClientDeps) PropReady() bool       { return true }
 func (d rebuildClientDeps) PipelineReady() bool { return !d.pipelineNotReady }

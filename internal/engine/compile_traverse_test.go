@@ -48,25 +48,32 @@ func TestCompileTraverse_DefaultDirectionIsOut(t *testing.T) {
 	assert.True(t, q.GetForward(), "empty direction defaults to out (the default ValidateTraverseDirection admits)")
 }
 
-// TestCompileTraverse_EdgeTypesCanonicalized pins the client-side
-// per-graph edge-casing: the engine now uses edge_types AS-GIVEN, so the client
-// canonicalizes them before they ride the wire. An absent graph defaults to
-// knowledge → lowercase, so both tokens lower-case.
-func TestCompileTraverse_EdgeTypesCanonicalized(t *testing.T) {
+// TestCompileTraverse_EdgeTypesRideTheWireVerbatim pins LAYERING, which is what
+// this test is about now that no casing fold exists.
+//
+// Resolution against the graph's own edge vocabulary happens ONCE, in the
+// Dispatch seam, so by the time a compiler sees an edge type it is ALREADY the
+// spelling the graph stores. The compiler's only correct behaviour is to pass
+// it through untouched — any transformation here would undo that resolution.
+// The mixed-case input is deliberate: it is what distinguishes a pass-through
+// from a fold in either direction.
+func TestCompileTraverse_EdgeTypesRideTheWireVerbatim(t *testing.T) {
 	req, ok := compileTraverse(json.RawMessage(`{"start":"n1","edge_types":["CALLS","contains"]}`))
 	require.True(t, ok)
-	// knowledge (default) → lowercase both tokens (client canonicalizes).
-	assert.Equal(t, []string{"calls", "contains"}, req.GetQuery().GetSelection().GetEdgeTypes())
+	assert.Equal(t, []string{"CALLS", "contains"}, req.GetQuery().GetSelection().GetEdgeTypes(),
+		"the compiler rides the already-resolved spellings verbatim, in both casings")
 }
 
-// TestCompileTraverse_EdgeTypesCanonicalizedCodeGraph pins the uppercase arm: a
-// code-graph traverse uppercases the edge tokens client-side (CALLS), so a
-// lowercase "calls" input matches the stored "CALLS" edge type.
-func TestCompileTraverse_EdgeTypesCanonicalizedCodeGraph(t *testing.T) {
+// TestCompileTraverse_EdgeTypesVerbatimOnCodeGraph pins the same layering on the
+// graph family that used to be uppercased. The graph name no longer selects a
+// casing anywhere in the client, so a lowercase token on the code graph reaches
+// the wire lowercase; whether it MATCHES is settled upstream by resolution
+// against what the graph actually stores.
+func TestCompileTraverse_EdgeTypesVerbatimOnCodeGraph(t *testing.T) {
 	req, ok := compileTraverse(json.RawMessage(`{"start":"sym","graph":"code","repo":"knowledge","edge_types":["calls"]}`))
 	require.True(t, ok)
-	assert.Equal(t, []string{"CALLS"}, req.GetQuery().GetSelection().GetEdgeTypes(),
-		"code graph uppercases edge types client-side")
+	assert.Equal(t, []string{"calls"}, req.GetQuery().GetSelection().GetEdgeTypes(),
+		"the compiler passes the resolved spelling through and does NOT uppercase for the code graph")
 }
 
 func TestCompileTraverse_CrossGraphTarget(t *testing.T) {
@@ -165,6 +172,7 @@ func TestDispatch_PrecheckTraverseUnknownDirection(t *testing.T) {
 			d := &dispatchCounters{}
 			out, err := Dispatch(context.Background(),
 				d.exec(nil, errors.New("exec must not run — precheck rejects the direction")),
+				nil,
 				"traverse", json.RawMessage(tc.args))
 			require.NoError(t, err, "the validation error is rendered, not returned")
 			assert.True(t, out.IsError, "an unknown direction is a validation failure (IsError)")
@@ -194,6 +202,7 @@ func TestDispatch_TraverseAcceptedDirectionsStillWalk(t *testing.T) {
 			}
 			out, err := Dispatch(context.Background(),
 				d.exec(&knowledgev1.ExecuteResponse{}, nil),
+				nil,
 				"traverse", json.RawMessage(args))
 			require.NoError(t, err)
 			assert.False(t, out.IsError, "%q is accepted and walks", dir)
@@ -222,6 +231,7 @@ func TestDispatch_StartlessLogsTraverse_DeniedWhileOtherGraphsEnumerate(t *testi
 		d := &dispatchCounters{}
 		out, err := Dispatch(context.Background(),
 			d.exec(nil, errors.New("exec must not run — a start-less logs traverse is denied")),
+			nil,
 			"traverse", json.RawMessage(`{"graph":"logs","name":"q1"}`))
 		require.NoError(t, err, "the deny is rendered, not returned as a Go error")
 		assert.True(t, out.IsError, "a start-less logs traverse is denied")
@@ -231,6 +241,7 @@ func TestDispatch_StartlessLogsTraverse_DeniedWhileOtherGraphsEnumerate(t *testi
 		d := &dispatchCounters{}
 		out, err := Dispatch(context.Background(),
 			d.exec(&knowledgev1.ExecuteResponse{}, nil),
+			nil,
 			"traverse", json.RawMessage(`{"graph":"knowledge"}`))
 		require.NoError(t, err)
 		assert.False(t, out.IsError, "the same shape on knowledge is the graph-wide enumeration")

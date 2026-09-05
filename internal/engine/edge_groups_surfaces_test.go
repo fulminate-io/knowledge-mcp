@@ -154,7 +154,7 @@ func TestCandidateGroupsAcrossSurfaces(t *testing.T) {
 			enginetest.ResponseWithNodes(nodes...),
 			{Edges: edgesToProtoForTest(edges)},
 		}}
-		out, err := Dispatch(context.Background(), s.fn(), "traverse", json.RawMessage(`{"graph":"knowledge","format":"json"}`))
+		out, err := Dispatch(context.Background(), s.fn(), nil, "traverse", json.RawMessage(`{"graph":"knowledge","format":"json"}`))
 		require.NoError(t, err)
 		var payload map[string]any
 		require.NoError(t, json.Unmarshal([]byte(out.Content[0].Text), &payload))

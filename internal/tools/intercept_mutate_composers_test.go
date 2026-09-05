@@ -30,7 +30,9 @@ func practiceNodeResult(t *testing.T, id, typ string) kgtools.ToolResult {
 // TestMutateComposers_CrossGraphLink_IntraPractice asserts that a
 // mutate(link, graph:practice) where BOTH endpoints resolve in the same
 // practice/<language> graph is claimed client-side and lowered to a LINK
-// MutationPlan targeting that practice graph (the engine routes cross-graph).
+// MutationPlan targeting that practice graph (the engine routes cross-graph),
+// carrying the relationship the declaration path resolved against that graph's
+// own edge vocabulary rather than a lowercase fold.
 func TestMutateComposers_CrossGraphLink_IntraPractice(t *testing.T) {
 	fc := &fakeGraphCaller{
 		// Both endpoints live in practice/design-patterns, NEITHER in knowledge —
@@ -54,14 +56,17 @@ func TestMutateComposers_CrossGraphLink_IntraPractice(t *testing.T) {
 	})
 	require.True(t, handled, "intra-practice link must be claimed client-side")
 	require.False(t, res.IsError, "intra-practice link: %s", toolResultText(res))
-	assert.Contains(t, toolResultText(res), "Linked in practice/design-patterns: pat-1 -[contains]-> uc-1")
+	assert.Contains(t, toolResultText(res), "Linked in practice/design-patterns: pat-1 -[Contains]-> uc-1")
 
-	// Exactly ONE LINK MutationPlan, targeting the practice graph, lowercased rel.
+	// Exactly ONE LINK MutationPlan, targeting the practice graph, carrying the
+	// relationship the DECLARATION path resolved.
 	require.Len(t, fc.execMutations, 1)
 	plan := fc.execMutations[0]
 	assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_LINK, plan.GetKind())
 	require.NotNil(t, plan.GetEdgeSpec())
-	assert.Equal(t, "contains", plan.GetEdgeSpec().GetRelationship(), "practice edges are lowercase")
+	assert.Equal(t, "Contains", plan.GetEdgeSpec().GetRelationship(),
+		"the fixture graph carries NO edges, so this write DECLARES the family with the caller's own spelling — "+
+			"not a regression from a lowercase practice fold, which no longer exists")
 	assert.Equal(t, "uc-1", plan.GetEdgeSpec().GetToId())
 	require.NotNil(t, plan.GetSelection())
 	assert.Equal(t, []string{"pat-1"}, plan.GetSelection().GetIds())
@@ -99,7 +104,9 @@ func TestMutateComposers_CrossGraphLink_ProxyFallsThrough(t *testing.T) {
 // via crossgraph.ResolveAndLink — the proxies + the metadata-carrying edge land in
 // the LINKAGE graph over the Execute seam, and the server's legacy ResolveOrProxy
 // is NOT reached (no mutate gc.Call). With neither endpoint a node, both resolve
-// best-effort to their raw ids and the LINK targets linkage with UPPERCASE casing.
+// best-effort to their raw ids and the LINK targets linkage carrying the
+// relationship the declaration path resolved against that graph's vocabulary —
+// here an empty one, so the caller's spelling is admitted as a new family.
 func TestMutateComposers_CrossGraphLink_LinkageHandledClientSide(t *testing.T) {
 	fc := &fakeGraphCaller{}
 	deps := interceptTestDeps{gc: fc}
@@ -123,7 +130,8 @@ func TestMutateComposers_CrossGraphLink_LinkageHandledClientSide(t *testing.T) {
 	assert.Equal(t, "linkage", linkReq.GetTarget().GetGraph(), "LINK targets the linkage graph")
 	assert.Equal(t, []string{"a"}, link.GetSelection().GetIds(), "best-effort raw FROM")
 	assert.Equal(t, "b", link.GetEdgeSpec().GetToId(), "best-effort raw TO")
-	assert.Equal(t, "RELATES-TO", link.GetEdgeSpec().GetRelationship(), "linkage edge type UPPERCASE")
+	assert.Equal(t, "relates-to", link.GetEdgeSpec().GetRelationship(),
+		"the fixture's linkage graph is EMPTY, so it admits the caller's spelling as a new edge family")
 	assert.Equal(t, "linker:test", link.GetEdgeSpec().GetMethod())
 	assert.InDelta(t, 0.7, link.GetEdgeSpec().GetConfidence(), 1e-9)
 }
@@ -201,7 +209,7 @@ func TestMutateComposers_CreateStampsLLMClaudeSource(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// CLASS-A: practice/transformers create/update/delete via Execute seam.
+// CLASS-A: practice create/update/delete via Execute seam.
 // ---------------------------------------------------------------------------
 
 // TestMutateComposers_PracticeCreate_TargetRouted asserts a practice create
@@ -224,21 +232,6 @@ func TestMutateComposers_PracticeCreate_TargetRouted(t *testing.T) {
 	require.NotNil(t, target)
 	assert.Equal(t, "practice", target.GetGraph())
 	assert.Equal(t, "go", target.GetLanguage())
-}
-
-// TestMutateComposers_TransformersCreate_TargetRouted asserts a transformers
-// create is claimed and targets the transformers graph.
-func TestMutateComposers_TransformersCreate_TargetRouted(t *testing.T) {
-	fc := &fakeGraphCaller{mutateIDs: []string{"r1"}}
-	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
-		Name:      "mutate",
-		Arguments: json.RawMessage(`{"operation":"create","graph":"transformers","type":"recipe","name":"r","summary":"s"}`),
-	})
-	require.True(t, handled)
-	require.False(t, res.IsError, "transformers create: %s", toolResultText(res))
-	require.NotEmpty(t, fc.execRequests)
-	assert.Equal(t, "transformers", fc.execRequests[len(fc.execRequests)-1].GetTarget().GetGraph())
 }
 
 // TestMutateComposers_PracticeUpdate_TargetRouted asserts a practice by-id

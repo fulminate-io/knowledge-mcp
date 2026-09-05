@@ -18,23 +18,40 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/layout"
 )
 
-// monospaceFraction returns the glyph-weighted fraction of monospace
-// glyphs in block. Returns 0 for empty blocks.
-func monospaceFraction(block layout.Block) float64 {
-	var total, monoTotal int
+// styleFractions returns the glyph-weighted bold, italic and monospace
+// fractions of block in ONE walk over its runs. The three are computed
+// together because every caller that wants one of the raw style
+// signals wants all three, and three separate walks over the same runs
+// is the cost this avoids. Returns three zeros for empty blocks.
+func styleFractions(block layout.Block) (bold, italic, mono float64) {
+	var total, boldTotal, italicTotal, monoTotal int
 	for _, line := range block.Lines {
 		for _, run := range line.Runs {
 			w := len(run.Glyphs)
 			total += w
+			if run.Bold {
+				boldTotal += w
+			}
+			if run.Italic {
+				italicTotal += w
+			}
 			if run.Mono {
 				monoTotal += w
 			}
 		}
 	}
 	if total == 0 {
-		return 0
+		return 0, 0, 0
 	}
-	return float64(monoTotal) / float64(total)
+	t := float64(total)
+	return float64(boldTotal) / t, float64(italicTotal) / t, float64(monoTotal) / t
+}
+
+// monospaceFraction returns the glyph-weighted fraction of monospace
+// glyphs in block. Returns 0 for empty blocks.
+func monospaceFraction(block layout.Block) float64 {
+	_, _, mono := styleFractions(block)
+	return mono
 }
 
 // hasMonoRun reports whether block contains at least one TextRun whose

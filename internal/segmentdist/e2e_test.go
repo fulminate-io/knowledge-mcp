@@ -143,6 +143,7 @@ func TestSegmentDistributionE2E(t *testing.T) {
 // no source, in this package or in searchengine, so the claim is structural and a test
 // asserting it could only ever be green.
 func TestLoadReadsL2InEveryBranch(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

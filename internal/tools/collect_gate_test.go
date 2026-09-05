@@ -37,9 +37,9 @@ func TestCollectGate_ReleasesAfterFailedCollect(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rt := NewCollectRuntime()
 			release := make(chan struct{})
-			h, started, _ := rt.Start("code\x00/x", "code /x", gateTestGraph, func() (string, error) {
+			h, started, _ := rt.Start("code\x00/x", "code /x", kgtypes.GraphCode, gateTestGraph, func() (string, string, error) {
 				<-release
-				return "", tc.work()
+				return "", "", tc.work()
 			})
 			require.True(t, started)
 
@@ -72,9 +72,9 @@ func TestCollectGate_StaleEntryDoesNotGateForever(t *testing.T) {
 
 	block := make(chan struct{})
 	t.Cleanup(func() { close(block) })
-	_, started, _ := rt.Start("code\x00/x", "code /x", gateTestGraph, func() (string, error) {
+	_, started, _ := rt.Start("code\x00/x", "code /x", kgtypes.GraphCode, gateTestGraph, func() (string, string, error) {
 		<-block // never returns during the test — the hung-collect shape
-		return "", nil
+		return "", "", nil
 	})
 	require.True(t, started)
 
@@ -95,9 +95,9 @@ func TestCollectGate_IgnoresOtherGraphsAndTypes(t *testing.T) {
 	rt := NewCollectRuntime()
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
-	_, started, _ := rt.Start("code\x00/x", "code /x", gateTestGraph, func() (string, error) {
+	_, started, _ := rt.Start("code\x00/x", "code /x", kgtypes.GraphCode, gateTestGraph, func() (string, string, error) {
 		<-release
-		return "", nil
+		return "", "", nil
 	})
 	require.True(t, started)
 
@@ -105,7 +105,8 @@ func TestCollectGate_IgnoresOtherGraphsAndTypes(t *testing.T) {
 	require.False(t, rt.CollectInFlightForGraph(kgtypes.GraphCode, "some-other-repo"),
 		"a collect into one repo must not gate a different repo")
 	require.False(t, rt.CollectInFlightForGraph(kgtypes.GraphKnowledge, gateTestGraph),
-		"the gate is code-graph only")
+		"a code collect must not gate a knowledge graph that shares its name — "+
+			"the gate matches the (family, name) PAIR, not the name alone")
 	require.False(t, rt.CollectInFlightForGraph(kgtypes.GraphCode, ""),
-		"an empty name (every non-code collector records one) must never gate")
+		"an empty name (a collector family the derivation does not name) must never gate")
 }

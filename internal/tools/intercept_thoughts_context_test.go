@@ -112,10 +112,11 @@ type ctxPackDeps struct {
 	emb    embed.BinaryEmbedder
 }
 
-func (d ctxPackDeps) LocalLiveness() LocalLiveness    { return nil }
-func (d ctxPackDeps) Sink() collector.Sink            { return nil }
-func (d ctxPackDeps) RootDir() string                 { return "" }
-func (d ctxPackDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+func (d ctxPackDeps) LocalLiveness() LocalLiveness          { return nil }
+func (d ctxPackDeps) Sink() collector.Sink                  { return nil }
+func (d ctxPackDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
+func (d ctxPackDeps) RootDir() string                       { return "" }
+func (d ctxPackDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
 
 func (d ctxPackDeps) PropReady() bool     { return true }
 func (d ctxPackDeps) PipelineReady() bool { return true }

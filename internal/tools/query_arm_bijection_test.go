@@ -74,7 +74,7 @@ var queryEntryPointArmFloors = []struct {
 			armPracticeListGraphs, armPracticeStats, armPracticeBrowse,
 			armPracticeSearchFanOut, armPracticeSearch,
 			armLinkageListGraphs, armLinkageStats, armLinkageGetNode, armLinkageSearchRetired,
-			armWebPDFSearch, armWebPDFStats,
+			armWebPDFSearch, armWebPDFStats, armWebPDFModules,
 		},
 	},
 	{

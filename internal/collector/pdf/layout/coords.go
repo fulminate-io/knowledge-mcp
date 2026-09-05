@@ -15,35 +15,74 @@ package layout
 // places the topmost line first. flipY converts a single coordinate;
 // callers flip on entry and restore on emit.
 //
-// All declarations are package-internal (lowercase initial — not
-// exported by Go's identifier-export rules).
+// Exported surface: NormalizePoint alone. Package structtree needs the
+// forward point transform to order a partially-tagged page's blocks in
+// the page's reading frame, so that one formula is exported and every
+// other declaration here stays package-internal.
 
 import (
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/text"
 )
+
+// NormalizePoint maps a single point out of the page's natural,
+// unrotated user-space frame and into the rotation-normalized reading
+// frame — the frame in which "down the page, then left to right" is
+// the order a viewer actually reads.
+//
+// The PDF /Rotate field specifies CW page-display rotation; content is
+// laid out in the *unrotated* frame and the viewer rotates the canvas
+// at display time. To work in the visual reading frame we
+// counter-rotate (CCW) by the same amount, with mb.X1 and mb.Y1 acting
+// as the page-extent pivot:
+//
+//   - 90° CW page  → counter-rotate by 90° CCW:
+//     (x', y') = (y, mb.X1 - x).
+//   - 180° page    → (x', y') = (mb.X1 - x, mb.Y1 - y).
+//   - 270° CW page → counter-rotate by 270° CCW (≡ 90° CW):
+//     (x', y') = (mb.Y1 - y, x).
+//
+// Rotation 0 is the IDENTITY, so a caller that keys on this function's
+// result orders an unrotated page exactly as it did before the call
+// existed — byte-identical by construction rather than by measurement.
+//
+// An unrecognized rotation is the identity too, and that is not a
+// silent degrade: every caller reaches this function downstream of
+// validateRotation (cluster.go, called first thing in clusterAtScale),
+// which rejects any /Rotate outside {0, 90, 180, 270} before geometry
+// runs. The default arm is unreachable for a value the collector
+// accepted.
+//
+// A POINT is transformed rather than a rectangle, deliberately. A
+// rectangle's extent rotates with it, so its normalized corner
+// coordinates shift by the block's ORIGINAL width and no single corner
+// is a stable ordering key across all four rotations. A point carries
+// no extent to rotate.
+//
+// Reference: PDF 32000-1:2008 §8.4.5 (Rotate).
+func NormalizePoint(x, y float64, rotation int, mb Rect) (float64, float64) {
+	switch rotation {
+	case 90:
+		return y, mb.X1 - x
+	case 180:
+		return mb.X1 - x, mb.Y1 - y
+	case 270:
+		return mb.Y1 - y, x
+	default:
+		return x, y
+	}
+}
 
 // normalizeForRotation returns a NEW slice (input is not mutated) in
 // which every run's (X, Y) anchor and (Width, Height) extents have
 // been counter-rotated by the page /Rotate value. For rotation 0
 // the input slice is returned as-is (zero-copy).
 //
-// The PDF /Rotate field specifies CW page-display rotation; runs in
-// the content stream are laid out in the *unrotated* frame and the
-// viewer rotates the canvas at display time. To cluster in the
-// visual reading frame we counter-rotate (CCW) the runs by the
-// same amount. The transforms below are applied to the run's
-// (X, Y) anchor:
-//
-//   - 90° CW page  → counter-rotate runs by 90° CCW:
-//     (x', y') = (y, mb.X1 - x);   swap Width<->Height.
-//   - 180° page    → (x', y') = (mb.X1 - x, mb.Y1 - y);
-//     preserve Width/Height.
-//   - 270° CW page → counter-rotate runs by 270° CCW (≡ 90° CW):
-//     (x', y') = (mb.Y1 - y, x);   swap Width<->Height.
-//
-// mb.X1 and mb.Y1 act as the page-extent pivot. The transforms
-// describe the (X, Y) anchor; downstream clustering uses these
-// anchors plus the rotated Width/Height for line/block grouping.
+// The anchor transform is NormalizePoint's; this function owns only
+// the EXTENT half, which a point transform cannot express: a 90° or
+// 270° normalize turns a run's horizontal extent into a vertical one,
+// so Width and Height swap, while 180° preserves both. Downstream
+// clustering uses the normalized anchors plus these rotated extents
+// for line and block grouping.
 //
 // Reference: PDF 32000-1:2008 §8.4.5 (Rotate). pdfcpu wrapper read
 // site: collector/pdf/internal/pdfcpu/page.go.
@@ -53,27 +92,11 @@ func normalizeForRotation(runs []text.TextRun, rotation int, mb Rect) []text.Tex
 	}
 	out := make([]text.TextRun, len(runs))
 	copy(out, runs)
-	mbW := mb.X1
-	mbH := mb.Y1
-	switch rotation {
-	case 90:
-		for i := range out {
-			r := out[i]
-			out[i].X = r.Y
-			out[i].Y = mbW - r.X
-			out[i].Width, out[i].Height = r.Height, r.Width
-		}
-	case 180:
-		for i := range out {
-			r := out[i]
-			out[i].X = mbW - r.X
-			out[i].Y = mbH - r.Y
-		}
-	case 270:
-		for i := range out {
-			r := out[i]
-			out[i].X = mbH - r.Y
-			out[i].Y = r.X
+	swapExtent := rotation == 90 || rotation == 270
+	for i := range out {
+		r := out[i]
+		out[i].X, out[i].Y = NormalizePoint(r.X, r.Y, rotation, mb)
+		if swapExtent {
 			out[i].Width, out[i].Height = r.Height, r.Width
 		}
 	}

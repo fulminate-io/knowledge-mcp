@@ -41,10 +41,11 @@ import (
 //   - ranked text search: RETIRED → rankedSearchRetiredResult("linkage").
 //
 // web/pdf shapes:
-//   - ranked text search: served CLIENT-SIDE by composeRawGraphSearch
-//     (intercept_query_webpdf.go) — the raw graph is drained, ranked in memory
-//     with BM25 and rendered with heading context. No vector arm exists for
-//     these graphs, and the render says so.
+//   - ranked text search: served from the CLIENT SEGMENT ENGINE by
+//     composeRawGraphSegmentSearch (raw_graph_segment_search.go) — raw graphs are
+//     enrolled embed-only, so their chunks carry BOTH a vector and a BM25
+//     document and the shipped segments are simply asked. Rendered with heading
+//     context, and the footer discloses which arms actually ran.
 //   - mode=stats    : CLAIMED here → one Stats RPC → RenderStatsBreakdown.
 //   - every remaining index-free op (by-id getNode, type-browse, mode=modules)
 //     passes through unhandled to the engineDispatch path (compileQuery lowers
@@ -485,8 +486,7 @@ func listPracticeGraphs(ctx context.Context, deps ClientDeps) kgtools.ToolResult
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Practice graphs (%d):\n\n", len(names))
 	for _, name := range names {
-		nodes, edges := graphCounts(ctx, sc, "practice", name)
-		fmt.Fprintf(&sb, "- **%s** — %d nodes, %d edges\n", name, nodes, edges)
+		sb.WriteString(graphCountRow(ctx, sc, "practice", name))
 	}
 	sb.WriteString("\nUse `query({ \"graph\": \"practice\", \"language\": \"go\" })` to browse a specific practice graph.")
 	return textResult(sb.String())

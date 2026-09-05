@@ -81,7 +81,8 @@ func (e *SegmentedIndex[Q, S]) ReplaceBucket(
 	// (3) Build the incoming documents into their own segment, when there are any.
 	var fresh *segmentEntry[Q, S]
 	if len(docs) > 0 {
-		seg, err := e.format.Build(dedupeDocsByID(docs))
+		seg, rep, err := e.format.Build(dedupeDocsByID(docs))
+		e.reportDegrade(rep)
 		if err != nil {
 			return "", err
 		}
@@ -187,7 +188,8 @@ func (e *SegmentedIndex[Q, S]) harvestPartition(
 ) (*segmentEntry[Q, S], SegmentID, error) {
 	var fresh *segmentEntry[Q, S]
 	if len(w.Docs) > 0 {
-		seg, err := e.format.Build(dedupeDocsByID(w.Docs))
+		seg, rep, err := e.format.Build(dedupeDocsByID(w.Docs))
+		e.reportDegrade(rep)
 		if err != nil {
 			return nil, "", err
 		}

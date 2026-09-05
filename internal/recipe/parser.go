@@ -87,6 +87,8 @@ func (p *parser) parseRule() (Rule, error) {
 		return p.parseSelect()
 	case "traverse":
 		return p.parseTraverse()
+	case "walk":
+		return p.parseWalk()
 	case "filter":
 		return p.parseFilter()
 	case "bind":
@@ -106,22 +108,70 @@ func (p *parser) parseRule() (Rule, error) {
 	}
 }
 
-// parseSelect parses `select IDENT [where expr]`.
+// parseSelect parses `select IDENT [where WHERE_TREE]`.
 func (p *parser) parseSelect() (Rule, error) {
 	kw := p.consume() // 'select'
 	nt, err := p.expectIdent("node type after 'select'")
 	if err != nil {
 		return nil, err
 	}
-	var where Expr
+	var where *WhereNode
 	if p.matchIdent("where") {
 		p.consume()
-		where, err = p.parseExpr()
+		where, err = p.parseWhereTreeClause("where")
 		if err != nil {
 			return nil, err
 		}
 	}
 	return RuleSelect{NodeType: nt.Value, Where: where, Pos: kw.Pos}, nil
+}
+
+// parseWhereTreeClause consumes the where-tree that must follow `where` or
+// `filter`, and REFUSES the retired string-expression predicate form.
+//
+// THE REFUSAL FIRES HERE BECAUSE THIS IS WHERE THE EVIDENCE IS. A legacy
+// predicate such as `filter page.name !~ /x/` lexes normally — the byte after
+// the keyword is 'p', not a brace, so the look-behind never triggers — and
+// arrives as an ordinary TokIdent carrying both the offending text and its
+// position. The message names both, then names the grammar that replaced the
+// old form, because an author told only "expected a where-tree" has no way to
+// learn what to write instead.
+//
+// IT DOES NOT KEEP PARSING THE OLD FORM BEHIND THE NEW ONE. A dual-grammar
+// parser would be a silently degraded lane: every refusal this validator adds
+// applies to the where-tree form alone, so an author left on the legacy form
+// keeps every silent failure permanently.
+func (p *parser) parseWhereTreeClause(keyword string) (*WhereNode, error) {
+	tok := p.peek()
+	if tok.Kind != TokWhereJSON {
+		return nil, p.errorf(tok,
+			"predicate after '%s' must be a JSON where-tree in braces, got %q — the string-expression predicate form was replaced by the ast-style where-tree. "+
+				"%s "+
+				"Example: filter {\"not\":{\"matches\":{\"of\":\"node.name\",\"regex\":\"^Part [IVX]+\"}}}. "+
+				"String expressions still work in emit field values and in bind. See help(\"recipes\")",
+			keyword, tok.Value, whereTreeVocabulary)
+	}
+	p.consume()
+	tree, err := ParseWhereTree([]byte(tok.Value), tok.Pos)
+	if err != nil {
+		return nil, &ParseError{Line: tok.Pos.Line, Col: tok.Pos.Col, Msg: stripParsePrefix(err.Error())}
+	}
+	return tree, nil
+}
+
+// stripParsePrefix removes the "parse error at L:C: " ParseError.Error already
+// renders, so a where-tree rejection that arrives pre-formatted is not printed
+// with its position twice.
+func stripParsePrefix(msg string) string {
+	const marker = ": "
+	if !strings.HasPrefix(msg, "parse error at ") {
+		return msg
+	}
+	rest := msg[len("parse error at "):]
+	if _, after, ok := strings.Cut(rest, marker); ok {
+		return after
+	}
+	return msg
 }
 
 // parseTraverse parses `traverse EDGE (in|out|both) [as VAR]`.
@@ -152,14 +202,39 @@ func (p *parser) parseTraverse() (Rule, error) {
 	return RuleTraverse{EdgeType: edge.Value, Direction: d, As: asName, Pos: kw.Pos}, nil
 }
 
-// parseFilter parses `filter expr`.
-func (p *parser) parseFilter() (Rule, error) {
-	kw := p.consume()
-	e, err := p.parseExpr()
+// parseWalk parses `walk EDGE [as VAR]`.
+//
+// It mirrors parseTraverse minus the direction token: a walk descends, so there
+// is nothing to choose. The `as` tail is the same tail, deliberately — an author
+// who knows one rule's binding syntax knows the other's.
+func (p *parser) parseWalk() (Rule, error) {
+	kw := p.consume() // 'walk'
+	edge, err := p.expectIdent("edge type after 'walk'")
 	if err != nil {
 		return nil, err
 	}
-	return RuleFilter{Pred: e, Pos: kw.Pos}, nil
+	var asName string
+	if p.matchIdent("as") {
+		p.consume()
+		v := p.peek()
+		if v.Kind != TokVar {
+			return nil, p.errorf(v, "expected $var after 'as'")
+		}
+		p.consume()
+		asName = v.Value
+	}
+	return RuleWalk{EdgeType: edge.Value, As: asName, Pos: kw.Pos}, nil
+}
+
+// parseFilter parses `filter WHERE_TREE`. The tree is required — there is no
+// nil-Where filter rule.
+func (p *parser) parseFilter() (Rule, error) {
+	kw := p.consume()
+	tree, err := p.parseWhereTreeClause("filter")
+	if err != nil {
+		return nil, err
+	}
+	return RuleFilter{Where: tree, Pos: kw.Pos}, nil
 }
 
 // parseBind parses `bind VAR := expr`.
@@ -205,6 +280,23 @@ func (p *parser) parseEmit() (Rule, error) {
 	fields, err := p.parseFieldMap()
 	if err != nil {
 		return nil, err
+	}
+	// AN EMIT CARRYING NEITHER `name` NOR `identity` IS REFUSED AT PARSE TIME,
+	// and the phase is the point rather than an implementation detail. The check
+	// is decidable from the RuleEmit AST alone, with no source graph, so putting
+	// it behind Interpret would be a choice — and a costly one: recipe.Parse is
+	// all the three documentation gates call, so a shipped example with a broken
+	// emit would pass every one of them.
+	//
+	// A row whose identity EXPRESSION evaluates empty at run time is a different
+	// thing entirely — a property of the data, not of the recipe — and is counted
+	// into Stats.SkippedChunks and disclosed by the extract header instead.
+	if _, hasName := fields["name"]; !hasName {
+		if _, hasIdentity := fields["identity"]; !hasIdentity {
+			return nil, p.errorf(kw,
+				"emit %s must set 'name' or 'identity' — an emit with neither has no way to identify the node it writes, so the row would be silently skipped at run time",
+				nt.Value)
+		}
 	}
 	if err := p.expect(TokRBrace, "'}'"); err != nil {
 		return nil, err

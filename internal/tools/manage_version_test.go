@@ -22,6 +22,12 @@ type versionDeps struct {
 	clientVer   string
 	daemonVer   string
 	daemonKnown bool
+	// serverBinVer/serverBinKnown drive the INSTALLED knowledge-server binary
+	// stamp. Zero values mean "not readable", which is the degrade the render
+	// surfaces treat as no server-binary line and no binary skew — so every
+	// pre-existing case in this file keeps its exact previous output.
+	serverBinVer   string
+	serverBinKnown bool
 }
 
 func (d *versionDeps) LocalLiveness() LocalLiveness {
@@ -33,6 +39,9 @@ func (d *versionDeps) LocalLiveness() LocalLiveness {
 
 func (d *versionDeps) ClientVersion() string         { return d.clientVer }
 func (d *versionDeps) DaemonVersion() (string, bool) { return d.daemonVer, d.daemonKnown }
+func (d *versionDeps) ServerBinaryVersion() (string, bool) {
+	return d.serverBinVer, d.serverBinKnown
+}
 
 // unhealthyLiveness is a LocalLiveness whose Healthy() is false — drives the
 // "daemon NOT RUNNING" branch without a nil-receiver panic.

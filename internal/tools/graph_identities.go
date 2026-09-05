@@ -26,10 +26,18 @@ import (
 // validator must be able to see and pass, and omitting it would make an empty
 // result indistinguishable from a failed enumeration.
 //
-// THE TYPES WALKED ARE THE EMBEDDABLE ONES, via kgtypes.HasRebuildableSegments —
-// the same predicate the segment rebuild uses to decide which graphs carry
-// vectors. A type that carries no vectors has no identity to validate, and
-// walking it would cost a round trip to learn nothing.
+// THE TYPES WALKED ARE THE EMBEDDABLE ONES, via rebuildableBuiltinNames() — the
+// SAME derivation manage(rebuild_segments) names in its refusal, so the two cannot
+// disagree about which graphs carry vectors. A type that carries no vectors has no
+// identity to validate, and walking it would cost a round trip to learn nothing.
+//
+// IT USED TO WALK SyncEligibleGraphTypes() AND FILTER BY HasRebuildableSegments,
+// which was correct only while the second set nested inside the first. Web and pdf
+// are embed-only: they carry vectors AND they are deliberately never sync-eligible,
+// so a sync-eligible outer loop dropped them before the filter ever ran and the
+// doctor's embed-identity check silently never saw a raw graph. The filter is not
+// the fix — the OUTER LOOP was the bug, and an inner predicate cannot widen a set
+// the loop already narrowed.
 //
 // exec is the raw Execute func (gc.Execute), mirroring RecordedCodeSyncMeta, so
 // callers outside this package do not need a ClientDeps to ask.
@@ -42,10 +50,8 @@ func RecordedGraphIdentities(
 	caller := execFnCaller{exec: exec}
 
 	var out []config.LiveGraphIdentity
-	for _, gt := range kgtypes.SyncEligibleGraphTypes() {
-		if !kgtypes.HasRebuildableSegments(gt) {
-			continue
-		}
+	for _, name := range rebuildableBuiltinNames() {
+		gt := kgtypes.GraphType(name)
 		infos, err := fetchGraphNamesOfType(ctx, caller, string(gt))
 		if err != nil {
 			return nil, fmt.Errorf("RecordedGraphIdentities: enumerate %s graphs: %w", gt, err)

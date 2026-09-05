@@ -4,6 +4,7 @@ package recipe
 
 import (
 	"maps"
+	"regexp"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
@@ -45,6 +46,36 @@ type Env struct {
 	// point at a different source anchor (e.g. a page rather than the
 	// current section).
 	SourceRef string
+
+	// whereRegexes holds the regexes the validator compiled for this run's
+	// where-tree matches leaves, keyed by the leaf each belongs to.
+	//
+	// IT LIVES HERE, PER RUN, RATHER THAN ON THE LEAF, because the leaf belongs
+	// to a *Recipe shared through the process-global astCache: storing the
+	// compiled expression on it was an unsynchronized write into state two
+	// concurrent runs both touch, and a reader that saw it as nil refused a
+	// valid recipe. An Env is built fresh per Interpret call, so this map is
+	// private to one run by construction.
+	whereRegexes map[*MatchesLeaf]*regexp.Regexp
+
+	// whereCompares holds the operator and operand the validator resolved for
+	// this run's where-tree compare leaves, keyed by the leaf each belongs to.
+	//
+	// IT LIVES HERE, PER RUN, RATHER THAN ON THE LEAF, on exactly the terms
+	// whereRegexes does and for the same measured reason: the leaf belongs to a
+	// *Recipe shared through the process-global astCache, so resolved state
+	// stored on it would be an unsynchronized write into state two concurrent
+	// runs both touch. An Env is built fresh per Interpret call, so this map is
+	// private to one run by construction.
+	whereCompares map[*CompareLeaf]compareResolution
+}
+
+// compareResolution is one compare leaf's resolved operator and parsed operand,
+// both settled by the validator BEFORE any row exists. The evaluator reads it
+// and writes nothing.
+type compareResolution struct {
+	op    knowledgev1.MetadataPredicate_Op
+	value float64
 }
 
 // Row is a single row of the interpreter's working selection. NodeID
@@ -57,6 +88,22 @@ type Row struct {
 	NodeID string
 	Node   *knowledgev1.Node
 	Vars   map[string]string
+
+	// Edge is the SOURCE-GRAPH EDGE THAT PRODUCED THIS ROW — the edge a
+	// traverse rule or a where-tree walk leaf stepped along to reach it. It is
+	// nil when the row came from a select, which walked no edge to find it.
+	//
+	// It exists because sourceView.edgesFrom projects every matching edge down
+	// to a neighbor ID, which puts the edge's own Type and Evidence — where
+	// both raw collectors stamp the contains position — structurally out of
+	// reach of any field reader. Carrying the handle on the row is what makes
+	// `edge.…` answerable at all.
+	//
+	// PER-ROW STATE, so the cached-AST rule is satisfied by construction rather
+	// than by care: rows are built fresh by the walker on every run, and
+	// nothing here is written onto a WhereNode, a leaf, or anything else
+	// hanging off the memoized *Recipe.
+	Edge *knowledgev1.Edge
 }
 
 // newEnv returns a freshly initialized Env. Used by Interpret() at the
@@ -64,8 +111,10 @@ type Row struct {
 // directly.
 func newEnv() *Env {
 	return &Env{
-		Vars:    map[string]string{},
-		EmitMap: map[string]map[string]string{},
+		Vars:          map[string]string{},
+		EmitMap:       map[string]map[string]string{},
+		whereRegexes:  map[*MatchesLeaf]*regexp.Regexp{},
+		whereCompares: map[*CompareLeaf]compareResolution{},
 	}
 }
 

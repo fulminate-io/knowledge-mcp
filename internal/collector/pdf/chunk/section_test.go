@@ -26,6 +26,47 @@ func pb(txt string) mergedBlock {
 	}, PageRange: [2]int{0, 0}}
 }
 
+// pbPages is pb with an explicit zero-indexed page range.
+func pbPages(txt string, first, last int) mergedBlock {
+	mb := pb(txt)
+	mb.PageRange = [2]int{first, last}
+	return mb
+}
+
+// TestBuildSections_SyntheticRootPageRangeSpansOrphans asserts the synthetic
+// orphan root's PageRange is the UNION of the orphans it collects rather than
+// the zero value it used to hold.
+//
+// The fixture separates the mandated maximum from the plausible-wrong
+// last-orphan variant: the greatest last index (7) belongs to a NON-FINAL
+// orphan, so the union is [3,7] while the last orphan's last index is 5. It
+// also starts off page index 0, so an implementation leaving [0,0] in place
+// cannot coincide with a correct answer.
+func TestBuildSections_SyntheticRootPageRangeSpansOrphans(t *testing.T) {
+	t.Parallel()
+	blocks := []mergedBlock{
+		pbPages("orphan one", 3, 4),
+		pbPages("orphan two", 4, 7),
+		pbPages("orphan three", 5, 5),
+		hb(1, "First heading"),
+	}
+	out := buildSections(blocks)
+	if len(out) != 2 {
+		t.Fatalf("len(out) = %d, want 2 (synthetic orphan root + heading root)", len(out))
+	}
+	root := out[0]
+	if root.Kind != layout.BlockUnknown {
+		t.Fatalf("out[0].Kind = %s, want the synthetic orphan root (unknown)", root.Kind)
+	}
+	if len(root.Children) != 3 {
+		t.Fatalf("synthetic root children = %d, want 3 orphans", len(root.Children))
+	}
+	want := [2]int{3, 7}
+	if root.PageRange != want {
+		t.Errorf("synthetic root PageRange = %v, want %v (union of the orphans)", root.PageRange, want)
+	}
+}
+
 // TestBuildSections_H1Plus3Paragraphs_OneRootThreeChildren — input
 // H1 + 3 paragraphs → 1 top-level Chunk (H1) with 3 Children, all
 // body chunks.

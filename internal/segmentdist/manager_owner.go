@@ -109,10 +109,14 @@ type Manager struct {
 	// takes its own mutex rather than mu: mu guards the per-graph engine maps and is
 	// held across lazy engine construction, while these are held only across a small
 	// file read+rename. bm25DeltaStateMu guards the per-graph BM25 arm cursor record
-	// (bm25_delta_state.go) under the same rationale.
-	mergeStateMu     sync.Mutex
-	repairStateMu    sync.Mutex
-	bm25DeltaStateMu sync.Mutex
+	// (bm25_delta_state.go) under the same rationale, and bm25DegradeStateMu guards
+	// the per-graph BM25 drop census (bm25_degrade_state.go) — whose writer is the
+	// ENGINE'S BUILD HOOK, which may run on several harvest workers at once, so its
+	// whole read-modify-write is held under it.
+	mergeStateMu       sync.Mutex
+	repairStateMu      sync.Mutex
+	bm25DeltaStateMu   sync.Mutex
+	bm25DegradeStateMu sync.Mutex
 	// repairStateHot is what keeps a disk read off the manage(status) assembly loop,
 	// which walks every graph serially. LoadRepairState fills it and SaveRepairState
 	// updates it; RepairStateCached is a pure map read that never falls back to disk.

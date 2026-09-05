@@ -61,7 +61,13 @@ func (s *crawlState) materializeGithub(ctx context.Context, fc *fetchClient, raw
 	}
 	if !claimed && !ready {
 		// Another worker tried but failed; we observed the abort. Skip.
-		slog.Debug("github_materializer: prior materialization aborted, skipping", "url", raw)
+		//
+		// REPORTED AS A FOLLOW-UP CANDIDATE, NOT AS A DEGRADE, under the user's
+		// ruling: "github links are things the user would decide to follow up
+		// on, its not a failure at all". It logs at Warn naming the URL and
+		// carries NO census class; the link itself is reported by the
+		// follow-up inventory on the collect response.
+		slog.Warn("github_materializer: prior materialization aborted, repository not materialized", "url", raw)
 		return
 	}
 
@@ -86,9 +92,19 @@ func (s *crawlState) materializeRepo(ctx context.Context, fc *fetchClient, raw s
 	repoInfo := info
 	repoInfo.Path = "" // always materialize the whole repo
 
-	rootDir, cleanup, w, err := fetchCodeloadTarball(ctx, fc, repoInfo, maxBytes)
+	// The per-entry unpack losses happen three frames below this one, inside
+	// unpackTar, which the crawl state cannot reach. They accumulate here and
+	// are folded into the census below.
+	var counts unpackCounts
+	rootDir, cleanup, w, err := fetchCodeloadTarball(ctx, fc, repoInfo, maxBytes, &counts)
+	s.bumpDegrade(degradeGithubUnsafePath, counts.UnsafePath)
+	s.bumpDegrade(degradeGithubUnpackFailed, counts.UnpackFailed)
+	s.bumpDegrade(degradeGithubNonregular, counts.NonRegular)
+	s.bumpDegrade(degradeGithubTarReadFailed, counts.TarReadFailed)
 	if err != nil {
-		slog.Debug("github_materializer: tarball fetch failed", "url", raw, "err", err)
+		// A follow-up candidate rather than a degrade — see the ruling quoted
+		// at the abort lane above. Warn, name the URL, count nothing.
+		slog.Warn("github_materializer: tarball fetch failed, repository not materialized", "url", raw, "err", err)
 		s.githubMat.abort(key)
 		return
 	}
@@ -108,7 +124,9 @@ func (s *crawlState) materializeRepo(ctx context.Context, fc *fetchClient, raw s
 	}
 	nodes, edges, err := parser.PopulateForExternalGraph(ctx, repoName, rootDir)
 	if err != nil {
-		slog.Debug("github_materializer: PopulateForExternalGraph failed", "url", raw, "err", err)
+		// A follow-up candidate rather than a degrade — see the ruling quoted
+		// at the abort lane above.
+		slog.Warn("github_materializer: repository population failed, repository not materialized", "url", raw, "err", err)
 		s.githubMat.abort(key)
 		return
 	}
@@ -256,7 +274,15 @@ func buildGhRoot(info githubURLInfo, sourceURL string, nodes []*knowledgev1.Node
 // fresh shot (e.g. if maxBytes was raised mid-crawl, hypothetically).
 func (s *crawlState) appendWarning(raw string, info githubURLInfo, w *materializerWarning, key githubKey) {
 	parentID := "" // seed-URL warnings have no parent page; future enhancement could thread one through
-	node, edges := emitMaterializerWarning(parentID, raw, info, w)
+	node, edges, err := emitMaterializerWarning(parentID, raw, info, w)
+	if err != nil {
+		// A string-map marshal cannot fail in a correct build; reaching this
+		// means it is not correct, so the warning node is refused loudly
+		// rather than appended with its provenance edge missing.
+		slog.Error("github_materializer: could not build materialization warning node", "url", raw, "err", err)
+		s.githubMat.abort(key)
+		return
+	}
 	s.mu.Lock()
 	s.matNodes = append(s.matNodes, node)
 	s.matEdges = append(s.matEdges, edges...)

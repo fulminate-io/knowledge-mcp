@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Raw Signals Fixture</title>
+</head>
+<body>
+<article id="main">
+  <p>Prose that sits before the first heading.</p>
+
+  <h1 id="raw-signals">Raw Signals</h1>
+
+  <p class="lead">The collector stamps a tag and a DOM depth on every node it derives from an element.</p>
+
+  <ul class="signals">
+    <li>First list item carries its own text length.</li>
+    <li>Second list item carries one as well.</li>
+  </ul>
+
+  <pre><code class="language-go">fmt.Println("the code block carries a recognizable sentence")</code></pre>
+
+  <blockquote cite="https://example.invalid/source">A quoted sentence retained verbatim by the walker.</blockquote>
+
+  <p><img src="/img/diagram.png" alt="A diagram of the emitted node shape"></p>
+
+  <h2 id="tables">Tables</h2>
+
+  <table class="datagrid">
+    <thead>
+      <tr><th>Name</th><th>Responsibility</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Alpha</td><td>First data row cell</td></tr>
+      <tr><td>Beta</td><td>Second data row cell</td></tr>
+    </tbody>
+  </table>
+
+  <table role="presentation" class="layoutgrid">
+    <tr>
+      <td><p>Layout cell one wraps a paragraph of prose rather than tabular data.</p></td>
+      <td><p>Layout cell two wraps a second paragraph of prose rather than tabular data.</p></td>
+    </tr>
+  </table>
+
+  <div class="markerhost">
+    <p class="marker">Context</p>
+    <p>A sibling paragraph long enough that the calibration gate has a real baseline to measure the marker series against, several times over.</p>
+    <p class="marker">Forces</p>
+    <p>A second sibling paragraph, also long enough that the median of the two stays far above twice the length of either marker label above.</p>
+  </div>
+
+  <div class="outerbox">
+    <div>Prose before <a href="/target">an inline anchor</a> and prose after it.</div>
+  </div>
+
+  <div class="linkstrip"><a href="/home">First Navigation Link</a> <a href="/docs">Second Navigation Link</a></div>
+</article>
+</body>
+</html>

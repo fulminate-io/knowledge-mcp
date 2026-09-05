@@ -1,12 +1,24 @@
 // classify.go — public orchestration for the heading / list / code /
 // paragraph classifier.
 //
-// Two entry points:
+// Single-slice entry points:
 //   - Classify uses DefaultClassifyParams.
 //   - ClassifyWithParams accepts caller-supplied overrides and
 //     substitutes per-field defaults for any zero-valued knob.
 //
-// Mutates blocks in place and returns the same slice (zero-copy).
+// Document-wide entry points, for callers holding every page at once:
+//   - CalibrateDocument computes the body-font reference ONCE over the
+//     whole document (body_calibration.go).
+//   - ClassifyPage classifies one page against that shared calibration.
+//   - AssignHeadingLevelsDocument ranks heading sizes across every page
+//     (classify_heading.go).
+//
+// The single-slice entry points compose the three over a one-page
+// slice.
+//
+// Annotates blocks in place, but the RETURNED slice may be SHORTER than
+// the input: the code-merge and split-heading passes consume blocks
+// into their neighbors. Always use the return value.
 
 package classify
 
@@ -92,16 +104,48 @@ func Classify(blocks []layout.Block) []layout.Block {
 	return ClassifyWithParams(blocks, DefaultClassifyParams)
 }
 
-// ClassifyWithParams runs the classifier with caller-supplied params.
-// Substitutes per-field defaults for any zero-valued knob, then walks
-// blocks once in order and dispatches to the per-rule helpers.
+// ClassifyWithParams runs the classifier over a single slice with
+// caller-supplied params. Composes the document-wide entry points over
+// a one-page slice: calibrate against exactly these blocks, classify
+// them, then rank their heading sizes.
+//
+// It does NOT reproduce the pre-split behaviour. ClassifyPage also
+// rejoins headings the layout grouper tore apart and stamps the nine
+// raw signals, so a caller can get back FEWER blocks than it passed in
+// and every returned block carries metadata it did not have before.
+// Callers depending on a one-to-one block correspondence, or on an
+// untouched Metadata map, have to account for both.
 func ClassifyWithParams(blocks []layout.Block, cp ClassifyParams) []layout.Block {
+	if len(blocks) == 0 {
+		return blocks
+	}
+	perPage := [][]layout.Block{blocks}
+	dc := CalibrateDocument(perPage)
+	perPage[0] = ClassifyPage(blocks, cp, dc)
+	AssignHeadingLevelsDocument(perPage)
+	return perPage[0]
+}
+
+// ClassifyPage classifies ONE page's blocks against a document-wide
+// calibration. It walks blocks once in order, dispatches to the
+// per-rule helpers, then stitches code blocks the layout grouper
+// fragmented.
+//
+// It deliberately does NOT assign heading levels: the level is a rank
+// of the DOCUMENT's distinct heading sizes, so it can only be computed
+// once every page has been classified. Callers run
+// AssignHeadingLevelsDocument after the last page.
+//
+// avgBlockGap and blockGapAbove stay PER PAGE — page-local typography
+// is the correct basis for a gap statistic, unlike the body-size
+// reference, which is a property of the document.
+func ClassifyPage(blocks []layout.Block, cp ClassifyParams, dc DocumentCalibration) []layout.Block {
 	if len(blocks) == 0 {
 		return blocks
 	}
 	cp = applyParamDefaults(cp)
 
-	cal := calibrateBody(blocks)
+	cal := dc.calibration()
 	avgGap := avgBlockGap(blocks)
 
 	for i := range blocks {
@@ -167,14 +211,27 @@ func ClassifyWithParams(blocks []layout.Block, cp ClassifyParams) []layout.Block
 		}
 	}
 
-	// 5. Second pass — assign HeadingLevel by distinct-size rank.
-	assignHeadingLevels(blocks)
-
-	// 6. Third pass — stitch adjacent code blocks the layout grouper
+	// 5. Second pass — stitch adjacent code blocks the layout grouper
 	// fragmented (bold-flip, paragraph-gap, SELECT/WHERE-style heading
 	// misclassification). Same-page only; cross-page stitching belongs
 	// to the chunk continuity pass.
-	return mergeAdjacentCodeBlocks(blocks)
+	//
+	// This runs BEFORE the document-wide heading rank on purpose: it
+	// reclassifies false all-bold-mono headings into code, so those
+	// blocks no longer contribute a spurious distinct size to the
+	// ranking population.
+	merged := mergeAdjacentCodeBlocks(blocks)
+
+	// 6. Fourth pass — rejoin headings the layout grouper tore across
+	// two adjacent blocks. Runs immediately after the code merge so it
+	// sees the final BlockHeading set, and before the document rank so
+	// a torn title contributes one size entry rather than two.
+	merged = MergeSplitHeadings(merged)
+
+	// 7. Stamp the classifier's own inputs onto every block, last, so a
+	// merged block reports the geometry of what it became.
+	StampRawSignals(merged, dc, avgGap)
+	return merged
 }
 
 // applyParamDefaults substitutes per-field defaults for any zero-valued

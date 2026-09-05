@@ -69,6 +69,7 @@ import (
 	_ "github.com/fulminate-io/knowledge-mcp/internal/llm/openai"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/bootstrap"
+	"github.com/fulminate-io/knowledge-mcp/internal/clientver"
 )
 
 // version is the binary version, injected at build time via:
@@ -79,7 +80,18 @@ var version = "dev"
 // Publish the binary-specific version into the bootstrap package so
 // the startup slog.Info reports the right SHA/tag. Mirrors
 // cmd/knowledge-server/main.go's init().
-func init() { bootstrap.Version = version }
+//
+// clientver.Version gets the SAME value from the SAME assignment. bootstrap's
+// copy is what the local status surfaces report; clientver's is what the client
+// claims on every cloud-bound request and what its possession proof is keyed
+// to. Publishing one without the other would ship a client that claims one
+// identity remotely and displays another locally, with nothing local to explain
+// the resulting refusal — which is why a test in this package asserts the two
+// agree after init.
+func init() {
+	bootstrap.Version = version
+	clientver.Version = version
+}
 
 func main() {
 	// Subcommand dispatch runs BEFORE ParseFlags so each subcommand can
@@ -116,6 +128,15 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+	// bootstrap.Run currently returns a non-nil error unconditionally: bare
+	// `knowledge` no longer serves MCP over stdio and its only job is to say so
+	// and point at the daemon. staticcheck is therefore right that this
+	// comparison is always true today. The check stays a check rather than
+	// collapsing into an unconditional exit, because what makes it always true
+	// is one function's present behaviour, not a property of this call site —
+	// hard-coding today's answer here is what would silently swallow a success
+	// the day Run has one again.
+	//nolint:staticcheck // SA4023: always true while Run unconditionally refuses; kept as a check so a future success path is honored.
 	if err := bootstrap.Run(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

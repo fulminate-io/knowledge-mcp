@@ -30,6 +30,10 @@ func LinkImageTargets(ctx context.Context, gc GraphCaller, opts LinkOptions) (in
 	if gc == nil {
 		return 0, nil
 	}
+	// One vocabulary snapshot per PASS: emitLink derives its Stats seam from
+	// gc, and it runs inside a per-item loop, so wrapping here is what turns
+	// one read per emitted edge into one read for the whole pass.
+	gc = withVocabCache(gc)
 
 	codeRepos, err := listCodeRepos(ctx, gc)
 	if err != nil {

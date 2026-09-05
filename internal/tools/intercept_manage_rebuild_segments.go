@@ -4,10 +4,13 @@
 // intercept. rebuild_segments BACKFILLS a graph's BM25+HNSW search segments
 // from nodes that are ALREADY embedded but have ZERO built segments (embedded
 // before the segment build path existed, or after a segment-cache prune) — WITHOUT
-// re-embedding. It serves the builtin code and knowledge graphs AND any
+// re-embedding. It serves every builtin graph kgtypes.HasRebuildableSegments
+// admits — including the raw web and pdf graphs, whose collected chunks carry
+// vectors and BM25 documents — AND any
 // registered custom graph type (the manual op registry-gates the target); the
-// bootstrap auto-heal closure that shares this core is scoped to code + knowledge
-// by its own gate. Unlike rebuild_cache (which lowers to one server-side Index RPC),
+// bootstrap auto-heal closure that shares this core is gated on the SAME
+// HasRebuildableSegments predicate, so the two admit the identical eight builtins
+// rather than the code-and-knowledge pair this sentence used to name. Unlike rebuild_cache (which lowers to one server-side Index RPC),
 // the WORK is CLIENT-driven: the server is engine-free, so the client pages the
 // new segment_rebuild PipelineScan axis (already-embedded nodes WITH their stored
 // vector + server-composed BM25 fields), rebuilds the segments DETERMINISTICALLY,
@@ -45,12 +48,32 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/workingset"
 )
 
+// rebuildableBuiltinNames lists the builtin graph names the gate below ADMITS, in
+// canonical order, so the refusal message can name what a caller may ask for
+// instead.
+//
+// IT IS DERIVED FROM THE PREDICATE, NEVER RESTATED. A hardcoded list is exactly
+// what drifted before — it named five while the gate admitted six — and the raw
+// graph enrollment would have drifted it a second time. Filtering
+// BuiltinGraphTypeNames through the same HasRebuildableSegments the gate calls
+// means the message cannot disagree with the gate that produced it.
+func rebuildableBuiltinNames() []string {
+	all := kgtypes.BuiltinGraphTypeNames()
+	out := make([]string, 0, len(all))
+	for _, name := range all {
+		if kgtypes.HasRebuildableSegments(kgtypes.GraphType(name)) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // handleClientRebuildSegments drives the client-side segment backfill for one
-// graph (the builtin code or knowledge graph, or a registered custom graph type).
+// graph (any builtin with rebuildable segments, or a registered custom graph type).
 // It runs SYNCHRONOUSLY (rendering the shipped/ pruned counts) but is single-flight
 // per (graph,name). Flow:
-//  1. registry-gate the graph (builtin code/knowledge OR a registered custom graph
-//     type; reject empty / other builtin / unregistered typo; default the knowledge
+//  1. registry-gate the graph (a builtin HasRebuildableSegments admits OR a
+//     registered custom graph type; reject empty / other builtin / unregistered typo; default the knowledge
 //     name to "default" and reject a knowledge overlay name) + non-empty name;
 //     resolve the PipelineScanner + SegmentShipper deps (error "pipeline not
 //     wired" on nil).
@@ -67,22 +90,35 @@ import (
 //     superseded local .seg files and — only on a landed swap — the watermark
 //     advances to the horizon the server served.
 func handleClientRebuildSegments(ctx context.Context, deps ClientDeps, a manageArgs) kgtools.ToolResult {
-	// Graph gate, registry-aware (segmentTarget shape): accept the builtin `code`
-	// or `knowledge` graph OR any registered custom graph type; reject an empty
-	// graph, any other builtin (practice/cloud/cicd carry no rebuildable segments),
-	// and an unregistered typo.
+	// Graph gate, registry-aware (segmentTarget shape): accept any builtin
+	// kgtypes.HasRebuildableSegments admits OR any registered custom graph type;
+	// reject an empty graph, a builtin with no segments to rebuild (linkage,
+	// logs), and an unregistered typo.
 	switch {
 	case a.Graph == "":
-		return errorResult(`manage(rebuild_segments) requires "graph" — name the code, knowledge, or registered custom graph to rebuild`)
+		return errorResult(fmt.Sprintf(
+			`manage(rebuild_segments) requires "graph" — name one of %s, or a registered custom graph, to rebuild`,
+			strings.Join(rebuildableBuiltinNames(), ", ")))
 	case kgtypes.IsBuiltinGraphType(a.Graph):
 		// A builtin carries rebuildable segments iff its graph type is embeddable.
 		// Gate on HasRebuildableSegments — the client mirror of the SAME Embeddable()
 		// predicate the server's segment_rebuild scan uses — so the client gate and
-		// the server scan cannot drift. This admits every embeddable builtin (code,
-		// knowledge, cloud, cicd, practice) and still rejects the non-embeddable ones
-		// (linkage, transformers, logs, web, pdf), which have no segments to rebuild.
+		// the server scan cannot drift. It admits the embeddable builtins (code,
+		// knowledge, cloud, cicd, practice, checks) AND the raw graphs web and pdf,
+		// whose collected chunks carry vectors and BM25 documents, and still rejects
+		// linkage and logs, which have no segments to rebuild. Raw
+		// graphs becoming rebuildable is deliberate: an operator whose collected
+		// document stopped answering searches needs this op for it.
+		//
+		// THE REFUSAL DERIVES ITS LIST FROM THE PREDICATE rather than restating it.
+		// A hardcoded list drifted once already — it named five while the gate
+		// admitted six, so the graph a reader most needed to discover was the one the
+		// message said did not exist. TestRebuildSegments_ErrorTextNamesEveryEmbeddableBuiltin
+		// checks the message against the predicate, not against a copy of itself.
 		if !kgtypes.HasRebuildableSegments(kgtypes.GraphType(a.Graph)) {
-			return errorResult(fmt.Sprintf(`manage(rebuild_segments): builtin graph %q has no rebuildable segments — only embeddable graphs (code, knowledge, cloud, cicd, practice, checks) and registered custom graph types are supported`, a.Graph))
+			return errorResult(fmt.Sprintf(
+				`manage(rebuild_segments): builtin graph %q has no rebuildable segments — only %s and registered custom graph types are supported`,
+				a.Graph, strings.Join(rebuildableBuiltinNames(), ", ")))
 		}
 		// The knowledge graph accepts its own type name as an alias for its one
 		// instance, and rejects an overlay: BASE layer only in v1, no overlay
@@ -166,8 +202,29 @@ func handleClientRebuildSegments(ctx context.Context, deps ClientDeps, a manageA
 	}
 
 	return textResult(fmt.Sprintf(
-		"rebuild_segments complete for %s/%s: %d embedded nodes scanned, %d hash buckets built + shipped and PUBLISHED as the live set, %d hnsw + %d bm25 superseded segments pruned (hnsw local cache invalidated). Re-running is a content-hash no-op, and a later run re-emits only the buckets whose members changed.",
-		a.Graph, a.Name, out.Scanned, out.Built, len(out.HNSWPruned), len(out.BM25Pruned)))
+		"rebuild_segments complete for %s/%s: %d embedded nodes scanned, %d hash buckets built + shipped and PUBLISHED as the live set, %d hnsw + %d bm25 superseded segments pruned (hnsw local cache invalidated). Re-running is a content-hash no-op, and a later run re-emits only the buckets whose members changed.%s",
+		a.Graph, a.Name, out.Scanned, out.Built, len(out.HNSWPruned), len(out.BM25Pruned),
+		rebuildDegradeSentence(out)))
+}
+
+// rebuildDegradeSentence names input THIS RUN dropped, or returns the empty
+// string when it dropped nothing — so a clean run's response is byte-identical to
+// what it was before the census existed. The three rules (render nothing when
+// empty, skip non-positive counts, order count-descending then name-ascending)
+// are the ones collector/composition.go:171-206 holds itself to, so one product
+// does not carry two census orderings.
+//
+// IT IS A SENTENCE, NOT A PARENTHETICAL, and that is deliberate: the text it
+// follows ends in "Re-running is a content-hash no-op", which reads as an
+// all-clear. A parenthetical after that would be read as a footnote TO the
+// all-clear rather than as a correction OF it.
+func rebuildDegradeSentence(out RebuildOutcome) string {
+	list := degradeClassList(out.Degraded)
+	if list == "" {
+		return ""
+	}
+	return " WARNING: this rebuild DROPPED input it could not index — " + list +
+		". Those documents are not searchable in the corpus this run published."
 }
 
 // rebuildScannedNothing explains a zero-scan run, and it exists because the

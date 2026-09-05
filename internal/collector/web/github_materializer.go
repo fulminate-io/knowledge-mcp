@@ -10,7 +10,7 @@ package web
 //
 // The materializer produces nodes/edges only. The web collector envelope
 // (WebCollector.Collect) routes them into the active web/<source-slug>
-// graph (GraphWebRaw, SkipsLLMProcessing=true) alongside ordinary HTML
+// graph (GraphWebRaw, enrolled embed-only) alongside ordinary HTML
 // pages. The materializer file is forbidden from referencing reindex-
 // flow names (verified by Phase 6 grep) so the literal token names are
 // kept out of source comments here. See the project plan node for the
@@ -43,7 +43,8 @@ package web
 //       via WebCollector.Collect, never GraphCode. Verdict: N/A.
 //
 // The web collector's existing envelope handles GraphWebRaw correctly
-// (SkipsLLMProcessing=true, no LLM-pipeline post-processing). No new
+// (enrolled embed-only: no summarization, and the embed/BM25 admission is the
+// server's per-graph node-type allow-list, not anything the collector does). No new
 // branches were added to cmd/knowledge/internal/collector/parser as a result of this
 // audit.
 
@@ -169,7 +170,6 @@ func parseGitHubURL(rawURL string) (info githubURLInfo, ok bool) {
 	}
 }
 
-// isGitHubURL is a lightweight gate used by the dispatcher in
 // splitNonEmpty splits s on sep and drops empty elements. Equivalent to
 // strings.FieldsFunc with a single-rune separator but avoids an allocation
 // for the rune-fn closure.

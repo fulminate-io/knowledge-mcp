@@ -63,7 +63,7 @@ func (f *fakeShipManager) AddAndMarkDirty(_ context.Context, gt kgtypes.GraphTyp
 	}
 	// Mirror the production build→encode→decode→ship round-trip so the test
 	// asserts on a DECODED segment (the shippable form), not just the input docs.
-	seg, err := hnsw.New().Build(docs)
+	seg, _, err := hnsw.New().Build(docs)
 	if err != nil {
 		return err
 	}
@@ -86,7 +86,7 @@ func (f *fakeShipManager) AddAndMarkDirtyFields(_ context.Context, gt kgtypes.Gr
 	f.fieldsCalls++
 	f.fieldsShipKeys = append(f.fieldsShipKeys, graphKey{GraphType: gt, GraphName: name})
 	f.fieldDocs = append(f.fieldDocs, docs...)
-	seg, err := bm25.New().Build(docs)
+	seg, _, err := bm25.New().Build(docs)
 	if err != nil {
 		return err
 	}

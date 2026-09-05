@@ -31,7 +31,18 @@ func (s *crawlState) processURL(ctx context.Context, fc *fetchClient, raw string
 	// are leaf content — the materializer file is forbidden from
 	// enqueueing new BFS work (verified by Phase 6 grep).
 	if info, ok := parseGitHubURL(raw); ok {
-		s.materializeGithub(ctx, fc, raw, info, depth)
+		// MATERIALIZATION IS CALLER-REQUESTED. Without the opt-in a github URL
+		// is left alone entirely: it is reported to the caller as a follow-up
+		// candidate and nothing is fetched. With it, the existing lane runs
+		// unchanged — same whole-repo unit, same dedupe registry, same
+		// download cap.
+		if s.opts.MaterializeGithub {
+			s.materializeGithub(ctx, fc, raw, info, depth)
+		}
+		// NEITHER PATH RECORDS A PAGE, so the budget slot this item was handed
+		// at dequeue goes back either way, or the page cap under-fills by one
+		// for every github link on the site.
+		s.releaseReservation()
 		return
 	}
 
@@ -40,11 +51,16 @@ func (s *crawlState) processURL(ctx context.Context, fc *fetchClient, raw string
 	// is per-host, so cross-host fetches run in true parallel.
 	record, ok := s.fetchAndParse(ctx, fc, raw)
 	if !ok {
+		// Fetch, clean or parse failed: no page will come of this slot.
+		s.releaseReservation()
 		return
 	}
 	// applyPage runs alias-check + host-cap + recordPage atomically under
 	// s.mu so concurrent workers don't race on the dedup maps.
 	if !s.applyPage(record) {
+		// Dropped as a content-hash alias or by the per-host cap — fetched,
+		// but not a page, so the slot goes back.
+		s.releaseReservation()
 		return
 	}
 	for _, link := range record.InternalLinks {
@@ -78,20 +94,47 @@ func (s *crawlState) fetchAndParse(
 	page, err := fc.fetch(ctx, raw)
 	if err != nil {
 		if isContextErr(err) {
+			// A cancelled context is the CALLER stopping the crawl, not the
+			// crawl losing work to the site — it is counted nowhere and the
+			// outer loop observes it separately.
 			return nil, false
 		}
-		slog.Debug("web.crawl: fetch failed", "url", raw, "err", err)
+		slog.Warn("web.crawl: fetch failed, page dropped", "url", raw, "err", err)
+		s.bumpDegrade(degradeFetchFailed, 1)
+		return nil, false
+	}
+	// POSITION IS PART OF THE CONTRACT. Before cleanArticle, because that lane
+	// SUCCEEDS on binary input and would have already run; after the fetch error
+	// branch, because a cancelled context and a transport failure are already
+	// classified and stay in their own lanes. Both observed media types go in the
+	// log line: the census class is a fixed-vocabulary counter and cannot carry a
+	// sub-reason, so this is the only place an operator can tell a declined epub
+	// from a lying origin.
+	if v := classifyPage(page); !v.isPage {
+		slog.Warn("web.crawl: not a page, resource skipped",
+			"url", raw, "reason", v.reason,
+			"declared_content_type", v.declared, "sniffed_content_type", v.sniffed)
+		s.bumpDegrade(degradeNotAPage, 1)
 		return nil, false
 	}
 	cleaned, err := cleanArticle(page.Body, page.FinalURL)
 	if err != nil {
-		slog.Debug("web.crawl: clean failed", "url", raw, "err", err)
+		slog.Warn("web.crawl: clean failed, page dropped", "url", raw, "err", err)
+		s.bumpDegrade(degradeCleanFailed, 1)
 		return nil, false
 	}
 	record, err := parsePage(page, cleaned)
 	if err != nil {
-		slog.Debug("web.crawl: parse failed", "url", raw, "err", err)
+		slog.Warn("web.crawl: parse failed, page dropped", "url", raw, "err", err)
+		s.bumpDegrade(degradeParseFailed, 1)
 		return nil, false
+	}
+	// The two parse-side lanes have no access to the crawl state — they run
+	// inside parsePage — so they report their losses on the record and are
+	// folded in here, at the first frame that can reach the census.
+	s.bumpDegrade(degradeHiddenPruned, record.HiddenPruned)
+	if record.RawLinkFailed {
+		s.bumpDegrade(degradeRawLinkParseFailed, 1)
 	}
 	return record, true
 }
@@ -108,8 +151,9 @@ func (s *crawlState) isContentAlias(record *pageRecord) bool {
 		return false
 	}
 	if existing, ok := s.hashToURL[record.ContentHash]; ok && existing != record.URL {
-		slog.Debug("web.crawl: content-hash alias",
+		slog.Warn("web.crawl: content-hash alias, page dropped",
 			"url", record.URL, "alias_of", existing, "hash", record.ContentHash)
+		s.bumpDegradeLocked(degradeContentAlias, 1)
 		return true
 	}
 	s.hashToURL[record.ContentHash] = record.URL
@@ -131,8 +175,9 @@ func (s *crawlState) hostCapReached(record *pageRecord) bool {
 		return false
 	}
 	if s.hostPageCount[host] >= s.maxPagesPerHost {
-		slog.Debug("web.crawl: per-host cap reached",
+		slog.Warn("web.crawl: per-host cap reached, page dropped",
 			"host", host, "cap", s.maxPagesPerHost, "url", record.URL)
+		s.bumpDegradeLocked(degradeHostCap, 1)
 		return true
 	}
 	s.hostPageCount[host]++

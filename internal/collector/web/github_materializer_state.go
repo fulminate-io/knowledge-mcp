@@ -123,7 +123,7 @@ func (s *githubMaterializerState) abort(key githubKey) {
 // size-cap warning wants. Never stamp uri from w.URL: for a test fixture it is
 // an ephemeral 127.0.0.1 address, and in production it is a codeload endpoint
 // rather than anything a recipe would address the node by.
-func emitMaterializerWarning(parentPageID, sourceURL string, info githubURLInfo, w *materializerWarning) (*knowledgev1.Node, []kgwire.BatchEdge) {
+func emitMaterializerWarning(parentPageID, sourceURL string, info githubURLInfo, w *materializerWarning) (*knowledgev1.Node, []kgwire.BatchEdge, error) {
 	id := "gh-warn:" + info.Owner + "/" + info.Repo + "@" + info.Ref + ":" + w.Reason + ":" + stableSuffix(w.URL)
 	md := map[string]string{
 		"materialization_skipped": w.Reason,
@@ -150,16 +150,20 @@ func emitMaterializerWarning(parentPageID, sourceURL string, info githubURLInfo,
 
 	var edges []kgwire.BatchEdge
 	if parentPageID != "" {
+		evidence, err := jsonMeta(map[string]string{"rel": "external", "url": w.URL, "materialization_skipped": w.Reason})
+		if err != nil {
+			return nil, nil, err
+		}
 		edges = append(edges, kgwire.BatchEdge{
 			FromIdx:  -1,
 			ToIdx:    -1,
 			FromID:   parentPageID,
 			ToID:     id,
 			Type:     kgtypes.EdgeReferences,
-			Evidence: jsonMeta(map[string]string{"rel": "external", "url": w.URL, "materialization_skipped": w.Reason}),
+			Evidence: evidence,
 		})
 	}
-	return node, edges
+	return node, edges, nil
 }
 
 // stableSuffix returns a short hex digest of s, used to make warning node

@@ -69,6 +69,10 @@ func (f *poolCoverageFake) LiveResidentDocCount(kgtypes.GraphType, string) int {
 	return f.liveCovered
 }
 
+// BM25DegradeCounts reports no drops: this fake exercises the coverage counts,
+// not the drop census.
+func (f *poolCoverageFake) BM25DegradeCounts(kgtypes.GraphType, string) map[string]int { return nil }
+
 // The remaining SegmentCoverageReader methods exist only to satisfy the seam —
 // the gate reads none of them, and a fake that returned something interesting here
 // would suggest otherwise.

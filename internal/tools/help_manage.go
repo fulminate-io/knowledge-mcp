@@ -76,7 +76,7 @@ const helpManage = `# manage — Server operations
   manage({ "operation": "prune", "graph": "practice", "name": "go", "before": "30d" })  — GC tombstones older than 30 days
 
   prune works GENERICALLY on any graph type (knowledge, code, cloud, cicd,
-  practice, logs, web, pdf, linkage, transformers) — it deletes tombstoned
+  practice, logs, web, pdf, linkage, checks) — it deletes tombstoned
   nodes and nothing else. There is no graph-type allowlist; just name the graph.
   before accepts a relative window ("24h"/"2d") or an absolute RFC3339 timestamp;
   only tombstones tombstoned before it are pruned. Omit before to prune all.
@@ -88,7 +88,7 @@ const helpManage = `# manage — Server operations
   drop_graph tears down a WHOLE non-logs graph — the persisted store plus its
   loaded state — via one DROP_GRAPH mutation, the same wire teardown discard_logs
   uses for log graphs. Requires graph=<knowledge|code|cloud|cicd|practice|web|pdf|
-  transformers|linkage or a registered custom type> plus the instance field that
+  checks|linkage or a registered custom type> plus the instance field that
   family needs (code→name as repo, cloud/cicd→name as account, practice→name as
   language, the rest→name; knowledge needs no name). graph=logs is rejected — use
   discard_logs for a log graph.

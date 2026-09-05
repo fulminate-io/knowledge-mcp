@@ -63,7 +63,7 @@ func TestPrecheckQuery_FilterAlongsideIDSelectorRefused(t *testing.T) {
 			if tc.param != "" {
 				execFn = d.exec(nil, errors.New("exec must not run — the precheck refuses this shape"))
 			}
-			out, err := Dispatch(context.Background(), execFn, "query", json.RawMessage(tc.args))
+			out, err := Dispatch(context.Background(), execFn, nil, "query", json.RawMessage(tc.args))
 			require.NoError(t, err, "the refusal is rendered as an error result, not returned")
 			body := out.Content[0].Text
 

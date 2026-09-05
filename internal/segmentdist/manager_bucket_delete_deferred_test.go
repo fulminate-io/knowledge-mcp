@@ -88,6 +88,7 @@ func requireDeleteDefersTheVectorRebuild(
 // would be satisfied by the old inline re-emit; absence of the rebuild alone would be
 // satisfied by a delete that did nothing at all.
 func TestDeleteRemovesResultsFromSearchWithoutAnHNSWReEmit(t *testing.T) {
+	requireMeasurementRun(t)
 	const name = "deferred-delete-search"
 	mgr, _, gt, docs := deferredDeleteFixture(t, name, twoPartitionFixtureN)
 	victim := docs[0]
@@ -114,6 +115,7 @@ func TestDeleteRemovesResultsFromSearchWithoutAnHNSWReEmit(t *testing.T) {
 // fresh engine's PHYSICAL count still includes the victim while its LIVE count does not,
 // pins the mask as the thing doing the work.
 func TestDeletionIsDurableAcrossReloadBeforeAnyReEmit(t *testing.T) {
+	requireMeasurementRun(t)
 	ctx := context.Background()
 	const name = "deferred-delete-reload"
 	mgr, dir, gt, docs := deferredDeleteFixture(t, name, twoPartitionFixtureN)
@@ -159,6 +161,7 @@ func TestDeletionIsDurableAcrossReloadBeforeAnyReEmit(t *testing.T) {
 // a prune naming hundreds of ids dirtied most partitions of the corpus and rebuilt every
 // one of them serially, which is where the seconds went.
 func TestMultiIDDeleteDefersAtTheSeam(t *testing.T) {
+	requireMeasurementRun(t)
 	const name = "deferred-multiid"
 	mgr, _, gt, docs := deferredDeleteFixture(t, name, twoPartitionFixtureN)
 
@@ -204,6 +207,7 @@ func TestMultiIDDeleteDefersAtTheSeam(t *testing.T) {
 // is what lets the driver be tested against fakes and what keeps the dependency from
 // running in either direction.
 func TestDeferredDeleteIdsSurviveARebuildThatDidNotEmitTheirPartition(t *testing.T) {
+	requireMeasurementRun(t)
 	ctx := context.Background()
 	const name = "deferred-invariant"
 	mgr, dir, gt, docs := deferredDeleteFixture(t, name, budgetFixtureN)

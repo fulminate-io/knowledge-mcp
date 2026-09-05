@@ -1,0 +1,245 @@
+{
+  "spec": "docs/collect-contribution-hash.md",
+  "scheme_version": 2,
+  "cases": [
+    {
+      "label": "null_vs_empty",
+      "kind": "nodes_must_differ",
+      "nodes": [
+        {
+          "id": "nve-null",
+          "type": "function",
+          "symbol_name": null,
+          "file_path": "pkg/a.go",
+          "language": "go",
+          "start_line": 1,
+          "end_line": 2,
+          "content": "x",
+          "signature": null,
+          "is_exported": null,
+          "is_test": null,
+          "test_kind": null,
+          "description": null,
+          "source": null,
+          "status": null,
+          "hash": "cc5c03dc60389a36ab03853d7d2a5d970503eccd5dfdda9dc0f6a7366de2f3ae"
+        },
+        {
+          "id": "nve-empty",
+          "type": "function",
+          "symbol_name": "",
+          "file_path": "pkg/a.go",
+          "language": "go",
+          "start_line": 1,
+          "end_line": 2,
+          "content": "x",
+          "signature": "",
+          "is_exported": null,
+          "is_test": null,
+          "test_kind": null,
+          "description": "",
+          "source": null,
+          "status": null,
+          "hash": "ca4c520e1bce0d1b46eb3af2910fa1160bddb49e6b3eecf5157eb624a5ecbf0e",
+          "cloud_only": true
+        }
+      ]
+    },
+    {
+      "label": "collation",
+      "kind": "file_aggregate",
+      "nodes": [
+        {
+          "id": "Ab",
+          "type": "function",
+          "symbol_name": "Ab",
+          "file_path": "pkg/c.go",
+          "language": "go",
+          "start_line": 1,
+          "end_line": 1,
+          "content": "A",
+          "signature": null,
+          "is_exported": null,
+          "is_test": null,
+          "test_kind": null,
+          "description": null,
+          "source": null,
+          "status": null,
+          "hash": "a1a9959695dc3d28209790855e3ca13d001ea1c6d8a455a7ff55ea83e5071e08"
+        },
+        {
+          "id": "aB",
+          "type": "function",
+          "symbol_name": "aB",
+          "file_path": "pkg/c.go",
+          "language": "go",
+          "start_line": 2,
+          "end_line": 2,
+          "content": "B",
+          "signature": null,
+          "is_exported": null,
+          "is_test": null,
+          "test_kind": null,
+          "description": null,
+          "source": null,
+          "status": null,
+          "hash": "e36e5c002d84594c24581f503266c26395103a29cfe2e1d7782af8b33971b753"
+        },
+        {
+          "id": "a_b",
+          "type": "function",
+          "symbol_name": "a_b",
+          "file_path": "pkg/c.go",
+          "language": "go",
+          "start_line": 3,
+          "end_line": 3,
+          "content": "C",
+          "signature": null,
+          "is_exported": null,
+          "is_test": null,
+          "test_kind": null,
+          "description": null,
+          "source": null,
+          "status": null,
+          "hash": "a2a1027c90488f3f7c45c482fe9cc182a382530b4a7769e2fb5763a4ddc87aac"
+        }
+      ],
+      "edges": [],
+      "file_hash": "a84c0e473fd6d7edc389f3a045994dc8665b0d0269214d35563a5f90c88a10a2"
+    },
+    {
+      "label": "float",
+      "kind": "edges",
+      "edges": [
+        {
+          "from_id": "pkg/c.go:Ab",
+          "to_id": "pkg/c.go:aB",
+          "type": "calls",
+          "weight": 0.3333333333333333,
+          "confidence": 0.1,
+          "method": null,
+          "evidence": null,
+          "hash": "d735734125b009c53f6fe28add5ca3086ffee6cef129da0f1af270625c27142d"
+        }
+      ]
+    },
+    {
+      "label": "position_shift_only",
+      "kind": "nodes_must_differ",
+      "nodes": [
+        {
+          "id": "pos-a",
+          "type": "function",
+          "symbol_name": "F",
+          "file_path": "pkg/d.go",
+          "language": "go",
+          "start_line": 10,
+          "end_line": 20,
+          "content": "func F() {}",
+          "signature": "func F()",
+          "is_exported": true,
+          "is_test": null,
+          "test_kind": null,
+          "description": null,
+          "source": null,
+          "status": null,
+          "hash": "7a6aaec89b9d70157d6efde72d61648c674309faa21f08a882414d3b079deb66"
+        },
+        {
+          "id": "pos-b",
+          "type": "function",
+          "symbol_name": "F",
+          "file_path": "pkg/d.go",
+          "language": "go",
+          "start_line": 11,
+          "end_line": 21,
+          "content": "func F() {}",
+          "signature": "func F()",
+          "is_exported": true,
+          "is_test": null,
+          "test_kind": null,
+          "description": null,
+          "source": null,
+          "status": null,
+          "hash": "cf1a7f9609f755477bf803f4ceb5644aaabaee0054aec3858f9505acf0d224c4"
+        }
+      ]
+    },
+    {
+      "label": "ambiguous_group_resize",
+      "kind": "edges_must_differ",
+      "edges": [
+        {
+          "from_id": "pkg/e.go:G",
+          "to_id": "pkg/f.go:H",
+          "type": "calls",
+          "weight": null,
+          "confidence": null,
+          "method": null,
+          "evidence": null,
+          "hash": "1b5fbe394b965ef91a88fee45f08c2ea115125188748b86182aef98643fc864e"
+        },
+        {
+          "from_id": "pkg/e.go:G",
+          "to_id": "pkg/f.go:H",
+          "type": "calls",
+          "weight": null,
+          "confidence": 0.5,
+          "method": "ambiguous-name",
+          "evidence": "pkg/e.go:1234:H",
+          "hash": "dcc9296571e5e0e5bf65809f6af0b11056c3f56afeb2f27cb057d3690c046ea4"
+        }
+      ]
+    },
+    {
+      "label": "evidence_byte_offset",
+      "kind": "edges_must_differ",
+      "edges": [
+        {
+          "from_id": "pkg/e.go:G",
+          "to_id": "pkg/f.go:H",
+          "type": "calls",
+          "weight": null,
+          "confidence": 0.5,
+          "method": "ambiguous-name",
+          "evidence": "pkg/e.go:1234:H",
+          "hash": "dcc9296571e5e0e5bf65809f6af0b11056c3f56afeb2f27cb057d3690c046ea4"
+        },
+        {
+          "from_id": "pkg/e.go:G",
+          "to_id": "pkg/f.go:H",
+          "type": "calls",
+          "weight": null,
+          "confidence": 0.5,
+          "method": "ambiguous-name",
+          "evidence": "pkg/e.go:1240:H",
+          "hash": "aa44ef16f3c862bb7915c8c111a18dcf6df23eb76e9cb65e441b0e1f6edae264"
+        }
+      ]
+    },
+    {
+      "label": "unicode",
+      "kind": "nodes",
+      "nodes": [
+        {
+          "id": "uni",
+          "type": "function",
+          "symbol_name": "Ünïcödé→λ",
+          "file_path": "pkg/ünï.go",
+          "language": "go",
+          "start_line": 1,
+          "end_line": 1,
+          "content": "héllo 世界 🌍",
+          "signature": null,
+          "is_exported": null,
+          "is_test": null,
+          "test_kind": null,
+          "description": null,
+          "source": null,
+          "status": null,
+          "hash": "a793c23df79f3f8321490019e87a1976fedf5f9cf94820fcaf3f06f89330d170"
+        }
+      ]
+    }
+  ]
+}

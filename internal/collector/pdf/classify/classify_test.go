@@ -116,7 +116,7 @@ func TestAssignHeadingLevels(t *testing.T) {
 	t.Run("Three", func(t *testing.T) {
 		t.Parallel()
 		blocks := []layout.Block{mkH(18, true, false), mkH(14, true, false), mkH(12, true, false)}
-		assignHeadingLevels(blocks)
+		AssignHeadingLevelsDocument([][]layout.Block{blocks})
 		for i, want := range []int{1, 2, 3} {
 			if blocks[i].HeadingLevel != want {
 				t.Errorf("blocks[%d] = %d, want %d", i, blocks[i].HeadingLevel, want)
@@ -126,7 +126,7 @@ func TestAssignHeadingLevels(t *testing.T) {
 	t.Run("Two_NoArtificialThird", func(t *testing.T) {
 		t.Parallel()
 		blocks := []layout.Block{mkH(18, true, false), mkH(14, true, false)}
-		assignHeadingLevels(blocks)
+		AssignHeadingLevelsDocument([][]layout.Block{blocks})
 		if blocks[0].HeadingLevel != 1 || blocks[1].HeadingLevel != 2 {
 			t.Errorf("got %d/%d, want 1/2", blocks[0].HeadingLevel, blocks[1].HeadingLevel)
 		}
@@ -134,7 +134,7 @@ func TestAssignHeadingLevels(t *testing.T) {
 	t.Run("BoldBump_ItalicDown", func(t *testing.T) {
 		t.Parallel()
 		blocks := []layout.Block{mkH(14, true, false), mkH(14, false, true)}
-		assignHeadingLevels(blocks)
+		AssignHeadingLevelsDocument([][]layout.Block{blocks})
 		if blocks[0].HeadingLevel != 1 {
 			t.Errorf("bold = %d, want 1", blocks[0].HeadingLevel)
 		}

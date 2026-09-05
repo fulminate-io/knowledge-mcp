@@ -12,9 +12,9 @@ import "github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 func CreatePlanToolDef() kgtools.MCPTool {
 	return kgtools.MCPTool{
 		Name: "create_plan",
-		Description: `Create an entire plan (plan + phases + steps + criteria + open questions) in a single call.
-Phases are ordered sequentially by array position (each depends-on the previous).
-Steps within a phase are also ordered sequentially by array position.
+		Description: `Create an entire plan in a single call, in EITHER of two shapes — supply exactly one of phases or sections.
+PHASES: plan + phases + steps + criteria. Phases are ordered sequentially by array position (each depends-on the previous); steps within a phase likewise.
+SECTIONS: a chunked plan — a root carrying the goal plus one section child per part, ordered by array position. Each section body is written and read ALONE, so revising one part is one write against one node and every other node is untouched. Reviewers attach annotations to a section rather than to the whole plan.
 Open questions surface uncertainties for the user to answer before implementation.
 Returns the full plan tree. Use this instead of individual create_project/create_phase/create_step calls.`,
 		InputSchema: kgtools.InputSchema{
@@ -32,6 +32,7 @@ Returns the full plan tree. Use this instead of individual create_project/create
 						"steps":    {Type: "array", Description: "Ordered list of steps in this phase.", Items: planStepItems()},
 					},
 				}},
+				"sections":    {Type: "array", Description: "Ordered list of the parts of a CHUNKED plan. Each section REQUIRES name, body and summary (handler enforces). Ordered by array position; `position` may be supplied explicitly instead, in which case EVERY section must supply one and the values must be unique (gaps are allowed — a deleted section leaves a hole and closing it would mean rewriting every later section). Mutually exclusive with phases: supply exactly one of the two.", Items: planSectionItems()},
 				"research_id": {Type: "string", Description: "Research project ID that informed this plan (optional — creates informed-by edge)"},
 				"ticket_id":   {Type: "string", Description: "Ticket node ID to link this plan under (optional)"},
 				"open_questions": {Type: "array", Description: "Open questions that need user input before implementation can proceed. Creates question nodes (status: open) linked to the plan.", Items: &kgtools.Property{
@@ -50,7 +51,11 @@ Returns the full plan tree. Use this instead of individual create_project/create
 				"language_patterns":  {Type: "array", Description: "Language-specific defensive patterns/findings (e.g., Go anti-patterns from practice/go with metadata.dsl_pattern set) the plan should be vigilant of. Wired as plan→<finding|pattern> EdgeAudits edges. INDEPENDENT of pattern_ids / no_patterns_reason / proposed_patterns — accepts any non-empty subset, including none. Broken/unknown IDs produce a non-fatal warning under the `## Warnings` section.", Items: &kgtools.Property{Type: "string"}},
 				"format":             {Type: "string", Description: "Output format: 'text' (default, walks the tree + warnings) or 'json' (structured: {id, name, node_ids, warnings})."},
 			},
-			Required: []string{"name", "goal", "summary", "phases"},
+			// phases is NOT in Required: a sectioned plan supplies none. The
+			// exactly-one-of-phases-or-sections rule is enforced by the handler,
+			// which can name which of the two shapes the caller mixed; a schema
+			// Required list can only say a key is absent.
+			Required: []string{"name", "goal", "summary"},
 		},
 	}
 }
@@ -67,6 +72,23 @@ func planStepItems() *kgtools.Property {
 		"file_paths":  {Type: "string", Description: "Comma-separated file paths this step touches"},
 		"criteria":    {Type: "array", Description: "Success criteria for this step.", Items: criterionItems()},
 	}}
+}
+
+// planSectionItems returns the closed nested-object Items shape for a chunked
+// plan's sections[] array: {name, body, summary, position}.
+//
+// AdditionalProperties is false for the same reason every other nested Items
+// shape here closes: an undeclared nested key is invisible to
+// rejectUndeclaredParams, which is TOP-LEVEL ONLY, so without the handler's own
+// nested scan a typo would vanish into a successful create.
+func planSectionItems() *kgtools.Property {
+	return &kgtools.Property{Type: "object", Description: `Section object: {"name":"...","body":"the section's full text","summary":"required search-optimized one-line summary, max 500 chars","position":0}`,
+		AdditionalProperties: &falseValue, Properties: map[string]kgtools.Property{
+			"name":     {Type: "string", Description: "Section name (required)"},
+			"body":     {Type: "string", Description: "The section's full text (required). This is the only place the section's prose lives — the plan root carries none of it."},
+			"summary":  {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars"},
+			"position": {Type: "integer", Description: "Explicit zero-based position (optional). When any section supplies one, EVERY section must, and the values must be unique; gaps are allowed."},
+		}}
 }
 
 // criterionItems returns the closed nested-object Items shape for a step's

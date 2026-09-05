@@ -67,6 +67,40 @@ func A() {
 		assert.NotContains(t, hint, "package_prefixes", "and the prefix, though supplied, is not what emptied the walk")
 	})
 
+	t.Run("the test-file filter is named as the cause and outranks the prefix", func(t *testing.T) {
+		// A prefix naming a real, tracked, in-language file that the walk's OWN
+		// test filter then drops. Both causes are live and the FILTER is the
+		// specific one: the prefix did reach the file. The retired hint blamed
+		// the prefix and sent the caller to widen a scope that was correct.
+		dir := fixtureRepo(t, map[string]string{"pkg/in_test.go": body, "pkg/other.go": body})
+		scope := Scope{PackagePrefixes: []string{"pkg/in_test.go"}, IncludeTests: false}
+		_, stats := honestyMatchOK(t, dir, treesitter.LangGo, honestyDeferPattern, scope)
+		require.Equal(t, 0, stats.FilesScanned, "setup: the only in-scope file is a test file and the filter is on")
+		require.Equal(t, 1, stats.TestFilesExcluded, "setup: and the walk must have charged it to the test filter")
+
+		hint := ZeroScanHint(dir, "go", scope, stats)
+		assert.Contains(t, hint, "include_tests", "the remedy is the flag, not a wider prefix")
+		assert.Contains(t, hint, "test file", "and the hint says what was dropped")
+		assert.NotContains(t, hint, "package_prefixes", "the prefix reached the file; blaming it sends the caller to widen a correct scope")
+		assert.NotContains(t, hint, wrongRootPhrase, "the root was correct")
+	})
+
+	t.Run("no test file was dropped, so the filter is not blamed", func(t *testing.T) {
+		// The FALSIFYING CONTROL for the row above, and the reason the branch
+		// reads the measured count rather than scope.IncludeTests: this walk has
+		// the filter ON and scans zero, and the cause is the prefix. A branch
+		// keyed on the flag alone would name the test filter here.
+		dir := fixtureRepo(t, map[string]string{"pkg/in.go": body})
+		scope := Scope{PackagePrefixes: []string{"nosuch"}, IncludeTests: false}
+		_, stats := honestyMatchOK(t, dir, treesitter.LangGo, honestyDeferPattern, scope)
+		require.Equal(t, 0, stats.FilesScanned, "setup: the prefix must exclude the only file")
+		require.Equal(t, 0, stats.TestFilesExcluded, "setup: and no test file may have been dropped")
+
+		hint := ZeroScanHint(dir, "go", scope, stats)
+		assert.Contains(t, hint, "package_prefixes", "the prefix is the cause here")
+		assert.NotContains(t, hint, "include_tests", "the test filter dropped nothing and must not be named")
+	})
+
 	t.Run("wrong root keeps the wrong-root text", func(t *testing.T) {
 		// A tree with no Go in it at all. The markdown file IS declined by a
 		// discovery rule, which is the known negative for the rule branch: an

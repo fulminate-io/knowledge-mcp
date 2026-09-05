@@ -2,8 +2,39 @@
   "schema_version": 1,
   "chunks": [
     {
+      "kind": "heading",
+      "text": "Heading One",
+      "heading_level": 1,
+      "page_range": [
+        0,
+        0
+      ],
+      "bbox": [
+        100,
+        750,
+        206.056,
+        768
+      ],
+      "struct_role": "H1"
+    },
+    {
       "kind": "paragraph",
-      "text": "Heading One First paragraph. Second paragraph.",
+      "text": "First paragraph.",
+      "page_range": [
+        0,
+        0
+      ],
+      "bbox": [
+        100,
+        720,
+        184.696,
+        732
+      ],
+      "struct_role": "P"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Second paragraph.",
       "page_range": [
         0,
         0
@@ -11,9 +42,10 @@
       "bbox": [
         100,
         700,
-        206.056,
-        768
-      ]
+        202.06,
+        712
+      ],
+      "struct_role": "P"
     }
   ]
 }

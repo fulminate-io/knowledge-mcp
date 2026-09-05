@@ -38,17 +38,11 @@ import (
 // compileMutateUpdateBatch and compileMutateBulkMetadata
 // (compile_mutate_batch.go), and deleteRequest (compile_delete.go).
 //
-// transformersBucketName is the one Target name that is a LITERAL rather than
-// caller input, so it is applied after the projection.
-//
 // A nil Target is preserved for the all-empty case, which is how the knowledge
 // default is addressed; buildTarget's own callers rely on the same convention.
 func mutateTarget(graph, repo, account, name, language, branch string) *knowledgev1.GraphSelector {
 	gt := kgtypes.GraphType(graph)
 	instance := graphsel.InstanceValueOf(gt, repo, account, name, language)
-	if graph == transformersGraphFamily {
-		instance = transformersBucketName
-	}
 	if graph == "" && instance == "" && branch == "" {
 		return nil
 	}
@@ -59,7 +53,3 @@ func mutateTarget(graph, repo, account, name, language, branch string) *knowledg
 	}
 	return sel
 }
-
-// transformersGraphFamily is the wire graph string whose Target name is pinned
-// to the canonical bucket rather than taken from the caller.
-const transformersGraphFamily = "transformers"

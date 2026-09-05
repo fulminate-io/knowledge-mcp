@@ -35,7 +35,7 @@ func TraverseToolDef() kgtools.MCPTool {
 				"direction":             {Type: "string", Description: "Edge direction to walk: 'out' (outgoing, default), 'in' (incoming), or 'both' (union deduped by node ID)", Enum: []string{"out", "in", "both"}},
 				"edge_types":            {Type: "array", Description: "Filter by edge types (optional; empty means any)", Items: &kgtools.Property{Type: "string"}},
 				"depth":                 {Type: "number", Description: "Max traversal depth (default 1)"},
-				"limit":                 {Type: "number", Description: "Max results to return (0 = no cap)"},
+				"limit":                 {Type: "number", Description: "Max results to return (0 = no cap). ON A RAW DOCUMENT GRAPH THE SLICE IS TAKEN IN NODE-ID ORDER, NOT DOCUMENT ORDER: the traversal never decodes the document position, which lives on edge Evidence, so a limited traverse over a collected document returns an arbitrary slice rather than the first N sections. Drop the limit, or use a recipe extract, which materializes the whole source graph and can therefore order it."},
 				"graph":                 {Type: "string", Description: "Target graph: '' or 'knowledge' (default), 'code', 'cloud', 'cicd', 'practice', 'checks', 'logs', 'linkage'."},
 				"name":                  {Type: "string", Description: "Graph identifier (e.g. query_id for graph='logs')."},
 				"language":              {Type: "string", Description: "Language slug for graph='practice' (e.g. 'go', 'python')."},

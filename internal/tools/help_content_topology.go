@@ -86,7 +86,12 @@ Each analyzer supports ` + "`extra`" + ` for tuning knobs; see the file in
   top_k         caps ranked findings
   path_prefix   honored ONLY by the corpus-scan analyzer. Supplying it for any
                 other algorithm is REFUSED naming the algorithm and the analyzers
-                that do honor it — it is never accepted and silently ignored
+                that do honor it — it is never accepted and silently ignored.
+                For corpus_scan, a prefix that reached NO FILE of the corpus
+                language is REFUSED naming the prefix rather than returned as an
+                empty findings slice: prefixes match whole path SEGMENTS, so
+                "pkg" is the pkg directory and never pkgextra, and a scan that
+                opened no file is not a clean scan
   resource_type cloud only — restrict to nodes whose 'resource_type' meta starts with prefix
   extra         map<string,string> — per-analyzer knobs
 

@@ -14,10 +14,11 @@ import (
 
 // TestReclaimConcurrency drives merges racing with ships and with each other on one
 // engine while the reclaim hook fires lock-free post-CAS. Run under -race it proves:
-// no data race, no panic, no deadlock; and at quiescence no id ever Removed from L2
-// is still live in Export() (the invariant's clause 2, observable only because the
-// instrumented seam intercepts Remove). The reclaim callback runs post-CAS holding
-// no engine lock, so it must never stall the 50ms merger.
+// no data race, no panic, no deadlock; and, once every reclaim the run triggered has
+// finished, no id ever Removed from L2 is still live in Export() (the invariant's
+// clause 2, observable only because the instrumented seam intercepts Remove). The
+// reclaim callback runs post-CAS holding no engine lock, so it must never stall the
+// 50ms merger.
 func TestReclaimConcurrency(t *testing.T) {
 	t.Parallel()
 
@@ -67,8 +68,8 @@ func TestReclaimConcurrency(t *testing.T) {
 	wg.Wait()
 
 	// Drain any in-flight merges, then re-warm so the final consolidated set is
-	// L2-backed and assert the invariant at quiescence.
-	waitMergeQuiesce(dm.engine.MergeCount)
+	// L2-backed and assert the invariant once every reclaim has finished.
+	waitReclaimSettled(t, dm.engine)
 	warmExported(dm)
 
 	// Clause 2 explicitly: no id the reclaim hook removed is still live.

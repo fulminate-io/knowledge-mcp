@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -58,7 +59,7 @@ func assembleTicket(ctx context.Context, gc GraphCaller, node *knowledgev1.Node)
 			targetIDs = append(targetIDs, e.ToId)
 		}
 	}
-	linked, linkedTruncated, _ := FetchNodesByIDs(ctx, gc, targetIDs)
+	linked, linkedTruncated, _ := foundation.FetchNodesByIDs(ctx, gc, "", "", targetIDs, foundation.IncludeTombstones)
 	truncated = truncated || linkedTruncated
 
 	// Walk the EDGE slice, never the hydrated map: the slice carries edge order

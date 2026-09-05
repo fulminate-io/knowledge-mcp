@@ -38,6 +38,7 @@ func newReBucketManager(t *testing.T) *Manager {
 // operand; legs (b) and (c) go red the moment the rule is weakened to
 // candidate != current.
 func TestReBucketTriggerFiresOnlyWhenADoublingBehind(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	gt := kgtypes.GraphCode
@@ -134,6 +135,7 @@ func TestReBucketTriggerFiresOnlyWhenADoublingBehind(t *testing.T) {
 // candidate != current rule — which is the single most likely weakening of this
 // detector, and the one that turns it into a per-tick rebuild storm.
 func TestReBucketTriggerSuppressedDuringPartialRealignment(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

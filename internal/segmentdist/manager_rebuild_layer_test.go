@@ -146,6 +146,7 @@ func storedBlobIDs(mgr *Manager, gt kgtypes.GraphType, name string) map[string]s
 // rebuilds — so the accumulated Export double-counts the shared documents and the
 // doc-count assertion reads a real duplicate rather than two unrelated corpora summed.
 func TestResetRebuildPublishesOnlyThisRunsLayer(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()
@@ -235,6 +236,7 @@ func TestResetRebuildPublishesOnlyThisRunsLayer(t *testing.T) {
 // bucket every change trivially touches it, so the "exactly the owning bucket
 // changed" assertion would hold no matter what the delta path did.
 func TestRebuildDeltaReEmitsOwningBucketOnly(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

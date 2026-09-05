@@ -94,10 +94,19 @@ func (f *crawlFixture) handle(name, body string) http.HandlerFunc {
 // politeness delay and invokes crawl. Used by the per-case tests below.
 func runCrawl(t *testing.T, opts CrawlOptions) ([]*pageRecord, map[string]string) {
 	t.Helper()
-	fc := newFetchClient("", 0)
-	pages, urlToID, _, _, err := crawl(context.Background(), fc, opts)
-	require.NoError(t, err)
+	pages, urlToID, _ := runCrawlWithCensus(t, opts)
 	return pages, urlToID
+}
+
+// runCrawlWithCensus is runCrawl for the callers that also read the per-class
+// degrade census. Both wrappers go through crawl itself rather than a second
+// harness, so a change to the crawl's contract reaches every test at once.
+func runCrawlWithCensus(t *testing.T, opts CrawlOptions) ([]*pageRecord, map[string]string, map[string]int) {
+	t.Helper()
+	fc := newFetchClient("", 0)
+	pages, urlToID, _, _, degraded, err := crawl(context.Background(), fc, opts)
+	require.NoError(t, err)
+	return pages, urlToID, degraded
 }
 
 func TestCrawl_BFS_AllPagesWithinDepthBudget(t *testing.T) {

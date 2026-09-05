@@ -45,11 +45,36 @@ func TestExtractCommonAttrs_AllFields(t *testing.T) {
 	}
 }
 
+// TestExtractCommonAttrs_EmptyNode pins the ATTRIBUTE half of the extract on an
+// element carrying no attributes at all.
+//
+// It deliberately does NOT assert the zero value any more. Tag and DomDepth are
+// read from the ELEMENT rather than from its attributes, so an attribute-free
+// element legitimately carries both — asserting the zero value here would be
+// asserting that the two universal signals are absent on exactly the elements
+// that most need them.
 func TestExtractCommonAttrs_EmptyNode(t *testing.T) {
 	n := attrNode()
 	got := extractCommonAttrs(n)
-	if !reflect.DeepEqual(got, commonAttrs{}) {
-		t.Errorf("expected zero-value commonAttrs, got %+v", got)
+	if !reflect.DeepEqual(commonAttrs{Class: got.Class, ID: got.ID, Role: got.Role, Data: got.Data}, commonAttrs{}) {
+		t.Errorf("expected every attribute-derived field empty, got %+v", got)
+	}
+	if got.Tag != "div" {
+		t.Errorf("Tag = %q, want %q — the tag comes from the element, not its attributes", got.Tag, "div")
+	}
+	// An element-derived record reports its OWN element as the attribute
+	// source and names no ancestor it climbed to, which is what keeps
+	// "ancestor" a statement about a real climb rather than a default.
+	md := map[string]string{}
+	applyCommonAttrs(md, got)
+	if md["attr_source"] != attrSourceOwn {
+		t.Errorf("attr_source = %q, want %q for an element-derived record", md["attr_source"], attrSourceOwn)
+	}
+	if _, named := md["attr_source_tag"]; named {
+		t.Errorf("an element-derived record named a source it climbed to: %q", md["attr_source_tag"])
+	}
+	if md["dom_depth"] == "" {
+		t.Errorf("an attribute-free element must still carry a dom_depth")
 	}
 }
 

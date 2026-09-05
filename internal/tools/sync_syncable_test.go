@@ -55,10 +55,11 @@ type listDeps struct {
 	crud  GraphTypeCRUDAPI
 }
 
-func (d listDeps) LocalLiveness() LocalLiveness    { return nil }
-func (d listDeps) Sink() collector.Sink            { return nil }
-func (d listDeps) RootDir() string                 { return "" }
-func (d listDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+func (d listDeps) LocalLiveness() LocalLiveness          { return nil }
+func (d listDeps) Sink() collector.Sink                  { return nil }
+func (d listDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
+func (d listDeps) RootDir() string                       { return "" }
+func (d listDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
 
 func (d listDeps) PropReady() bool     { return true }
 func (d listDeps) PipelineReady() bool { return true }

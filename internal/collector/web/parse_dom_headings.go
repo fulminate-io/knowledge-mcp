@@ -37,9 +37,34 @@ type markerCandidate struct {
 
 // markerGroup is a set of candidates sharing a parent and a normalized class.
 // depth and order are taken from the group's first member.
+//
+// median is the CALIBRATION BASELINE this group was measured against — the
+// median text length of its parent's other block children. It is set by
+// calibrateMarkerGroups on the groups that survive, and it is retained rather
+// than discarded because it is half of the comparison that promoted the group:
+// a reader who sees only the assigned level cannot tell a marker that cleared
+// the gate by a wide margin from one that scraped it.
 type markerGroup struct {
 	members      []markerCandidate
 	depth, order int
+	median       float64
+}
+
+// headingSignal is the level the heuristic pre-pass assigned a presentation
+// marker, TOGETHER WITH THE MEASUREMENTS THAT PRODUCED IT.
+//
+// The pre-pass already computes every field here and previously threw all but
+// the level away, which left the promotion unauditable downstream: a section
+// node said "I am a level 3 heading" and nothing said why. Carrying the inputs
+// makes the verdict checkable by whoever consumes the graph — the group key it
+// was repeated under, its own text length, the sibling baseline it was measured
+// against, and how many members the repetition gate actually saw.
+type headingSignal struct {
+	level         int
+	classGroup    string
+	textLen       int
+	siblingMedian float64
+	groupSize     int
 }
 
 // isSectionBoundary reports whether a ends the scope of every heading opened
@@ -167,7 +192,7 @@ func hasToken(list, want string) bool {
 //
 // It must run AFTER pruneHiddenNodes, or a hidden repeated marker series
 // would be admitted into a group and inflate it.
-func (w *walker) heuristicHeadingLevels(doc *html.Node) map[*html.Node]int {
+func (w *walker) heuristicHeadingLevels(doc *html.Node) map[*html.Node]headingSignal {
 	auth, cands := w.scanForMarkers(doc)
 	return assignMarkerLevels(w.calibrateMarkerGroups(groupMarkers(cands)), auth)
 }
@@ -292,6 +317,10 @@ func groupMarkers(cands []markerCandidate) []markerGroup {
 // surviving group, so no text is materialized for a page with no repeated
 // classed series at all. A group whose parent has no other block children
 // supplies no baseline and is rejected.
+//
+// The baseline is RETAINED on each surviving group rather than being consumed
+// by the comparison and dropped, so the measurement travels with the verdict
+// all the way to the emitted node.
 func (w *walker) calibrateMarkerGroups(groups []markerGroup) []markerGroup {
 	out := make([]markerGroup, 0, len(groups))
 	for _, g := range groups {
@@ -309,7 +338,9 @@ func (w *walker) calibrateMarkerGroups(groups []markerGroup) []markerGroup {
 		if len(others) == 0 {
 			continue
 		}
-		if limit := markerLengthRatio * medianLength(others); !overLimit(g.members, limit) {
+		median := medianLength(others)
+		if limit := markerLengthRatio * median; !overLimit(g.members, limit) {
+			g.median = median
 			out = append(out, g)
 		}
 	}
@@ -345,8 +376,8 @@ func overLimit(members []markerCandidate, limit float64) bool {
 // at 6. Groups sharing a base heading are ranked by DOM depth ascending and
 // take successive levels. A group with no authoritative heading before it
 // starts at 1.
-func assignMarkerLevels(groups []markerGroup, auth []authHeading) map[*html.Node]int {
-	out := map[*html.Node]int{}
+func assignMarkerLevels(groups []markerGroup, auth []authHeading) map[*html.Node]headingSignal {
+	out := map[*html.Node]headingSignal{}
 	byBase := map[int][]markerGroup{}
 	var bases []int
 	for _, g := range groups {
@@ -371,7 +402,13 @@ func assignMarkerLevels(groups []markerGroup, auth []authHeading) map[*html.Node
 		}
 		for i, g := range peers {
 			for _, m := range g.members {
-				out[m.node] = min(level+i, 6)
+				out[m.node] = headingSignal{
+					level:         min(level+i, 6),
+					classGroup:    m.class,
+					textLen:       m.textLen,
+					siblingMedian: g.median,
+					groupSize:     len(g.members),
+				}
 			}
 		}
 	}

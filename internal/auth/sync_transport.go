@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/clientver"
 )
 
 // Transport is the client-side half of the push-only sync protocol. It wraps
@@ -40,6 +42,15 @@ type Transport struct {
 	// [WithAccountSelection]; nil in production, where [Transport.selection]
 	// falls back to [SelectedAccount].
 	sel *AccountSelection
+	// proveAnswer enables the one-shot prove-on-refusal recovery and supplies
+	// the possession-proof answer function. nil (the default) disables it
+	// entirely: the daemon owns proving through its background loop and must
+	// not gain a second prover on the request path. Set via
+	// [WithProveOnRefusal]; see version_prove_on_refusal.go.
+	proveAnswer func(nonce []byte, offset, length int64) (string, error)
+	// proveState is the single-attempt guard, at most one exchange per
+	// Transport — and one Transport per CLI invocation.
+	proveState proveOnRefusalState
 }
 
 // TransportOption configures a [Transport] at construction time. See the
@@ -57,6 +68,17 @@ type TransportOption func(*Transport)
 func WithAccountSelection(sel *AccountSelection) TransportOption {
 	return func(t *Transport) { t.sel = sel }
 }
+
+// SetHTTPClientForTest replaces the HTTP client this Transport issues through.
+// It exists for TESTS, in the same spirit as [WithAccountSelection].
+//
+// It is a post-construction setter rather than an option because the case it
+// serves is a test that must drive a transport built by the REAL constructor —
+// which takes no options from its caller and pins its endpoint to a build-tag
+// constant with no runtime override. Redirecting the client is how such a test
+// reaches a stub server WITHOUT making that endpoint overridable, which would
+// weaken a deliberate production property to make a fixture convenient.
+func (t *Transport) SetHTTPClientForTest(c *http.Client) { t.httpClient = c }
 
 // selection returns the test-injected selection when one is set, otherwise the
 // process-wide one.
@@ -213,6 +235,15 @@ func (t *Transport) sendWithAuthBytes(
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusUnauthorized {
+		// A version refusal this client can repair by proving: prove once,
+		// then re-issue the IDENTICAL request from the same body bytes. Every
+		// other refusal — and every later one on this Transport — falls
+		// through with its body restored and its remedy intact.
+		if t.maybeProveAndRetry(ctx, resp) {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			return t.issueBytes(ctx, method, prefix, path, accept, body, token, bypassAccountRefusal)
+		}
 		return resp, nil
 	}
 
@@ -266,6 +297,11 @@ func (t *Transport) issueBytes(
 	}
 	req.Header.Set("Accept", accept)
 	req.Header.Set("Authorization", "Bearer "+token)
+	// The client's build identity rides every cloud-bound request. This is the
+	// single stamping point for the whole /v1/sync/* surface (see the doc
+	// comment above), so PushGraph, the control channel and the version
+	// challenge that rides it all carry the headers without separate plumbing.
+	clientver.Stamp(req.Header)
 
 	// Stamp or refuse. An empty id sets NO header at all (not an empty one),
 	// which preserves the unset semantics exactly: no config entry -> no
@@ -317,6 +353,20 @@ func (t *Transport) readHTTPError(ctx context.Context, resp *http.Response, path
 	body := ""
 	if readErr == nil {
 		body = string(raw)
+	}
+	// A version refusal is answered FIRST and returned as its own error: it is
+	// the gateway refusing this client outright, and reporting it as a generic
+	// non-2xx would lose the remedy the user needs. It is never swallowed and
+	// never downgraded into a warning.
+	if refusal, ok := LatchVersionRefusal(RefusalObservation{
+		Status:    resp.StatusCode,
+		Header:    resp.Header,
+		Body:      raw,
+		ReadErr:   readErr,
+		Transport: "sync",
+		Path:      path,
+	}); ok {
+		return refusal
 	}
 	reason, latch := ClassifyAccountRejection(resp.StatusCode, raw)
 	if latch {

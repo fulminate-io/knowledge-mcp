@@ -29,28 +29,56 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/text"
 )
 
-// groupRunsToLines is the Stage-1 entry point. runs MUST already be
-// rotation-normalized + Y-flipped to top-down by the caller (Phase 5
-// cluster.go). medianHeight is the per-page median(run.Height for
-// runs with Height > 0); cluster.go computes it once and passes in.
-// lp supplies the threshold surface; only LineMargin and WordMargin
-// are read here (CharMargin is consumed by Stage 2).
+// groupRunsToLines is the Stage-1 entry point for a whole PAGE. runs
+// MUST already be rotation-normalized + Y-flipped to top-down by the
+// caller (cluster.go). medianHeight is the per-page median(run.Height
+// for runs with Height > 0); cluster.go computes it once and passes
+// in. lp supplies the threshold surface; only LineMargin and
+// WordMargin are read here (CharMargin is consumed by Stage 2).
 func groupRunsToLines(runs []text.TextRun, medianHeight float64, lp LayoutParams) []Line {
 	if len(runs) == 0 {
 		return nil
 	}
-	// Few-runs short-circuit (Rule 1.5): for very small inputs we
-	// emit each run as its own Line. The median-based threshold is
-	// untrustworthy on n < 3 inputs (one or two outliers dominate
-	// the median). cluster.go's PageInfo-level few-runs short-circuit
-	// covers n < 3 at the API boundary; we keep the local guard so
-	// groupRunsToLines is robust when called in isolation (tests).
+	// Few-runs short-circuit (Rule 1.5), and it is scoped to the PAGE
+	// scale on purpose. A page carrying fewer than three runs is a
+	// near-empty page, and a median computed from one or two runs is
+	// dominated by its own outliers, so banding them is less
+	// trustworthy than leaving each alone.
+	//
+	// That reasoning does NOT transfer to a smaller unit. Two runs are
+	// unremarkable inside one structure element — a heading with one
+	// bold word, a table cell, a running header, a mid-word font
+	// switch — and there the guard is actively wrong: it splits one
+	// rendered line into two, which the joiner downstream then
+	// separates with a space or a newline. Callers working at element
+	// scale call bandRunsToLines directly and skip this guard.
 	if len(runs) < 3 {
 		out := make([]Line, 0, len(runs))
 		for i := range runs {
 			out = append(out, newLine(runs[i]))
 		}
 		return out
+	}
+	return bandRunsToLines(runs, medianHeight, lp)
+}
+
+// bandRunsToLines groups runs into lines by Y-center proximity with no
+// minimum-input guard: it always bands, always sorts each line's runs
+// by X ascending, and always returns the lines top-to-bottom.
+//
+// This is the body of the grouper, split out so a caller that knows
+// its runs belong to ONE ELEMENT rather than one page can reach it
+// without the page-scale few-runs short-circuit above. At page scale
+// that guard is a reasonable refusal to trust a two-sample median; at
+// element scale it is a defect, because two runs on one baseline is
+// the common case and splitting them fabricates a line break that the
+// document does not contain.
+//
+// Inputs must already be rotation-normalized and Y-flipped, exactly as
+// for groupRunsToLines. Returns nil for an empty run set.
+func bandRunsToLines(runs []text.TextRun, medianHeight float64, lp LayoutParams) []Line {
+	if len(runs) == 0 {
+		return nil
 	}
 
 	yTolerance := medianHeight * lp.LineMargin

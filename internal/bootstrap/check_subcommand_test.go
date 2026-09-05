@@ -28,38 +28,47 @@ func checkFinding(title string) foundation.Finding {
 // checkVerdictFixtures is the SHARED table both faces are driven through. It is
 // one table rather than two so the cross-face test cannot compare a CLI row
 // against an MCP row that describes a different run.
+//
+// topK IS A ROW PROPERTY EVEN THOUGH THE CLI TAKES NO CAP. The CLI declares no
+// -top-k flag, so on that face rendered always equals total and the rendered
+// truncated value is identically v.Truncated. A capped row is therefore not
+// about the CLI honoring a cap — it is a permanent record of the defect's shape:
+// a row whose findings classify DIFFERENTLY once a render-side slice is folded,
+// so both faces go red the day either one reintroduces the fold-then-clip order.
 func checkVerdictFixtures() []struct {
 	name      string
 	findings  []foundation.Finding
+	topK      int
 	wantExit  int
 	wantToken string
 } {
 	return []struct {
 		name      string
 		findings  []foundation.Finding
+		topK      int
 		wantExit  int
 		wantToken string
 	}{
-		{"clean", nil, 0, tools.VerdictClean},
+		{"clean", nil, 0, 0, tools.VerdictClean},
 		{
 			"one flagged site",
 			[]foundation.Finding{checkFinding("no-fmt-println at a.go:1")},
-			ExitCheckFlagged, tools.VerdictFlagged,
+			0, ExitCheckFlagged, tools.VerdictFlagged,
 		},
 		{
 			"one refused check",
 			[]foundation.Finding{checkFinding(corpusscan.RefusalPrefixUnvalidated + "go:broken")},
-			ExitCheckInconclusive, tools.VerdictInconclusive,
+			0, ExitCheckInconclusive, tools.VerdictInconclusive,
 		},
 		{
 			"the run ceiling truncated the output",
 			[]foundation.Finding{checkFinding(corpusscan.TruncationTitleRun)},
-			ExitCheckInconclusive, tools.VerdictInconclusive,
+			0, ExitCheckInconclusive, tools.VerdictInconclusive,
 		},
 		{
 			"the per-check ceiling truncated the output",
 			[]foundation.Finding{checkFinding(corpusscan.TruncationPrefixCheck + "go:noisy")},
-			ExitCheckInconclusive, tools.VerdictInconclusive,
+			0, ExitCheckInconclusive, tools.VerdictInconclusive,
 		},
 		{
 			"flagged AND refused reports inconclusive",
@@ -67,7 +76,7 @@ func checkVerdictFixtures() []struct {
 				checkFinding("no-fmt-println at a.go:1"),
 				checkFinding(corpusscan.RefusalPrefixEnvironment + "go:unplaceable"),
 			},
-			ExitCheckInconclusive, tools.VerdictInconclusive,
+			0, ExitCheckInconclusive, tools.VerdictInconclusive,
 		},
 		{
 			"an llm_only disclosure alone is still clean",
@@ -76,9 +85,45 @@ func checkVerdictFixtures() []struct {
 				Title:     corpusscan.DisclosureTitleLLMOnly,
 				Metrics:   map[string]float64{"llm_only_total": 2},
 			}},
-			0, tools.VerdictClean,
+			0, 0, tools.VerdictClean,
+		},
+		{
+			// Built disclosure-then-site deliberately, mirroring the analyzer's own
+			// lead-first ordering, so a cap of 1 keeps exactly the finding that
+			// classifies as neither a site nor a refusal — which is what makes the
+			// clipped slice read CLEAN while the true fold reads FLAGGED.
+			"a render cap below the finding count moves neither face",
+			[]foundation.Finding{
+				{
+					Algorithm: corpusscan.AnalyzerName,
+					Title:     corpusscan.DisclosureTitleLLMOnly,
+					Metrics:   map[string]float64{"llm_only_total": 1},
+				},
+				checkFinding("no-fmt-println at a.go:1"),
+			},
+			1, ExitCheckFlagged, tools.VerdictFlagged,
+		},
+		{
+			// A scope fact, not a completeness one: a run that reached test
+			// files answered the question it was asked, so the disclosure alone
+			// classifies CLEAN exactly as the llm_only one does.
+			"a test-file disclosure alone is still clean",
+			testFilesDisclosureFindings(3),
+			0, 0, tools.VerdictClean,
 		},
 	}
+}
+
+// testFilesDisclosureFindings builds the analyzer's test-file disclosure with
+// the given count, through the SAME title and metric constants the analyzer
+// emits it under. A hand-typed copy here would let this table describe a
+// disclosure the fold does not recognize.
+func testFilesDisclosureFindings(n int) []foundation.Finding {
+	return []foundation.Finding{{
+		Algorithm: corpusscan.AnalyzerName,
+		Title:     corpusscan.DisclosureTitleTestFiles,
+		Metrics:   map[string]float64{corpusscan.MetricTestFilesScanned: float64(n)},
+	}}
 }
 
 // TestCheckRun_ExitCodesMatchTheVerdictClassification drives the real
@@ -149,6 +194,19 @@ func TestCheckRun_AgreesWithTheMCPVerdictOnTheSameFindings(t *testing.T) {
 			// agreeing on a WRONG answer is not a pass.
 			assert.Equal(t, tc.wantToken, token)
 			assert.Equal(t, tc.wantExit, code)
+
+			// WITHOUT THIS CONTROL THE CAPPED ROW IS DECORATION. The CLI takes no
+			// cap, so agreement on a capped row is otherwise satisfied by any
+			// implementation at all. The control pins that the row is one where
+			// folding over a render-side slice WOULD have answered differently —
+			// which is the defect's exact shape, and what makes the row go red the
+			// day either face reintroduces it.
+			if tc.topK > 0 {
+				clipped := tools.RunVerdictToken(corpusscan.ClassifyRun(
+					foundation.TruncateTopK(tc.findings, tc.topK)))
+				require.NotEqual(t, token, clipped,
+					"a capped row must be one where the clipped slice classifies differently, or it discriminates nothing")
+			}
 		})
 	}
 

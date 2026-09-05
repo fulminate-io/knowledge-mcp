@@ -33,7 +33,7 @@ func TestAstWalkAddedExtensions(t *testing.T) {
 	// regardless of language would satisfy the assertion below.
 	write("other.py", "def c():\n    return 3\n")
 
-	files, _, err := discoverScopedFiles(context.Background(), dir, "javascript", Scope{IncludeTests: true})
+	files, _, _, err := discoverScopedFiles(context.Background(), dir, "javascript", Scope{IncludeTests: true})
 	require.NoError(t, err)
 
 	require.Contains(t, files, "bundle.cjs",

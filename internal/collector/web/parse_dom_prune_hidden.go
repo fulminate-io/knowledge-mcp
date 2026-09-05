@@ -15,8 +15,11 @@ import (
 //
 // Browsers run this filter natively before any rendering or accessibility
 // tree construction; our walker doesn't, which is why chrome blocks like
-// Microsoft Learn's `<div id="unsupported-browser" hidden>` boilerplate
-// were leaking into Description and from there into pattern nodes. Wikipedia
+// Microsoft Learn's `<div id="unsupported-browser" hidden>` boilerplate were
+// reaching pattern nodes. The route is now a CHUNK NODE rather than a page
+// body — the page carries no body at all — so the boilerplate would be emitted
+// as its own node and composed into a pattern by any recipe that gathers a
+// page's chunks. Wikipedia
 // uses the same pattern for many decorative spans (`aria-hidden="true"` on
 // menu chevron icons, hidden language-list collapse toggles, etc.).
 //
@@ -28,9 +31,9 @@ import (
 // `.visually-hidden`, etc.) because those depend on the page's stylesheet
 // which we don't load. The HTML-level markers above cover the structural
 // chrome that matters for the catalogs we scrape.
-func pruneHiddenNodes(root *html.Node) {
+func pruneHiddenNodes(root *html.Node) int {
 	if root == nil {
-		return
+		return 0
 	}
 	// Two-pass traversal so removing children doesn't break the parent's
 	// sibling-pointer walk. First collect every offender via DFS, then
@@ -50,11 +53,18 @@ func pruneHiddenNodes(root *html.Node) {
 		}
 	}
 	walk(root)
+	pruned := 0
 	for _, v := range victims {
 		if v.Parent != nil {
 			v.Parent.RemoveChild(v)
+			pruned++
 		}
 	}
+	// The count is what reaches the collect response as the hidden_pruned
+	// degrade class. It counts DETACHED subtrees, not elements: a hidden div
+	// holding forty children is one loss of one subtree, which is the unit a
+	// reader of the census is deciding about.
+	return pruned
 }
 
 // elementIsHidden reports whether n carries any of the standard

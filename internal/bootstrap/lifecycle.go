@@ -193,17 +193,30 @@ type SpawnArgs struct {
 // channel while still delivering it somewhere a supervisor or container runtime
 // can read.
 //
+// THAT INHERITED STDERR CAN DIE UNDER THE CHILD, and the child must not die with
+// it. The fd belongs to a process this child is designed to outlive; when it is
+// a pipe — a container runtime's exec stdio, a supervisor or MCP host that pipes
+// our output — its reader goes away and a write to fd 1 or 2 raises SIGPIPE,
+// which the Go runtime turns into a fatal signal. The child survives that by
+// tolerating the dead sink rather than by refusing the stream: it ignores
+// SIGPIPE, writes its durable --log-file sink first, and retires stderr on the
+// first EPIPE with one line recorded in the file. See spawn_detached_stdio.go
+// for the measurement, and the server's own bootstrap/logging.go for the
+// writer.
+//
 // A DIFFERENT BINARY has a stricter form of the same constraint, and it is
 // cmd/frontend rather than this one: in --stdio mode ONLY, the frontend's own
 // stdout IS a newline-framed JSON-RPC channel, and it protects it the same way
 // (cmd/frontend/daemon.go). `knowledge` itself does not serve MCP over stdio at
 // all — bootstrap.Run returns an error saying exactly that.
 //
-// The child's DURABLE log file is no longer opened here: the server opens it
-// itself via --log-file and TEES it with its inherited stderr, so both sinks get
-// every line. That direction is required, not stylistic — a tee on this side
-// would mean a non-*os.File writer on exec.Cmd, hence a pipe with a
-// parent-lifetime copier, which a child designed to outlive us cannot survive.
+// The child's DURABLE log file is not opened here: the server opens it itself
+// via --log-file and TEES it with its inherited stderr, so both sinks get every
+// line. That direction is required, not stylistic — a tee on this side would
+// mean a non-*os.File writer on exec.Cmd, hence a pipe with a parent-lifetime
+// copier, which a child designed to outlive us cannot survive. It is also what
+// keeps the file ROTATED: --log-file is the switch that builds the server's
+// lumberjack rotator.
 //
 // NO SysProcAttr is set — the child is a regular
 // fork+exec child of the parent. When the parent exits, the kernel
@@ -232,7 +245,8 @@ type SpawnArgs struct {
 // run with a t.TempDir() root never writes to the dev's real log.
 //
 // The SERVER opens it, via --log-file, rather than this process opening it and
-// handing over the fd — see spawnServer for why that direction is load-bearing.
+// handing over the fd — see spawnServer for why that direction is load-bearing,
+// and note that the flag is also what builds the server's log rotator.
 func serverLogPath(graphStorage string) string {
 	return filepath.Join(expandTilde(graphStorage), "server.log")
 }
@@ -242,13 +256,16 @@ func serverSpawnArgv(args SpawnArgs) []string {
 		"--port", fmt.Sprintf("%d", args.Port),
 		"--root", args.Root,
 		"--graph-storage", args.GraphStorage,
-		// The server tees this file WITH its stderr; it does not replace stderr.
+		// The server TEES this file WITH its stderr; it does not replace stderr.
 		// Both sinks matter: the file is the durable record, and the inherited
-		// stderr is what a supervisor or container runtime captures.
+		// stderr is what a supervisor or container runtime captures. The flag is
+		// ALSO the switch that builds the server's lumberjack rotator, so dropping
+		// it would retire the size cap, the backup count and the age prune along
+		// with the file.
 		"--log-file", serverLogPath(args.GraphStorage),
 	}
 	// Appended only when asked for, so the default spawn argv stays exactly the
-	// three flags above.
+	// four flags above.
 	if args.Pprof {
 		argv = append(argv, "--pprof")
 	}
@@ -256,6 +273,12 @@ func serverSpawnArgv(args SpawnArgs) []string {
 }
 
 func spawnServer(args SpawnArgs) (int, error) {
+	// The child's log DIRECTORY must exist before the child opens --log-file in
+	// it; the child reports a failure to open on stderr and carries on with one
+	// sink, which is the state this whole seam exists to avoid.
+	if err := ensureLogDir(serverLogPath(args.GraphStorage)); err != nil {
+		return 0, err
+	}
 	devNull, err := os.OpenFile(os.DevNull, os.O_RDONLY, 0)
 	if err != nil {
 		return 0, fmt.Errorf("open devnull: %w", err)
@@ -271,6 +294,12 @@ func spawnServer(args SpawnArgs) (int, error) {
 	// on its first write and the log file ended up empty too. Do not "improve"
 	// this into an io.MultiWriter to get a second sink; the server tees its own
 	// log file internally via --log-file, which is the only place a tee is safe.
+	//
+	// THE CHILD SURVIVES THIS FD DYING UNDER IT. That is a property of the CHILD,
+	// not of this assignment: it ignores SIGPIPE and retires the stream on the
+	// first EPIPE, so handing it a pipe whose reader later goes away costs the
+	// stream and not the process. Keeping the assignment is what preserves
+	// `docker logs` and any supervisor's stderr as a live read path.
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	// NO SysProcAttr. See file docstring — bare fork+exec is sufficient
@@ -311,10 +340,19 @@ func waitForServer(port int, deadline time.Duration) error {
 	end := time.Now().Add(deadline)
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	// Readiness-poll client only — the caller's real client is constructed
-	// separately, so nothing else ever reuses this connection. Releasing it on
-	// the way out keeps the h2 read/write loops from outliving the wait.
+	// separately, so nothing else ever reuses this connection.
+	//
+	// Close, NOT CloseIdleConnections: this client is discarded the instant the
+	// health check succeeds, and at that instant the transport has not
+	// necessarily finished retiring the stream the check just used. A pool-level
+	// release skips a connection it does not yet consider idle, and this
+	// transport holds no idle timeout that would reap it later — so losing that
+	// race leaves the connection, its read loop and the SERVER's serve
+	// goroutines running for the life of the process. Close owns the connections
+	// it dialed and ends them outright, which makes the teardown a fact rather
+	// than the outcome of a race.
 	gc := graphclient.NewGraphClient(port)
-	defer gc.CloseIdleConnections()
+	defer gc.Close()
 
 	for time.Now().Before(end) {
 		conn, err := dialWithTimeout(addr, 200*time.Millisecond)

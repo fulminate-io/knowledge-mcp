@@ -12,7 +12,7 @@ agent built for it.
 The agents ship with the project and are available wherever it is installed. The
 core flow is **researcher → planner → plan-reviewer → implementer** for building,
 and **test-planner → tester** for verifying, with `explorer` and
-`pattern-ingester` serving more specialized roles.
+`infra-reviewer` serving more specialized roles.
 
 ## When & how to use
 
@@ -29,7 +29,7 @@ leaves a plan the reviewer audits and the implementer executes, and so on.
 | `implementer` | Follows plan steps in order, updates status in the graph, verifies each step's criteria, and records findings. | After a plan is created and approved. |
 | `test-planner` | Researches what needs testing, discusses scope and criteria, then creates a structured test plan. | When defining what to test and how. |
 | `tester` | Executes a test plan step by step, runs the commands, and records pass/fail/skip. Read-only — reports results without fixing failures. | After a test plan exists. |
-| `pattern-ingester` | Synthesizes high-fidelity pattern nodes (pattern + use case + example + reference) into the design-patterns library graph from an authoritative source. | When building out the pattern catalog from a book or reference. |
+| `infra-reviewer` | Adversarially audits an infrastructure changeset before any infra command runs, grounding each claim in provider docs, current source, the live cloud graph, and runtime log graphs. Read-only; always produces a go/no-go report. | Before a deploy, apply, upgrade, provision, or image roll. |
 
 Each agent picks up where the last one left off by reading the graph, so the
 discipline is to run them in order — research before plan, plan before review,

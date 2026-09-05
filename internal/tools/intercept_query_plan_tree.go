@@ -13,6 +13,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
@@ -108,19 +109,7 @@ func InterceptQueryPlanTree(ctx context.Context, deps ClientDeps, params kgtools
 	// (render_node.go, render_misc.go). A projected row is a field map, and the text
 	// tree has no way to express one.
 	if a.Format == "json" || len(a.Fields) > 0 {
-		payload := buildPlanTreeJSON(node, 0, depth, childIndex, a.Fields)
-		// THE KEY GOES ON THE ENVELOPE ROOT, never inside buildPlanTreeJSON.
-		// Truncation is a property of the READ, not of a node: a leaf row asserting
-		// truncated:false says nothing about anything, and per-row emission inflates
-		// exactly the large-tree payloads where truncation matters most. The file
-		// already draws this distinction the other way for updated_at, which IS
-		// per-row because a timestamp genuinely belongs to a node.
-		//
-		// Emitted UNCONDITIONALLY (true and false), the same contract every sibling
-		// envelope carries: an absent key is indistinguishable from an old binary.
-		// The prose block below STAYS — the two artifacts answer different questions.
-		payload["truncated"] = truncated
-		return true, render.AppendTruncationNotice(jsonResult(payload), truncated, len(nodes))
+		return true, renderPlanTreeJSON(ctx, gc, node, a.Fields, depth, nodes, childIndex, truncated)
 	}
 
 	// Text path needs depends-on ordering. Fetch every node's depends-on
@@ -138,9 +127,17 @@ func InterceptQueryPlanTree(ctx context.Context, deps ClientDeps, params kgtools
 		dependsOn = map[string]string{}
 	}
 
+	annotationLines, annotationsTruncated, annotationErr := planTreeAnnotationLines(ctx, gc, nodes)
+	truncated = truncated || annotationsTruncated
+
 	var sb strings.Builder
-	render.RenderTreeFromIndex(&sb, node, 0, depth, childIndex, dependsOn)
-	return true, render.AppendTruncationNotice(kgtools.TextResult(sb.String()), truncated, len(nodes))
+	render.RenderTreeFromIndex(&sb, node, 0, depth, childIndex, dependsOn, annotationLines)
+	// TWO DISCLOSURES, TWO CAUSES — the same split the two assemble arms carry.
+	// The truncation notice speaks for a server row ceiling; a failed annotation
+	// read gets its own, because that notice's text names a cause that did not
+	// occur and a `limit` remedy this arm's caller cannot apply to it.
+	out := render.AppendTruncationNotice(kgtools.TextResult(sb.String()), truncated, len(nodes))
+	return true, render.AppendAnnotationReadFailureNotice(out, annotationErr)
 }
 
 // buildPlanTreeJSON renders the recursive
@@ -170,8 +167,19 @@ func buildPlanTreeJSON(
 	depth, maxDepth int,
 	childIndex map[string][]*knowledgev1.Node,
 	fields []string,
+	annotations map[string]render.SectionAnnotationCounts,
 ) map[string]any {
 	row := planTreeRow(node, fields)
+	// THE ANNOTATIONS KEY RIDES EVERY ROW THAT HAS ONE, PROJECTION OR NOT, on
+	// exactly the rule the children key already follows one line below: it
+	// describes the READ rather than the node, so it is not a projectable node
+	// field and a projection that dropped it would turn a reviewed plan into an
+	// unreviewed-looking one. It is omitted entirely for a node with no
+	// annotations, so every plan written before annotations existed emits the
+	// bytes it always did — which is what keeps the two plan_tree goldens green.
+	if counts, ok := annotations[node.Id]; ok {
+		row["annotations"] = counts
+	}
 	if depth >= maxDepth {
 		return row
 	}
@@ -181,10 +189,75 @@ func buildPlanTreeJSON(
 	}
 	rows := make([]map[string]any, 0, len(children))
 	for _, child := range children {
-		rows = append(rows, buildPlanTreeJSON(child, depth+1, maxDepth, childIndex, fields))
+		rows = append(rows, buildPlanTreeJSON(child, depth+1, maxDepth, childIndex, fields, annotations))
 	}
 	row["children"] = rows
 	return row
+}
+
+// renderPlanTreeJSON renders the json (and projected) plan_tree envelope.
+//
+// SPLIT OUT OF InterceptQueryPlanTree, which crossed the statement gate when the
+// annotation read reached this branch. The file's own precedent is to move a
+// decision tree out rather than raise the limit, and this branch is a natural
+// unit: it builds one payload, discloses two independent verdicts on it, and
+// returns.
+//
+// THE ANNOTATION READ RUNS FOR BOTH FORMATS, not only for text. It was wired into
+// the text branch alone, so query(mode:"plan_tree", format:"json") and the same
+// call under a projection reported NO review state on a plan whose text render
+// carried the per-section line — the json arm being the text arm minus a feature,
+// which is the shape this branch hit three times before it was swept.
+//
+// THE truncated KEY GOES ON THE ENVELOPE ROOT, never inside buildPlanTreeJSON.
+// Truncation is a property of the READ, not of a node: a leaf row asserting
+// truncated:false says nothing about anything, and per-row emission inflates
+// exactly the large-tree payloads where truncation matters most. The file already
+// draws this distinction the other way for updated_at, which IS per-row because a
+// timestamp genuinely belongs to a node. It is emitted UNCONDITIONALLY, the same
+// contract every sibling envelope carries: an absent key is indistinguishable
+// from an old binary. The prose notice rides alongside — the two artifacts answer
+// different questions.
+func renderPlanTreeJSON(
+	ctx context.Context,
+	gc GraphCaller,
+	node *knowledgev1.Node,
+	fields []string,
+	depth int,
+	nodes []*knowledgev1.Node,
+	childIndex map[string][]*knowledgev1.Node,
+	truncated bool,
+) kgtools.ToolResult {
+	annotations, annotationsTruncated, annotationErr := planTreeAnnotationCounts(ctx, gc, nodes)
+	payload := buildPlanTreeJSON(node, 0, depth, childIndex, fields, annotations)
+	truncated = truncated || annotationsTruncated
+	payload["truncated"] = truncated
+	out := render.AppendTruncationNotice(jsonResult(payload), truncated, len(nodes))
+	return render.AppendAnnotationReadFailureNotice(out, annotationErr)
+}
+
+// planTreeAnnotationCounts reads the annotations on a tree's sections and
+// projects them into the per-node count-and-kinds shape the json rows carry.
+//
+// IT SHARES THE READ AND THE DEGRADE RULE with the text arm's own helper: the
+// same FetchSectionAnnotations call, the same log-and-return-the-error on
+// failure, so the two formats cannot report different review state or disclose a
+// failure differently.
+func planTreeAnnotationCounts(
+	ctx context.Context, gc GraphCaller, nodes []*knowledgev1.Node,
+) (map[string]render.SectionAnnotationCounts, bool, error) {
+	sectionIDs := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		if kgtypes.NodeType(n.GetType()) == kgtypes.NodePlanSection {
+			sectionIDs = append(sectionIDs, n.Id)
+		}
+	}
+	annotations, truncated, err := render.FetchSectionAnnotations(ctx, gc, sectionIDs)
+	if err != nil {
+		slog.Warn("plan_tree json: annotation read failed; rendering without annotation state", "error", err)
+		return nil, truncated, err
+	}
+	return render.AnnotationCounts(annotations), truncated, nil
 }
 
 // planTreeRow builds one node's json row: the full fixed key set when no
@@ -210,4 +283,42 @@ func planTreeRow(node *knowledgev1.Node, fields []string) map[string]any {
 		row["updated_at"] = node.UpdatedAt
 	}
 	return row
+}
+
+// planTreeAnnotationLines reads the reviewer annotations on a sectioned plan's
+// sections and returns the per-node line map RenderTreeFromIndex takes, plus the
+// read's truncation verdict.
+//
+// A sectioned plan's annotations hang off its sections by relates-to, which the
+// contains traversal cannot see, so they need their own read. TWO EXTRA WIRE
+// CALLS, AND ONLY WHEN THE TREE HAS SECTIONS: a phase-and-step plan yields an
+// empty section set and the read short-circuits on it without issuing anything,
+// so no existing tree pays for this.
+//
+// A FAILED READ DEGRADES TO NO LINES AND RETURNS THE ERROR. Returning no lines
+// alone would render a plan under review as one with no review on it, so the
+// caller is told; what changed is WHICH disclosure says so.
+//
+// THIS WAS THE THIRD DEGRADE ARM AND IT WAS MISSED. The two assemble arms were
+// swept when their notice was split out; this one still folded a failed
+// annotation read into the truncation verdict, so a caller was told the server
+// row ceiling engaged and to retry with a smaller `limit` — a cause that did not
+// occur and a remedy that does not address it. Worse, the error was DISCARDED
+// with not even a log line, so an operator had nothing to investigate. Both are
+// fixed here: the error rides out to its own notice, and it is logged.
+func planTreeAnnotationLines(
+	ctx context.Context, gc GraphCaller, nodes []*knowledgev1.Node,
+) (map[string]string, bool, error) {
+	sectionIDs := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		if kgtypes.NodeType(n.GetType()) == kgtypes.NodePlanSection {
+			sectionIDs = append(sectionIDs, n.Id)
+		}
+	}
+	annotations, truncated, err := render.FetchSectionAnnotations(ctx, gc, sectionIDs)
+	if err != nil {
+		slog.Warn("plan_tree: annotation read failed; rendering without annotation lines", "error", err)
+		return nil, truncated, err
+	}
+	return render.AnnotationLines(annotations), truncated, nil
 }

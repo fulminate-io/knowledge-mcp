@@ -40,6 +40,7 @@ const (
 // engine: resident membership is the very quantity the defect inflates, so deriving
 // the expectation from it would make the assertion an identity.
 func TestRebuiltDeltaCorpusExactAcrossCountChange(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()
@@ -98,6 +99,7 @@ func TestRebuiltDeltaCorpusExactAcrossCountChange(t *testing.T) {
 // rebuild's swap already reference-counted away, so an error-only check would read the
 // exact regression this test exists to catch as a pass.
 func TestResetThenDeltaThenDrainKeepsCardinality(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

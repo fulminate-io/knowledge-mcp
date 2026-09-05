@@ -91,7 +91,7 @@ func TestMergeDerivesDtypeFromSurvivors(t *testing.T) {
 
 		// A ubinary segment at the SAME width, so the refusal is attributable to
 		// the dtype and not to the width check that already exists.
-		uSeg, err := Format{}.Build([]searchengine.Document{
+		uSeg, _, err := Format{}.Build([]searchengine.Document{
 			{ID: "u1", Vector: make([]byte, dim*4)},
 			{ID: "u2", Vector: make([]byte, dim*4)},
 		})
@@ -209,7 +209,7 @@ func TestEmptySegmentAcceptsAnyQueryWidth(t *testing.T) {
 	const otherWidth = 128 // deliberately NOT defaultVecBytes
 	require.NotEqual(t, defaultVecBytes, otherWidth, "the test's premise is that this width differs from the default")
 
-	empty, err := Format{}.Build([]searchengine.Document{
+	empty, _, err := Format{}.Build([]searchengine.Document{
 		{ID: "x", Vector: nil},
 		{ID: "y", Vector: []byte{}},
 	})
@@ -222,7 +222,7 @@ func TestEmptySegmentAcceptsAnyQueryWidth(t *testing.T) {
 	}, "a segment holding no vectors cannot misread a query, so it must not refuse one")
 
 	// KNOWN-POSITIVE, same run: a segment that holds vectors still refuses.
-	nonEmpty, err := Format{}.Build([]searchengine.Document{
+	nonEmpty, _, err := Format{}.Build([]searchengine.Document{
 		{ID: "a", Vector: make([]byte, defaultVecBytes)},
 		{ID: "b", Vector: make([]byte, defaultVecBytes)},
 	})
@@ -249,7 +249,7 @@ func TestUbinaryEncodingIsByteIdenticalToThePreDtypeEncoder(t *testing.T) {
 	require.NoError(t, err)
 
 	// The fixture was captured from exactly this input through exactly this path.
-	seg, err := Format{}.Build(vecDocs(8))
+	seg, _, err := Format{}.Build(vecDocs(8))
 	require.NoError(t, err)
 	got, err := seg.Encode()
 	require.NoError(t, err)

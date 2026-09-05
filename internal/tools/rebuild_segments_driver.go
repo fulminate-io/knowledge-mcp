@@ -96,6 +96,15 @@ type RebuildOutcome struct {
 	// legitimately carries extra sealed tails, so comparing that arm to a build count
 	// would fail correct work.
 	ResidentSegmentCount int
+	// Degraded is THIS RUN'S per-class census of input the builds dropped — the
+	// record is cleared immediately before the finalize and read immediately
+	// after, so it is not a running total.
+	//
+	// THE OTHER SURFACE'S WINDOW IS DIFFERENT and they render side by side, so the
+	// difference is stated here: the manage(status) coverage row reports the same
+	// durable record and therefore the same number until the next rebuild clears
+	// it, PLUS anything the background BM25 arm has dropped since.
+	Degraded map[string]int
 }
 
 // RebuildSegments is the REUSABLE driver core both the manual manage(rebuild_segments)
@@ -291,7 +300,7 @@ func RebuildSegments(
 // keeps asserting a gate that no longer exists.
 //
 // WHAT REPLACED THE GATE IS LOCAL. The finalize builds each format's layer aside and
-// refuses a prospective layer that would retire a populated one in favour of nothing,
+// refuses a prospective layer that would retire a populated one in favor of nothing,
 // which it decides from the resident set it can see — no second authority, and so no
 // claim to be told.
 func runCorpusCompleteRebuild(
@@ -333,6 +342,22 @@ func runCorpusCompleteRebuild(
 		}
 	}
 
+	// CLEAR THE DROP CENSUS IMMEDIATELY BEFORE THE FINALIZE, and the POSITION IS THE
+	// CORRECTNESS PROPERTY: the finalize is where the segment builds happen, because
+	// StageRebuildPartition's own contract says it adds nothing to any engine and
+	// ships nothing — so no Build, and therefore no drop, can occur between the
+	// staging loop and this line. Clearing at the top of the run instead would fold
+	// in whatever the background BM25 arm dropped while the scan was paging.
+	//
+	// A FAILED CLEAR IS NON-FATAL, unlike the cursor reset a few lines above which
+	// ABORTS, and the asymmetry is reasoned rather than incidental: a stale cursor
+	// loses documents permanently, while a stale census only OVER-REPORTS drops —
+	// and over-reporting must not abort a rebuild that would restore the corpus.
+	if cerr := shipper.ResetBM25DegradeCounts(gt, name); cerr != nil {
+		slog.Warn("rebuild_segments: could not clear the BM25 drop census before the finalize — this run's reported drop count may include earlier drops",
+			"graph_type", gt, "name", name, "error", cerr)
+	}
+
 	// FINALIZE: the ONE serial build-aside + ship + gate + swap + publish, per format.
 	// There is no staging engine to reset first — the partitions were staged in a work
 	// map and this call takes them once.
@@ -349,6 +374,7 @@ func runCorpusCompleteRebuild(
 		Ran: true, Scanned: len(items), Built: built, Partial: partial,
 		HNSWPruned: res.HNSWSuperseded, BM25Pruned: res.BM25Superseded, Published: res.Swapped,
 		ResidentSegmentCount: derivedBucketCardinalityUnmeasured,
+		Degraded:             shipper.BM25DegradeCounts(gt, name),
 	}
 
 	// CARDINALITY READ-BACK, CORPUS-COMPLETE RUNS ONLY. A DELTA rebuild legitimately

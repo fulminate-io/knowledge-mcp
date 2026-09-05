@@ -259,89 +259,6 @@ func TestCompileMutate_Upsert(t *testing.T) {
 	})
 }
 
-// TestCompileMutate_UpdateBatch covers the update_batch contract: a
-// mutate(update_batch, graph:code, repo:knowledge, items:[{id,summary},
-// {id,binary_vector}]) compiles to a MUTATION_KIND_UPDATE_ITEMS plan (2
-// UpdateItems, set/unset preserved) with Target{Graph:code, Repo:knowledge};
-// empty items → ok=false.
-func TestCompileMutate_UpdateBatch(t *testing.T) {
-	t.Run("update_batch graph:code repo:knowledge → UPDATE_ITEMS + Target", func(t *testing.T) {
-		// 32 base64-encoded bytes for the binary_vector item (decodes to the
-		// 256-bit embedding length the engine validates).
-		args := `{"operation":"update_batch","graph":"code","repo":"knowledge","items":[` +
-			`{"id":"a","summary":"sum-a"},` +
-			`{"id":"b","binary_vector":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}]}`
-		req, ok := compileMutate(json.RawMessage(args))
-		require.True(t, ok)
-		m := req.GetMutation()
-		require.NotNil(t, m)
-		assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_UPDATE_ITEMS, m.GetKind())
-		require.Len(t, m.GetUpdateItems(), 2)
-
-		// Item 0: summary SET, every other field unset (nil pointers preserved).
-		assert.Equal(t, "a", m.GetUpdateItems()[0].GetId())
-		require.NotNil(t, m.GetUpdateItems()[0].Summary, "summary pointer is set")
-		assert.Equal(t, "sum-a", m.GetUpdateItems()[0].GetSummary())
-		assert.Nil(t, m.GetUpdateItems()[0].Keywords, "keywords stays unset")
-		assert.Nil(t, m.GetUpdateItems()[0].Status, "status stays unset")
-		assert.Empty(t, m.GetUpdateItems()[0].GetBinaryVector(), "binary_vector stays unset")
-
-		// Item 1: binary_vector SET, summary unset.
-		assert.Equal(t, "b", m.GetUpdateItems()[1].GetId())
-		assert.Nil(t, m.GetUpdateItems()[1].Summary, "summary stays unset on the vector item")
-		assert.Len(t, m.GetUpdateItems()[1].GetBinaryVector(), 32, "binary_vector decoded to 32 bytes")
-
-		// Target carries the per-graph routing.
-		require.NotNil(t, req.GetTarget())
-		assert.Equal(t, "code", req.GetTarget().GetGraph())
-		assert.Equal(t, "knowledge", req.GetTarget().GetRepo())
-	})
-
-	t.Run("empty items → ok=false (legacy fall-through)", func(t *testing.T) {
-		req, ok := compileMutate(json.RawMessage(`{"operation":"update_batch","items":[]}`))
-		assert.False(t, ok, "empty update_batch → legacy")
-		assert.Nil(t, req)
-	})
-}
-
-// TestCompileMutate_UpdateBatchBranch is the wire-contract round trip between
-// the pipeline's overlay-qualified writeback and the engine compiler: a
-// mutate(update_batch, graph:code, repo:myrepo, branch:feat) must thread the
-// branch onto the Execute Target so the server resolveCode Scopes the overlay
-// (repo@branch) instead of resolving the base graph. The branch json tag must
-// be exactly "branch" — the same tag rpc.go's updateBatchArgs marshals — or the
-// overlay dimension is silently dropped and overlay-resident writebacks fail
-// not_found.
-func TestCompileMutate_UpdateBatchBranch(t *testing.T) {
-	t.Run("branch threads onto the Execute Target", func(t *testing.T) {
-		// Marshal the SAME wire shape rpc.go's updateBatchArgs produces (the json
-		// tags are the contract), through the public engine.Compile entrypoint.
-		args, err := json.Marshal(map[string]any{
-			"operation": "update_batch",
-			"graph":     "code",
-			"repo":      "myrepo",
-			"branch":    "feat",
-			"items":     []map[string]any{{"id": "a", "summary": "sum-a"}},
-		})
-		require.NoError(t, err)
-		req, ok := Compile("mutate", args)
-		require.True(t, ok, "update_batch with branch lowers to UPDATE_ITEMS")
-		require.NotNil(t, req.GetTarget())
-		assert.Equal(t, "code", req.GetTarget().GetGraph())
-		assert.Equal(t, "myrepo", req.GetTarget().GetRepo())
-		assert.Equal(t, "feat", req.GetTarget().GetBranch(),
-			"branch must thread onto the Target so resolveCode Scopes the overlay")
-	})
-
-	t.Run("absent branch → empty Target.Branch (base/default-branch write)", func(t *testing.T) {
-		args := `{"operation":"update_batch","graph":"code","repo":"myrepo","items":[{"id":"a","summary":"s"}]}`
-		req, ok := Compile("mutate", json.RawMessage(args))
-		require.True(t, ok)
-		require.NotNil(t, req.GetTarget())
-		assert.Empty(t, req.GetTarget().GetBranch(), "no branch → base graph write, Branch stays empty")
-	})
-}
-
 // TestCompileMutate_ThoughtChargeCreateCompiles is the reversal
 // of the old default-deny: thought/charge creates now COMPILE to a CREATE
 // MutationPlan (the client composers lower think/charge into a generic
@@ -371,9 +288,9 @@ func TestCompileMutate_DenyCases(t *testing.T) {
 		name string
 		args string
 	}{
-		// NOTE: practice/transformers create/update/delete/link/update_batch are NO
+		// NOTE: practice/checks create/update/delete/link/update_batch are NO
 		// LONGER here — the compileMutate guard was narrowed to
-		// link_graph-only, so an intra-practice/transformers op (no link_graph)
+		// link_graph-only, so an intra-practice/checks op (no link_graph)
 		// Target-routes to a MutationPlan (proven by TestCompileMutate_PracticeTransformers).
 		// Only the cross-graph link_graph case stays denied.
 		{"link_graph linkage", `{"operation":"link","link_graph":"linkage","from":"x","to":"y","relationship":"r"}`},

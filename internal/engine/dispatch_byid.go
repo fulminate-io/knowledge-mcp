@@ -104,15 +104,15 @@ func dispatchQueryByID(ctx context.Context, exec ExecuteFn, args json.RawMessage
 	// ceiling engaged", a correct disclosure attached to a number that contradicts
 	// it.
 	//
-	// THE FORMAT CHOICE IS renderByIDResult's, not this function's: dispatch_byid.go
-	// is within a handful of lines of the 500-line cap, and the shape rules (which
-	// envelope, which legacy body, where the truncated key rides) belong beside the
-	// renderers they describe. a.Format is threaded rather than dropped — a
-	// format:"json" by-id read used to receive prose or a markdown-suffixed body
-	// with no error and no tell.
+	// THE FORMAT AND PROJECTION CHOICES ARE renderByIDResult's, not this function's:
+	// this file is at the 500-line cap, and the shape rules belong beside the
+	// renderers they describe. a.Format and a.Fields are both THREADED rather than
+	// dropped, and EACH WAS DROPPED ONCE: format:"json" used to return prose, and
+	// `fields` was honored WITHOUT include_edges and ignored WITH it.
 	rows := len(edges) + len(links)
 	return WithTruncationNoticeFor(
-		renderByIDResult(node, label, isKnowledge, a.Format, edges, links, truncated), truncated, rows), true
+		renderByIDResult(node, label, isKnowledge, a.Format, a.Fields, a.IncludeTombstones, edges, links, truncated),
+		truncated, rows), true
 }
 
 // byIDNodeRead issues ONE Execute for the bare by-id node (RETURN_MODE_NODES)

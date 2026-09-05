@@ -4,6 +4,7 @@ package segmentdist
 
 import (
 	"testing"
+	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
@@ -23,11 +24,38 @@ import (
 // per Add via MinSegmentDocs, low count target) AND carries the reclaim hook for
 // the supplied distManager pointer (var-before-assign captured by the caller).
 func reclaimEngineOpts[Q, S any](dmPtr **distManager[Q, S], countTarget int) searchengine.Options {
+	return reclaimEngineOptsWithHookDelay(dmPtr, countTarget, 0)
+}
+
+// reclaimEngineOptsWithHookDelay is reclaimEngineOpts with a test-only stall in
+// FRONT of the reclaim call, so the hook's Put lands a known interval after the
+// merge published.
+//
+// THIS IS THE PUBLISH-TO-RECLAIM WINDOW MADE SUMMONABLE. doMerge publishes the
+// consolidated segment by CAS and counts it BEFORE it calls this hook, so between
+// the publish and the hook's Put there is an interval in which a live segment has
+// no L2 file — clause 1 of assertLiveSetBackedByL2. In an ordinary run that
+// interval is however long the merge's own Put happens to take, which is why the
+// failure it produces only ever showed up as a load-dependent flake. A delay makes
+// the interval a number the test chooses, so a wait that returns inside it fails
+// EVERY time rather than under contention.
+//
+// IT WRAPS THE CALL, IT DOES NOT REPLACE IT: the reclaim that runs is the
+// production reclaimMerged, unmodified. A delay of zero is exactly the undelayed
+// closure, so the ordinary constructors keep their behaviour.
+func reclaimEngineOptsWithHookDelay[Q, S any](
+	dmPtr **distManager[Q, S], countTarget int, hookDelay time.Duration,
+) searchengine.Options {
 	return searchengine.Options{
 		MinSegmentDocs:     1,
 		DeletesPctAllowed:  0.33,
 		SegmentCountTarget: countTarget,
-		OnMerge:            func(res searchengine.MergeResult) { (*dmPtr).reclaimMerged(res) },
+		OnMerge: func(res searchengine.MergeResult) {
+			if hookDelay > 0 {
+				time.Sleep(hookDelay)
+			}
+			(*dmPtr).reclaimMerged(res)
+		},
 	}
 }
 
@@ -56,11 +84,23 @@ func buildHNSWReclaimManagerOn(
 	t *testing.T, gt kgtypes.GraphType, name, cacheDir string, countTarget int,
 ) (*distManager[[]byte, struct{}], *instrumentedCache) {
 	t.Helper()
+	return buildHNSWReclaimManagerWithHookDelay(t, gt, name, cacheDir, countTarget, 0)
+}
+
+// buildHNSWReclaimManagerWithHookDelay is buildHNSWReclaimManagerOn whose reclaim
+// hook stalls hookDelay before it reclaims, holding the publish-to-reclaim window
+// open for a known interval (see reclaimEngineOptsWithHookDelay). A zero delay is
+// the ordinary manager, which is why the two undelayed constructors delegate here.
+func buildHNSWReclaimManagerWithHookDelay(
+	t *testing.T, gt kgtypes.GraphType, name, cacheDir string, countTarget int, hookDelay time.Duration,
+) (*distManager[[]byte, struct{}], *instrumentedCache) {
+	t.Helper()
 	target := graphSelector(gt, name)
 	ic := newInstrumentedCache(newDiskSegmentCache(cacheDir, 0, adviceRandom))
 
 	var dm *distManager[[]byte, struct{}]
-	engine := closeOnCleanup(t, searchengine.New[[]byte, struct{}](hnsw.New(), reclaimEngineOpts(&dm, countTarget)))
+	engine := closeOnCleanup(t, searchengine.New[[]byte, struct{}](
+		hnsw.New(), reclaimEngineOptsWithHookDelay(&dm, countTarget, hookDelay)))
 	dm = newDistManager(engine, ic, target, hnsw.New().Name())
 	return dm, ic
 }

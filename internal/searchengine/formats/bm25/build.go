@@ -3,11 +3,20 @@
 package bm25
 
 import (
+	"log/slog"
 	"runtime"
+	"runtime/debug"
 	"sync"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
+
+// degradeTokenizePanic is the fixed-vocabulary census class for a document
+// dropped because tokenizing it panicked. This is the single authoritative
+// declaration of the class name; every other site cites the const, never the
+// literal. The vocabulary is the format's own — segmentdist stores the census
+// and the operator surfaces render it, but neither interprets the key.
+const degradeTokenizePanic = "tokenize_panic"
 
 // indexedFields lists the BM25F field names in defaultFieldConfigs order. Build
 // reads ONLY these documented Document.Fields keys (defensively — a missing key
@@ -32,11 +41,36 @@ type docFieldTokens struct {
 // goroutines, mirroring the server tokenizeFieldsParallel (build_internal.go:17)
 // and the HNSW format's delegation to a parallel builder. A document contributing
 // zero indexable fields yields a nil fields map and is dropped by buildSegment.
-func tokenizeDocsParallel(docs []searchengine.Document, workers int) []docFieldTokens {
+//
+// The second return is the per-class census of documents LOST to a panic. It is
+// NIL when nothing was dropped, so an empty census and no census are one state —
+// the same contract collector.renderDegraded holds itself to at
+// collector/composition.go:171-174.
+func tokenizeDocsParallel(docs []searchengine.Document, workers int) ([]docFieldTokens, map[string]int) {
+	return tokenizeDocsParallelWith(docs, workers, tokenizeOne)
+}
+
+// tokenizeDocsParallelWith is tokenizeDocsParallel with the per-document unit of
+// work taken as a parameter. THE SEAM EXISTS BECAUSE A TEST CANNOT OTHERWISE
+// REACH THE RECOVERY BOUNDARY: with the guarded per-part lowering in place no
+// production input panics inside tokenize, so a test driving a real drifting
+// rune would prove nothing about the recovery SCOPE. It is an unexported
+// parameter on an unexported function — nothing here is reachable or swappable
+// from outside this package.
+func tokenizeDocsParallelWith(
+	docs []searchengine.Document,
+	workers int,
+	one func(searchengine.Document) docFieldTokens,
+) ([]docFieldTokens, map[string]int) {
 	results := make([]docFieldTokens, len(docs))
 	if workers < 1 {
 		workers = 1
 	}
+	// One counter per worker, written only by the worker that owns it — the same
+	// disjoint-slot discipline the results slice already uses, so counting costs
+	// no shared mutex. Sized after the clamp so a caller passing 0 cannot index a
+	// zero-length slice.
+	dropped := make([]int, workers)
 	var wg sync.WaitGroup
 	chunkSize := (len(docs) + workers - 1) / workers
 	for w := 0; w < workers; w++ {
@@ -46,15 +80,61 @@ func tokenizeDocsParallel(docs []searchengine.Document, workers int) []docFieldT
 			break
 		}
 		wg.Add(1)
+		// The OUTER recover STAYS. It is the process-crash guard this codebase's
+		// Go practice mandates for every spawned goroutine (goWithRecover is the
+		// helper; a bare `go func()` is the smell). The INNER per-document
+		// recover in tokenizeDocRecovered is what bounds the blast radius to the
+		// one document that panicked. Neither is redundant with the other, so a
+		// later reader removes neither.
 		goWithRecover("tokenizeDocsParallel", func() {
 			defer wg.Done()
 			for i := start; i < end; i++ {
-				results[i] = tokenizeOne(docs[i])
+				if !tokenizeDocRecovered(one, docs[i], &results[i]) {
+					dropped[w]++
+				}
 			}
 		})
 	}
 	wg.Wait()
-	return results
+	total := 0
+	for _, n := range dropped {
+		total += n
+	}
+	if total == 0 {
+		return results, nil
+	}
+	return results, map[string]int{degradeTokenizePanic: total}
+}
+
+// tokenizeDocRecovered runs ONE document's tokenization under its own recover
+// and reports whether that document survived. The caller counts a false into the
+// degrade census; the document's slot keeps the zero value, which is the same
+// non-member disposition buildSegment already gives a document with no indexable
+// fields. No state exists in which a document is both counted as dropped and
+// indexed: one return value decides both.
+//
+// THE RESET IS LOAD-BEARING. tokenizeOne fills its fields map incrementally, so
+// a panic partway through one document would otherwise leave a half-tokenized
+// document that buildSegment indexes as a member with fields missing — a
+// silently wrong document is worse than a counted absent one.
+func tokenizeDocRecovered(
+	one func(searchengine.Document) docFieldTokens,
+	d searchengine.Document,
+	out *docFieldTokens,
+) (ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("goroutine panic",
+				"site", "tokenizeDocRecovered",
+				"doc_id", d.ID,
+				"err", r,
+				"stack", string(debug.Stack()))
+			*out = docFieldTokens{}
+			ok = false
+		}
+	}()
+	*out = one(d)
+	return true
 }
 
 // tokenizeOne tokenizes one document's indexed fields, reading the documented

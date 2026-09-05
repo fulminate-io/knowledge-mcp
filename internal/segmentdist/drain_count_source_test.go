@@ -34,6 +34,7 @@ import (
 // EXPECTATIONS ARE COMPUTED FROM BucketCountFor over fixture CONSTANTS, never
 // hard-coded and never read back from the run being judged.
 func TestDrainDerivesCountFromTrueCorpus(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

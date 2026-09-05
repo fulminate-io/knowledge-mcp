@@ -296,7 +296,9 @@ func TestInterceptQueryKnowledgeSearch_GateMisses(t *testing.T) {
 // TestInterceptSearch_LinkageRetired is the SEARCH-tool criterion for the ONE
 // graph with no ranked search: search(graph:linkage) returns the not-offered
 // result and dispatches NOTHING (no server search, no RPC at all). web and pdf
-// are no longer in this class — see TestInterceptSearch_WebPDFRanksClientSide.
+// are no longer in this class — they are served from the client segment engine,
+// and TestRawGraphHybridArm_ServesHybridThroughSegments (raw_graph_hybrid_search_test.go)
+// is where that arm is gated.
 func TestInterceptSearch_LinkageRetired(t *testing.T) {
 	for _, graph := range []string{"linkage"} {
 		t.Run(graph, func(t *testing.T) {
@@ -319,67 +321,19 @@ func TestInterceptSearch_LinkageRetired(t *testing.T) {
 	}
 }
 
-// TestInterceptSearch_WebPDFRanksClientSide is the successor half: the SEARCH
-// tool now serves web/pdf from the client-computed BM25 read over the drained
-// raw graph, and still dispatches no server search.
+// TWO TESTS WERE RETIRED HERE, and neither property was dropped.
 //
-// NAME THE CATCHER: with no nodes in the canned response this fails on an empty
-// result body, so a harness that silently stopped serving nodes cannot leave it
-// green.
-func TestInterceptSearch_WebPDFRanksClientSide(t *testing.T) {
-	for _, graph := range []string{"web", "pdf"} {
-		t.Run(graph, func(t *testing.T) {
-			var execHits atomic.Int64
-			gc, handler := newInterceptHarnessWithHandler(t, &execHits, cannedNodesResp(
-				&knowledgev1.Node{
-					Id: "para1", Type: "paragraph", Source: "web-collect",
-					Content: "connection pooling keeps a bounded set of live connections",
-				},
-			))
-			mgr := &fakeSegmentSearcher{}
-			deps := &interceptDeps{gc: gc, segMgr: mgr}
-
-			handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
-				"graph": graph, "name": "doc-slug", "query": "connection pooling",
-			}))
-			require.True(t, handled, "%s search is claimed", graph)
-			require.False(t, out.IsError)
-
-			body := engine.FirstTextContent(out)
-			assert.NotContains(t, body, "retired", "%s ranked search is served, not declined", graph)
-			assert.Contains(t, body, "para1", "the matching node must be ranked in")
-			assert.Contains(t, body, "_search mode: BM25-only_", "the arm disclosure must be present")
-
-			// The raw read never touches the segment engine — these graphs ship
-			// no segments — and never dispatches a server search.
-			require.Equal(t, int64(0), mgr.calls.Load(), "%s raw read hits no segment engine", graph)
-			assert.False(t, dispatchedAServerSearch(handler.recordedReqs()),
-				"%s must not dispatch a server RETURN_MODE_SEARCH", graph)
-			assert.Positive(t, execHits.Load(), "%s must actually read the graph", graph)
-		})
-	}
-}
-
-// TestInterceptSearch_WebPDFVectorModeRefused proves mode:vector is REFUSED by
-// name rather than served as zero rows. Zero rows would read as "no matches"
-// when the truth is that these graphs carry no semantic index at all.
-func TestInterceptSearch_WebPDFVectorModeRefused(t *testing.T) {
-	for _, graph := range []string{"web", "pdf"} {
-		t.Run(graph, func(t *testing.T) {
-			var execHits atomic.Int64
-			gc, _ := newInterceptHarnessWithHandler(t, &execHits, &knowledgev1.ExecuteResponse{})
-			deps := &interceptDeps{gc: gc, segMgr: &fakeSegmentSearcher{}}
-
-			handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
-				"graph": graph, "name": "doc-slug", "query": "x", "mode": "vector",
-			}))
-			require.True(t, handled, "%s mode:vector is claimed, then refused", graph)
-
-			body := engine.FirstTextContent(out)
-			assert.Contains(t, body, "mode:vector", "the refusal names the mode")
-			assert.Contains(t, body, "never embedded", "the refusal names the zero-LLM reason")
-			assert.Contains(t, body, "mode:text", "the refusal names the alternative")
-			assert.Zero(t, execHits.Load(), "a refused mode costs no read")
-		})
-	}
-}
+// TestInterceptSearch_WebPDFRanksClientSide asserted that the search tool ranked
+// web/pdf CLIENT-SIDE over a drained raw graph and never touched the segment
+// engine. This change reverses exactly that: raw graphs are enrolled embed-only,
+// so they carry vectors and BM25 documents and the ranked read asks the shipped
+// segments. Its successor is TestRawGraphHybridArm_ServesHybridThroughSegments's
+// hybrid and text legs, which assert the engine IS asked and the footer discloses
+// the arms that ran.
+//
+// TestInterceptSearch_WebPDFVectorModeRefused guarded TWO things: that a
+// raw-graph vector search never silently returns an empty list, and that raw
+// graphs are never embedded. The SECOND half is what this change makes false. The
+// FIRST half survives verbatim as that test's vector_without_embedder_refuses
+// leg, which additionally asserts the refusal fires BEFORE the engine is asked —
+// a property the retired test could not observe.

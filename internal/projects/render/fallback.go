@@ -9,6 +9,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
+	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
@@ -45,7 +46,7 @@ func assembleFallback(ctx context.Context, gc GraphCaller, node *knowledgev1.Nod
 	for _, e := range inEdges {
 		peerIDs = append(peerIDs, e.FromId)
 	}
-	peers, truncated, _ := FetchNodesByIDs(ctx, gc, peerIDs)
+	peers, truncated, _ := foundation.FetchNodesByIDs(ctx, gc, "", "", peerIDs, foundation.IncludeTombstones)
 
 	if len(outEdges) > 0 {
 		fmt.Fprintf(&sb, "\n## Outgoing Edges\n\n")

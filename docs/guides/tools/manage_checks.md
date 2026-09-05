@@ -34,6 +34,15 @@ machine-readable verdict line. `repo` names both the code graph and the tree tha
 is walked; `ids` narrows to named checks, and an id matching no check is an error
 naming it rather than a silent widening back to the whole corpus.
 
+By default the walk skips the paths the language's own test-file convention
+claims, so a check whose defect class lives only in test code can never fire on a
+real instance. Two controls change that, and they are deliberately different
+shapes: `include_tests` on the run widens every check in that run, while
+`applies_to_tests` on a check node widens THAT CHECK ALONE on every run, with no
+knob at any call site. `test_files_scanned` on the verdict line is how a reader
+tells a run that read the test code from one that did not — zero is a different
+answer from "found nothing there".
+
 ```jsonc
 manage_checks({ "operation": "list", "language": "go" })
 
@@ -52,6 +61,7 @@ the two faces cannot disagree.
 <!-- BEGIN GENERATED: params -->
 | Parameter | Type | Required | Enum | Description |
 | --- | --- | --- | --- | --- |
+| `applies_to_tests` | boolean |  |  | create only: declare that this check's defect class lives in TEST files, so a run widens the walk for this check alone with no run-wide include_tests. Omitted or false writes no declaration; true is refused for a language ast carries no test-file convention for, where it would widen nothing. |
 | `check_type` | string |  |  | create only: the check's execution kind (ast_pattern \| graph_assertion \| topology_threshold \| flow_model). |
 | `check_where` | string |  |  | create only: an optional ast where-tree as JSON text. |
 | `content` | string |  |  | create only: the check node's full content body. |
@@ -70,12 +80,13 @@ the two faces cannot disagree.
 | `format` | string |  |  | Output format: 'text' (default) or 'json'. |
 | `ids` | array of string |  |  | run only: check node ids to execute. Omit to run every check in the corpus. An id matching no check is an error naming it, never a silent widening. |
 | `ids[]` | string |  |  |  |
+| `include_tests` | boolean |  |  | run only: walk this language's TEST files too. Omitted (the default) walks non-test files only, and is legal for every language; an explicit true or false for a language ast carries no test-file convention for is REFUSED naming the language, because there the flag would decide nothing. A check may instead declare applies_to_tests on its own node, which widens that check alone and needs no knob here. |
 | `language` | string |  |  | Tree-sitter language slug (e.g. 'go', 'python'). REQUIRED for run — it selects the checks corpus. Optional narrowing for list; omit it to list every language. |
 | `name` | string |  |  | create only: the check node's name. |
 | `operation` | string | yes | create, list, run | What to do: create \| list \| run |
-| `path_prefix` | string |  |  | run only: repo-relative subtree the walk is narrowed to. |
+| `path_prefix` | string |  |  | run only: repo-relative subtree the walk is narrowed to. Prefixes match whole path SEGMENTS, so 'pkg' is the pkg directory and never pkgextra. A prefix that reached NO FILE of the corpus language is REFUSED naming the prefix — a mistyped or over-specific scope is never reported as a clean corpus, because a scan that opened no file is not a clean scan. |
 | `repo` | string |  |  | Code-graph name, or an absolute checkout path. REQUIRED for run — it names both the graph and the tree the checks walk. |
 | `severity` | string |  |  | create only: the severity its findings are emitted at (info \| notice \| warning \| critical). |
 | `summary` | string |  |  | create only: required search-optimized one-line summary of the check, max 500 chars. (max length: 500) |
-| `top_k` | integer |  |  | run only: cap on how many findings are rendered (0 = the analyzer's own ceilings apply). |
+| `top_k` | integer |  |  | run only: cap on how many findings are rendered (0 = no cap, the analyzer's own ceilings apply). It bounds ONLY the rendered body and never reaches the classification: the verdict line and its counts are folded over every finding the run produced. A render that was clipped states the total, as 'returning X of Y findings'. The admitted range is 0 or a positive count; a NEGATIVE value is REFUSED naming it, rather than coerced into a second spelling of no cap. |
 <!-- END GENERATED: params -->

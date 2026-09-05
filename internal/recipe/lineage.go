@@ -16,8 +16,8 @@ import (
 // StableID returns a deterministic 16-character hex ID for a node a recipe run
 // is about to emit into a target graph. The ID is a SHA-256 truncation over
 // (targetGraph, sourceSlug, kind, identity) so re-running the same recipe on the
-// same source graph produces the same IDs, making Force=false idempotent and
-// Force=true deterministically identifiable.
+// same source graph produces the same IDs, which is what makes a re-run
+// idempotent and what lets the write guard recognize a resident row by id.
 //
 // The component separator is "\x00" so that adjacent components like
 // ("hohpe-eip", "") and ("hohpe", "eip") do not collide. The null byte is ASCII
@@ -47,15 +47,15 @@ func StableID(targetGraph, sourceSlug, kind, identity string) string {
 // edge. The schema is intentionally minimal — consumers parse it field-by-field
 // so additive fields do not break older readers.
 type translatedFromEvidence struct {
-	// Source is the opaque source slug (e.g. "hohpe-eip"). Used by Force=true
-	// selection to delete exactly the nodes from one source run.
+	// Source is the opaque source slug (e.g. "hohpe-eip"). It records which
+	// source run produced the node, so lineage stays attributable per source.
 	Source string `json:"source"`
 }
 
 // TranslatedFromEdge builds the kgwire.BatchEdge a recipe run emits to stamp
 // provenance from a target-graph node (the newly-emitted one) back to the
 // source node in the source graph. The edge carries Evidence JSON with the
-// source slug so Force=true can filter by source.
+// source slug so a node's emitting run stays identifiable.
 //
 // Both IDs are full string identifiers (FromIdx/ToIdx are -1). The returned edge
 // is appended to Result.Lineage. If marshaling fails (never does in practice;
@@ -78,7 +78,7 @@ func TranslatedFromEdge(targetNodeID, sourceRawNodeID, sourceSlug string) kgwire
 }
 
 // SourceFromEvidence extracts the Source field from a translated-from edge's
-// Evidence blob. Used by Force=true cleanup to match nodes against the current
+// Evidence blob. Reads the source a node was translated from, matching the
 // source slug. Returns "" on empty or malformed input.
 func SourceFromEvidence(evidence string) string {
 	if evidence == "" {

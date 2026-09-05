@@ -111,4 +111,51 @@ type CollectResult struct {
 	// CLIENT-INTERNAL, exactly as above: this struct is never marshaled and the
 	// server module never imports this package.
 	CollectorOutputVersion uint32 `json:"collector_output_version,omitempty"`
+	// NonSubstantiveNodes is how many of Nodes carry a node TYPE that a
+	// composition invariant counts as content while being, in fact, retained
+	// chrome. The producing collector counts them; NewCollectComposition
+	// copies the figure verbatim and the producing collector's own invariant
+	// subtracts it.
+	//
+	// IT IS A COUNT RATHER THAN A PREDICATE BECAUSE THE KNOWLEDGE IS THE
+	// COLLECTOR'S. The web collector retains a navigation strip as a node
+	// carrying the `paragraph` type — the graph keeps its node vocabulary —
+	// so a nav-only page would otherwise read as a substantive harvest and the
+	// captured-only-chrome leg would stop firing. Only the web collector knows
+	// which of its paragraph nodes are strips; carrying a count keeps that
+	// knowledge on its own side of the seam instead of teaching
+	// collector-generic code to read a web metadata key.
+	//
+	// ZERO IS THE CORRECT DEFAULT for every collector that has no such class:
+	// subtracting nothing leaves the invariant exactly as it was.
+	NonSubstantiveNodes int `json:"non_substantive_nodes,omitempty"`
+	// Degraded is the per-class census of work this collection run DROPPED:
+	// class name to count. A class with no occurrences is ABSENT rather than
+	// zero, so an empty map means a clean run and renders nothing.
+	//
+	// CLASSES, NEVER URLS. A census keyed by the thing that failed grows with
+	// the corpus and turns a collect response into a log; a fixed class
+	// vocabulary answers "what did this harvest lose, and how much" in one
+	// line whatever the crawl's size. The vocabulary belongs to the producing
+	// collector, which is the only layer that knows what its lanes are.
+	Degraded map[string]int `json:"degraded,omitempty"`
+	// GithubFollowUps is how many DISTINCT units of github follow-up work —
+	// a repository AT A REF, which is the unit the materializer itself works
+	// in — this harvest met and did not materialize, and GithubFollowUpSample
+	// is a bounded sample of them for the rendered response. Two refs of one
+	// repository are two units; a URL naming no ref asks for the default
+	// branch and is covered by any ref of that repository.
+	//
+	// THEY ARE NOT A DEGRADE. Under the user's ruling — "github links are
+	// things the user would decide to follow up on, its not a failure at all"
+	// — an unmaterialized repository is neither a failure nor dropped work; it
+	// is a decision the caller gets to make. It therefore rides its own pair
+	// of fields rather than a degrade class, and nothing about it makes a
+	// harvest unsuccessful.
+	//
+	// The COUNT is exact and the SAMPLE is capped, so the response stays one
+	// line on a crawl that met a thousand repositories while still naming
+	// enough of them to act on.
+	GithubFollowUps      int      `json:"github_follow_ups,omitempty"`
+	GithubFollowUpSample []string `json:"github_follow_up_sample,omitempty"`
 }

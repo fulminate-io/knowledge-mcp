@@ -15,6 +15,7 @@ package bootstrap
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/backends"
 	"github.com/fulminate-io/knowledge-mcp/internal/backends/provider"
@@ -95,6 +96,31 @@ func (c *client) DaemonVersion() (string, bool) {
 	return probeDaemonVersion(graphclient.DefaultMCPHTTPPort)
 }
 
+// serverBinaryVersionBudget bounds the locate-and-exec of the installed
+// knowledge-server on a status render. Generous for a process start, tight
+// enough that a corrupt or wrong-architecture binary hanging on startup cannot
+// wedge a status call.
+const serverBinaryVersionBudget = 2 * time.Second
+
+// ServerBinaryVersion reads the version of the INSTALLED knowledge-server
+// binary on disk. Satisfies the optional tools.versionInfo interface.
+//
+// It answers a DIFFERENT question from DaemonVersion: that one reports the
+// version of the daemon PROCESS currently running, while this reports what is
+// on disk. The two diverge in different ways and have different remedies — a
+// stale process is fixed by a restart, a stale binary only by re-installing —
+// which is why they are separate stamps with separate skew lines rather than
+// one comparison.
+//
+// Returns ("", false) on ANY failure — no binary found, an exec error, an empty
+// reply — so both render surfaces degrade to no server-binary line and skew on
+// nothing.
+func (c *client) ServerBinaryVersion() (string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), serverBinaryVersionBudget)
+	defer cancel()
+	return serverBinaryVersion(ctx)
+}
+
 // ResetPipelineFailedCounters zeroes the session-lifetime failed counters.
 // Satisfies the optional tools.pipelineResetter interface called by
 // clear_llm_failures after removing on-disk markers.
@@ -137,6 +163,23 @@ func (c *client) CollectRunSnapshot() []tools.CollectRunStatus {
 // collect intercept path streams chunks to the server via this sink rather
 // than opening knowledge.bin directly.
 func (c *client) Sink() collector.Sink { return c.sink }
+
+// SubgraphFetcher returns the INNER ingest sink c.Sink()'s admitting wrapper
+// delegates to — the same *remote.UploadSink instance, so the logs collector's
+// cloud-subgraph read rides the same per-call login-routed picker as its writes
+// while the admission wrapper stays in front of every WriteResult.
+//
+// The explicit nil branch is load-bearing: returning a typed-nil
+// *remote.UploadSink directly would reach the caller as a NON-nil interface
+// value and defeat the consumer's nil guard. Nil means the client was built
+// without an ingest sink (router-less / headless fixture); the logs collector
+// surfaces a loud error rather than collecting without cloud enrichment.
+func (c *client) SubgraphFetcher() tools.CloudSubgraphFetcher {
+	if c.subgraphFetcher == nil {
+		return nil
+	}
+	return c.subgraphFetcher
+}
 
 // RootDir returns the project root directory passed via --root (defaults to
 // ".") so the ast intercept can walk source files locally. Satisfies

@@ -2,7 +2,9 @@
 
 // intercept_sync_push.go holds the PUSH half of the sync intercept: the presign/confirm
 // control-plane DTOs, the GCS object content-type, the Exporter seam that reads the LOCAL
-// graph, the push flow itself, and its caller-actionable error wrapping.
+// graph, the push flow itself, and its caller-actionable error wrapping. The job-status
+// half of the flow — the DTOs, the bounded poll and its terminal errors — is in
+// sync_job_poll.go.
 //
 // The split is by DIRECTION, which is the seam intercept_sync.go's own doc already draws:
 // "push reads local + writes cloud; pull reads cloud + writes local". It was made when the
@@ -69,11 +71,14 @@ type Exporter interface {
 // Bearer-authenticated /v1/sync control channel, asymmetric-envelope-encrypts the
 // bytes (a fresh per-request DEK, AES-256-GCM, RSA-OAEP-SHA256-wrapped to the
 // agent key), PUTs the ciphertext straight to GCS with NO auth header, then calls
-// confirm so the agent downloads, decrypts, and ingests it. Only the small
-// presign/confirm control requests cross Cloudflare; the bulk ciphertext goes
-// direct to GCS. The DEK lives only inside SealEnvelope and is discarded with the
-// ciphertext buffer on return. Errors are wrapped for caller-actionable login
-// guidance.
+// confirm, which ENQUEUES the ingest and answers 202 with a job id. The agent's
+// download, decrypt and ingest run behind that answer, so the push is not
+// finished until pollSyncJob (sync_job_poll.go) sees the job reach a terminal
+// state. Only the small presign/confirm/job-status control requests cross
+// Cloudflare; the bulk ciphertext goes direct to GCS. The DEK lives only inside
+// SealEnvelope and is discarded with the ciphertext buffer on return. Transport
+// errors are wrapped for caller-actionable login guidance; a failed INGEST
+// carries the gateway's own reason and is surfaced verbatim.
 func pushGraph(
 	ctx context.Context,
 	exp Exporter,
@@ -119,7 +124,9 @@ func pushGraph(
 		return errorResult(fmt.Sprintf("sync push: upload %s/%s to GCS: %v", graph, name, err))
 	}
 
-	// (4) Confirm: the agent downloads, decrypts, bomb-checks, and ingests it.
+	// (4) Confirm: the agent validates and ENQUEUES the ingest, then answers 202
+	// with a job id. The download, decrypt, bomb-check and ingest run behind
+	// that answer — confirm returning is not the push landing.
 	confirmReqBody, err := json.Marshal(syncConfirmRequest{
 		ObjectPath: presign.ObjectPath,
 		GraphType:  graph,
@@ -128,14 +135,57 @@ func pushGraph(
 	if err != nil {
 		return errorResult(fmt.Sprintf("sync push: marshal confirm request: %v", err))
 	}
-	if _, err := transport.SyncControlJSON(ctx, "confirm", confirmReqBody); err != nil {
+	confirmRaw, err := transport.SyncControlJSON(ctx, "confirm", confirmReqBody)
+	if err != nil {
+		return errorResult(wrapPushErr(graph, name, err))
+	}
+	var confirm syncConfirmResponse
+	if err := json.Unmarshal(confirmRaw, &confirm); err != nil {
+		return errorResult(fmt.Sprintf("sync push: decode confirm response: %v", err))
+	}
+	if confirm.JobID == "" {
+		// Without a job id there is nothing to poll and no way to learn whether
+		// the ingest landed. Reporting success here is exactly the failure this
+		// whole change exists to remove.
+		return errorResult(fmt.Sprintf(
+			"sync push %s/%s: confirm returned no job id, so the ingest's outcome cannot be observed",
+			graph, name))
+	}
+	// The state confirm reports is READ, not just decoded. The wire says a
+	// confirm answers in_progress; a terminal value is still coherent (a job
+	// that finished before this line ran), and the poll below settles either
+	// case from the job record, which is the authority. A value outside the
+	// three is a wire this build does not understand, and bad input errors here
+	// rather than being ignored on the way to a poll whose answer would be
+	// interpreted by the same misunderstanding.
+	switch confirm.State {
+	case syncJobStateInProgress, syncJobStateComplete, syncJobStateFailed:
+	default:
+		return errorResult(fmt.Sprintf(
+			"sync push %s/%s: confirm reported an unrecognized job state %q (expected %s, %s or %s)",
+			graph, name, confirm.State,
+			syncJobStateInProgress, syncJobStateComplete, syncJobStateFailed))
+	}
+
+	// (5) Poll the job until it completes, fails, or the poll deadline expires.
+	// The poll retries only what asking again could fix, so what arrives here is
+	// a settled outcome. The poll's OWN errors — an unknown job, a refused
+	// state, the deadline, a canceled wait — already carry the whole
+	// operator-facing sentence and are surfaced verbatim. Everything else is a
+	// transport refusal the poll declined to retry, and those go through
+	// wrapPushErr, whose 401/403 login guidance is exactly the right advice for
+	// a credential that expired mid-ingest.
+	if err := pollSyncJob(ctx, transport, confirm.JobID, graph, name); err != nil {
+		if _, ok := errors.AsType[syncJobError](err); ok {
+			return errorResult(fmt.Sprintf("sync push %s/%s: %v", graph, name, err))
+		}
 		return errorResult(wrapPushErr(graph, name, err))
 	}
 	uploadDur := time.Since(uploadStart)
 
-	return textResult(fmt.Sprintf("pushed %s/%s (%d bytes; serialize=%s upload=%s)",
+	return textResult(fmt.Sprintf("pushed %s/%s (%d bytes; serialize=%s upload+ingest=%s; job=%s)",
 		graph, name, len(body),
-		serializeDur.Round(time.Millisecond), uploadDur.Round(time.Millisecond)))
+		serializeDur.Round(time.Millisecond), uploadDur.Round(time.Millisecond), confirm.JobID))
 }
 
 // exporterSeam upgrades deps.LocalGraphCaller() to the Exporter seam, or

@@ -1,6 +1,6 @@
 ---
 name: ingest-patterns
-description: Ingest design patterns from an authoritative source (book, public catalog, reference site) into the practice/design-patterns.bin library graph. Four stages — collect the source once into a raw graph, extract from it interactively with zero LLM spend, freeze a good extraction as a saved recipe when it is worth re-running, then hydrate the chosen slice into full pattern nodes via the pattern-ingester agent. Extract is where you decide what is worth having; hydrate is where the token spend lands, so it runs on a chosen slice rather than everything.
+description: Ingest practices from an authoritative source (book, public catalog, reference site) into a language's practice graph, each with a sister structural check where the practice has a shape a checker can see. Collect the source once into a raw graph, search it for the passages worth reading, read those passages with inline recipe bodies, draft and polish the candidates by hand, land each one, then drop the raw graph.
 argument-hint: <source-slug-or-pdf-path-or-ticket-id>
 ---
 
@@ -13,306 +13,303 @@ For universal orchestration discipline reference /orchestrate.
 This skill is pattern-ingestion-specific.
 </precedence>
 
-Four stages, in order:
+The flow is: collect, find, read, draft, polish, land, drop. Step 0 orients, and
+steps 1 through 7 run in that order.
 
-1. **Collect** — pull the source into a raw graph once. The raw graph is a cached
-   structured document: every later stage replays it at zero network cost, so
-   iterating costs nothing but your own time.
-2. **Extract** — ZERO LLM SPEND, and that is the whole point of this stage. Run
-   inline recipe bodies against the raw graph and read the rows back; use the
-   ranked text read to find which sections even mention what you are after.
-   Nothing is written and nothing is summarized by a model.
-3. **Freeze** — when an extraction is worth re-running (a new edition, a second
-   source of the same shape), SAVE the same body as a recipe. Freezing is a
-   save, not a rewrite: an inline extract and a saved recipe are one mechanism
-   with two ways to invoke it.
-4. **Hydrate** — the only stage that spends tokens. The `pattern-ingester` agent
-   turns a CHOSEN SLICE of the extraction into full pattern nodes: original
-   prose, applies-when and avoid-when use cases, working examples, primary
-   references. Roughly 50k output tokens per pattern.
+Reading a collected source is cheap and repeatable — the raw graph is a cached
+structured document, and every read after the collect replays it and fetches
+nothing over the network. So the deciding happens while reading. The writing at
+the end is hand work on the small set you already chose.
 
-The shape of the cost is why the order matters. Collect and extract are cheap and
-repeatable, so do your deciding there; hydrate is expensive and therefore runs on
-what you decided, not on everything the source contains.
+## Step 0: Orient
 
-<constraint id="phase-2-default-off" severity="hard">
-
-  <rule>
-    Default is extract only. Don't auto-hydrate every pattern.
-  </rule>
-
-  <override-default>
-    Trained instinct: produce maximum-quality output, hydrate everything.
-    Wrong here — hydration budget should track downstream design impact,
-    not abstract interestingness.
-  </override-default>
-
-  <when-to-hydrate>
-    Pattern actually shapes design decisions in downstream /brainstorm or /plan sessions.
-    Not: "pattern looks interesting in the abstract."
-  </when-to-hydrate>
-
-</constraint>
-
-## Step 0: Identify Source + Mode + Verify Server
+Check the server is up and see what is already collected.
 
 ```jsonc
 manage({ "operation": "status" })
 ```
 
-Resolve source identity from `$ARGUMENTS`:
-- **Web slug** (e.g. `sre-workbook`) → `~/.knowledge/web/<slug>.bin`
-- **Absolute PDF path** → resolves to `~/.knowledge/pdf/<hashed-slug>.bin`
-- **Ticket ID** (40-hex) → `assemble({id:...})` to read embedded source spec
-
-If neither bin exists → **new-source mode** (Step 1a). If exists → skip the crawl.
-
 ```jsonc
-query({ "graph": "transformers", "type": "recipe", "limit": 30 })
+query({ "graph": "web", "mode": "modules" })
 ```
 
-Find recipe named `<slug>-to-<target>` (target usually `design-patterns`). Exists → **fix mode**. Missing → **new-recipe mode**.
+```jsonc
+query({ "graph": "pdf", "mode": "modules" })
+```
 
-## Stages 1-3: Collect, Extract, Freeze
+`mode:"modules"` lists the raw graphs already collected, with their node counts.
+Run it for whichever family your source belongs to, or both if you are not sure
+which one holds it.
 
-### Step 1a (new-source mode): Collect
+Pick a SCRATCH NAME for this run — something you will not mind losing, keyed to
+the source and this session. Step 7 drops the graph.
+
+## Step 1: Collect the source into a raw graph
 
 Web:
+
 ```jsonc
 collect({
-  "type": "web", "id": "<slug>",
+  "type": "web",
+  "id": "<scratch-slug>",
   "seed_urls": ["<entry-url>"],
   "follow_patterns": ["^<host-and-path-prefix-regex>"],
-  "max_pages": 100, "politeness_ms": 500, "force": true
+  "max_pages": 100,
+  "politeness_ms": 500
 })
 ```
 
 PDF:
+
 ```jsonc
-collect({ "type": "pdf", "id": "<absolute-path-to-pdf>", "force": true })
+collect({ "type": "pdf", "id": "<absolute-path-to-pdf>" })
 ```
 
-Verify body capture on a sample node — body should appear under title.
+`max_pages` is a HARD cap on the pages the crawl fetches, not a target it
+approaches — the crawl stops there even with work still queued, and zero means
+unbounded. `follow_patterns` is a regex allowlist for internal links; anchor it
+at the host and path prefix you actually want, or a site-wide crawl will bring
+back mostly navigation.
 
-### Step 1b: Extract interactively — no writes, no model spend
+Pass no `force` on either call. A scratch name has nothing to overwrite, and
+`force` is refused outright on a recipe run later in this flow.
 
-Before authoring anything permanent, ASK THE RAW GRAPH WHAT IS IN IT. Both reads
-below replay the cached raw graph and fetch nothing over the network.
-
-Find the sections that mention what you care about:
+Then read the shape of what you collected, before writing any body:
 
 ```jsonc
-query({ "graph": "<web|pdf>", "name": "<slug>", "text": "connection pooling" })
+query({ "graph": "<web|pdf>", "name": "<slug>", "mode": "stats" })
 ```
 
-That is a ranked text read computed on the client with no embedding step, so it
-costs nothing and works on a raw graph that was never summarized. `mode:"stats"`
-on the same selector gives the node-type breakdown; `mode:"modules"` lists the
-raw graphs you have collected.
+That read is not a formality. It gives the node-type breakdown and the edge
+vocabulary, and the DSL compares edge types EXACTLY, including case. A PDF raw
+graph carries `CONTAINS` only. A web raw graph can carry both `CONTAINS` and a
+lowercase `contains` at the same time, because a crawl that materializes a code
+host anchors its files under a lowercase edge while the document structure stays
+uppercase. A body that names the wrong spelling is refused before the walk, with
+the graph's real vocabulary in the message — but reading it here is cheaper than
+meeting the refusal.
 
-Then run a body against it and read the rows back, with NOTHING written:
+## Step 2: Find the passages worth reading
 
 ```jsonc
-collect({
-  "type": "<web|pdf>", "id": "<slug>",
-  "transformer": "recipe", "extract": true, "max_rows": 20,
-  "recipe_body": "select section\nemit pattern {\n    name := section.symbol_name\n    path := heading_path(\"CONTAINS\", \"symbol_name\", \" > \")\n    body := subtree_concat(\"CONTAINS\", \"body\", \"\\n\\n\", \"3\")\n}"
+search({
+  "graph": "<web|pdf>",
+  "name": "<slug>",
+  "query": "<concept>",
+  "mode": "hybrid",
+  "limit": 10
 })
 ```
 
-`recipe_body` is an INLINE body — no saved recipe node is created, and `extract`
-is required with it. Iterate the filters here, where a mistake costs one read.
+Each hit renders a locality line reading `under: <heading> | p. N`. That is how
+you find the passages worth reading instead of walking the whole document, and
+the heading it names is what you key the section-body read on in Step 3.
 
-Three DSL pieces do most of the work on a document graph:
-- `body` — one field name that reaches the text on either collector, because the
-  web side puts it in `content` and the pdf side in `description`.
-- `heading_path(edge, field, sep)` — the section's path, walking up.
-- `subtree_concat(edge, field, sep, max_depth)` — the section's body, walking
-  down in document order. Unlike a page's own flattened description this
-  includes code blocks, tables and quotes.
+A freshly collected raw graph carries no vectors until it has been enrolled and
+embedded, so a just-collected document answers BM25-only. The response footer
+says which mode it actually ran in.
 
-Output is bounded and says so: the header reports rows returned over rows
-MATCHED, and any truncation prints a line beginning `TRUNCATED by` naming the cap
-that fired. Raise `max_rows` / `max_bytes` or narrow the body.
+## Step 3: Read the passages
 
-### Step 1c: Freeze the extraction — Author or Update Recipe
+Two reads through the extract path. Nothing is written, and nothing is saved.
 
-FREEZE ONLY WHAT IS WORTH RE-RUNNING: a source that gets new editions, or a shape
-you will point at a second source. A one-off extraction does not need a saved
-recipe at all — the rows you already read were the deliverable.
+An OUTLINE first — what sections the document has, and where each one sits:
 
-Freezing is a SAVE of the body you just iterated on, not a rewrite of it.
-
-**New-recipe mode.** Canonical PDF template:
-
-```
-select section
-filter page.metadata.heading_level ~= /^2$/
-filter page.name !~ /\.\s+\.\s+\./           # drop TOC dot-leaders
-filter page.name !~ /^Part [IVX]+/           # drop "Part I" headers
-filter page.name !~ /^PART [IVX]*$/          # all-caps variant
-filter page.name !~ /\| \d+$/                # drop "<title> | <pagenum>"
-filter not(has_ancestor("CONTAINS", "symbol_name", "^(Foreword|Preface|Acknowledgments|How to Read This Book|About the Author|Revision History|Index|Bibliography)$"))
-filter page.name !~ /^(Foreword|Preface|Acknowledgments|How to Read|About the Author|Revision History|Introduction|Setting the Stage|Conclusion|Index|Bibliography)/
-filter page.name ~= /^.{4,80}$/              # name length sanity
-emit pattern {
-    type := "pattern"
-    identity := page.name
-    name := page.name
-    summary := slice(children_concat("CONTAINS", "description", " "), "0", "200")
-    description := children_concat("CONTAINS", "description", "\n\n")
-    source := "<source-slug>"
-    source_path := "<absolute-path-or-url>"
-    source_page_first := page.metadata.page_first
-    source_page_last := page.metadata.page_last
-} as $pat
+```jsonc
+collect({
+  "type": "<web|pdf>",
+  "id": "<slug-or-absolute-pdf-path>",
+  "transformer": "recipe",
+  "extract": true,
+  "max_rows": 50,
+  "recipe_body": "select section\nemit outline {\n    name := section.symbol_name\n    path := heading_path(\"CONTAINS\", \"symbol_name\", \" > \")\n}"
+})
 ```
 
-Web template uses `select page` and `description := page.description` directly. See existing recipes in `graph: "transformers"` for live web-source examples.
+Then a SECTION BODY — the prose under one heading, with its subtree in document
+order:
 
-Store recipe:
+```jsonc
+collect({
+  "type": "<web|pdf>",
+  "id": "<slug-or-absolute-pdf-path>",
+  "transformer": "recipe",
+  "extract": true,
+  "max_rows": 20,
+  "recipe_body": "select section\nfilter {\"matches\": {\"of\": \"section.symbol_name\", \"regex\": \"^Idempotent\"}}\nemit passage {\n    name := section.symbol_name\n    path := heading_path(\"CONTAINS\", \"symbol_name\", \" > \")\n    body := subtree_concat(\"CONTAINS\", \"body\", \"\\n\\n\", \"4\")\n}"
+})
+```
+
+Swap the regex for the heading Step 2 handed you. `help("recipes")` carries the
+grammar and worked bodies for both collectors — copy one of those and adapt it
+rather than writing a body from scratch.
+
+What `heading_path` renders, so an empty path does not read as a broken read:
+it walks the row's ancestors and joins their headings, skipping any ancestor
+that has none. A PDF document's heading is the file's embedded Title; when the
+file carries none the collector derives one and stamps `metadata.title_source`
+on the document node so a derived title is never mistaken for the document's
+own. The `under:` line on a search hit comes from a different mechanism and is
+not evidence that `heading_path` will populate for that row.
+
+MEASURED COST OF ONE PASS. This loop was run end to end on two collected
+sources. On a book: three calls returning 88,204 response bytes, of which a
+single section-body read accounted for 63,574 because its heading regex matched
+fifteen sections instead of one — keyed to a single section, the same loop is
+two calls and 24,630 bytes. On a site: three successful calls returning 32,880
+bytes; a fourth call was refused against a stale graph and is not counted. Both
+are single runs on one document each, so read them as the order of magnitude of
+a pass, and expect the section-body read to dominate whatever you pay.
+
+What the tool enforces, so you meet none of it by surprise:
+
+- `recipe_body` requires `extract: true`.
+- An inline body is the only form this flow uses. A body is written for one
+  extraction and discarded; there is no save step and nothing to name later.
+- `force` is refused on a recipe run.
+- `max_rows` defaults to 200 and `max_bytes` to 65536.
+- `offset` is the zero-based index of the first matched row returned, for paging
+  a document larger than one response.
+- Any truncation prints a line beginning `TRUNCATED by`, naming the cap that
+  fired and the offset to resume from. Rows returned and rows matched are both
+  reported, so a truncated read never looks like a short one.
+
+Iterate here. A mistake costs one read.
+
+## Step 4: Draft the candidates
+
+List the best-practice and anti-pattern statements the source actually makes.
+Each candidate carries the cited passage and any code the source gave for it.
+
+Code arrives as `code_block` nodes whose text is in `Content`. A web collect
+stamps `metadata.language` on them; a PDF collect stamps no language at all, so
+for a PDF source you supply the language yourself.
+
+Keep the source's own words in the excerpt. Your prose goes in the description.
+
+## Step 5: Polish
+
+The human edits the candidates: what the practice is, when it applies, when it
+does not, and what the source's example actually demonstrates.
+
+Practice graphs are hand-massaged golden state. Nothing in this flow overwrites
+them — every write below is one deliberate create you authored.
+
+## Step 6: Land
+
+TWO separate hand operations, in this order. No tool changes between them.
+
+**(a) The practice node.** This is where the prose lives.
+
 ```jsonc
 mutate({
-  "operation": "create", "graph": "transformers", "type": "recipe",
-  "name": "<slug>-to-design-patterns",
-  "content": "<DSL body>",
+  "operation": "create",
+  "graph": "practice",
+  "language": "<lang>",
+  "type": "pattern",
+  "name": "<short-kebab-name>",
+  "summary": "<one line, search-optimized>",
+  "description": "<the practice in your words>",
   "metadata": {
-    "source_graph_type": "<web|pdf>",
-    "target_graph_type": "practice",
-    "target_name": "design-patterns"
+    "source": "<url or file>",
+    "source_locator": "<page or anchor>"
   }
 })
 ```
 
-**Fix mode.** Pull existing recipe, edit content, `mutate(operation:"update")`. Common edits: tighter front-matter filters, and swapping `description := page.name` for `description := children_concat(...)` once you confirm the source's child nodes actually carry the body.
+Carry the provenance and the polished excerpt with it. `help("patterns")` has
+the full authoring sequence — the use_case, example and reference children and
+the edges that link them.
 
-### Step 1d: Dry-Run
+A language with no practice graph yet gets one from this first create: the
+graph is created on first write. The `language` value must already be its
+canonical slug (lowercase, hyphen-separated); a name that is not its own slug
+is refused naming the value, never coerced, so pick the slug before you write.
+
+**(b) The sister structural check**, authored exactly as any other ast check:
 
 ```jsonc
-collect({
-  "type": "<source-type>", "id": "<slug-or-pdf-path>",
-  "transformer": "recipe", "recipe": "<recipe-name>",
+manage_checks({
+  "operation": "create",
+  "language": "<lang>",
+  "name": "<check-name>",
+  "summary": "<one line, search-optimized>",
+  "description": "<what the rule is and why, naming the practice node>",
+  "check_type": "ast_pattern",
+  "dsl_pattern": "<pattern>",
+  "check_where": "<optional where-tree as JSON text>",
+  "severity": "<info|notice|warning|critical>",
+  "fixture_bad": {
+    "name": "<name>",
+    "summary": "<one line>",
+    "description": "Why this snippet is the bad example.",
+    "content": "<snippet the check must fire on>"
+  },
+  "fixture_good": {
+    "name": "<name>",
+    "summary": "<one line>",
+    "description": "Why this snippet is the good example.",
+    "content": "<snippet the check must stay silent on>"
+  }
+})
+```
+
+Draw both fixtures from the source's own code blocks where it gave them.
+Nothing is written unless the check fires on the bad fixture and stays silent on
+the good one — that admission run is the gate, and it happens inside the create.
+
+THE EXCEPTION, stated so you do not manufacture a check to satisfy the pattern:
+a practice with no structural shape gets a practice node and NO check. Advice
+about naming, sequencing or judgement has nothing for an ast pattern to match,
+and a check written to match it anyway will be wrong in both directions.
+
+THE OTHER EXCEPTION, a different case: the practice has a shape but the
+source's code is in a language the checker cannot parse. Every check type
+requires a registered tree-sitter grammar for its language, and an
+`ast_pattern` check additionally requires one the ast engine does not deny;
+`ast({"operation": "list_node_kinds", "language": "<lang>"})` answers in one
+call. When the source's only code blocks are in a language with no grammar,
+the practice node lands alone and no check of any kind is authored for it,
+`llm_only` included. Fixtures are never invented in another language to get a
+check through — that breaks the rule above that fixtures come from the
+source's own code blocks. Say in the practice node's description that no check
+exists and why, so the next reader does not go looking for one.
+
+## Step 7: Drop the raw graph
+
+Preview first:
+
+```jsonc
+manage({
+  "operation": "drop_graph",
+  "graph": "<web|pdf>",
+  "name": "<slug>",
   "dry_run": true
 })
 ```
 
-The run prints one line, and these are the tokens it actually uses:
+Then the same call without `dry_run`.
 
-`Ran recipe "<name>" over <type>/<slug> — emitted N nodes (skipped S, force-deleted D, lookups L/T, link misses M) in Xms.`
-
-Healthy shape: `emitted` roughly one pattern per real article (title-only stubs filtered), `skipped` zero, `lookups` fully resolved — L equal to T — when the recipe has `lookup` rules, and `link misses` low. Emitted too high → chapter scaffolding is leaking; too low → the filters are too aggressive. Iterate the recipe.
-
-### Step 1e: Real Run
-
-```jsonc
-collect({
-  "type": "<source-type>", "id": "<slug-or-pdf-path>",
-  "transformer": "recipe", "recipe": "<recipe-name>",
-  "force": true
-})
-```
-
-`force:true` deletes prior practice nodes whose `translated-from` edge Evidence names this source slug. Confirm `force-deleted` matches the prior pattern count and `emitted` matches the dry run.
-
-#### force-rerun-same-target discipline
-
-A force re-run REPLACES the previous run's emissions in the same target graph. So re-run a changed recipe against the SAME target it wrote before, rather than pointing it at a new target name: a new name leaves the old emissions in place, and the graph then carries two generations of the same source with nothing marking which is current. If you genuinely want a parallel copy, that is a new source slug, not a new target for the same slug.
-
-### Step 1f: Reindex
-
-```jsonc
-manage({ "operation": "rebuild_segments", "graph": "practice", "name": "design-patterns" })
-```
-
-The background pipeline rebuilds search segments on its own cadence; run
-`rebuild_segments` only when the new patterns must be searchable immediately.
-
-Spot-check via `assemble({id: <pattern_id>})` — body should be coherent multi-paragraph extract, not title-only. If title-only, recipe didn't pick up children — verify edge type matches source graph storage (PDF uses `CONTAINS`).
-
-**Extract and freeze done.** Surface results and pause.
-
-## Stage 4: Hydrate (Interactive)
-
-After the extract and freeze stages, ask the user:
-
-> Extraction complete: N patterns. Ready to hydrate a slice of them?
-> Reply: `none` (stop after extract) / `all` (hydrate every pattern — expensive) / `<comma-separated names>` / `--top K` (longest descriptions).
-
-<constraint id="phase-2-token-cost-confirmation" severity="hard">
-
-  <rule>
-    Don't proceed silently into hydrate — ~50k output tokens per pattern.
-    Wait for user's explicit choice. "all" requires double-confirmation.
-  </rule>
-
-  <reason>
-    No-op "all" is the costly mistake to avoid. The user touch point here is
-    legitimate — token-budget decisions belong to the user.
-  </reason>
-
-</constraint>
-
-### Step 4a: Pick Hydration Targets
-
-- `none` → done. Exit; the extraction stands on its own.
-- `<names>` → list of specific patterns to refine.
-- `--top K` → query recipe-emitted patterns sorted by `length(description)` desc, take K. Longest descriptions ≈ most substantive sections.
-- `all` → confirm token budget once more, then proceed.
-
-### Step 4b: Spawn Pattern-Ingester Per Target
-
-<spawn id="pattern-ingester" background="true">
-
-  <invocation>
-    Agent(
-      subagent_type: "pattern-ingester",
-      prompt: "Refine the existing pattern node at id &lt;pattern_id&gt; in practice/design-patterns.bin.
-
-The pattern was emitted by the '&lt;recipe-name&gt;' recipe and currently carries the section's verbatim body in `description`. Your job is to upgrade it to the agent quality bar:
-
-1. Read existing node: assemble({id:'&lt;pattern_id&gt;'}). Note the raw body.
-2. Move raw body to metadata.source_excerpt: mutate({operation:'update', graph:'practice', language:'design-patterns', id:'&lt;pattern_id&gt;', metadata:{'source_excerpt': &lt;raw_description&gt;}}).
-3. Author SYNTHESIZED original prose (2-4 paragraphs) describing the pattern, its shape, when it applies, tradeoffs. Replace description.
-4. Add 3-5 applies-when use_cases, 2-3 avoid-when use_cases, 2-3 examples (with language + attribution metadata), 2-3 references including primary-source citation.
-5. Spot-check via assemble. Verify all four sections (Applies / Avoid / Examples / References) populated.
-
-Source context: &lt;source-name + URL/path&gt;. Stop and ask if pattern boundaries are ambiguous (e.g. recipe-emitted section is actually two distinct patterns).",
-      description: "Refine: &lt;pattern_name&gt;",
-      run_in_background: true
-    )
-  </invocation>
-
-  <parallel-rule>
-    Spawn in parallel (background) when refining > 3 patterns.
-    Surface completions as they come in; don't poll.
-  </parallel-rule>
-
-</spawn>
-
-### Step 4c: Reindex After Each Batch
-
-```jsonc
-manage({ "operation": "rebuild_segments", "graph": "practice", "name": "design-patterns" })
-```
-
-Once per hydration batch (not per agent — batch-and-reindex is cheaper), and
-only when immediate searchability matters; the pipeline rebuilds automatically.
+This step is mandatory, not optional. Raw graphs are temporary: they exist to be
+read once, and they are cleaned up as soon as the polished content exists. The
+practice node and its check are the deliverable; the raw graph is scaffolding.
 
 ## Closure
 
-When user says done (or after `none`):
-
-1. **Final reindex** (idempotent if Step 4c already ran).
-2. **Close the associated work item** if any: `mutate({"operation":"update", "id":"<ticket_id>", "status":"closed"})`.
-3. **No commit needed** — recipe + practice-graph writes are graph-resident.
+1. Confirm each landed practice reads correctly: `assemble({ "id": "<pattern_id>" })`.
+2. Close the associated work item if there is one:
+   `mutate({ "operation": "update", "id": "<ticket_id>", "status": "closed" })`.
+3. No commit is needed — practice and checks writes are graph-resident.
 
 <constraint id="ingest-patterns-anti-patterns" severity="hard">
 
   <anti-patterns>
-    <pattern>Skipping extract even if you "know" the source needs full agent treatment — extraction enumerates sections you'd otherwise miss, and its rows are the dedup floor hydration works from</pattern>
-    <pattern>Auto-hydrating every pattern by default — extract gives 100% coverage for nothing; hydrate is reserved for downstream-impactful patterns</pattern>
-    <pattern>Reindexing per-pattern inside hydrate — batch-and-reindex once per user decision</pattern>
-    <pattern>Spending model tokens during extract — extract is zero-LLM by design; if you find yourself summarizing rows to decide, you are hydrating early</pattern>
-    <pattern>Writing to practice/knowledge-architecture.bin — that's the per-project catalog, hand-maintained; only design-patterns for library ingestion</pattern>
-    <pattern>Discarding recipe-emitted body when refining — move to metadata.source_excerpt so verbatim text remains accessible</pattern>
+    <pattern>Skipping the search and reading the whole document instead — the ranked read is what finds the passages worth your attention, and reading everything costs far more than the search that would have narrowed it</pattern>
+    <pattern>Writing a body from scratch before reading the source graph's stats — the DSL compares edge types exactly, so a guessed edge spelling is refused and the repair is the read you skipped</pattern>
+    <pattern>Landing a practice node without its structural check when the practice HAS a shape — the prose is then unenforced, and the corpus reads as covered when it is not</pattern>
+    <pattern>Manufacturing a check for a practice with no structural shape — a check that cannot express the rule fires on the wrong code and stays silent on the right code</pattern>
+    <pattern>Leaving the raw graph behind after the practice node lands — it is scratch state that will look like a curated source to the next reader</pattern>
+    <pattern>Discarding the source's own words when writing the description — keep the cited excerpt with the node so the claim stays checkable</pattern>
   </anti-patterns>
+
+</constraint>

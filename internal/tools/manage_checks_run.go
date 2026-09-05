@@ -17,6 +17,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
@@ -30,6 +31,17 @@ import (
 func manageChecksRun(ctx context.Context, deps ClientDeps, gc GraphCaller, a manageChecksArgs) kgtools.ToolResult {
 	if strings.TrimSpace(a.Repo) == "" {
 		return errorResult("manage_checks run: repo is required — it names both the code graph and the tree the checks walk")
+	}
+	// A NEGATIVE CAP IS REFUSED BEFORE ANYTHING IS SCANNED, and the comparison is
+	// strictly less than zero on purpose: ZERO IS THE DOCUMENTED NO-CAP VALUE, so
+	// refusing it would break every uncapped call. A negative is a different
+	// answer entirely — foundation.TruncateTopK returns its input untouched at or
+	// below zero, so accepting -1 would make it a second, undocumented spelling of
+	// "no cap" rather than the value the caller actually wrote.
+	if a.TopK < 0 {
+		return errorResult(fmt.Sprintf(
+			"manage_checks run: top_k=%d is not admitted — it caps how many findings are rendered, so the admitted range is 0 (no cap) or a positive count",
+			a.TopK))
 	}
 	// The registry lookup is resolved through the exported constant, never a
 	// hand-typed name: the registered identifier carries an underscore while the
@@ -55,7 +67,6 @@ func manageChecksRun(ctx context.Context, deps ClientDeps, gc GraphCaller, a man
 		Name:       codeGraphInstanceName(a.Repo),
 		RepoRoot:   repoRoot,
 		PathPrefix: a.PathPrefix,
-		TopK:       a.TopK,
 		Language:   a.Language,
 	}
 	// An ABSENT key means "every check" and is legitimate; a present-but-empty
@@ -63,6 +74,18 @@ func manageChecksRun(ctx context.Context, deps ClientDeps, gc GraphCaller, a man
 	// actually named ids.
 	if len(a.IDs) > 0 {
 		req.Extra = map[string]string{corpusscan.ExtraKeyChecks: strings.Join(a.IDs, ",")}
+	}
+	// THE TRI-STATE SURVIVES TO THE ANALYZER. An omitted flag leaves the key
+	// absent, which is what makes "the caller never asked" distinguishable from
+	// "the caller asked for false" — and the analyzer refuses only the explicit
+	// forms for a language with no test-file convention. Collapsing this to a
+	// plain bool here would hand every caller of an unsupported language a
+	// silent false they never wrote.
+	if a.IncludeTests != nil {
+		if req.Extra == nil {
+			req.Extra = map[string]string{}
+		}
+		req.Extra[corpusscan.ExtraKeyIncludeTests] = strconv.FormatBool(*a.IncludeTests)
 	}
 
 	findings, err := analyzer.Run(ctx, req)
@@ -73,14 +96,21 @@ func manageChecksRun(ctx context.Context, deps ClientDeps, gc GraphCaller, a man
 		return errorResult("manage_checks run: " + err.Error())
 	}
 
-	body, rerr := foundation.RenderFindings(findings)
+	// CLASSIFY BEFORE CLIPPING, and the order of these three statements is the
+	// whole fix. The fold runs over the COMPLETE set of findings the analyzer
+	// produced — which is why top_k is deliberately absent from the Request
+	// above, leaving the analyzer to apply only its own ceilings — and the
+	// caller's cap is applied afterwards, to the render alone. Folding a
+	// render-side slice was the defect: a cap of one over a dirty corpus reported
+	// CLEAN with zero counts, because the findings that would have flagged it had
+	// already been clipped away before the classifier ever saw them.
+	v := corpusscan.ClassifyRun(findings)
+	rendered := foundation.TruncateTopK(findings, a.TopK)
+	body, rerr := foundation.RenderFindings(rendered)
 	if rerr != nil {
 		return errorResult("manage_checks run: render findings: " + rerr.Error())
 	}
-	// THE VERDICT LEADS. The analyzer emits its refusals, disclosures and
-	// truncation notices AHEAD of the match findings so a small top_k cannot clip
-	// them; the verdict line follows the same rule for the same reason.
-	return textResult(renderRunVerdict(corpusscan.ClassifyRun(findings)) + "\n" + body)
+	return textResult(renderRunVerdict(v, len(rendered), len(findings)) + body)
 }
 
 // The verdict tokens. They are the machine-readable half of the line, so they are
@@ -98,16 +128,39 @@ const (
 	VerdictInconclusive = "INCONCLUSIVE"
 )
 
-// renderRunVerdict renders the single machine-readable line.
+// renderRunVerdict renders the single machine-readable line, plus the count line
+// when the caller's cap withheld findings from the body. rendered is how many
+// findings this render carries and total is how many the run produced.
+//
+// THE TOKEN AND THE truncated FIELD ANSWER DIFFERENT QUESTIONS, and keeping them
+// apart is the point of taking two counts here. The TOKEN answers whether the
+// VERDICT is complete: it is folded over every finding the run produced, so a
+// render cap can move neither it nor the counts beside it. The FIELD answers
+// whether the BODY is complete, and it is COMPUTED from a rendered-versus-total
+// comparison rather than inferred from the presence of a truncation notice — the
+// inference was the original defect, since a notice the analyzer never emitted
+// cannot set a flag. The comparison stays OUT of RunVerdict deliberately:
+// RunVerdict.Truncated feeds Inconclusive(), which outranks Flagged, so folding
+// a render clip into the struct would report a flagged corpus as INCONCLUSIVE.
 //
 // A REFUSED OR TRUNCATED RUN NEVER READS CLEAN. The classification comes from the
 // verdict's own methods rather than being re-derived here, so this line and the
 // CLI's exit status cannot disagree.
-func renderRunVerdict(v corpusscan.RunVerdict) string {
-	return fmt.Sprintf(
-		"%s: %s  checks_flagged=%d sites_flagged=%d checks_refused=%d llm_only_not_executed=%d truncated=%t",
+//
+// test_files_scanned IS A SCOPE FACT, NOT A COMPLETENESS ONE, which is why it is
+// rendered beside the counters and reaches neither the token nor truncated. A
+// run that deliberately excluded test files answered the question it was asked;
+// it just answered a narrower one, and the number is how a reader can tell.
+func renderRunVerdict(v corpusscan.RunVerdict, rendered, total int) string {
+	clipped := rendered < total
+	line := fmt.Sprintf(
+		"%s: %s  checks_flagged=%d sites_flagged=%d checks_refused=%d llm_only_not_executed=%d test_files_scanned=%d truncated=%t\n",
 		corpusscan.AnalyzerName, RunVerdictToken(v),
-		v.ChecksExecuted, v.SitesFlagged, v.ChecksRefused, v.LLMOnlyNotExecuted, v.Truncated)
+		v.ChecksExecuted, v.SitesFlagged, v.ChecksRefused, v.LLMOnlyNotExecuted, v.TestFilesScanned, v.Truncated || clipped)
+	if clipped {
+		line += fmt.Sprintf("returning %d of %d findings\n", rendered, total)
+	}
+	return line
 }
 
 // RunVerdictToken maps a verdict onto its token. INCONCLUSIVE outranks FLAGGED: a run that

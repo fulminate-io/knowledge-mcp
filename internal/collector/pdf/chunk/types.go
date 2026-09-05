@@ -49,6 +49,12 @@ type Chunk struct {
 
 	// HeadingLevel is the heading depth (1 = top-level) for heading
 	// chunks. 0 for non-heading chunks.
+	//
+	// The level is a RANK of the DOCUMENT's distinct heading sizes, so
+	// it is comparable across pages: the largest heading size anywhere
+	// in the document is level 1 whatever page it appears on, and a
+	// smaller size on an earlier page ranks below it. It is not a
+	// within-page rank, and it is not an absolute point size.
 	HeadingLevel int
 
 	// Children are sub-chunks (e.g. paragraphs nested under a section
@@ -67,8 +73,8 @@ type Chunk struct {
 
 // Options tunes the chunker. Mode picks the grouping granularity;
 // LayoutParams + ClassifyParams flow through to the layout grouper +
-// classifier; SkipHeadersFooters / SkipFootnotes / MinChunkChars are
-// post-process filters applied during chunk emission.
+// classifier; MinChunkChars is a post-process filter applied during
+// chunk emission.
 type Options struct {
 	// Mode picks paragraph- vs section-grouping (default ModeParagraph
 	// when zero — empty Mode is treated as ModeParagraph by T7).
@@ -79,14 +85,6 @@ type Options struct {
 
 	// ClassifyParams tunes the heading / list / code classifier.
 	ClassifyParams classify.ClassifyParams
-
-	// SkipHeadersFooters drops blocks classified as page header /
-	// footer before chunk emission.
-	SkipHeadersFooters bool
-
-	// SkipFootnotes drops blocks classified as footnotes before chunk
-	// emission.
-	SkipFootnotes bool
 
 	// MinChunkChars drops chunks shorter than this many characters
 	// after concatenation. 0 disables the filter.

@@ -39,10 +39,11 @@ type cloudStatusDeps struct {
 	host     string
 }
 
-func (d *cloudStatusDeps) LocalLiveness() LocalLiveness    { return d.local }
-func (d *cloudStatusDeps) Sink() collector.Sink            { return nil }
-func (d *cloudStatusDeps) RootDir() string                 { return "" }
-func (d *cloudStatusDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+func (d *cloudStatusDeps) LocalLiveness() LocalLiveness          { return d.local }
+func (d *cloudStatusDeps) Sink() collector.Sink                  { return nil }
+func (d *cloudStatusDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
+func (d *cloudStatusDeps) RootDir() string                       { return "" }
+func (d *cloudStatusDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
 
 func (d *cloudStatusDeps) PropReady() bool     { return true }
 func (d *cloudStatusDeps) PipelineReady() bool { return true }
@@ -98,7 +99,7 @@ func closedGraphClient(t *testing.T) *graphclient.GraphClient {
 	srv := httptest.NewServer(http.NewServeMux())
 	srv.Close()
 	gc := graphclient.NewGraphClientForURL(srv.URL)
-	t.Cleanup(gc.CloseIdleConnections)
+	t.Cleanup(gc.Close)
 	return gc
 }
 

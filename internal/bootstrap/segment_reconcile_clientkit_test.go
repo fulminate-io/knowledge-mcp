@@ -212,7 +212,7 @@ func buildReconcileClientOnDir(
 	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 
 	local := graphclient.NewGraphClientForURL(srv.URL)
-	t.Cleanup(local.CloseIdleConnections)
+	t.Cleanup(local.Close)
 
 	// The auth state exists because NewRouter needs one, not because it selects a
 	// segment source any more — there is only one source.

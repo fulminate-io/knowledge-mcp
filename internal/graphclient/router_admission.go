@@ -23,6 +23,7 @@ package graphclient
 
 import (
 	"context"
+	"fmt"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
@@ -75,8 +76,19 @@ func (r *Router) AttachWorkingSet(admit func(gt kgtypes.GraphType, name, reason 
 // Reads admit as well as writes: the rule names "some kind of mcp query like
 // search, mutate, collect", so the recorder reads the request's Target and does
 // not branch on the query/mutation oneof.
-func (r *Router) recordAdmission(ctx context.Context, req *knowledgev1.ExecuteRequest) {
-	if r == nil || req == nil {
+// IT TAKES THE ALREADY-RESOLVED (gt, name) rather than the request, and that
+// split is deliberate. Resolving the family is SELECTOR VALIDATION, which is
+// boundary work that belongs ahead of the dispatch; enrolling the member is
+// ENROLLMENT, which belongs after one. Threading the resolved pair through means
+// the family is resolved EXACTLY ONCE per Execute and the two concerns cannot
+// drift onto different readings of the same selector.
+//
+// Every remaining early return here is a legitimate NON-ADMISSION rather than a
+// swallowed error: a nil Router, the empty graph type standing for a nil target,
+// an operation outside the working-set partition, an unattached admit hook, and
+// an instance name workingset.Normalize declines.
+func (r *Router) recordAdmission(ctx context.Context, gt kgtypes.GraphType, name string) {
+	if r == nil || gt == "" {
 		return
 	}
 	op, ok := OperationFromContext(ctx)
@@ -89,12 +101,43 @@ func (r *Router) recordAdmission(ctx context.Context, req *knowledgev1.ExecuteRe
 	if admit == nil {
 		return
 	}
-	gt, name, ok := graphsel.InstanceKeyOf(req.GetTarget())
-	if !ok {
-		return
-	}
 	if _, ok := workingset.Normalize(gt, name); !ok {
 		return
 	}
 	admit(gt, name, string(op))
+}
+
+// resolveAdmissionTarget is the ONE place this package resolves a graph family,
+// and it is BOUNDARY VALIDATION: a target naming a family this binary cannot
+// honor is bad input and is refused before any work is done.
+//
+// THE NIL-TARGET CASE IS SPLIT OUT FIRST, and that is the load-bearing detail.
+// graphsel.InstanceKeyOf reports !ok for TWO different reasons — a nil selector,
+// and a set-but-unrecognized family — and only the second is an error. A nil
+// Target is the KNOWLEDGE DEFAULT: engine.mutateTarget returns nil for the
+// all-empty case, which is how almost every knowledge write addresses its graph.
+// Folding the two together would turn ordinary traffic into a hard error, so the
+// nil target is answered here, ahead of InstanceKeyOf. Past that guard, !ok means
+// exactly one thing and the error can say so.
+//
+// THE MESSAGE NAMES THE NUMERIC VALUE, not the condition, because an operator
+// cannot act on "some family". It deliberately does NOT name the legacy `graph`
+// string: falling back to that string for a family the binary does not know is
+// the precise defect the typed enum exists to make loud, and quoting it in the
+// refusal invites exactly that reading.
+//
+// A nil request and a nil target both resolve to the empty graph type with NO
+// error — nothing to admit, nothing wrong.
+func resolveAdmissionTarget(req *knowledgev1.ExecuteRequest) (kgtypes.GraphType, string, error) {
+	if req == nil || req.GetTarget() == nil {
+		return "", "", nil
+	}
+	sel := req.GetTarget()
+	gt, name, ok := graphsel.InstanceKeyOf(sel)
+	if !ok {
+		return "", "", fmt.Errorf(
+			"graph selector names family %d, which this binary does not recognize",
+			int32(sel.GetFamily()))
+	}
+	return gt, name, nil
 }

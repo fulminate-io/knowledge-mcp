@@ -1,7 +1,7 @@
 select section
 emit pattern {
     type := "pattern"
-    name := section.heading
+    name := section.name
 } as $p
 traverse references out as $t
 emit pattern {

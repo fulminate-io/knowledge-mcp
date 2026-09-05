@@ -119,7 +119,7 @@ func InterceptCreateTestPlan(ctx context.Context, deps ClientDeps, params kgtool
 		return true, textResult(oneLine.String() + " [graph: knowledge/default]")
 	}
 	childIndex, byID, dependsOn, truncated := render.AssembleSubtree(ctx, gc, root.Id, 3)
-	render.RenderTreeFromIndex(&sb, root, 0, 3, childIndex, dependsOn)
+	render.RenderTreeFromIndex(&sb, root, 0, 3, childIndex, dependsOn, nil)
 	writeClientWarningsSection(&sb, warnings)
 	return true, render.AppendTruncationNotice(
 		textResult(sb.String()+" [graph: knowledge/default]"), truncated, len(byID))

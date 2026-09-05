@@ -69,10 +69,11 @@ type interceptDeps struct {
 	loadCalls int
 }
 
-func (d *interceptDeps) LocalLiveness() LocalLiveness    { return d.gc }
-func (d *interceptDeps) Sink() collector.Sink            { return nil }
-func (d *interceptDeps) RootDir() string                 { return "" }
-func (d *interceptDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+func (d *interceptDeps) LocalLiveness() LocalLiveness          { return d.gc }
+func (d *interceptDeps) Sink() collector.Sink                  { return nil }
+func (d *interceptDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
+func (d *interceptDeps) RootDir() string                       { return "" }
+func (d *interceptDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
 
 func (d *interceptDeps) PropReady() bool     { return true }
 func (d *interceptDeps) PipelineReady() bool { return !d.pipelineNotReady }

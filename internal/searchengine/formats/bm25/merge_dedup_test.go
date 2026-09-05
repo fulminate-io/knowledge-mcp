@@ -24,7 +24,7 @@ func TestBM25MergeKeepsOneNodePerID(t *testing.T) {
 	// Two segments over the SAME ids with DIFFERENT text — the two-layer shape. The
 	// differing text matters: identical content would collapse anyway and the test
 	// would not discriminate.
-	segA, err := f.Build([]searchengine.Document{
+	segA, _, err := f.Build([]searchengine.Document{
 		{ID: "shared-1", Fields: map[string]string{searchengine.FieldContent: "alpha layer one"}},
 		{ID: "shared-2", Fields: map[string]string{searchengine.FieldContent: "beta layer one"}},
 		{ID: "only-a", Fields: map[string]string{searchengine.FieldContent: "gamma only a"}},
@@ -32,7 +32,7 @@ func TestBM25MergeKeepsOneNodePerID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build A: %v", err)
 	}
-	segB, err := f.Build([]searchengine.Document{
+	segB, _, err := f.Build([]searchengine.Document{
 		{ID: "shared-1", Fields: map[string]string{searchengine.FieldContent: "alpha layer two"}},
 		{ID: "shared-2", Fields: map[string]string{searchengine.FieldContent: "beta layer two"}},
 		{ID: "only-b", Fields: map[string]string{searchengine.FieldContent: "delta only b"}},

@@ -296,7 +296,7 @@ var createArmSpecs = map[armID]armSpec{
 	// `name` is REJECTED, like every other top-level body field: each created node
 	// names itself in nodes[]{name}. It is not routing either — a foreign-graph
 	// create_batch never reaches this arm (the non-knowledge guard claims it under
-	// armNonKnowledgeFallthrough, practice/checks/transformers under armGraphPassthrough),
+	// armNonKnowledgeFallthrough, practice/checks under armGraphPassthrough),
 	// so this arm only ever runs on the knowledge family, whose resolver reads no
 	// selector name at all. It read as consumed while the compile arm copied it
 	// into the Execute Target's graph-instance selector — a request for a graph

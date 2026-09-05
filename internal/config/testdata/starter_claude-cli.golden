@@ -27,6 +27,15 @@
 # versioning configs are accepted as-is).
 schema_version = 1
 
+# auto_update controls whether the daemon upgrades itself in the
+# background. Automatic updates are ON by default; set
+#   auto_update = false
+# to turn them off. The daemon reads this at startup, so a change takes
+# effect on the next restart. This file is the switch a launchd- or
+# systemd-managed install has, because such a daemon is launched with a
+# fixed command line no flag can reach.
+# auto_update = true
+
 [default]
 provider = "claude-cli"
 model    = "claude-haiku-4-5"
@@ -125,7 +134,7 @@ model    = "claude-haiku-4-5"
 
 # CREATION-TIME DEFAULTS PER GRAPH FAMILY. A family table names the
 # profile that a NEW graph of that family is embedded under. Accepted
-# families: knowledge, code, practice, cloud, cicd, transformers. A family
+# families: knowledge, code, practice, cloud, cicd. A family
 # with no table here uses the "default" profile.
 #
 # THIS IS CONSULTED ONLY AT A GRAPH'S FIRST EMBED. A graph's embed identity

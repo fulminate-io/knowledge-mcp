@@ -40,7 +40,7 @@ func sampleDocs() []searchengine.Document {
 // buildOne builds a single sealed segment from docs and its matching corpus stats.
 func buildOne(t *testing.T, docs []searchengine.Document) (*mappedSegment, *CorpusStats) {
 	t.Helper()
-	segIface, err := Format{}.Build(docs)
+	segIface, _, err := Format{}.Build(docs)
 	require.NoError(t, err)
 	seg := segIface.(*mappedSegment)
 	stats := Format{}.AggregateStats([]searchengine.Segment[Query, *CorpusStats]{seg})
@@ -53,7 +53,8 @@ func buildOne(t *testing.T, docs []searchengine.Document) (*mappedSegment, *Corp
 // the offset reader is held to — reach it through here.
 func buildAccumulator(t *testing.T, docs []searchengine.Document) *bm25Segment {
 	t.Helper()
-	return buildSegment(tokenizeDocsParallel(docs, numWorkers()))
+	results, _ := tokenizeDocsParallel(docs, numWorkers())
+	return buildSegment(results)
 }
 
 // staticDocFreq answers document-frequency probes from a fixed map, so a test can
@@ -197,14 +198,14 @@ func TestNewQueryTokenizesOnce(t *testing.T) {
 // empty batch builds a searchable zero-hit segment; a doc with no indexable
 // fields is dropped; a nil-stats / zero-totalDocs Search returns nil.
 func TestEmptyAndDefensive(t *testing.T) {
-	segIface, err := Format{}.Build(nil)
+	segIface, _, err := Format{}.Build(nil)
 	require.NoError(t, err)
 	seg := segIface.(*mappedSegment)
 	require.Empty(t, seg.IDs())
 	require.Nil(t, seg.Search(NewQuery("anything"), newCorpusStats(), 10, nil))
 
 	// A doc with only unknown keys contributes nothing.
-	segIface2, err := Format{}.Build([]searchengine.Document{
+	segIface2, _, err := Format{}.Build([]searchengine.Document{
 		{ID: "x", Fields: map[string]string{"not_a_field": "ignored"}},
 		{ID: "y", Fields: map[string]string{searchengine.FieldSummary: "real text here"}},
 	})
@@ -219,9 +220,9 @@ func TestEmptyAndDefensive(t *testing.T) {
 func TestMergeUnionMatchesScratch(t *testing.T) {
 	docs := sampleDocs()
 	// Split into two segments: {a,b} and {c,d}.
-	seg1Iface, err := Format{}.Build(docs[:2])
+	seg1Iface, _, err := Format{}.Build(docs[:2])
 	require.NoError(t, err)
-	seg2Iface, err := Format{}.Build(docs[2:])
+	seg2Iface, _, err := Format{}.Build(docs[2:])
 	require.NoError(t, err)
 
 	// accept drops "b" from seg1 (kill it) and keeps everything else.

@@ -4,7 +4,8 @@
 // followed on the next page by a lowercase-starting block of similar
 // font and X-start is treated as a single logical block spanning both
 // pages (PageRange=[i, i+1], Lines concatenated, BBox stays at the
-// first page's BBox per Chunk.BBox documentation).
+// first page's BBox per Chunk.BBox documentation, metadata merged
+// tail-wins with a page_span stamp — see mergeInto).
 //
 // Resolved Q2 (locked ALL-3): all three signals required —
 // terminator punctuation, font mismatch, or X-start mismatch each
@@ -27,12 +28,21 @@
 package chunk
 
 import (
+	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/layout"
 )
+
+// MetaKeyPageSpan is the metadata key a cross-page-merged record
+// carries: the number of pages it spans, always at least 2 when
+// present. It is what discloses that the record's other per-block
+// geometric signals were measured on the FIRST of those pages, which
+// is the page the reader meets first.
+const MetaKeyPageSpan = "page_span"
 
 // mergeAcrossPages walks per-page block slices and emits a single
 // flat slice of mergedBlock values in document order. When the last
@@ -49,10 +59,11 @@ func mergeAcrossPages(perPage [][]layout.Block) []mergedBlock {
 	prevTailIdx := -1
 	prevPageIdx := -1
 	for pageIdx, page := range perPage {
+		firstBody := firstNonChromeIndex(page)
 		for blkIdx, b := range page {
 			mb := mergedBlock{Block: b, PageRange: [2]int{b.PageIndex, b.PageIndex}}
 
-			if blkIdx == 0 && prevTailIdx >= 0 && pageIdx == prevPageIdx+1 &&
+			if blkIdx == firstBody && prevTailIdx >= 0 && pageIdx == prevPageIdx+1 &&
 				out[prevTailIdx].Kind != layout.BlockHeading && b.Kind != layout.BlockHeading &&
 				crossPageMatch(out[prevTailIdx].Block, b) {
 				mergeInto(&out[prevTailIdx], b, pageIdx)
@@ -60,7 +71,9 @@ func mergeAcrossPages(perPage [][]layout.Block) []mergedBlock {
 			}
 
 			out = append(out, mb)
-			prevTailIdx = len(out) - 1
+			if !carriesChromeStamp(b) {
+				prevTailIdx = len(out) - 1
+			}
 		}
 		// Empty page resets the tail. SOLE safeguard against merging
 		// across an empty-page gap — the pageIdx==prevPageIdx+1 check
@@ -74,6 +87,36 @@ func mergeAcrossPages(perPage [][]layout.Block) []mergedBlock {
 		prevPageIdx = pageIdx
 	}
 	return out
+}
+
+// firstNonChromeIndex returns the index of the first block on the page
+// that is not retained page chrome, or -1 when the page is empty or
+// entirely chrome (in which case no block can be a continuation head).
+//
+// Retained chrome sits BETWEEN the two halves of a paragraph that spans
+// a page break: the running header is block 0 of the next page and the
+// paragraph's continuation is block 1. While chrome was deleted, block
+// 0 was the continuation and a plain blkIdx == 0 test found it. Now it
+// has to be stepped over — the same step-over
+// classify.pickClassifyNeighbor already performs when picking code
+// neighbors. Measured on the rfc-7234-caching fixture, retaining
+// chrome without this left 400 substantive chunks against a hand-marked
+// golden of 395 and pushed the harness's whole-document word-edit
+// distance from 0.000 to 0.062, past its 0.050 threshold; with it, the
+// population returns to exactly the pre-change 361.
+func firstNonChromeIndex(page []layout.Block) int {
+	for i := range page {
+		if !carriesChromeStamp(page[i]) {
+			return i
+		}
+	}
+	return -1
+}
+
+// carriesChromeStamp reports whether b was marked as repeating across
+// pages by stampRepeatedChrome.
+func carriesChromeStamp(b layout.Block) bool {
+	return b.Metadata[ChromeKeyPageRepeatCount] != ""
 }
 
 // crossPageMatch dispatches between the prose 3-signal heuristic and
@@ -246,14 +289,38 @@ func primaryFont(b layout.Block) (string, float64) {
 	return "", 0
 }
 
-// mergeInto extends prev in place by appending head's Lines and
-// updating PageRange[1] to head's page index. BBox stays at
-// prev.BBox (first page's bbox per Chunk.BBox doc). Taking
-// &out[prevTailIdx] in the caller is safe because the pointer is
+// mergeInto extends prev in place by appending head's Lines, updating
+// PageRange[1] to head's page index, carrying across the metadata keys
+// head has and prev does not, and stamping the resulting page span.
+// BBox stays at prev.BBox (first page's bbox per Chunk.BBox doc).
+// Taking &out[prevTailIdx] in the caller is safe because the pointer is
 // scoped to this synchronous call — never stored beyond it.
+//
+// TAIL WINS on a colliding key, and that is a decision rather than an
+// accident. The per-block geometric signals — font size, gap above,
+// line count — describe the block the READER MEETS FIRST, so the
+// tail's values stay authoritative for the merged record, and
+// page_span is what discloses that the record spans more than the page
+// its geometry was measured on. Keys the tail simply lacks, measurably
+// has_inline_code, list_marker and list_index today, survive from the
+// continuing half instead of being silently dropped as they were
+// before this merge existed.
 func mergeInto(prev *mergedBlock, head layout.Block, headPageIdx int) {
 	prev.Lines = append(prev.Lines, head.Lines...)
 	prev.PageRange[1] = headPageIdx
+
+	// COPY ON WRITE. prev.Metadata is the very map the source
+	// layout.Block still holds — mergedBlock embeds the Block by value,
+	// which copies the struct but shares the map header. Writing
+	// through it would reach back into perPage and mutate a block the
+	// caller may still read, so the merged record gets a map of its
+	// own.
+	merged := make(map[string]string, len(prev.Metadata)+len(head.Metadata)+1)
+	maps.Copy(merged, head.Metadata)
+	// tail wins on a collision
+	maps.Copy(merged, prev.Metadata)
+	merged[MetaKeyPageSpan] = strconv.Itoa(prev.PageRange[1] - prev.PageRange[0] + 1)
+	prev.Metadata = merged
 }
 
 // totalBlockCount sums the per-page block counts so mergeAcrossPages

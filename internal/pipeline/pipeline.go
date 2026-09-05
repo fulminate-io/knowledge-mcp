@@ -202,6 +202,16 @@ type Pipeline struct {
 	// segments, the same gate healFactory applies.
 	balanceFactory func(gt kgtypes.GraphType, name string) func(ctx context.Context) error
 
+	// evictGraph drops a graph from the client's working set. Wired by BOOTSTRAP
+	// over client.RemoveFromWorkingSet.
+	//
+	// IT IS A FUNC RATHER THAN A *workingset.Set, deliberately: the eviction owner
+	// is the client, and this package should not learn how membership is recorded
+	// or logged — the same reason AttachWorkingSet takes the set behind an
+	// accessor. nil when nothing is wired (test fakes) → the collector's
+	// durable-not-found arm still ENDS the lane, it just evicts nothing.
+	evictGraph func(gt kgtypes.GraphType, name, reason string)
+
 	// workingSet is the set of graphs THIS client process has directly interacted
 	// with, and it is the sole source of the catalog pass's wanted set: the
 	// pipeline drains a graph only once a search, a collect or a user write has

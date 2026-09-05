@@ -49,6 +49,24 @@ func nextIdleInterval(cur, max time.Duration) time.Duration {
 	return next
 }
 
+// nextScanInterval is throttle #1, the idle-backoff step, decided for one cycle:
+// work found → the fast base cadence; an empty scan → grow toward idleMax so a
+// fully-drained graph costs about one scan per idleMax. Relocated whole out of
+// runLoop, which had grown past the cognitive-complexity cap; the branch, the
+// growth step it delegates to and the values it returns are unchanged.
+//
+// The idle sleep this feeds is the ONLY one a collect wake interrupts — a long
+// idle interval should yield immediately to fresh work, but a rate-limit backoff
+// (#3) and a drain-gate wait must run to completion. That distinction lives at
+// the call site, in which sleep primitive runLoop reaches for; this function
+// only decides how long the interval is.
+func nextScanInterval(items int, base, cur, idleMax time.Duration) time.Duration {
+	if items > 0 {
+		return base
+	}
+	return nextIdleInterval(cur, idleMax)
+}
+
 // drainReleases empties the release channel non-blocking, removing each
 // released ID from the in-flight set. Called at the start of every cycle
 // so the next discovery query sees an accurate in-flight picture.

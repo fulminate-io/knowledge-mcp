@@ -66,15 +66,9 @@ func mkMultiLineBlock(kind layout.BlockKind, lines [][]text.TextRun) layout.Bloc
 }
 
 // fakeDoc satisfies the chunk.Document interface for testing Build.
-// pages is indexed by page number; headersFooters and footnotes are
-// per-page maps (nil entry = empty); the *Err fields let tests
-// inject error conditions (notably ErrPageMethodNotImplemented).
+// pages is indexed by page number.
 type fakeDoc struct {
-	pages          [][]layout.Block
-	headersFooters map[int][]layout.Block
-	footnotes      map[int][]layout.Block
-	headersErr     map[int]error
-	footnotesErr   map[int]error
+	pages [][]layout.Block
 }
 
 func (f *fakeDoc) PageCount() int { return len(f.pages) }
@@ -96,20 +90,6 @@ func (f *fakeDoc) PageBlocks(i int) ([]layout.Block, error) {
 // (cluster on zero runs produces zero blocks).
 func (f *fakeDoc) PageRuns(_ int) (PageRuns, error) {
 	return PageRuns{}, nil
-}
-
-func (f *fakeDoc) PageHeadersFooters(i int) ([]layout.Block, error) {
-	if err, ok := f.headersErr[i]; ok {
-		return nil, err
-	}
-	return f.headersFooters[i], nil
-}
-
-func (f *fakeDoc) PageFootnotes(i int) ([]layout.Block, error) {
-	if err, ok := f.footnotesErr[i]; ok {
-		return nil, err
-	}
-	return f.footnotes[i], nil
 }
 
 // syntheticHierarchyFixture returns a single-page block stream with

@@ -64,6 +64,7 @@ func TestWithWebCrawlOptions_CarriesEveryValidatedFieldIntoCrawlOptions(t *testi
 		"max_pages": 40,
 		"max_path_segments": 5,
 		"max_pages_per_host": 12,
+		"max_concurrency": 4,
 		"politeness_ms": 25,
 		"max_download_bytes": 1048576
 	}`
@@ -118,6 +119,11 @@ func TestWithWebCrawlOptions_CarriesEveryValidatedFieldIntoCrawlOptions(t *testi
 			name:    "max_pages_per_host",
 			payload: `{"type":"web","id":"web/example","seed_urls":["https://example.com/"],"max_pages_per_host":-1}`,
 			wantIn:  "MaxPagesPerHost must be >= 0",
+		},
+		{
+			name:    "max_concurrency",
+			payload: `{"type":"web","id":"web/example","seed_urls":["https://example.com/"],"max_concurrency":-1}`,
+			wantIn:  "MaxConcurrency must be >= 0",
 		},
 		{
 			name:    "max_download_bytes",

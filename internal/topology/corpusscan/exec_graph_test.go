@@ -234,6 +234,50 @@ func TestCorpusScan_GraphAssertionRefusesEmptyCandidateSet(t *testing.T) {
 	}
 }
 
+// TestCorpusScan_GraphOnlyCorpusUnderAPrefixIsNotRefusedForOpeningNoFile is the
+// leg of the scope guard's `walked` conjunct.
+//
+// The guard refuses a run whose caller-supplied path_prefix reached no file,
+// because a mistyped scope would otherwise render as a clean corpus. A
+// graph_assertion opens no file BY DESIGN — it reads the code graph, not the
+// tree — so a corpus made only of graph checks must be exempt, and `walked` is
+// the conjunct that exempts it. Every other leg in this plan drives a corpus of
+// ast_pattern checks, which can never set `walked` false, so without this test
+// the conjunct could be dropped with every gate still green.
+func TestCorpusScan_GraphOnlyCorpusUnderAPrefixIsNotRefusedForOpeningNoFile(t *testing.T) {
+	corpusNodes := []*knowledgev1.Node{
+		checkNode("chk-graph", "no function calls another", "",
+			graphCheckMeta(corpus.CheckGraphAssertion, noOutboundCalls, "warning", "fx-graph-bad", "fx-graph-good")),
+		exampleNode("fx-graph-bad", callsBad),
+		exampleNode("fx-graph-good", callsGood),
+	}
+	gc := newFakeCaller().
+		seed("checks", corpusNodes, nil).
+		seed("code/repo", []*knowledgev1.Node{codeNode("pkg/a.go:caller"), codeNode("pkg/a.go:helper")},
+			[]*knowledgev1.Edge{{Type: string(kgtypes.EdgeCalls), FromId: "pkg/a.go:caller", ToId: "pkg/a.go:helper"}})
+
+	// THE SUBJECT: the tree is EMPTY and the prefix resolves nothing on disk,
+	// which is exactly the state the scope guard fires in — but this corpus never
+	// asked the disk anything, so the run must still answer.
+	req := scanRequest(gc, "repo", t.TempDir())
+	req.PathPrefix = "pkg"
+	sites := matchFindings(runScan(t, req))
+	if len(sites) != 1 {
+		t.Fatalf("a graph-only corpus opens no file by design and must not be refused for it; expected the one violating node, got %d: %+v", len(sites), sites)
+	}
+
+	// DISCRIMINATING CONTROL, same prefix, same empty tree: an AST corpus IS
+	// refused there. Without it the success above is satisfied by a guard that
+	// never fires at all.
+	astGC := astCorpus(checkNode("chk-ast", "no naked defer Close", "",
+		astCheckMeta("defer $X.Close()", "warning", "fx-bad", "fx-good")))
+	astReq := scanRequest(astGC, "repo", t.TempDir())
+	astReq.PathPrefix = "pkg"
+	if err := runScanErr(astReq); err == nil {
+		t.Fatal("control: an ast corpus under the same unresolvable prefix must be REFUSED, or the guard is inert and this test proves nothing")
+	}
+}
+
 // TestCorpusScan_GraphAssertionBodyIsValidatedStrictly proves the assertion body
 // refuses bad input rather than defaulting or ignoring it.
 func TestCorpusScan_GraphAssertionBodyIsValidatedStrictly(t *testing.T) {

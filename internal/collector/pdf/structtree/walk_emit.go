@@ -12,7 +12,10 @@ import (
 
 // emitBlock produces one layout.Block for an element classified as
 // RoleEmit. The Block aggregates all marked-content the element owns
-// (via /K-array MCRs) into a single Lines[0] with run-derived bbox.
+// (via /K-array MCRs), with a run-derived bbox, and splits those runs
+// into ONE LINE PER RENDERED LINE through layout.LinesFromRuns — the
+// same grouper the untagged path uses. A tagged element is a semantic
+// unit that may span many rendered lines; it is not one line.
 //
 // Empty-MCID guard (T3.6 reviewer fix): if the element has no MCID
 // kids of its own, no Block is emitted. /K children that are
@@ -23,8 +26,9 @@ import (
 // ActualText override (T2.1 reviewer fix): when the element carries
 // /A << /ActualText (...) >>, emitBlock synthesizes a single
 // replacement TextRun whose Text is the override, BBox-derived X/Y/
-// W/H, and inherited FontKey/Size from runs[0]. Otherwise Lines[0].
-// Runs holds the raw extracted runs.
+// W/H, and inherited FontKey/Size from runs[0]; being one run it
+// groups to one line. Otherwise the element's raw extracted runs are
+// grouped into lines by geometry.
 //
 // pageFilter pruning (T2.3 reviewer fix): when the caller passes
 // pageFilter >= 0 and this element's resolved pageIndex doesn't
@@ -74,6 +78,19 @@ func emitBlock(s *internalpdf.StructElemRef, role RoleMapping, pageIndex int, ki
 		lineRuns = runs
 	}
 
+	// One layout.Line per RENDERED line, through the SAME grouper the
+	// untagged path uses. A tagged element is a semantic unit that may
+	// span many rendered lines; collapsing them into one Line lost
+	// every boundary the downstream dehyphenation and normalization
+	// passes work across. Routing through layout keeps the per-line X
+	// sort, the Y-center banding that places a raised run, space-token
+	// insertion and rotation handling — a local re-implementation
+	// dropped all four and emitted superscripts ahead of their words.
+	elementLines, err := layout.LinesFromRuns(lineRuns, idx.pageInfo, layout.DefaultLayoutParams)
+	if err != nil {
+		return err
+	}
+
 	block := layout.Block{
 		Kind:         role.Kind,
 		StructRole:   s.Type(),
@@ -82,10 +99,7 @@ func emitBlock(s *internalpdf.StructElemRef, role RoleMapping, pageIndex int, ki
 		BBox: layout.Rect{
 			X0: bbox.X0, Y0: bbox.Y0, X1: bbox.X1, Y1: bbox.Y1,
 		},
-		Lines: []layout.Line{{
-			BBox: layout.Rect{X0: bbox.X0, Y0: bbox.Y0, X1: bbox.X1, Y1: bbox.Y1},
-			Runs: lineRuns,
-		}},
+		Lines:    elementLines,
 		Metadata: cloneMetadata(role.Metadata),
 	}
 	if hasObjref {

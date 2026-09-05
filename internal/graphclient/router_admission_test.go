@@ -4,8 +4,11 @@ package graphclient
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
+
+	"connectrpc.com/connect"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,12 +38,46 @@ func (a *admissionRecorder) recorded() []string {
 	return append([]string(nil), a.refs...)
 }
 
-// routerWithRecorder returns a Router carrying the recorder. It has no backend,
-// so Execute fails at pick() — deliberately: the admission is recorded BEFORE
-// dispatch, which is what these tests observe, and it keeps them off the wire.
+// routerWithRecorder returns a Router carrying the recorder, behind a SUCCEEDING
+// backend.
+//
+// THE BACKEND IS LOAD-BEARING, NOT SCAFFOLDING. This helper used to build a
+// Router with no backend at all, because admission was recorded BEFORE dispatch
+// so every Execute short-circuited at pick() and never went near the wire.
+// Admission now follows a SUCCESSFUL dispatch, so a backendless Router admits
+// nothing — and every ABSENCE assertion in this file would start passing for a
+// reason that has nothing to do with the operation partition it exists to pin.
+//
+// h2c RATHER THAN PLAIN httptest IS ALSO REQUIRED: GraphClient dials cleartext
+// HTTP/2 with prior knowledge, so an HTTP/1.1-only test server never reaches the
+// handler and the call fails seconds later with a transport error that reads
+// exactly like a refusal. newEngineHarness (client_execute_test.go) already
+// stands one up; reuse it rather than building a second.
 func routerWithRecorder(t *testing.T) (*Router, *admissionRecorder) {
 	t.Helper()
-	r := &Router{}
+	r := &Router{local: succeedingBackend(t)}
+	rec := &admissionRecorder{}
+	r.AttachWorkingSet(rec.admit)
+	return r, rec
+}
+
+// succeedingBackend is a GraphClient over an h2c engine that answers every
+// Execute with an empty success.
+func succeedingBackend(t *testing.T) *GraphClient {
+	t.Helper()
+	return newEngineHarness(t, func(*knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
+		return &knowledgev1.ExecuteResponse{}, nil
+	})
+}
+
+// routerWithFailingBackend is the sibling whose backend REFUSES with a scripted
+// connect code, for the tests that assert a failed dispatch enrolls nothing.
+func routerWithFailingBackend(t *testing.T, code connect.Code) (*Router, *admissionRecorder) {
+	t.Helper()
+	gc := newEngineHarness(t, func(*knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
+		return nil, connect.NewError(code, errors.New("scripted backend refusal"))
+	})
+	r := &Router{local: gc}
 	rec := &admissionRecorder{}
 	r.AttachWorkingSet(rec.admit)
 	return r, rec

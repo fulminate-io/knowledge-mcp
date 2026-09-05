@@ -1,1 +1,1 @@
-parse error at 1:18: unexpected token "\n" in expression
+parse error at 1:18: predicate after 'where' must be a JSON where-tree in braces, got "\n" — the string-expression predicate form was replaced by the ast-style where-tree. Composers: all, any, not. Leaves: kind{of,is}, matches{of,regex}, equals{of,value}, exists{of}, compare{of,op,value}, ancestor{edge,where}, descendant{edge,where}. Example: filter {"not":{"matches":{"of":"node.name","regex":"^Part [IVX]+"}}}. String expressions still work in emit field values and in bind. See help("recipes")

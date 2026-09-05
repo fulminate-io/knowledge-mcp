@@ -64,6 +64,7 @@ func batchItemToUpdateItem(it batchItem) *knowledgev1.UpdateItem {
 		Id:            it.ID,
 		Summary:       it.Summary,
 		Keywords:      it.Keywords,
+		Description:   it.Description,
 		BinaryVector:  it.BinaryVector,
 		Metadata:      it.Metadata,
 		Status:        it.Status,

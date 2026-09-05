@@ -99,15 +99,36 @@ func (p *Pipeline) RegisterGraph(ctx context.Context, gt kgtypes.GraphType, name
 	if p.balanceFactory != nil {
 		c.balanceAtQuiescence = p.balanceFactory(gt, name)
 	}
+	// The durable-not-found eviction closure, assigned at the SAME nesting level as
+	// the other post-construction closures — NOT inside the balanceFactory guard
+	// above. That distinction is load-bearing rather than stylistic: p.balanceFactory
+	// is nil whenever no segment manager is wired, and the graphs most likely to be
+	// phantoms are exactly the ones with no segments, so a closure placed inside that
+	// guard would be disabled on precisely the configuration it exists for.
+	//
+	// BOTH CALLS ARE REQUIRED. The working set IS the wanted set refreshOnce diffs,
+	// so removing the member is what unregisters this collector; and the refresh loop
+	// is wake-driven with its only other wake firing on an ADMISSION, so without the
+	// catalog wake the unregistration would not happen until some unrelated graph was
+	// admitted.
+	c.evictOnDurableNotFound = func(reason string) {
+		if p.evictGraph != nil {
+			p.evictGraph(gt, name, reason)
+		}
+		p.wakeCatalog()
+	}
 	// Build the BM25 arm's closures over the SAME p.segmentMgr the flush closure
 	// uses, so the collector keeps no segmentdist dependency — it sees only funcs.
 	// Bound to (gt, name) so each arm reads and advances only its own graph's cursor.
 	//
 	// THE GRAPH GATE IS AN EXISTING PREDICATE (HasRebuildableSegments), reused rather
-	// than re-derived: it is fail-closed, so transformers/linkage/logs/web/pdf are
-	// excluded by construction rather than by a hand-rolled rule that could silently
-	// admit them. checks IS admitted — its check findings carry segments, and its
-	// deliberately-wrong fixture nodes are refused server-side by node type.
+	// than re-derived: it is fail-closed, so linkage/logs are excluded by
+	// construction rather than by a hand-rolled rule that could silently admit them.
+	// checks IS admitted — its check findings carry segments, and its
+	// deliberately-wrong fixture nodes are refused server-side by node type. web and
+	// pdf ARE admitted too, and deliberately: server-side BM25 segments over the
+	// collected chunks are what make a raw graph keyword-searchable, and the same
+	// server-side per-graph node-type allow-list keeps their container nodes out.
 	if bm25ArmEnabledFor(gt, p.segmentMgr != nil) {
 		mgr := p.segmentMgr
 		c.bm25 = bm25Arm{

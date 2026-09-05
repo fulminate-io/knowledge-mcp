@@ -125,7 +125,8 @@ type syncArgs struct {
 // returns an error; the not-logged-in / transport-failure cases render the
 // actionable login guidance. Push AND pull of a NON-builtin (custom) graph are
 // gated on its GraphTypeDef syncable flag (syncableGateRejection) before any RPC
-// fires; builtins skip that gate (SyncEligible is their only gate, unchanged).
+// fires; a BUILTIN goes through the SAME gate, which admits it iff
+// kgtypes.SyncEligible does — so web, pdf and logs are refused there by name.
 func InterceptSync(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "sync" {
 		return false, kgtools.ToolResult{}
@@ -154,11 +155,11 @@ func InterceptSync(ctx context.Context, deps ClientDeps, params kgtools.CallTool
 		name = "default"
 	}
 
-	// Syncable gate for push AND pull. A builtin graph skips this gate (its
-	// SyncEligible membership is its only gate, unchanged). A NON-builtin (custom)
-	// graph must carry a registered GraphTypeDef whose behavior declares
-	// syncable=true; an unregistered type, or one with syncable false/unset, is
-	// rejected BEFORE any ExportGraph/OverwriteGraph RPC fires.
+	// Syncable gate for push AND pull. A builtin graph is admitted iff
+	// kgtypes.SyncEligible admits it, which refuses web, pdf and logs by name. A
+	// NON-builtin (custom) graph must carry a registered GraphTypeDef whose behavior
+	// declares syncable=true; an unregistered type, or one with syncable
+	// false/unset, is rejected BEFORE any ExportGraph/OverwriteGraph RPC fires.
 	if msg := syncableGateRejection(ctx, deps, graph); msg != "" {
 		return true, errorResult(msg)
 	}
@@ -306,16 +307,33 @@ func pullGraph(
 
 // syncableGateRejection returns a non-empty rejection message when a push/pull of
 // `graph` must be refused on the syncable axis, or "" when it may proceed. A
-// builtin graph ALWAYS proceeds here (its SyncEligible membership is its only
-// gate, unchanged). A NON-builtin (custom) graph proceeds ONLY when a registered
-// GraphTypeDef resolves (crud.ByName found) AND its behavior cascade declares
-// syncable=true; an unregistered type, a missing registry (degraded client), or a
-// syncable false/unset def is rejected. Mirrors the collect.go:192 ByName gate.
+// BUILTIN graph proceeds iff kgtypes.SyncEligible admits it. A NON-builtin
+// (custom) graph proceeds ONLY when a registered GraphTypeDef resolves
+// (crud.ByName found) AND its behavior cascade declares syncable=true; an
+// unregistered type, a missing registry (degraded client), or a syncable
+// false/unset def is rejected. Mirrors the collect.go:192 ByName gate.
+//
+// THE BUILTIN ARM USED TO ADMIT EVERYTHING, and that was the gap this closes.
+// SyncEligible governed only what sync(operation:"list") DISPLAYS, so an operator
+// who typed the graph name directly could push a raw web or pdf graph — the cloud
+// receive side carries explicit accept arms for both — and the "raw graphs never
+// sync" invariant was documented but unenforced. Three builtins move from admitted
+// to refused: web, pdf and logs. The other eight are unaffected.
+//
+// IT REFUSES PULL AS WELL AS PUSH, because InterceptSync applies this one gate to
+// both. That is intended rather than incidental: a pull of a never-pushed raw
+// graph would reach handlePull and could overwrite the local copy with nothing.
 //
 // It stays HERE rather than moving with either direction's flow: InterceptSync
 // applies it to push AND pull alike, so it belongs with the router, not a half.
 func syncableGateRejection(ctx context.Context, deps ClientDeps, graph string) string {
 	if kgtypes.IsBuiltinGraphType(graph) {
+		if !kgtypes.SyncEligible(kgtypes.GraphType(graph)) {
+			return fmt.Sprintf(
+				"sync: graph type %q is not sync-eligible — raw web/pdf graphs and log graphs stay on this machine "+
+					"(a raw graph is a temporary scratch corpus, expected to be dropped once a golden graph is produced)",
+				graph)
+		}
 		return ""
 	}
 	crud := deps.GraphTypeCRUD()

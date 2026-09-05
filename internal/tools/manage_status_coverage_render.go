@@ -13,7 +13,11 @@
 
 package tools
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+	"strings"
+)
 
 // formatCoverageRow renders one Markdown table row from a CoverageRow. An empty
 // (zero-denominator) graph renders "(empty graph)" so a never-populated graph is
@@ -95,6 +99,64 @@ func segmentCoverageCell(r CoverageRow) string {
 	if !r.SegProbed {
 		return fmt.Sprintf("not read [%s]", coverageBandTerm(r))
 	}
-	return fmt.Sprintf("shipped %d · live %d [%s]",
-		r.SegCovered, r.LiveResident, coverageBandTerm(r))
+	return fmt.Sprintf("shipped %d · live %d [%s]%s",
+		r.SegCovered, r.LiveResident, coverageBandTerm(r), coverageDegradeSuffix(r))
+}
+
+// coverageDegradeSuffix names input this client's BM25 builds dropped for the
+// row's graph, or returns the empty string when it dropped nothing — so a clean
+// row is byte-identical to what it was before the census existed.
+//
+// THE WORD IS "dropped", NOT "degraded". Every other cell in this row is a count
+// of what IS indexed, and the bracketed term beside it is already a BAND, so
+// "degraded" here would read as another band. What this names is input that never
+// entered any of those counts.
+func coverageDegradeSuffix(r CoverageRow) string {
+	list := degradeClassList(r.Degraded)
+	if list == "" {
+		return ""
+	}
+	return " · dropped (" + list + ")"
+}
+
+// degradeClassList renders a per-class degrade census as `class n` pairs joined by
+// ", ", and is shared by BOTH operator surfaces that carry one — this row's cell
+// and the manage(rebuild_segments) response — so one product does not grow two
+// spellings of the same census.
+//
+// The three rules are the ones collector/composition.go:171-206 holds itself to,
+// adopted verbatim: render NOTHING when the census is empty, skip non-positive
+// counts, and order count-descending then name-ascending. The RULES are delegated,
+// not the code: that renderer lives in another package and formats a different
+// line, and importing across the boundary to share nine lines of sorting would
+// couple the status table to the collector's own render.
+func degradeClassList(census map[string]int) string {
+	if len(census) == 0 {
+		return ""
+	}
+	type row struct {
+		name  string
+		count int
+	}
+	rows := make([]row, 0, len(census))
+	for name, n := range census {
+		if n <= 0 {
+			continue
+		}
+		rows = append(rows, row{name: name, count: n})
+	}
+	if len(rows) == 0 {
+		return ""
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].count != rows[j].count {
+			return rows[i].count > rows[j].count
+		}
+		return rows[i].name < rows[j].name
+	})
+	parts := make([]string, 0, len(rows))
+	for _, r := range rows {
+		parts = append(parts, fmt.Sprintf("%s %d", r.name, r.count))
+	}
+	return strings.Join(parts, ", ")
 }

@@ -16,7 +16,6 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/cloud"
-	_ "github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/pdfcollector" // side-effect: registers "pdf" with collector.Register
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/web"
 	"github.com/fulminate-io/knowledge-mcp/internal/externalcollector"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -105,12 +104,12 @@ func InterceptCollect(ctx context.Context, deps ClientDeps, params kgtools.CallT
 		return true, res
 	}
 
-	if a.ID == "" {
-		// Prefix with "collect <type>:" so the error shape matches the
-		// other collect-time errors (e.g. "collect logs: provider is
-		// required") instead of the bare "'id' is required" that gave
-		// no clue which tool surfaced it.
-		return true, errorResult(fmt.Sprintf("collect %s: 'id' is required", a.Type))
+	// Derive the id a web collect did not supply, then refuse a collect that
+	// still has none. Both live in resolveCollectID because their ORDER is the
+	// contract: deriving first is what makes the id optional for web-with-seeds
+	// and unchanged for every other collect.
+	if res, bad := resolveCollectID(&a); bad {
+		return true, res
 	}
 
 	// Cloud collectors use a cascade set for cross-provider dedup; the cicd path
@@ -150,10 +149,10 @@ func InterceptCollect(ctx context.Context, deps ClientDeps, params kgtools.CallT
 			// metadata does not match.
 			return true, runRecipeCollect(ctx, deps, a)
 		}
-		if a.Transformer != "" || a.Recipe != "" || a.DryRun || a.Extract || a.RecipeBody != "" || a.MaxRows != 0 || a.MaxBytes != 0 {
+		if a.Transformer != "" || a.Recipe != "" || a.DryRun || a.Extract || a.RecipeBody != "" || a.MaxRows != 0 || a.MaxBytes != 0 || a.Offset != 0 {
 			return true, errorResult(fmt.Sprintf(
 				"collect %s transformer=%q not supported (only \"recipe\" today). "+
-					"recipe / recipe_body / dry_run / extract / max_rows / max_bytes / transformer fields require transformer=\"recipe\".",
+					"recipe / recipe_body / dry_run / extract / max_rows / max_bytes / offset / transformer fields require transformer=\"recipe\".",
 				a.Type, a.Transformer))
 		}
 	}
@@ -166,18 +165,50 @@ func InterceptCollect(ctx context.Context, deps ClientDeps, params kgtools.CallT
 		}
 	}
 
-	// Route the builtin collect through the standing runtime: cap the synchronous
-	// wait at 60s, coalesce a duplicate target already in flight, and detach the
-	// run past the cap. work is a NO-ARG closure over the fully-enriched ctx built
-	// above (cascade set + resolution map + web-crawl opts) — Start injects no ctx,
-	// so there is no bare-baseCtx an implementation could substitute and drop that
-	// enrichment. successText is the CURRENT literal; collectWaitOrDetach suffixes
-	// it with the run's rendered node-type composition on the sub-60s / fallback
-	// paths, and a run reporting no composition returns it byte-identically.
-	work := func() (string, error) { return builtinCollectWork(ctx, deps, a, opts) }
+	return true, routeBuiltinCollect(ctx, deps, a, opts, rt)
+}
+
+// routeBuiltinCollect runs the pre-walk identity work and then routes the builtin
+// collect through the standing runtime: cap the synchronous wait at 60s, coalesce
+// a duplicate target already in flight, and detach the run past the cap.
+//
+// Extracted from InterceptCollect to keep that dispatch function within the
+// funlen budget, the same reason withWebCrawlOptions below was split out of it.
+//
+// work is a NO-ARG closure over the fully-enriched ctx InterceptCollect built
+// (cascade set + resolution map + web-crawl opts) — Start injects no ctx, so
+// there is no bare-baseCtx an implementation could substitute and drop that
+// enrichment. successText is the CURRENT literal; collectWaitOrDetach suffixes it
+// with the run's rendered node-type composition on the sub-60s / fallback paths,
+// and a run reporting no composition returns it byte-identically.
+func routeBuiltinCollect(
+	ctx context.Context,
+	deps ClientDeps,
+	a collectArgs,
+	opts collector.CollectOptions,
+	rt *CollectRuntime,
+) kgtools.ToolResult {
+	// The name this collect will land under, plus the pre-walk collision check
+	// and the legacy-graph notice — all BEFORE the work closure, so a refusal
+	// costs no crawl and no parse.
+	graphName, notice, err := prepareRawCollect(ctx, deps, a)
+	if err != nil {
+		return errorResult(err.Error())
+	}
+	// The (family, name) pair the in-flight gate records. gateName is by
+	// construction equal to graphName above — prepareRawCollect's own first
+	// statement calls the same pure CollectGateGraphName on the same inputs, and
+	// nothing between the two mutates a.Type, a.ID or a.SeedURLs — so what this
+	// call adds is the FAMILY, which must come from the dispatcher's switch and
+	// never from a bare kgtypes.GraphType(a.Type) conversion.
+	gateType, gateName, gateErr := collectGateGraphIdentity(a.Type, a.ID, a.SeedURLs)
+	if gateErr != nil {
+		return errorResult(gateErr.Error())
+	}
+	work := func() (string, string, error) { return builtinCollectWork(ctx, deps, a, opts, graphName) }
 	successText := fmt.Sprintf("Collected %s %s — streamed to server.", a.Type, a.ID)
-	return true, collectWaitOrDetach(rt, collectTargetKey(a.Type, a.ID), fmt.Sprintf("%s %s", a.Type, a.ID),
-		CollectGateGraphName(a.Type, a.ID), successText, work)
+	return collectWaitOrDetach(rt, a.Type, collectTargetKey(a.Type, a.ID), fmt.Sprintf("%s %s", a.Type, a.ID),
+		gateType, gateName, successText, notice, work)
 }
 
 // recordCollectedRepo upserts the just-collected code repo's name→absolute-path
@@ -206,16 +237,18 @@ func recordCollectedRepo(collectorType, absID string) {
 // function within the funlen budget.
 func withWebCrawlOptions(ctx context.Context, a collectArgs) (context.Context, bool, kgtools.ToolResult) {
 	crawlOpts := web.CrawlOptions{
-		Source:           a.ID,
-		SeedURLs:         a.SeedURLs,
-		FollowPatterns:   a.FollowPatterns,
-		MaxDepth:         a.MaxDepth,
-		MaxPages:         a.MaxPages,
-		MaxPathSegments:  a.MaxPathSegments,
-		MaxPagesPerHost:  a.MaxPagesPerHost,
-		PolitenessMs:     a.PolitenessMs,
-		UserAgent:        a.UserAgent,
-		MaxDownloadBytes: a.MaxDownloadBytes,
+		Source:            a.ID,
+		SeedURLs:          a.SeedURLs,
+		FollowPatterns:    a.FollowPatterns,
+		MaxDepth:          a.MaxDepth,
+		MaxPages:          a.MaxPages,
+		MaxPathSegments:   a.MaxPathSegments,
+		MaxPagesPerHost:   a.MaxPagesPerHost,
+		MaxConcurrency:    a.MaxConcurrency,
+		MaterializeGithub: a.MaterializeGithub,
+		PolitenessMs:      a.PolitenessMs,
+		UserAgent:         a.UserAgent,
+		MaxDownloadBytes:  a.MaxDownloadBytes,
 	}
 	crawlOpts = crawlOpts.ApplyDefaults()
 	if err := web.ValidateCrawlOptions(crawlOpts); err != nil {
@@ -226,12 +259,10 @@ func withWebCrawlOptions(ctx context.Context, a collectArgs) (context.Context, b
 
 // runRecipeCollect handles `collect type=web|pdf transformer=recipe`. The recipe
 // transform runs CLIENT-SIDE: recipe.RunRecipe reads the source raw graph over
-// the GraphCaller wire into an in-memory view, interprets the named recipe, and
-// ships the projected practice-graph nodes/edges back through the Sink. The
-// collect `type` is passed as the expected source type so a recipe whose
-// source_graph_type does not match (e.g. a pdf collect against a web-source
-// recipe) is rejected with a typed error. DryRun previews the projection and
-// returns Stats without writing.
+// the GraphCaller wire into an in-memory view, interprets the caller's inline
+// body, and returns the extracted rows. NOTHING IS SHIPPED — the run reaches no
+// Sink and no target graph. The collect `type` is passed as the expected source
+// type, because an inline body carries none.
 func runRecipeCollect(ctx context.Context, deps ClientDeps, a collectArgs) kgtools.ToolResult {
 	// recipe.RunRecipe reads the source graph into an in-memory view and holds the
 	// projected result, so scavenge on the way out — mirrors builtinCollectWork's
@@ -242,24 +273,22 @@ func runRecipeCollect(ctx context.Context, deps ClientDeps, a collectArgs) kgtoo
 	if oerr != nil {
 		return errorResult(oerr.Error())
 	}
-	res, err := recipe.RunRecipe(ctx, deps.GraphCaller(), deps.Sink(), a.ID, kgtypes.GraphType(a.Type), opts)
+	// RESOLVE THE REPLAY ID INTO THE LOCAL ARGS COPY rather than threading a new
+	// parameter. a is a value parameter, and the source read, the extract header's
+	// `source=<type>/<id>` and the non-extract run summary all read a.ID — so one
+	// assignment makes all three name the graph the run actually read.
+	givenID := a.ID
+	a.ID = resolveRawSourceGraphName(a.Type, givenID)
+	res, err := recipe.RunRecipe(ctx, deps.GraphCaller(), a.ID, kgtypes.GraphType(a.Type), opts)
 	if err != nil {
-		return errorResult("collect " + a.Type + " recipe: " + err.Error())
+		return errorResult("collect " + a.Type + " recipe: " + err.Error() +
+			rawSourceNotFoundHint(a.Type, givenID, a.ID))
 	}
-	if a.Extract {
-		return textResult(renderExtract(a, res))
-	}
-	verb := "Ran"
-	if a.DryRun {
-		verb = "Dry-ran"
-	}
-	return textResult(fmt.Sprintf(
-		"%s recipe %q over %s/%s — emitted %d nodes (skipped %d, force-deleted %d, lookups %d/%d, link misses %d) in %dms.",
-		verb, a.Recipe, a.Type, a.ID,
-		res.Stats.NodesEmitted, res.Stats.SkippedChunks, res.Stats.ForceDeleted,
-		res.Stats.LookupsResolved, res.Stats.LookupsResolved+res.Stats.LookupMisses,
-		res.Stats.LinkMisses, res.Stats.ElapsedMillis,
-	))
+	// EVERY ADMITTED RUN IS AN EXTRACT, so there is one render and no branch.
+	// The other branch summarized nodes emitted and rows found already resident
+	// in a target graph — a report about work that no longer happens, over a
+	// write path that no longer exists.
+	return textResult(renderExtract(a, res))
 }
 
 // tryRegisteredCollect runs the external collector plugin for a registered
@@ -369,15 +398,17 @@ type collectArgs struct {
 	Params map[string]any `json:"params,omitempty"`
 
 	// Web-specific. Threaded through ctx via web.WithCrawlOptions.
-	SeedURLs         []string `json:"seed_urls,omitempty"`
-	FollowPatterns   []string `json:"follow_patterns,omitempty"`
-	MaxDepth         int      `json:"max_depth,omitempty"`
-	MaxPages         int      `json:"max_pages,omitempty"`
-	MaxPathSegments  int      `json:"max_path_segments,omitempty"`
-	MaxPagesPerHost  int      `json:"max_pages_per_host,omitempty"`
-	PolitenessMs     int      `json:"politeness_ms,omitempty"`
-	UserAgent        string   `json:"user_agent,omitempty"`
-	MaxDownloadBytes int64    `json:"max_download_bytes,omitempty"`
+	SeedURLs          []string `json:"seed_urls,omitempty"`
+	FollowPatterns    []string `json:"follow_patterns,omitempty"`
+	MaxDepth          int      `json:"max_depth,omitempty"`
+	MaxPages          int      `json:"max_pages,omitempty"`
+	MaxPathSegments   int      `json:"max_path_segments,omitempty"`
+	MaxPagesPerHost   int      `json:"max_pages_per_host,omitempty"`
+	MaxConcurrency    int      `json:"max_concurrency,omitempty"`
+	MaterializeGithub bool     `json:"materialize_github,omitempty"`
+	PolitenessMs      int      `json:"politeness_ms,omitempty"`
+	UserAgent         string   `json:"user_agent,omitempty"`
+	MaxDownloadBytes  int64    `json:"max_download_bytes,omitempty"`
 
 	// Web/PDF transformer dispatch. Transformer="recipe" runs the recipe
 	// transform CLIENT-SIDE via recipe.RunRecipe (see runRecipeCollect):
@@ -386,10 +417,12 @@ type collectArgs struct {
 	// value is rejected; the fields are parsed so the error message can name
 	// them rather than "unknown argument".
 	// Extract turns a recipe run into EXTRACT MODE: nothing is written and the
-	// emitted rows come back for inspection, bounded by MaxRows and MaxBytes.
-	// Body is an INLINE recipe body run instead of a saved one, and requires
-	// Extract. MaxBytes deliberately does NOT travel through recipe.Options —
-	// only the renderer knows rendered sizes, so the byte cap is applied there.
+	// emitted rows come back for inspection, bounded by MaxRows and MaxBytes and
+	// windowed by Offset. Body is an INLINE recipe body run instead of a saved
+	// one, and requires Extract. MaxBytes deliberately does NOT travel through
+	// recipe.Options — only the renderer knows rendered sizes, so the byte cap is
+	// applied there. Offset DOES travel through recipe.Options: the cursor is
+	// applied where the rows are captured.
 	Transformer string `json:"transformer,omitempty"`
 	Recipe      string `json:"recipe,omitempty"`
 	DryRun      bool   `json:"dry_run,omitempty"`
@@ -397,6 +430,7 @@ type collectArgs struct {
 	RecipeBody  string `json:"recipe_body,omitempty"`
 	MaxRows     int    `json:"max_rows,omitempty"`
 	MaxBytes    int    `json:"max_bytes,omitempty"`
+	Offset      int    `json:"offset,omitempty"`
 
 	// Logs-specific. The collector resolves the provider config either by
 	// reading the configured log_backend node (when Backend is set) or

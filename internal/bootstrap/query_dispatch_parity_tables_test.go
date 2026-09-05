@@ -248,19 +248,16 @@ var queryShapeDispositions = []shapeDisposition{
 	// WHY THESE ROWS EXIST. Every row above pins a graph and no row varies it, so
 	// a mode served on ONE graph and denied on another satisfied the headline
 	// invariant while shipping the defect: mode:stats reached the generic deny on
-	// checks and on transformers even though the mode-level row (graph:knowledge)
-	// was green. The mode axis cannot express this — queryModeDispositions enforces
-	// exactly one disposition per published mode — so the cross goes here.
+	// checks even though the mode-level row (graph:knowledge) was green. The mode
+	// axis cannot express this — queryModeDispositions enforces exactly one
+	// disposition per published mode — so the cross goes here.
 	//
-	// The four rows split into two dispositions, and asserting WHICH is the point:
+	// The three rows split into two dispositions, and asserting WHICH is the point:
 	// a real graph with no stats arm is now SERVED, while a value naming no graph
 	// at all is REFUSED with the accepted vocabulary. Both assert the absence of
 	// the generic deny; only the kind says what answered.
 	{name: "stats_checks", args: map[string]any{"graph": "checks", "mode": "stats"},
 		kind: shapeStatsServed, marker: checksStatsHeader},
-	{name: "stats_transformers", args: map[string]any{
-		"graph": "transformers", "name": "recipes", "mode": "stats",
-	}, kind: shapeStatsServed, marker: transformersStatsHeaderPrefix},
 	// `all` is a TICKET-NAMED measured value, and a plausible-looking word a caller
 	// reasonably tries; the unregistered string is the typo stand-in. They are not
 	// interchangeable — an implementation could special-case one without the other.
@@ -273,8 +270,7 @@ var queryShapeDispositions = []shapeDisposition{
 // The stats headers the served rows above match on. Declared here rather than
 // inlined so the row and the arm cannot drift into two spellings.
 const (
-	checksStatsHeader             = "## Checks Graph"
-	transformersStatsHeaderPrefix = "## Transformers Graph: recipes"
+	checksStatsHeader = "## Checks Graph"
 	// graphVocabularyMarker is the fragment acceptedGraphVocabulary always emits,
 	// so the refusal rows assert the VOCABULARY was rendered and not merely that
 	// the offending value was echoed back.

@@ -62,8 +62,7 @@ func TestMode_Constants(t *testing.T) {
 // surface. Mode=ModeSection is a deliberate flip from the ticket-pinned
 // ModeParagraph (resolved Q3) — section context is the better default
 // for recipe-driven pattern extraction. LayoutParams + ClassifyParams
-// borrow their respective package defaults; SkipHeadersFooters is true,
-// SkipFootnotes is false, MinChunkChars is 0.
+// borrow their respective package defaults; MinChunkChars is 0.
 func TestDefaultOptions_AllFieldsPopulated(t *testing.T) {
 	t.Parallel()
 	if DefaultOptions.Mode != ModeSection {
@@ -86,12 +85,6 @@ func TestDefaultOptions_AllFieldsPopulated(t *testing.T) {
 	}
 	if DefaultOptions.ClassifyParams.ListMarkerPattern != classify.DefaultClassifyParams.ListMarkerPattern {
 		t.Errorf("ClassifyParams.ListMarkerPattern pointer mismatch — DefaultOptions did not borrow the package default regexp")
-	}
-	if !DefaultOptions.SkipHeadersFooters {
-		t.Errorf("DefaultOptions.SkipHeadersFooters = false, want true")
-	}
-	if DefaultOptions.SkipFootnotes {
-		t.Errorf("DefaultOptions.SkipFootnotes = true, want false")
 	}
 	if DefaultOptions.MinChunkChars != 0 {
 		t.Errorf("DefaultOptions.MinChunkChars = %d, want 0", DefaultOptions.MinChunkChars)

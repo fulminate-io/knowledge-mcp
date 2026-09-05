@@ -68,8 +68,8 @@ const (
 // buildClient constructs the MCP client + runs the cheap synchronous bind-ready
 // prefix (constructClient, the boot-spawn decision, the one-shot asset-drift
 // hints), then returns the *client ready to BIND the HTTP MCP listener. The
-// background runtimes (PropagationLoop, segment Manager, LLM pipeline,
-// instruction bootstrap) are NOT wired here — runServe launches
+// background runtimes (PropagationLoop, segment Manager, LLM pipeline)
+// are NOT wired here — runServe launches
 // c.wireRuntimesBackground in a goroutine AFTER the listener binds (Bind-first startup:
 // bind first, wire in the background) so first-call latency is ~25ms instead of
 // blocking on the ~2.6s wire chain. The serve daemon (runServe) is its sole
@@ -363,23 +363,25 @@ func (c *client) wireRuntimesBackground(ctx context.Context, f Config) {
 	// handles. Do NOT reorder the Store before the field writes.
 	c.markPipelineReady()
 
-	// Seed agent + skill nodes from .claude/{agents,
-	// skills}/*.md. Server-side projects.Bootstrap call has been
-	// removed; the client owns disk I/O for code-graph + project
-	// assets now. Non-fatal — startup continues on error.
-	//
-	// DEFERRED UNTIL ADMITTED, not run at boot: it is a query plus a create_batch
-	// against the knowledge graph, so at boot it would be background work against
-	// a graph no interaction has earned. The goroutine waits on the working set
-	// and exits on ctx.Done.
-	go c.deferInstructionBootstrapUntilAdmitted(ctx, c.router, f.RootDir)
-	stage("instruction bootstrap deferred until the knowledge graph is admitted")
-
 	// Background hourly transcript upload — gated on NoTranscriptUpload (set under
 	// --headless) so an embedded daemon spawns no upload loops. See
 	// maybeStartTranscriptUpload for the full rationale.
 	c.maybeStartTranscriptUpload(ctx, f)
 	stage("transcript upload loop spawned")
+
+	// Background self-update check — gated by autoUpdateEnabled, which reads
+	// the config file loaded above as well as the flag/env, so a disabled
+	// daemon spawns no goroutines at all. See maybeStartUpdateCheck.
+	c.maybeStartUpdateCheck(ctx, f)
+	stage("update check loop spawned")
+
+	// Background possession-proof loop. It opens the running executable's
+	// descriptor FIRST and then proves at once with no boot delay — until a
+	// verification record exists the gateway refuses every cloud request, so a
+	// delay here would guarantee a window of refusals on every restart. See
+	// maybeStartVersionProof.
+	c.maybeStartVersionProof(ctx)
+	stage("version proof loop spawned")
 }
 
 // runServe is the `knowledge serve` daemon entry — the sole MCP-serving
@@ -407,6 +409,13 @@ func runServe(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	// A malformed KNOWLEDGE_NO_AUTO_UPDATE is a startup error rather than a
+	// silent default: the flag above took its value from that variable, and a
+	// typo that quietly left updates ON is the surprise the switch exists to
+	// prevent.
+	if err := checkAutoUpdateEnv(); err != nil {
+		return err
+	}
 	// Record whether --root was explicitly set (vs the "." default) via the
 	// SAME shared helper ParseFlags uses, so the ast walk-root guard sees an
 	// identical was-set bit on both parse paths.
@@ -423,7 +432,10 @@ func runServe(args []string) error {
 	if err := logLevelVar.UnmarshalText([]byte(cfg.LogLevel)); err != nil {
 		slog.Warn("invalid --log-level, using info", "value", cfg.LogLevel)
 	}
-	setupLogging(&cfg, &logLevelVar)
+	// REFUSES ON BAD INPUT rather than starting without the operator's sink.
+	if err := installServeLogging(&cfg, &logLevelVar); err != nil {
+		return err
+	}
 	applyMemoryLimit()
 	cfg.GraphStorage = expandTilde(cfg.GraphStorage)
 

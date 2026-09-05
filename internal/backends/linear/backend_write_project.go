@@ -52,10 +52,10 @@ func projectContentField(summary, body string) (string, bool) {
 }
 
 // CreateProject — group-key-driven team resolution; project status is
-// passed verbatim (workspace-level enum). Labels resolve against the
-// supplied group's team. Linear requires teamIds on project create, so
-// we always resolve the team (regardless of whether labels were
-// supplied).
+// passed verbatim (workspace-level enum). Each label resolves through its
+// own filtered lookup on the supplied group's team (see ensureLabels).
+// Linear requires teamIds on project create, so we always resolve the team
+// (regardless of whether labels were supplied).
 func (b *Backend) CreateProject(ctx context.Context, args backends.ProjectCreateArgs) (backends.RemoteRef, error) {
 	team, err := b.resolveTeamByKey(ctx, args.GroupKey)
 	if err != nil {
@@ -170,10 +170,11 @@ func (b *Backend) UpdateProject(ctx context.Context, ref backends.RemoteRef, dif
 	return nil
 }
 
-// resolveProjectLabels looks up the project's first team and resolves
-// the comma-separated label list against it (creating any missing
-// labels). Extracted from UpdateProject to keep the method body short
-// and the multi-team caveat localized.
+// resolveProjectLabels looks up the project's first team and resolves the
+// comma-separated label list against it, one filtered lookup per name
+// (creating only the names the team genuinely lacks). Extracted from
+// UpdateProject to keep the method body short and the multi-team caveat
+// localized.
 func (b *Backend) resolveProjectLabels(ctx context.Context, ref backends.RemoteRef, labels string) ([]string, error) {
 	var pr projectByIDResponse
 	if err := b.Client.do(ctx, projectByIDQuery,

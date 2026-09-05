@@ -56,7 +56,7 @@ func (c *GitLabCollector) Collect(
 
 	return &collectorwire.CollectResult{
 		GraphType: kgtypes.GraphCICD,
-		GraphName: "gitlab-" + id,
+		GraphName: GraphName(id),
 		Nodes:     nodes,
 		Edges:     edges,
 		// The enumeration was complete only if no subcollector failed. A partial

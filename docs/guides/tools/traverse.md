@@ -55,7 +55,7 @@ knowledge node id with `graph: "code"`. For the full parameter reference, run
 | `include_edge_metadata` | boolean |  |  | When true, emit Weight/Confidence/Method/Evidence/LastValidated on every edge at every hop. Default off for all graphs. |
 | `include_tombstones` | boolean |  |  | Include tombstoned (deleted) nodes in results. Default false. Edge endpoints are always tombstone-filtered regardless of this flag: the flag governs NODES. |
 | `language` | string |  |  | Language slug for graph='practice' (e.g. 'go', 'python'). |
-| `limit` | number |  |  | Max results to return (0 = no cap) |
+| `limit` | number |  |  | Max results to return (0 = no cap). ON A RAW DOCUMENT GRAPH THE SLICE IS TAKEN IN NODE-ID ORDER, NOT DOCUMENT ORDER: the traversal never decodes the document position, which lives on edge Evidence, so a limited traverse over a collected document returns an arbitrary slice rather than the first N sections. Drop the limit, or use a recipe extract, which materializes the whole source graph and can therefore order it. |
 | `name` | string |  |  | Graph identifier (e.g. query_id for graph='logs'). |
 | `repo` | string |  |  | Repo name for graph='code'. |
 | `start` | string |  |  | Starting node ID. OPTIONAL: an EMPTY start is not an error — it selects the graph-wide enumeration of the target graph instead of a walk, reporting the graph's node and edge totals in text and its node/edge rows under format='json'. The one exception is graph='logs', where an empty start is rejected. |

@@ -141,3 +141,57 @@ func TestInterceptCreateTicket_Success_StampsBackendMetadata(t *testing.T) {
 	assert.Equal(t, "FUL", md["linear_group_key"])
 	assert.Equal(t, "EX-42", md["external_id"], "ref.Identifier should fill external_id when caller didn't supply one")
 }
+
+// TestInterceptCreateTicket_NameOf131Runes_StillCreates — THE DISCRIMINATING
+// CONTROL for R4, and the reason it is not optional. The 80-rune cap is
+// settled onto the create_project path only. Every other R4 test passes under
+// BOTH readings: the settled one (a project-name guard beside validate.Name)
+// and the literal one (the cap inside validate.Name itself, which reaches all
+// ten of its callers, validateCreateTicketArgs among them). Only a
+// create_ticket name over the cap separates them.
+//
+// 131 runes is the length of the work item that added this cap. The relayed measurement
+// behind the settlement, not measured by this lane: 1273 of 1752 existing FUL
+// issue titles exceed 80 runes (longest 298), while 0 of 167 project names do
+// — so a cap on ticket names would refuse titles the tracker demonstrably
+// accepts. Its paired opposite is
+// TestInterceptCreateProject_NameOverCap_RefusedBeforeBackend, which sends a
+// name of the SAME length to create_project and requires a refusal.
+func TestInterceptCreateTicket_NameOf131Runes_StillCreates(t *testing.T) {
+	name := runesN(131)
+	fb := &fakeBackend{
+		createTicketRef: backends.RemoteRef{
+			ID:         "ticket-uuid",
+			URL:        "https://example.invalid/t",
+			Identifier: "EX-42",
+		},
+	}
+	fc := &fakeGraphCaller{
+		queryResponses: map[string]kgtools.ToolResult{
+			"proj-back": nodeResultJSON(t, "proj-back", "project", map[string]string{
+				"backend":          "linear",
+				"linear_id":        "proj-uuid",
+				"external_url":     "https://example.invalid/p",
+				"linear_group_id":  "team-uuid",
+				"linear_group_key": "FUL",
+			}),
+		},
+		mutateResult: kgtools.ToolResult{
+			Content: []kgtools.ContentBlock{{Type: "text", Text: `{"ids":["ticket-local-id"]}`}},
+		},
+	}
+	deps := interceptTestDeps{
+		byName: map[string]backends.Backend{"linear": fb},
+		gc:     fc,
+	}
+	handled, res := InterceptCreateTicket(opCtx(), deps, kgtools.CallToolParams{
+		Name:      "create_ticket",
+		Arguments: json.RawMessage(`{"name":"` + name + `","project_id":"proj-back","description":"d","summary":"s","no_patterns_reason":"trivial"}`),
+	})
+	require.True(t, handled)
+	require.False(t, res.IsError,
+		"a 131-rune ticket name must still create — the 80-rune cap is on the create_project path only: %s",
+		toolResultText(res))
+	assert.Equal(t, name, fb.createTicketArg.Name, "the ticket name reaches the backend unchanged, never clamped")
+	require.Len(t, fc.execMutations, 1, "the local mirror must still be persisted")
+}

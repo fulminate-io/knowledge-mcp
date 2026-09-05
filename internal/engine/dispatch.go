@@ -39,7 +39,15 @@ type ExecuteFn func(ctx context.Context, req *knowledgev1.ExecuteRequest) (*know
 // renderEngineError relays to the LLM verbatim. The two precheck seams below —
 // precheckQuery on the query branch and precheckTraverse on the traverse
 // branch — are the remaining pre-Compile validation hooks.
-func Dispatch(ctx context.Context, exec ExecuteFn, tool string, args json.RawMessage) (kgtools.ToolResult, error) {
+//
+// The stats seam is REQUIRED in the signature rather than optional on a struct:
+// edge-type resolution reads the target graph's own edge vocabulary, and a
+// caller that quietly loses resolution is the failure mode the change removes.
+// A parameter the compiler demands cannot be forgotten. It may be nil for a
+// caller that provably never names edge types (the engine's own tests), where
+// the resolver returns before touching it; a nil seam on a call that DOES name
+// them is a loud error, never a silent skip.
+func Dispatch(ctx context.Context, exec ExecuteFn, stats StatsFn, tool string, args json.RawMessage) (kgtools.ToolResult, error) {
 	// Special-shape pre-Compile seam: a query(id) carrying
 	// include_edges / include_cross_links is NOT a single-plan compile — the
 	// engine does not absorb those carriers. dispatchQueryByID composes the
@@ -80,9 +88,37 @@ func Dispatch(ctx context.Context, exec ExecuteFn, tool string, args json.RawMes
 		if verr := precheckTraverse(args); verr != nil {
 			return errorResult(verr.Error()), nil
 		}
+		// PLACEMENT IS LOAD-BEARING IN BOTH DIRECTIONS.
+		//
+		// AFTER precheckTraverse: an invalid direction is a shape error and must
+		// be reported as one, without buying a vocabulary round trip for a
+		// request that was never going to run. Hoisting this above the precheck
+		// reports an edge-type fault when the real fault is the direction.
+		//
+		// BEFORE dispatchGraphWideEdges and before Compile: BOTH traverse shapes
+		// resolve through this one place. The start-less graph-wide arm composes
+		// its own edge read (dispatch_graphwide.go) and would otherwise filter on
+		// an unresolved spelling — which is this ticket's own silent zero.
+		next, _, rerr := resolveArgsEdgeTypes(ctx, stats, tool, args)
+		if rerr != nil {
+			return errorResult(rerr.Error()), nil
+		}
+		args = next
 		if out, handled := dispatchGraphWideEdges(ctx, exec, args); handled {
 			return out, nil
 		}
+	}
+	// The mutate arm resolves its relationship declaration in its OWN sibling
+	// branch, so a create/update/delete never reaches the resolver at all and
+	// never costs a Stats read. resolutionNotice carries the unmatched-spelling
+	// unlink disclosure through to the render below.
+	var resolutionNotice string
+	if tool == "mutate" {
+		next, notice, rerr := resolveArgsEdgeTypes(ctx, stats, tool, args)
+		if rerr != nil {
+			return errorResult(rerr.Error()), nil
+		}
+		args, resolutionNotice = next, notice
 	}
 	// Special-shape pre-Compile seam: a delete(dry_run:true) must NEVER compile to
 	// a MUTATION_KIND_DELETE (the by-ids compile path ignored dry_run and really
@@ -108,7 +144,11 @@ func Dispatch(ctx context.Context, exec ExecuteFn, tool string, args json.RawMes
 	if err != nil {
 		return renderEngineError(err), nil
 	}
-	return Render(tool, args, resp)
+	res, rerr := Render(tool, args, resp)
+	if rerr != nil {
+		return res, rerr
+	}
+	return withResolutionNotice(res, resolutionNotice), nil
 }
 
 // validationErr is a client-side pre-Compile validation failure (the

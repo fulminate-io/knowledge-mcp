@@ -153,7 +153,7 @@ func renderViaIndex(gc GraphCaller, root *knowledgev1.Node, maxDepth int) string
 	}
 	dependsOn, _ := FetchDependsOnEdges(ctx, gc, allIDs)
 	var sb strings.Builder
-	RenderTreeFromIndex(&sb, root, 0, maxDepth, childIndex, dependsOn)
+	RenderTreeFromIndex(&sb, root, 0, maxDepth, childIndex, dependsOn, nil)
 	return sb.String()
 }
 

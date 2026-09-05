@@ -83,7 +83,7 @@ func TestByIDJSON_EnvelopeShape(t *testing.T) {
 		}),
 	}}
 
-	out, err := Dispatch(context.Background(), s.fn(), "query",
+	out, err := Dispatch(context.Background(), s.fn(), nil, "query",
 		json.RawMessage(`{"id":"n1","include_edges":true,"include_cross_links":true,"graph":"knowledge","format":"json"}`))
 	require.NoError(t, err)
 	require.False(t, out.IsError, "content: %s", out.Content[0].Text)
@@ -115,7 +115,7 @@ func TestByIDJSON_EnvelopeShape(t *testing.T) {
 func TestByIDJSON_TruncatedField(t *testing.T) {
 	render := func(hydrateTruncated bool) map[string]any {
 		s := byIDEdgeExec(hydrateTruncated)
-		out, err := Dispatch(context.Background(), s.fn(), "query",
+		out, err := Dispatch(context.Background(), s.fn(), nil, "query",
 			json.RawMessage(`{"id":"n1","include_edges":true,"graph":"knowledge","format":"json"}`))
 		require.NoError(t, err)
 		require.False(t, out.IsError)
@@ -136,7 +136,7 @@ func TestByIDJSON_TruncatedField(t *testing.T) {
 // contract query_schema.go states for every other JSON envelope.
 func TestByIDJSON_ClampAlsoKeepsTheProseNotice(t *testing.T) {
 	s := byIDEdgeExec(true)
-	out, err := Dispatch(context.Background(), s.fn(), "query",
+	out, err := Dispatch(context.Background(), s.fn(), nil, "query",
 		json.RawMessage(`{"id":"n1","include_edges":true,"graph":"knowledge","format":"json"}`))
 	require.NoError(t, err)
 	require.Len(t, out.Content, 2, "the notice is a SECOND block, never concatenated into the payload")
@@ -154,7 +154,7 @@ func TestByIDJSON_ClampAlsoKeepsTheProseNotice(t *testing.T) {
 func TestByID_DefaultFormatKeepsLegacyBodies(t *testing.T) {
 	t.Run("knowledge: {node, edges} with no truncated key", func(t *testing.T) {
 		s := byIDEdgeExec(true) // clamped: the key would be TRUE if this body carried one.
-		out, err := Dispatch(context.Background(), s.fn(), "query",
+		out, err := Dispatch(context.Background(), s.fn(), nil, "query",
 			json.RawMessage(`{"id":"n1","include_edges":true,"graph":"knowledge"}`))
 		require.NoError(t, err)
 		payload := byIDEnvelope(t, out.Content[0].Text)
@@ -168,7 +168,7 @@ func TestByID_DefaultFormatKeepsLegacyBodies(t *testing.T) {
 
 	t.Run("generic: markdown", func(t *testing.T) {
 		s := byIDEdgeExec(false)
-		out, err := Dispatch(context.Background(), s.fn(), "query",
+		out, err := Dispatch(context.Background(), s.fn(), nil, "query",
 			json.RawMessage(`{"id":"n1","include_edges":true,"graph":"practice","language":"go"}`))
 		require.NoError(t, err)
 		assert.Contains(t, out.Content[0].Text, " node\n\n**Hub**",
@@ -181,7 +181,7 @@ func TestByID_DefaultFormatKeepsLegacyBodies(t *testing.T) {
 // fix wired only into the knowledge branch would leave it there.
 func TestByIDJSON_GenericGraphAlsoHonorsFormat(t *testing.T) {
 	s := byIDEdgeExec(false)
-	out, err := Dispatch(context.Background(), s.fn(), "query",
+	out, err := Dispatch(context.Background(), s.fn(), nil, "query",
 		json.RawMessage(`{"id":"n1","include_edges":true,"graph":"practice","language":"go","format":"json"}`))
 	require.NoError(t, err)
 	payload := byIDEnvelope(t, out.Content[0].Text)

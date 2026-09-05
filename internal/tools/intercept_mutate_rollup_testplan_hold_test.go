@@ -194,7 +194,7 @@ func criteriaOwningContainerTypes(t *testing.T) map[kgtypes.NodeType]bool {
 		nil, nil, "", backends.RemoteRef{}, backends.Group{}, "")
 	absorb("tkt", tktSeed, tktNodes, tktEdges)
 
-	planNodes, planEdges := projects.BuildPlanGraph(projects.PlanArgs{
+	planNodes, planEdges, planErr := projects.BuildPlanGraph(projects.PlanArgs{
 		Name:     "census plan",
 		TicketID: tktSeed,
 		Phases: []projects.PhaseArgs{{
@@ -205,6 +205,7 @@ func criteriaOwningContainerTypes(t *testing.T) map[kgtypes.NodeType]bool {
 			}},
 		}},
 	}, nil, nil)
+	require.NoError(t, planErr)
 	absorb("plan", "", planNodes, planEdges)
 
 	tpNodes, tpEdges := projects.BuildTestPlanGraph(projects.TestPlanArgs{

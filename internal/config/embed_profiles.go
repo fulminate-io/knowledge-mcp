@@ -50,7 +50,7 @@ const DefaultEmbedProfileName = "default"
 //
 // THE VOCABULARY IS DECLARED LOCALLY, NOT IMPORTED, for the same reason
 // EmbedProvider is (see embed.go): this package is a true leaf with no
-// upstream deps, and importing the graph-type package to name six strings
+// upstream deps, and importing the graph-type package to name five strings
 // would end that. The cost is that the two lists must be kept in step by hand;
 // the alternative cost is a dependency edge from config to the type system it
 // configures.
@@ -63,12 +63,11 @@ type EmbedFamily string
 
 // EmbedFamily constants — the accepted [embedder.family.<family>] keys.
 const (
-	EmbedFamilyKnowledge    EmbedFamily = "knowledge"
-	EmbedFamilyCode         EmbedFamily = "code"
-	EmbedFamilyPractice     EmbedFamily = "practice"
-	EmbedFamilyCloud        EmbedFamily = "cloud"
-	EmbedFamilyCICD         EmbedFamily = "cicd"
-	EmbedFamilyTransformers EmbedFamily = "transformers"
+	EmbedFamilyKnowledge EmbedFamily = "knowledge"
+	EmbedFamilyCode      EmbedFamily = "code"
+	EmbedFamilyPractice  EmbedFamily = "practice"
+	EmbedFamilyCloud     EmbedFamily = "cloud"
+	EmbedFamilyCICD      EmbedFamily = "cicd"
 )
 
 // AcceptedEmbedFamilies is the set of families a creation default may name,
@@ -79,7 +78,6 @@ var AcceptedEmbedFamilies = []EmbedFamily{
 	EmbedFamilyPractice,
 	EmbedFamilyCloud,
 	EmbedFamilyCICD,
-	EmbedFamilyTransformers,
 }
 
 // IsValid reports whether f is one of the accepted families.

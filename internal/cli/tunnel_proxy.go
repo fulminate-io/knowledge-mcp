@@ -20,11 +20,15 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/auth"
+	"github.com/fulminate-io/knowledge-mcp/internal/clientver"
 )
 
 // wsProxyPath is the relay's ws connect-ingress path. It MUST match the relay's
@@ -126,12 +130,33 @@ var (
 // would deadlock a bidi SSH session, mirroring the relay's two-pump splice). It
 // returns nil on a clean end (either side closing) and the error otherwise.
 func proxyOverWS(ctx context.Context, wsURL string, hdr proxyHeader, stdin io.Reader, stdout io.Writer) error {
-	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
+	// The handshake is an HTTP request, so it carries the client-identity
+	// headers like every other Fulminate-bound call. This dial passed a NIL
+	// header map until the call-path census found it — it names no endpoint
+	// constant in an argument, so only the shape half of that census could see
+	// it.
+	hdrs := http.Header{}
+	clientver.Stamp(hdrs)
+	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, wsURL, hdrs)
 	if resp != nil {
 		defer func() { _ = resp.Body.Close() }()
 	}
 	if err != nil {
 		if resp != nil {
+			// A version refusal on the handshake, routed through the shared
+			// classifier so it names the remedy rather than surfacing as a bare
+			// status the user cannot act on.
+			raw, readErr := io.ReadAll(io.LimitReader(resp.Body, auth.MaxErrorBodyBytes))
+			if refusal, ok := auth.LatchVersionRefusal(auth.RefusalObservation{
+				Status:    resp.StatusCode,
+				Header:    resp.Header,
+				Body:      raw,
+				ReadErr:   readErr,
+				Transport: "tunnel-proxy",
+				Path:      wsURL,
+			}); ok {
+				return refusal
+			}
 			return fmt.Errorf("dial relay ws %s: %w (status %d)", wsURL, err, resp.StatusCode)
 		}
 		return fmt.Errorf("dial relay ws %s: %w", wsURL, err)

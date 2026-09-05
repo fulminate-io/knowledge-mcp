@@ -315,6 +315,12 @@ func handleAstCount(ctx context.Context, deps ClientDeps, a astArgs) kgtools.Too
 		"skipped_parse_limit":         walk.SkippedParseLimit,
 		"files_with_parse_errors":     walk.FilesWithParseErrors,
 		"matches_from_degraded_trees": walk.MatchesFromDegradedTrees,
+		// What this walk's own test-file filter did, in both directions. count
+		// builds its metrics map by hand, so a counter absent here is invisible
+		// to every count caller while match — which marshals the struct —
+		// reports it.
+		"test_files_scanned":  walk.TestFilesScanned,
+		"test_files_excluded": walk.TestFilesExcluded,
 		// count answers "how many are there", so what discovery never offered
 		// the walk belongs in the same answer: a total is only readable
 		// alongside the set it was computed over.

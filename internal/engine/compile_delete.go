@@ -189,11 +189,8 @@ func pruneSelection(a deleteArgs) (*knowledgev1.Selection, bool) {
 // rather than a verbatim copy is what routes here.
 //
 // The `name` argument stays empty: the delete surface declares no name param, so
-// every family but transformers gets an empty Target name (unchanged — this path
-// always passed ""), and transformers gets the pinned canonical "recipes" bucket
-// so a recipe delete lands where RunRecipe's loader reads. The server previously
-// defaulted an empty transformers name to "recipes" on its own, so the pin is
-// hardening rather than a routing change.
+// every family gets an empty Target name. No family pins a literal name here —
+// the one that did addressed a graph family that no longer exists.
 func deleteRequest(plan *knowledgev1.MutationPlan, graph, repo, account, language string) *knowledgev1.ExecuteRequest {
 	return &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},

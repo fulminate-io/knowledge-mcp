@@ -55,20 +55,22 @@ func tokenize(text string) map[string]int {
 }
 
 // tokenizeWord extracts sub-tokens from a word (snake_case or camelCase splitting).
-// For camelCase, it slices the pre-computed `lower` at the same byte offsets as
-// the original word's camelCase boundaries, avoiding per-part toLowerASCII allocs.
+// For camelCase, it takes each part from the pre-computed `lower` at the original
+// word's camelCase byte offsets when lowering preserved the byte length, avoiding
+// per-part toLowerASCII allocs; lowerPart decides that per part.
 func tokenizeWord(word, lower string, tokens map[string]int) {
 	if strings.Contains(word, "_") {
 		tokenizeSnakeCase(word, lower, tokens)
 		return
 	}
-	// Inline camelCase split using lower for zero-alloc part extraction.
-	// Since lower is the ASCII-lowered version of word, byte offsets are 1:1.
+	// Inline camelCase split using lower for zero-alloc part extraction. Offsets
+	// walked on word may index lower only when len(word) == len(lower); lowerPart
+	// enforces that condition and lowers the part itself when it does not hold.
 	tokenizeCamelParts(word, lower, tokens)
 }
 
 // tokenizeCamelParts splits word on camelCase boundaries and indexes parts
-// by slicing lower at the same offsets — zero allocation per part.
+// through lowerPart — zero allocation per part on the byte-length-stable path.
 func tokenizeCamelParts(word, lower string, tokens map[string]int) {
 	start := 0
 	n := len(word)
@@ -81,20 +83,31 @@ func tokenizeCamelParts(word, lower string, tokens map[string]int) {
 		if !split {
 			continue
 		}
-		emitCamelPart(lower, start, i, tokens)
+		emitCamelPart(word, lower, start, i, tokens)
 		start = i
 	}
-	emitCamelPart(lower, start, n, tokens)
+	emitCamelPart(word, lower, start, n, tokens)
 }
 
-func emitCamelPart(lower string, start, end int, tokens map[string]int) {
+func emitCamelPart(word, lower string, start, end int, tokens map[string]int) {
 	if end-start < 2 {
 		return
 	}
-	pl := lower[start:end]
+	pl := lowerPart(word, lower, start, end)
 	if pl != lower {
 		tokens[pl]++
 	}
+}
+
+// lowerPart returns the lowered form of word[start:end]. It slices the
+// pre-lowered buffer when — and only when — lowering preserved the byte
+// length, which is the exact and complete condition under which offsets
+// walked on word may index lower. Otherwise it lowers the part itself.
+func lowerPart(word, lower string, start, end int) string {
+	if len(word) == len(lower) {
+		return lower[start:end]
+	}
+	return toLowerASCII(word[start:end])
 }
 
 // tokenizeSnakeCase splits a snake_case identifier and indexes all sub-tokens.
@@ -104,7 +117,7 @@ func tokenizeSnakeCase(word, lower string, tokens map[string]int) {
 	for part := range strings.SplitSeq(word, "_") {
 		partLen := len(part)
 		if partLen >= 2 {
-			partLower := lower[off : off+partLen]
+			partLower := lowerPart(word, lower, off, off+partLen)
 			tokens[partLower]++
 			tokenizeCamelParts(part, partLower, tokens)
 		}

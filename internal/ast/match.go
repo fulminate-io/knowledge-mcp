@@ -50,8 +50,14 @@ var errMatchNilPattern = errors.New("ast/match: nil CompiledPattern or pattern t
 // Scope narrows the files walked. It NEVER caps the walk: every file the
 // filters admit is parsed, and every match found is returned. The ast tool's
 // `limit` argument is a RENDER bound owned entirely by the tool layer
-// (cmd/knowledge/internal/tools/ast.go), which is also the only non-test
-// constructor of this struct.
+// (cmd/knowledge/internal/tools/ast.go).
+//
+// THE TOOL LAYER IS NOT THE ONLY CONSTRUCTOR, and a comment here once said it
+// was. The corpus-check scanner builds this struct twice — once for the walk it
+// runs per check and once for the scope it hands the zero-scan hint — and the
+// check-fixture runner builds it a third time. A caller reading the retired
+// claim would conclude that a change to the tool layer's argument handling
+// reaches every walk, which it does not.
 type Scope struct {
 	// Repo is informational only — Match operates on repoDir directly.
 	Repo string
@@ -164,7 +170,11 @@ type RawMatch struct {
 // that produced no match from a file that was never read. They describe
 // discovery's own rule chain only: files this Scope's language / prefix /
 // test-file filters dropped are not exclusions in this sense, since the caller
-// asked for those.
+// asked for those. The test-file drop is reported instead by TestFilesExcluded
+// below, which is a separate stats field and deliberately NOT a new exclusion
+// rule: folding it into the report would hand a caller their own request back
+// as an exclusion and change excluded_by_rule under a flag that excludes
+// nothing.
 //
 // FilesSkipped is the exact SUM of the three by-cause skip counters below, and
 // is computed from them (walkCounters.skippedTotal) rather than tracked
@@ -199,6 +209,27 @@ type WalkStats struct {
 	// they do not make parses correct.
 	FilesWithParseErrors     int `json:"files_with_parse_errors"`
 	MatchesFromDegradedTrees int `json:"matches_from_degraded_trees"`
+	// TestFilesScanned and TestFilesExcluded report what Scope.IncludeTests did,
+	// in both directions, and they are COMPLEMENTS rather than one fact told
+	// twice: the first is zero exactly when the filter is on and the second is
+	// zero exactly when it is off, and neither is recoverable from the other
+	// without a corpus total this walk does not report. A consumer saying "this
+	// run reached tests" reads the first; one explaining a zero scan reads the
+	// second, which is the only place the cause exists at all.
+	//
+	// THEY ARE COUNTED AT DISCOVERY, where the filter lives, so they count files
+	// ADMITTED TO the walk rather than files the parser then got through.
+	// FilesScanned is counted at the other end, by the workers, so a test file
+	// the walk could not read is counted here AND in FilesSkipped. The gap is
+	// exactly the by-cause skip counters and is never larger.
+	//
+	// A language with no test-file convention filters nothing, so both read zero
+	// however IncludeTests is set — an honest report of a filter that had no
+	// vocabulary to act on, which is why the tool layer refuses an explicit
+	// include_tests for those languages up front rather than letting a caller
+	// read the zeros as an answer.
+	TestFilesScanned  int `json:"test_files_scanned"`
+	TestFilesExcluded int `json:"test_files_excluded"`
 	// ExcludedByRule counts, per rule name, the candidates discovery declined.
 	// Counts are exact. A rule present with zero ran and declined nothing; a
 	// rule ABSENT never executed on the discovery path that ran — the two are
@@ -267,10 +298,11 @@ func Match(
 		return nil, stats, errMatchNilPattern
 	}
 
-	files, report, err := discoverScopedFiles(ctx, repoDir, lang, scope)
+	files, report, tests, err := discoverScopedFiles(ctx, repoDir, lang, scope)
 	if err != nil {
 		return nil, stats, err
 	}
+	tests.applyTo(&stats)
 	stats.ExcludedByRule = report.ExcludedByRule
 	stats.ExcludedSamples = report.ExcludedSamples
 	stats.ExcludedTruncated = report.ExcludedTruncated
@@ -316,6 +348,22 @@ func closeSubPatternCache(cache map[string][]patternVariant, mu *sync.Mutex) {
 	}
 }
 
+// testFileTally is what the test-file branch of the scope filter did: how many
+// of this language's test files were admitted to the walk, and how many were
+// dropped. It is a third return rather than two more ints because the two
+// numbers are one fact about one branch and a caller that reads one without the
+// other cannot tell "the filter was off" from "there are no test files here".
+type testFileTally struct {
+	scanned  int
+	excluded int
+}
+
+// applyTo copies the tally onto the stats the walk reports.
+func (t testFileTally) applyTo(s *WalkStats) {
+	s.TestFilesScanned = t.scanned
+	s.TestFilesExcluded = t.excluded
+}
+
 // discoverScopedFiles delegates to parser.DiscoverFilesReporting and applies
 // scope filters: language match, PackagePrefixes prefix-match, and the
 // per-language test-file drop when IncludeTests is false.
@@ -324,14 +372,15 @@ func closeSubPatternCache(cache map[string][]patternVariant, mu *sync.Mutex) {
 // disclose what it never saw. The report is discovery's own and is deliberately
 // NOT extended with the scope filters applied below: those are the caller's
 // narrowing, and folding them in would report a caller's own request back to
-// them as an exclusion.
-func discoverScopedFiles(ctx context.Context, repoDir string, lang treesitter.Language, scope Scope) ([]string, parser.DiscoveryReport, error) {
+// them as an exclusion. The test-file branch is reported through the SEPARATE
+// tally instead, for the same reason.
+func discoverScopedFiles(ctx context.Context, repoDir string, lang treesitter.Language, scope Scope) ([]string, parser.DiscoveryReport, testFileTally, error) {
 	all, report, err := parser.DiscoverFilesReporting(ctx, repoDir, parser.DiscoveryOptions{
 		LiftExclusions:  scope.LiftExclusions,
 		PackagePrefixes: scope.PackagePrefixes,
 	})
 	if err != nil {
-		return nil, report, fmt.Errorf("ast/match: discover files: %w", err)
+		return nil, report, testFileTally{}, fmt.Errorf("ast/match: discover files: %w", err)
 	}
 	// The language config is loop-invariant — one language per call — and
 	// langConfigFor takes a registry read lock, so it is resolved once here
@@ -343,6 +392,7 @@ func discoverScopedFiles(ctx context.Context, repoDir string, lang treesitter.La
 		isTest = cfg.IsTestFile
 	}
 	out := make([]string, 0, len(all))
+	var tests testFileTally
 	for _, rel := range all {
 		if treesitter.DetectLanguage(rel) != lang {
 			continue
@@ -350,12 +400,20 @@ func discoverScopedFiles(ctx context.Context, repoDir string, lang treesitter.La
 		if !matchesPackagePrefixes(rel, scope.PackagePrefixes) {
 			continue
 		}
-		if !scope.IncludeTests && isTest != nil && isTest(rel) {
-			continue
+		// THE BRANCH IS SPLIT RATHER THAN SHORT-CIRCUITED so both sides are
+		// counted. The retired one-line condition could only ever observe the
+		// drop; the admitted test file — the number a caller needs to tell a run
+		// that reached tests from one that did not — was invisible to it.
+		if isTest != nil && isTest(rel) {
+			if !scope.IncludeTests {
+				tests.excluded++
+				continue
+			}
+			tests.scanned++
 		}
 		out = append(out, rel)
 	}
-	return out, report, nil
+	return out, report, tests, nil
 }
 
 // matchesPackagePrefixes reports whether rel is admitted by the caller's

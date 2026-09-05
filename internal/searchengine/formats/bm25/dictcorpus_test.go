@@ -59,7 +59,7 @@ func TestGenerateDictbenchCorpus(t *testing.T) {
 	var segments, bytes int
 	for i := 0; i < len(docs); i += perSegment {
 		batch := docs[i:min(i+perSegment, len(docs))]
-		seg, err := Format{}.Build(batch)
+		seg, _, err := Format{}.Build(batch)
 		require.NoError(t, err)
 		blob, err := seg.Encode()
 		require.NoError(t, err)

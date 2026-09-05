@@ -217,6 +217,11 @@ func (f *gapCoverageFake) LiveResidentDocCount(_ kgtypes.GraphType, name string)
 	}
 	return f.covered
 }
+
+// BM25DegradeCounts reports no drops: this fake exercises the coverage counts,
+// not the drop census.
+func (f *gapCoverageFake) BM25DegradeCounts(kgtypes.GraphType, string) map[string]int { return nil }
+
 func (f *gapCoverageFake) RepairVerification(kgtypes.GraphType, string) (RepairVerification, bool) {
 	return RepairVerification{}, false
 }

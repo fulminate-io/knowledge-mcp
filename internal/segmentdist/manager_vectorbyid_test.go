@@ -21,6 +21,7 @@ import (
 // absent-id (ok=false, err=nil) from a load failure. Fails-when-absent: skipping
 // dm.load(ctx) returns (nil,false) for a known id on a fresh manager.
 func TestManagerVectorByIDResolvesShippedVector(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

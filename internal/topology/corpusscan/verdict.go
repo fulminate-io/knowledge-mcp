@@ -43,6 +43,15 @@ type RunVerdict struct {
 	// Truncated reports whether either render ceiling fired, so a bounded result
 	// is never mistaken for a complete one.
 	Truncated bool
+	// TestFilesScanned is how many of this language's test files the run's walk
+	// reached — the most any single check scanned, since the test-file scope is
+	// per check. Zero means the run did not read test code at all, which is a
+	// different answer from having found nothing in it.
+	//
+	// IT DOES NOT PARTICIPATE IN Clean() OR Inconclusive(). Reaching test files
+	// is a scope fact, not a completeness one: a run that deliberately excluded
+	// them answered the question it was asked.
+	TestFilesScanned int
 }
 
 // Clean reports whether the run both completed and found nothing.
@@ -74,6 +83,11 @@ func (v RunVerdict) Inconclusive() bool {
 // THE TRAILING SPACE ON THE TWO REFUSAL PREFIXES IS LOAD-BEARING: an id is
 // concatenated directly after it, which is why these are HasPrefix tests against
 // the declared constants rather than equality or a hand-typed copy.
+//
+// THE DEFAULT ARM IS A TRAP FOR NEW DISCLOSURES. Anything this switch does not
+// recognize counts as a flagged site, so a disclosure added to the analyzer
+// without an arm here adds one to sites_flagged on every run, makes Clean()
+// false, and renders a clean corpus as FLAGGED with a non-zero exit status.
 func ClassifyRun(findings []foundation.Finding) RunVerdict {
 	var v RunVerdict
 	flagged := map[string]bool{}
@@ -86,6 +100,8 @@ func ClassifyRun(findings []foundation.Finding) RunVerdict {
 			v.Truncated = true
 		case f.Title == DisclosureTitleLLMOnly:
 			v.LLMOnlyNotExecuted = int(f.Metrics["llm_only_total"])
+		case f.Title == DisclosureTitleTestFiles:
+			v.TestFilesScanned = int(f.Metrics[MetricTestFilesScanned])
 		default:
 			v.SitesFlagged++
 			flagged[f.Metadata[MetaKeyCheckID]] = true

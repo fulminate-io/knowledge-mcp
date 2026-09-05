@@ -161,6 +161,16 @@ func (p *Page) Blocks() ([]Block, error) {
 // before falling back to the heuristic clusterer so the desync is
 // observable. T6 reviewer fix T4.10.
 func (p *Page) blocksFromStructTree() ([]Block, error) {
+	return p.blocksFromStructTreeInto(nil)
+}
+
+// blocksFromStructTreeInto is the arena-aware variant. A non-nil arena
+// backs the residue runs' per-glyph slices, which is what lets a whole
+// tagged document share the one document-scoped arena the pool hands
+// out instead of allocating a private one per page — the exact per-page
+// allocation the two-phase design exists to avoid. A nil arena keeps
+// the one-shot behaviour for the direct Page.Blocks caller.
+func (p *Page) blocksFromStructTreeInto(arena *text.RunArena) ([]Block, error) {
 	pageIdx := p.inner.Index()
 	pageBlocks, err := structtree.Walk(p.doc.ctx, pageIdx)
 	if err != nil {
@@ -171,7 +181,10 @@ func (p *Page) blocksFromStructTree() ([]Block, error) {
 		}
 		return nil, err
 	}
-	runs, err := p.TextRuns()
+	if arena == nil {
+		arena = &text.RunArena{}
+	}
+	runs, err := p.TextRunsInto(arena)
 	if err != nil {
 		return nil, err
 	}
@@ -206,16 +219,5 @@ func (p *Page) BlocksWithParams(params LayoutParams) ([]Block, error) {
 // ReadingOrder returns the page's blocks ordered by reading-order
 // heuristics (top-to-bottom, multi-column-aware). T5 fills; T1 stubs.
 func (p *Page) ReadingOrder() ([]Block, error) {
-	return nil, ErrNotImplemented
-}
-
-// HeadersFooters returns the page's header and footer blocks. T5
-// fills; T1 stubs.
-func (p *Page) HeadersFooters() ([]Block, error) {
-	return nil, ErrNotImplemented
-}
-
-// Footnotes returns the page's footnote blocks. T5 fills; T1 stubs.
-func (p *Page) Footnotes() ([]Block, error) {
 	return nil, ErrNotImplemented
 }

@@ -4,11 +4,10 @@ package pdfcollector
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf"
@@ -63,14 +62,36 @@ func (c *PDFCollector) Collect(
 		return nil, fmt.Errorf("pdf collector: chunk %q: %w", id, err)
 	}
 
+	// The instant this collect ran, stamped on the document root so an
+	// operator can tell a fresh raw graph from a stale one.
+	collectedAt := time.Now().UTC()
+
 	meta := doc.Metadata()
-	nodes, edges := emit(meta, id, chunks)
+	nodes, edges, err := emit(meta, id, chunks, collectedAt)
+	if err != nil {
+		// The emitter refuses whole rather than shipping survivors: see emit's
+		// doc for why a partial emission on this path would retire the rest of
+		// the graph instead of leaving it alone.
+		return nil, fmt.Errorf("pdf collector: %w", err)
+	}
 
 	return &collectorwire.CollectResult{
 		GraphType: kgtypes.GraphPDFRaw,
-		GraphName: sourceSlug(id),
+		GraphName: SourceSlug(id),
 		Nodes:     nodes,
 		Edges:     edges,
+		// REACHING THIS RETURN IS ITSELF THE PROOF OF A COMPLETE WALK, which is why
+		// the assertion is unconditional here rather than derived from a census the
+		// way the web collector's is. Every per-page failure in this path ERRORS
+		// rather than skipping: chunk.Build returns nil plus an error at each of its
+		// page-level call sites, its `continue` statements are reached only after a
+		// nil error, doc.Chunks returns on that error and the Chunks call above
+		// returns on it in turn. So a partially-read document cannot arrive here at
+		// all — it left as an error. The assertion is what entitles the server to
+		// treat this emission as the document's authoritative set and retire the
+		// prior generation; without it the deletion phase stays disabled and every
+		// re-collect accumulates.
+		WalkComplete: true,
 	}, nil
 }
 
@@ -83,19 +104,50 @@ func defaultChunkOptions() pdf.ChunkOptions {
 	return chunk.DefaultOptions
 }
 
-// sourceSlug derives a per-source graph name from the input path. The
-// slug is "<basename-without-extension>-<sha256[:8]>", which is stable
-// across invocations on the same path and unique-enough across distinct
-// documents that share a basename. Re-collecting the same file produces
-// the same graph name and overwrites the prior contents.
-func sourceSlug(path string) string {
+// SourceSlug derives a per-source graph name from the input path: the
+// sanitized, extension-stripped BASENAME of the file and nothing else.
+// A raw graph is named after the document it was collected from, so the
+// name is the thing an operator already knows how to read.
+//
+// THE HASH SUFFIX IS GONE. This used to append a dash and eight hex
+// characters of sha256 over the PATH, which made every name unreadable in
+// order to keep two same-basename documents apart. Separating those two
+// documents is now the collect-time collision refusal's job — see
+// precheckRawCollect in the tools package, which reads the source recorded
+// on the target graph's document root and refuses an incoming collect that
+// came from a different file rather than merging into it or minting a
+// suffix. Nothing here disambiguates, and nothing here needs to.
+//
+// THIS DECLARATION IS THE ONE PRODUCTION DERIVATION of a pdf raw graph's
+// name. Its callers are PDFCollector.Collect above, which names the graph
+// the collect actually writes; resolveRawSourceGraphName in the tools
+// package (collect_recipe_extract.go), which turns a replay id that spells
+// the absolute path into the graph name; and tools.CollectGateGraphName,
+// the single dispatcher that predicts the name BEFORE the walk. A second
+// implementation anywhere would be a second definition of the graph's
+// identity and would drift silently.
+//
+// WHAT THIS FUNCTION DECIDES IS THE NAME, AND ONLY THE NAME — it performs no
+// write, so it promises nothing about the contents on its own. Re-collecting the
+// same file resolves to the same graph name, and the prior contents are then
+// REPLACED by the server: a pdf graph is in the collector-managed full-replace
+// set, so Finalize retires whatever the collect did not re-emit. That replacement
+// is conditional on the walk assertion Collect makes above — a collect that
+// reported an incomplete walk gets no deletion phase, and the graph would
+// accumulate instead.
+//
+// IT IS EXPORTED BECAUSE THE COLLECT DISPATCH RESOLVES REPLAY IDS WITH IT: a
+// recipe replay may name the absolute path the collect took rather than the
+// slug, and the tools package turns one into the other by calling this. A
+// second implementation there would be a second definition of the graph's
+// identity and would drift silently, so this declaration is the only one.
+func SourceSlug(path string) string {
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	base = sanitizeSlug(base)
 	if base == "" {
 		base = "pdf"
 	}
-	sum := sha256.Sum256([]byte(path))
-	return fmt.Sprintf("%s-%s", base, hex.EncodeToString(sum[:4]))
+	return base
 }
 
 // sanitizeSlug replaces any character that is not [a-z0-9-_] with '-'

@@ -104,6 +104,15 @@ func cursorHighWater(cursors []*knowledgev1.LayerCursor) int64 {
 // under-indexing, which is the failure this whole ticket removes. A zero stamp WITH
 // sampled == true is different and correctly skips: that is the server's honest
 // "never recorded", and an empty graph has nothing to drain.
+//
+// A FRESHLY-COLLECTED RAW GRAPH IS EXACTLY THE CASE THIS FAIL-OPEN IS FOR, and it
+// needs no change to serve one. WHAT IT DOES NOT SURVIVE ON ITS OWN IS A DROPPED
+// GRAPH: a dropped graph presents the SAME never-sampled state, so this arm would
+// drain it forever, paying a full-layer walk every tick for a graph that no longer
+// exists. The gate that prevents that is the working-set REMOVAL on the drop path
+// (workingset.Remove, called from the drop handler): the pipeline's wanted set is a
+// filter over working-set members, so a removed graph never starts an arm and never
+// reaches this predicate. The two are coupled — do not remove one without the other.
 func (c *collector) skipQuiescentGraph(cursors []*knowledgev1.LayerCursor) bool {
 	if c.bm25.corpusStamp == nil {
 		return false // no signal wired — drain rather than skip, same fail-open rule.
@@ -352,15 +361,19 @@ func (c *collector) maybeBM25Flush(ctx context.Context, merged int, pending bool
 
 // bm25ArmEnabledFor is the arm's GRAPH GATE, and it is an EXISTING predicate rather
 // than a new one: kgtypes.HasRebuildableSegments resolves to exactly {knowledge,
-// code, cloud, cicd, practice, checks} and is already the gate manage(status)'s
-// coverage probe and the heal factory use.
+// code, cloud, cicd, practice, checks, web, pdf} and is already the gate
+// manage(status)'s coverage probe and the heal factory use.
 //
-// FAIL-CLOSED BY CONSTRUCTION, which is the point. transformers is
-// Summarizable-but-NOT-Embeddable and gets zero segments today; linkage, logs, web
-// and pdf are outside the segment world entirely. A hand-rolled predicate like
-// "BM25-eligible = not embeddable" would silently grant transformers segments it
-// must not have. Reusing the repo's allowlist is what discharges the standing
-// cross-graph requirement rather than re-deciding it here.
+// THE TWO RAW GRAPHS ARE IN THAT SET DELIBERATELY, and this arm is why: server-side
+// BM25 segments over the collected chunks are what make a raw web or pdf graph
+// keyword-searchable at all, which replaced a client-side whole-graph drain-and-rank.
+//
+// FAIL-CLOSED BY CONSTRUCTION, which is the point, and the argument is unchanged by
+// the widening. linkage and logs are outside the segment world entirely — linkage
+// holds proxy edges with no text, logs are never embedded. A hand-rolled predicate
+// like "BM25-eligible = not embeddable" would silently grant a non-embeddable
+// family segments it must not have. Reusing the repo's allowlist is what
+// discharges the standing cross-graph requirement rather than re-deciding it here.
 //
 // CHECKS IS ADMITTED HERE AND NARROWED SERVER-SIDE. The graph carries segments for
 // its check findings; its fixture example nodes — code authored deliberately to be

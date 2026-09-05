@@ -1,111 +1,60 @@
 ---
 name: test
-description: Execute a test plan from the knowledge graph. Starts a run session, spawns tester agents to run each test step, and reviews pass/fail/skip results.
-argument-hint: <test plan ID or name to execute>
+description: Run the live confirmation — a test plan executed against the built system by the tester agent, with pass, fail or skip recorded per step. The audit of the whole chain against reality; the last gate before a ticket closes. Use after code review ships and the system is rebuilt from the branch.
+argument-hint: <test plan id or name, or the ticket to confirm>
 ---
 
-# Test: $ARGUMENTS
+# Confirm: $ARGUMENTS
 
 <precedence>
 User input > Skill constraints > Trained defaults
 
-For universal orchestration discipline (background spawning, user touch points,
-non-negotiation), reference /orchestrate. This skill is test-execution-specific.
+For pipeline discipline reference /orchestrate. This skill is confirmation-specific.
 </precedence>
 
-You are executing a test plan from the knowledge store. Delegate to `tester` agents — they follow steps, run automated criteria, verify manual criteria, and record pass/fail/skip results.
+<mental-model>
+Tests catch bugs; the confirmation confirms. A defect found here is a missing
+test by definition, and the fix ticket names the test class that was absent.
+The confirmation never substitutes for a test the implementer could have
+written.
+</mental-model>
 
-## Step 0: Find the Test Plan
+## Step 0: The plan
 
-```json
-query({ "text": "$ARGUMENTS", "type": "test_plan", "limit": 5 })
+A ticket's confirmation plan is short: per numbered requirement, one live
+observation on the built system, plus the write round-trip read back by
+identifier, the processing observation in the component's own output, and the
+deterministic-identifier lifecycle probe where the ticket touches a lifecycle
+(the run-a-smoke-test rulebook). Write it as a test plan node with
+`create_test_plan` under the ticket; the orchestrator authors it directly,
+since it is a list of observations, not a design.
+
+## Step 1: The system under test
+
+The confirmation runs against a build of the branch under test. Where the
+project sanctions a rebuild of a shared service, the orchestrator performs it
+at the sanctioned point and records the build identity; a tester never
+rebuilds, restarts or reconfigures the operator's running services. Where a
+spawned system suffices, the tester spawns its own on picked ports with an
+isolated home.
+
+## Step 2: Spawn the tester (background)
+
+```
+Agent(subagent_type: "tester",
+      prompt: "Execute test plan <id> with run session <uuid> against <build identity>. Run every automated criterion from its stored bytes, verify manual criteria by observation, record pass|fail|skip per test_run with full output, and report to main. The operator's services and stores are never touched.",
+      description: "Confirm: <ticket>",
+      run_in_background: true)
 ```
 
-If multiple match, present and ask the user which one to run. Get the `test_plan_id`.
+Steps that share state or order run in one tester; independent steps may run
+in parallel testers with distinct test_run ids.
 
-Walk the plan to see all steps and criteria:
+## Step 3: Route the results
 
-```json
-assemble({ "id": "test_plan_id" })
-```
-
-## Step 1: Start a Run Session
-
-```json
-assemble({ "id": "test_plan_id", "new_run": true })
-```
-
-Returns a `run_session` UUID grouping all test_run nodes. Save both `test_plan_id` and `run_session` — pass to the tester agent.
-
-## Step 2: Spawn Tester Agent(s)
-
-<spawn id="tester" background="true">
-
-  <single-tester-invocation>
-    Agent(
-      subagent_type: "tester",
-      prompt: "Execute the test plan [test_plan_id] with run session [run_session]. For each test_run node, read the step details, execute the test (run automated criteria via Bash, verify manual criteria), and record results with mutate(operation: 'update', id: run_id, status: 'pass|fail|skip'). Report results when done.",
-      description: "Test: [brief name]",
-      run_in_background: true
-    )
-  </single-tester-invocation>
-
-  <parallel-tester-invocation when="steps test independent components">
-    Spawn in parallel (one message, multiple Agent calls):
-
-    Agent(subagent_type: "tester", prompt: "Execute test_run [run_id_1] from plan [test_plan_id] run session [run_session]. ...", description: "Test: [step 1]", run_in_background: true)
-    Agent(subagent_type: "tester", prompt: "Execute test_run [run_id_2] from plan [test_plan_id] run session [run_session]. ...", description: "Test: [step 2]", run_in_background: true)
-  </parallel-tester-invocation>
-
-  <parallelization-rule>
-    Steps testing different components: parallel.
-    Steps sharing state or requiring order: sequential.
-  </parallelization-rule>
-
-</spawn>
-
-## Step 3: Review Results
-
-```json
-assemble({ "id": "test_plan_id", "run_session": "uuid" })
-```
-
-Present summary to user:
-- Pass/fail/skip counts
-- Specific failures with error output
-- Any unexpected behavior or findings
-
-Failures need user input (legitimate touch point — design decision).
-
-## Step 4: Handle Failures
-
-- **Fix and re-run**: suggest `/implement` to address, then re-run with new session.
-- **Re-run specific tests**: spawn tester targeting failed test_run nodes from same plan.
-- **Record findings**: systemic issues → `mutate(operation:"create", type:"finding")`.
-- **Skip and continue**: ONLY for a failure the USER has designated known/acceptable → mark `skip` citing the user's decision. Classifying a failure as acceptable is never the agent's call.
-
-<constraint id="test-execution-discipline" severity="hard">
-
-  <anti-patterns>
-    <pattern>Implementing fixes inline — use implementer agents for that</pattern>
-    <pattern>Skipping review with the user before proceeding (failures = legitimate touch point)</pattern>
-    <pattern>Parallelizing steps that share state or have ordering requirements</pattern>
-    <pattern>Forgetting to pass both test_plan_id and run_session to tester agents</pattern>
-  </anti-patterns>
-
-</constraint>
-
-## Inline smoke protocol
-
-Test execution that claims live behavior follows the inline smoke protocol
-(defined in full in the implement skill): the minimum post-rebuild battery
-(read paths + write round-trip read back by identifier + processing-stage
-observation), deterministic-identifier create/delete/recreate probes verified
-through both the derived and the by-identifier read paths, probe eligibility
-established before interpretation, adversarial controls on every
-zero/absence/equality check, baseline-vs-treatment asymmetry as the signal,
-confound elimination (build identity, record existence by identifier,
-source-derived intervals, instance/flavor) before classifying any observation
-as a defect, and AMBER — storage-verified but serving-unverified — as a
-first-class result whose only disposition is reporting the asymmetry, never
-declaring green or red.
+- All pass → close the ticket; if the project's closing tickets are met, offer
+  /retro.
+- A failure → a researcher reproduces it and names the test class that would
+  have caught it; the fix lands with that test through the pipeline; never a
+  fix without its test, never a skip the user did not designate.
+- Amber → report the asymmetry to the user; neither green nor red.

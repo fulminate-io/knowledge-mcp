@@ -65,6 +65,7 @@ func (s *groupRecordingShipper) FinalizeRebuild(
 	s.mu.Lock()
 	s.finalizes++
 	s.mu.Unlock()
+	s.applyFinalizeCensus()
 	return RebuildFinalizeResult{Swapped: true}, nil
 }
 
@@ -96,7 +97,7 @@ func (s *groupRecordingShipper) ReEmitRebuiltDelta(
 // many distinct groups it has recorded.
 //
 // IT CAN NO LONGER DECLINE. Its predecessor returned an error meaning "no manifest
-// modelled", and the driver skipped the cardinality check on it. The real reader
+// modeled", and the driver skipped the cardinality check on it. The real reader
 // cannot fail, so there is no error for a fake to return and no skip for the driver
 // to take — which means this fixture now participates in the cardinality gate instead
 // of opting out of it. Reporting the recorded group count is what keeps that

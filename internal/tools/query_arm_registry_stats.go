@@ -4,7 +4,7 @@ package tools
 
 // query_arm_registry_stats.go holds the SELECTOR-DRIVEN stats arms and the
 // raw-graph ranked read they sit beside: the web/pdf pair, and the
-// checks/transformers stats arm.
+// checks stats arm.
 //
 // FOURTH SIBLING of the query arm table. query_arm_registry.go owns the param
 // groups, the armIDs and the single init that assembles the registry; the other
@@ -20,8 +20,8 @@ package tools
 
 // queryStatsArmSpecs is the selector-driven stats group of the query arm registry.
 var queryStatsArmSpecs = map[armID]armSpec{
-	// The web/pdf ranked text read: the raw graph is drained and ranked
-	// client-side (composeRawGraphSearch). `name` IS consumed, and the reason is
+	// The web/pdf ranked text read: served from the CLIENT SEGMENT ENGINE
+	// (composeRawGraphSegmentSearch). `name` IS consumed, and the reason is
 	// stronger here than anywhere else: resolveBySourceName reads sel.Name for
 	// both families, so the source slug is the ONLY selector that identifies
 	// which document is being searched. `limit` is consumed as the rank cutoff k;
@@ -30,7 +30,7 @@ var queryStatsArmSpecs = map[armID]armSpec{
 	// has nowhere to put one.
 	armWebPDFSearch: {
 		operation: "query",
-		handler:   "InterceptQueryPracticeLinkage routeWebPDFClient composeRawGraphSearch",
+		handler:   "InterceptQueryPracticeLinkage routeWebPDFClient composeRawGraphSegmentSearch",
 		consumed: qparams(qkeys(
 			"graph", "name", "mode", "id", "text", "queries", "format", "fields", "limit")),
 		rejected: qparams(
@@ -60,19 +60,43 @@ var queryStatsArmSpecs = map[armID]armSpec{
 		deliberatelyIgnored: queryFieldsIgnored(),
 	},
 
-	// The checks / transformers stats arm — the same selector-driven body the
-	// web/pdf arm above uses, so the read set is identical and so is this cell.
-	// `name` is consumed for transformers (its real instance name) and must stay
-	// absent for checks, whose selector policy admits none; the arm enforces that
-	// split rather than the cell, because one cell cannot say "per graph".
+	// The raw modules listing enumerates the collected graphs of ONE family and
+	// reads two stamps off each one's root, so `graph` and `mode` are the whole
+	// input. `name` is REJECTED rather than consumed — this arm is the surface a
+	// caller reaches BECAUSE it does not yet know a slug, and silently ignoring a
+	// supplied one would answer a narrower question than the caller asked.
+	// `samples` is rejected for the same reason it is on any non-stats arm: there
+	// is no stats body here to enrich. Both render params are deliberately
+	// ignored — the listing renders one markdown body and consults neither.
+	armWebPDFModules: {
+		operation: "query",
+		handler:   "InterceptQueryPracticeLinkage routeWebPDFClient webPDFModules",
+		consumed:  qparams(qkeys("graph", "mode")),
+		rejected: qparams(
+			qgIdentity, qgPaging, qgStats, qgCode, qgThought, qgSimulate,
+			qgTopology, qgPivot, qgCloud, qgRules,
+			qkeys("name", "repo", "account", "language", "branch", "text", "queries", "query_vector"),
+		),
+		deliberatelyIgnored: queryRenderIgnored(),
+	},
+
+	// The checks stats arm — the same selector-driven body the web/pdf arm above
+	// uses, so the read set is identical and so is this cell.
+	//
+	// `name` IS REJECTED, NOT CONSUMED, and the move is the arm's membership
+	// rather than a policy change. This arm served two graphs and only one of them
+	// carried a real instance name; checks is a singleton whose selector policy
+	// admits no instance field, so with the other graph gone there is no member
+	// left that reads `name`. The cell can now say it outright — the note that
+	// "one cell cannot say per graph" applied to a split that no longer exists.
 	armBuiltinGraphStats: {
 		operation: "query",
 		handler:   "InterceptQueryBuiltinStats renderGraphStatsBody",
-		consumed:  qparams(qkeys("graph", "name", "mode", "format", "samples")),
+		consumed:  qparams(qkeys("graph", "mode", "format", "samples")),
 		rejected: qparams(
 			qgIdentity, qgPaging, qgCode, qgThought, qgSimulate,
 			qgTopology, qgPivot, qgCloud, qgRules,
-			qkeys("repo", "account", "language", "branch", "text", "queries", "query_vector"),
+			qkeys("name", "repo", "account", "language", "branch", "text", "queries", "query_vector"),
 		),
 		deliberatelyIgnored: queryFieldsIgnored(),
 	},

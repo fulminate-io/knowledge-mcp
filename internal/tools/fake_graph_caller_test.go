@@ -418,6 +418,16 @@ func (f *fakeGraphCaller) MetadataStats(_ context.Context, _ *knowledgev1.Metada
 // Stats satisfies the statsRPC seam the per-graph stats arms type-assert for:
 // returns the seeded GraphStats (or the seeded error) and records the request.
 // Records a "stats" call so dispatch-order assertions can observe it.
+//
+// SECOND CONSUMER: statsFnOf derives the engine.StatsFn that edge-type
+// resolution reads a graph's edge vocabulary through, by the SAME narrow type
+// assertion — so every tools-layer Dispatch call in these tests reaches this one
+// method. There is one seam; a second Stats method would not compile.
+//
+// A nil statsResp yields an empty EdgesByType, and that is the BOOTSTRAP case
+// rather than a broken fixture: a graph holding no edges yet has no stored
+// family to match, so a WRITE admits the caller's spelling as the graph's first
+// edge type while a READ filter refuses and names the vocabulary.
 func (f *fakeGraphCaller) Stats(_ context.Context, req *knowledgev1.StatsRequest) (*knowledgev1.StatsResponse, error) {
 	f.recordStats(req)
 	if f.statsErr != nil {

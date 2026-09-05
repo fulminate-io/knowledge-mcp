@@ -356,6 +356,7 @@ func TestAnOrdinaryReadNoLongerResurrectsAStrandedConstituent(t *testing.T) {
 // stored blob, which is TestFreshProcessCannotRetireAPriorCorpus's incident shape
 // reached through the write path instead of the read path.
 func TestPruneCacheColdStartStillLoadsTheWholeCorpus(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

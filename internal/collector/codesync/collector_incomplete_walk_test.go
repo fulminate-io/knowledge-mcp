@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -13,20 +14,56 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 )
 
+// hermeticGitEnv returns os.Environ() with every GIT_* entry stripped, then
+// re-adds GIT_TERMINAL_PROMPT=0. Test fixtures that spawn git subprocesses MUST
+// use this instead of raw os.Environ(): inside a worktree or a git hook, git
+// exports GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE / etc. into child processes,
+// and those override `git -C <dir>` and cmd.Dir — so a fixture's `git init`
+// would re-init the host worktree gitdir (flipping core.bare=true) and its
+// commits would land on the host branch. Scrubbing GIT_* makes the fixture
+// operate only in its own temp dir regardless of the ambient env. Intentionally
+// duplicated from the coderun package: the no-shared-packages-outside-gen-proto
+// invariant (AGENTS.md) forbids a hand-written shared test-helper package
+// between these internal packages.
+func hermeticGitEnv() []string {
+	base := os.Environ()
+	out := make([]string, 0, len(base)+1)
+	for _, kv := range base {
+		if strings.HasPrefix(kv, "GIT_") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "GIT_TERMINAL_PROMPT=0")
+}
+
 // gitFixtureRepo initializes a git repository at dir and commits everything in
 // it, so discovery takes the git path (git ls-files) rather than the
 // filesystem-walk fallback — the path a real collect runs.
+//
+// REASON THIS TEST SPAWNS GIT (approved site, see the git-in-tests allowlist
+// under scripts/testdata/): its subject is the code collector's git discovery
+// path, which calls `git ls-files`; without a real repository the fixture would
+// silently exercise the filesystem-walk fallback and the test would prove
+// nothing about the path a real collect takes. dir is a t.TempDir, every command
+// runs under hermeticGitEnv, and the committer identity is passed per-command
+// with -c — never `git config user.*`, which persists into a repository's config
+// and is the form that once overwrote a developer's identity in a shared repo.
 func gitFixtureRepo(t *testing.T, dir string) {
 	t.Helper()
 	for _, args := range [][]string{
 		{"init"},
-		{"config", "user.email", "fixture@example.invalid"},
-		{"config", "user.name", "fixture"},
 		{"add", "-A"},
-		{"-c", "commit.gpgsign=false", "commit", "-m", "fixture"},
+		{
+			"-c", "user.email=fixture@example.invalid",
+			"-c", "user.name=fixture",
+			"-c", "commit.gpgsign=false",
+			"commit", "-m", "fixture",
+		},
 	} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
+		cmd.Env = hermeticGitEnv()
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, "git %v: %s", args, out)
 	}

@@ -14,9 +14,9 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/logs"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/logs/cloudresolver"
-	"github.com/fulminate-io/knowledge-mcp/internal/collector/remote"
 	"github.com/fulminate-io/knowledge-mcp/internal/collectorwire"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	logwire "github.com/fulminate-io/knowledge-mcp/internal/logwire"
@@ -45,9 +45,17 @@ func runLogsCollect(ctx context.Context, deps ClientDeps, a collectArgs) kgtools
 	}
 	queryID := computeLogsQueryID(query)
 
-	uploader, ok := deps.Sink().(*remote.UploadSink)
-	if !ok {
-		return errorResult(fmt.Sprintf("collect logs: sink is %T, expected *remote.UploadSink", deps.Sink()))
+	// The cloud-subgraph read is reached BY NAME. Downcasting the injected sink
+	// to a concrete type was the defect: the production sink is an admission
+	// wrapper around the uploader, so the assertion failed every collect.
+	//
+	// A nil fetcher is a LOUD refusal, never a warn-and-continue: no fetcher
+	// means no cloud resolver and no dependency checker, which is exactly the
+	// silent enrichment loss the FAIL LOUD comment below already refuses for
+	// the transport-error case.
+	fetcher := deps.SubgraphFetcher()
+	if fetcher == nil {
+		return errorResult("collect logs: no cloud subgraph fetcher configured")
 	}
 
 	// ENTRIES-FIRST FLOW: pull raw entries, derive candidate cloud
@@ -64,7 +72,7 @@ func runLogsCollect(ctx context.Context, deps ClientDeps, a collectArgs) kgtools
 	// existing prefixRank logic. Wire-size narrowing is deferred to a
 	// benchmarks-end-of-project ticket.
 	graphNames := candidateCloudGraphNames(entries)
-	subgraph, err := uploader.FetchCloudSubgraph(ctx, graphNames, nil)
+	subgraph, err := fetcher.FetchCloudSubgraph(ctx, graphNames, nil)
 	if err != nil {
 		// FAIL LOUD. This used to warn and proceed with a nil subgraph,
 		// which silently downgraded the collect: no cloud resolver means
@@ -86,22 +94,25 @@ func runLogsCollect(ctx context.Context, deps ClientDeps, a collectArgs) kgtools
 		logs.WithDependencyChecker(cloudresolver.NewDependencyChecker(subgraph)),
 	}
 	// nil dbStore = no-store mode. The client materializes the log graph
-	// in memory via logs.MaterializeLogGraph below; UploadSink.WriteResult
-	// then ships it via the standard wire path (CreateBatch on the server).
+	// in memory via logs.MaterializeLogGraph below; the injected sink's
+	// WriteResult then ships it via the standard wire path (CreateBatch on
+	// the server).
 	pipeline := logs.NewPipeline(provider, queryID, opts...)
 	result, err := pipeline.CollectFromEntries(ctx, entries, query)
 	if err != nil {
 		return errorResult(fmt.Sprintf("collect logs: pipeline: %v", err))
 	}
 
-	return shipLogsResult(ctx, uploader, result)
+	return shipLogsResult(ctx, deps.Sink(), result)
 }
 
 // shipLogsResult runs the client-side MaterializeLogGraph pure transform
-// against the pipeline output and ships the resulting nodes+edges via the
-// standard UploadSink.WriteResult RPC. Extracted from runLogsCollect to
-// keep both functions inside the file-line / funlen budget.
-func shipLogsResult(ctx context.Context, uploader *remote.UploadSink, result *logs.CollectResult) kgtools.ToolResult {
+// against the pipeline output and ships the resulting nodes+edges through the
+// INJECTED collector.Sink — wrappers included, so the log graph is admitted to
+// the working set like every other collected graph instead of bypassing the
+// admission wrapper on the way to the raw uploader. Extracted from
+// runLogsCollect to keep both functions inside the file-line / funlen budget.
+func shipLogsResult(ctx context.Context, sink collector.Sink, result *logs.CollectResult) kgtools.ToolResult {
 	matNodes, matEdges, err := logs.MaterializeLogGraph(
 		result.QueryID,
 		result.Templates,
@@ -120,7 +131,7 @@ func shipLogsResult(ctx context.Context, uploader *remote.UploadSink, result *lo
 		Nodes:     matNodes,
 		Edges:     matEdges,
 	}
-	if err := uploader.WriteResult(ctx, "logs", wireResult); err != nil {
+	if err := sink.WriteResult(ctx, "logs", wireResult); err != nil {
 		return errorResult(fmt.Sprintf("collect logs: write log graph: %v", err))
 	}
 

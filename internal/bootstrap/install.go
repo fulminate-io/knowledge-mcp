@@ -17,10 +17,8 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
-	"errors"
 	"flag"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -240,21 +238,58 @@ func runCheck(ctx context.Context) error {
 	// bootstrap.Version.
 	reportBinaryStatus("client", Version, resolvedTag, goos, goarch)
 
-	// Server = the sibling knowledge-server; probe its --version,
-	// bounded by ctx so a hung binary can't wedge the check.
+	// Server = the sibling knowledge-server; probe its --version through the
+	// shared reader, bounded by ctx so a hung binary can't wedge the check.
+	// runCheck keeps its OWN not-installed and version-unknown wording, which
+	// is part of its user-facing output and not the reader's business.
 	installed := "not installed"
-	binPath, ferr := findServerBinary()
-	if ferr == nil {
-		cmd := exec.CommandContext(ctx, binPath, "--version")
-		out, execErr := cmd.Output()
+	if binPath, ferr := findServerBinary(); ferr == nil {
+		v, execErr := readServerBinaryVersion(ctx, binPath)
 		if execErr != nil {
 			installed = fmt.Sprintf("installed (version unknown: %v)", execErr)
 		} else {
-			installed = strings.TrimSpace(string(out))
+			installed = v
 		}
 	}
 	reportBinaryStatus("server", installed, resolvedTag, goos, goarch)
 	return nil
+}
+
+// readServerBinaryVersion execs a knowledge-server binary's --version and
+// returns the bare version string it prints.
+//
+// THE CONTEXT DEADLINE IS NOT OPTIONAL: a corrupt or wrong-architecture binary
+// that hangs on startup must not wedge its caller. Both callers supply one —
+// the install check, and the status surfaces' bounded accessor.
+//
+// It lives HERE, beside runCheck, rather than in a file of its own. That is a
+// placement constraint rather than a preference: a landed gate asserts
+// findServerBinary is named in this file, and this read is the only place it
+// occurs here, so relocating the reader and leaving runCheck calling it would
+// delete the literal and false-red a gate against work that preserves its
+// property.
+func readServerBinaryVersion(ctx context.Context, binPath string) (string, error) {
+	out, err := exec.CommandContext(ctx, binPath, "--version").Output() //nolint:gosec // binPath is resolved by findServerBinary, not caller-supplied
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// serverBinaryVersion locates the installed knowledge-server and reads its
+// version. ok is false when the binary cannot be found OR its version cannot be
+// read — the render surfaces treat both as unknown and skew on neither, so an
+// absent server binary never reads as a mismatch.
+func serverBinaryVersion(ctx context.Context) (string, bool) {
+	binPath, err := findServerBinary()
+	if err != nil {
+		return "", false
+	}
+	v, err := readServerBinaryVersion(ctx, binPath)
+	if err != nil || v == "" {
+		return "", false
+	}
+	return v, true
 }
 
 // reportBinaryStatus prints the installed/latest/staleness triple for
@@ -349,10 +384,24 @@ const devVersionSentinel = "dev"
 // tag the releases API answers 404 for, failing every locally-built
 // client. Prefixed stamps route to latest as an unstamped build always has.
 func resolveReleaseTag(v string) (tag string, isLatest bool) {
-	if v == devVersionSentinel || strings.HasPrefix(v, devVersionSentinel+"-") {
+	if isDevVersion(v) {
 		return "", true
 	}
 	return v, false
+}
+
+// isDevVersion reports whether v is a development stamp: the bare sentinel, or
+// any locally-built "dev-"-prefixed stamp carrying a git sha.
+//
+// It is extracted so the definition of "a dev build" has exactly ONE home. Two
+// callers depend on it for different reasons: resolveReleaseTag routes such a
+// build at the latest release endpoint, and the background update loop REFUSES
+// to touch such a build at all. The second cannot delegate its question to the
+// version comparator, because compareReleaseVersions reports ok=false for a dev
+// stamp — an uncomparable version would fail the strictly-newer test for the
+// wrong reason and the guard's intent would go untested.
+func isDevVersion(v string) bool {
+	return v == devVersionSentinel || strings.HasPrefix(v, devVersionSentinel+"-")
 }
 
 // releaseTagLabel is a tiny formatter for the user-facing status
@@ -427,67 +476,4 @@ func resolveInstallDest(flagDest string) (string, error) {
 		exe = resolved
 	}
 	return filepath.Dir(exe), nil
-}
-
-// writeAtomic writes binBytes to a tempfile inside destDir, fsyncs
-// it, then os.Renames it onto its final path. On Windows the final
-// path is removed first because Windows can't atomically replace an
-// open file via Rename (ERROR_ACCESS_DENIED). The tempfile is mode
-// 0o755 on unix so the resulting binary is immediately executable.
-//
-// Returns the absolute final path on success. On any failure after
-// the tempfile is created the tempfile is removed (best effort).
-// Permission errors surface as fs.ErrPermission so the caller can
-// translate into the multi-line UX hint without parsing error text.
-//
-// finalBase is the binary basename to install ("knowledge-server" or
-// "knowledge"); the +".exe" suffix is applied on Windows.
-func writeAtomic(destDir string, binBytes []byte, goos, finalBase string) (string, error) {
-	finalName := finalBase
-	if goos == "windows" {
-		finalName = finalBase + ".exe"
-	}
-	finalPath := filepath.Join(destDir, finalName)
-	if abs, err := filepath.Abs(finalPath); err == nil {
-		finalPath = abs
-	}
-
-	tmp, err := os.CreateTemp(destDir, "knowledge-server-install-*")
-	if err != nil {
-		return "", fmt.Errorf("create tempfile in %s: %w", destDir, err)
-	}
-	tmpPath := tmp.Name()
-	cleanup := func() { _ = os.Remove(tmpPath) }
-
-	if _, err := tmp.Write(binBytes); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return "", fmt.Errorf("write tempfile %s: %w", tmpPath, err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return "", fmt.Errorf("fsync tempfile %s: %w", tmpPath, err)
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return "", fmt.Errorf("close tempfile %s: %w", tmpPath, err)
-	}
-	if goos != "windows" {
-		if err := os.Chmod(tmpPath, 0o755); err != nil { //nolint:gosec // executable bit required so the installed server runs
-			cleanup()
-			return "", fmt.Errorf("chmod tempfile %s: %w", tmpPath, err)
-		}
-	}
-	if goos == "windows" {
-		if err := os.Remove(finalPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			cleanup()
-			return "", fmt.Errorf("remove existing %s: %w", finalPath, err)
-		}
-	}
-	if err := os.Rename(tmpPath, finalPath); err != nil {
-		cleanup()
-		return "", err
-	}
-	return finalPath, nil
 }

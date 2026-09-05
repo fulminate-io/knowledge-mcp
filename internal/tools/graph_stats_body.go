@@ -4,6 +4,8 @@ package tools
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
@@ -28,12 +30,18 @@ import (
 //
 // header is the markdown heading the text arm opens with; the json arm ignores
 // it and emits the identity as graph/name fields instead.
+//
+// extraFields carries caller-resolved lines the generic Stats RPC cannot know
+// about — the web/pdf arm passes the collected graph's collector_schema_version
+// through it. Rendered as additional lines after the breakdown in the text arm
+// and merged into the map in the json arm. Nil means no extra lines.
 func renderGraphStatsBody(
 	ctx context.Context,
 	gc statsRPC,
 	sel *knowledgev1.GraphSelector,
 	header string,
 	a queryArgs,
+	extraFields map[string]string,
 ) kgtools.ToolResult {
 	resp, err := gc.Stats(ctx, &knowledgev1.StatsRequest{Target: sel})
 	if err != nil {
@@ -41,7 +49,7 @@ func renderGraphStatsBody(
 	}
 	stats := resp.GetGraphStats()
 	if a.Format == "json" {
-		return jsonResult(map[string]any{
+		out := map[string]any{
 			"graph":               sel.GetGraph(),
 			"name":                sel.GetName(),
 			"node_count":          stats.GetNodeCount(),
@@ -49,11 +57,18 @@ func renderGraphStatsBody(
 			"binary_vector_count": stats.GetBinaryVectorCount(),
 			"nodes_by_type":       stats.GetNodesByType(),
 			"edges_by_type":       stats.GetEdgesByType(),
-		})
+		}
+		for _, k := range slices.Sorted(maps.Keys(extraFields)) {
+			out[k] = extraFields[k]
+		}
+		return jsonResult(out)
 	}
 	var sb strings.Builder
 	sb.WriteString(header + "\n\n")
 	sb.WriteString(engine.RenderStatsBreakdown(stats))
+	for _, k := range slices.Sorted(maps.Keys(extraFields)) {
+		sb.WriteString(k + ": " + extraFields[k] + "\n")
+	}
 	if a.Samples {
 		engine.RenderSampleNames(&sb, stats, fetchGraphSamples(ctx, statsExecOf(gc), sel, stats))
 	}

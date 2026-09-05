@@ -45,7 +45,7 @@ func TestConstructClient_NoAuth_ForcesLocalOnly(t *testing.T) {
 		t.Helper()
 		cfg.LocalDialer = func(int) *graphclient.GraphClient {
 			gc := graphclient.NewGraphClientForURL(localURL)
-			t.Cleanup(gc.CloseIdleConnections)
+			t.Cleanup(gc.Close)
 			return gc
 		}
 		origStore := newAuthStoreFn

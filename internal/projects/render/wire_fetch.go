@@ -68,7 +68,7 @@ func asExecutor(gc GraphCaller) (Executor, error) {
 // graphTarget builds the GraphSelector for a cross-graph fetch. The MCP wire
 // keys each graph family by its typed selector field: `language` for practice,
 // `repo` for code, `account` for cloud and cicd, and `name` for the rest (logs,
-// transformers, …). Routing an instance name through the wrong field is not a
+// checks, …). Routing an instance name through the wrong field is not a
 // soft failure — the server's resolver rejects the selector before any graph
 // lookup (the code resolver REQUIRES sel.Repo, the cloud/cicd resolver REQUIRES
 // sel.Account), so a wrongly-keyed selector fails every cross-graph fetch for
@@ -331,74 +331,6 @@ func FetchDependsOnEdges(ctx context.Context, gc GraphCaller, nodeIDs []string) 
 		dependsOn[e.FromId] = e.ToId
 	}
 	return dependsOn, nil
-}
-
-// FetchNodesByIDs hydrates many nodes in one bounded read against the
-// knowledge/default graph, replacing a per-id FetchNode loop. It returns the
-// nodes keyed by id, the read's truncation verdict, and any error.
-func FetchNodesByIDs(ctx context.Context, gc GraphCaller, ids []string) (map[string]*knowledgev1.Node, bool, error) {
-	return FetchNodesByIDsIn(ctx, gc, ids, "", "")
-}
-
-// FetchNodesByIDsIn is FetchNodesByIDs with an explicit cross-graph Target.
-// Empty graphType targets the knowledge/default graph. The pair mirrors
-// FetchNode/FetchNodeIn and IterEdges/IterEdgesIn so there is one paging body
-// rather than two, and IncludeTombstones is set for the same reason FetchNodeIn
-// sets it: a single-target hydrate and a bulk hydrate must answer identically.
-//
-// PAGED, AND THE SECOND RETURN IS WHY. The server flags truncation off the
-// REQUEST — an id list longer than its row ceiling is clamped before any row is
-// read — so an unpaged bulk hydrate of a large id set comes back short with the
-// missing nodes silently absent. Draining in pages keeps each request under that
-// ceiling, and the verdict is returned rather than dropped so a caller that is
-// clamped anyway renders a short list as short rather than as complete.
-//
-// A REQUESTED ID MISSING FROM THE RESULT MAP MEANS THE NODE WAS NOT FOUND, which
-// is the same thing FetchNodeIn expresses by returning a nil node. Callers that
-// treated a per-target fetch error as "skip this target" branch on the map miss
-// instead.
-func FetchNodesByIDsIn(
-	ctx context.Context,
-	gc GraphCaller,
-	ids []string,
-	graphType, graphName string,
-) (map[string]*knowledgev1.Node, bool, error) {
-	if gc == nil || len(ids) == 0 {
-		return map[string]*knowledgev1.Node{}, false, nil
-	}
-	ex, err := asExecutor(gc)
-	if err != nil {
-		return nil, false, err
-	}
-	out := make(map[string]*knowledgev1.Node, len(ids))
-	truncated := false
-	for start := 0; start < len(ids); start += paging.BrowsePageSize {
-		end := min(start+paging.BrowsePageSize, len(ids))
-		resp, rerr := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
-			Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-				Ids:               ids[start:end],
-				IncludeTombstones: true,
-			}},
-			Target: graphTarget(graphType, graphName),
-		})
-		if rerr != nil {
-			var ce *connect.Error
-			if errors.As(rerr, &ce) && ce.Code() == connect.CodeNotFound {
-				continue
-			}
-			return nil, false, fmt.Errorf("fetch nodes by ids: %w", rerr)
-		}
-		if resp.GetTruncated() {
-			truncated = true
-		}
-		for _, n := range decodeCarrierNodes(resp) {
-			if n == nil || n.Id == "" {
-				continue
-			}
-			out[n.Id] = n
-		}
-	}
-	return out, truncated, nil
 }
 
 // IterEdgesFor is the node-SET form of IterEdges: one bounded pivot drain over

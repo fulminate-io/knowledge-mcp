@@ -172,7 +172,7 @@ func newFanOutHarnessWithHandler(t *testing.T, graphNames []string, nodes ...*kn
 	srv := httptest.NewServer(h2c.NewHandler(mux, h2s))
 	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 	gc := graphclient.NewGraphClientForURL(srv.URL)
-	t.Cleanup(gc.CloseIdleConnections)
+	t.Cleanup(gc.Close)
 	return gc, h
 }
 

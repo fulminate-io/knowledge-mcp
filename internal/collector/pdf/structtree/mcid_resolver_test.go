@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	internalpdf "github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/internal/pdfcpu"
+	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/layout"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/text"
 )
 
@@ -22,7 +23,7 @@ func TestNewPageRunIndex_BucketsByMCID(t *testing.T) {
 		mkRun("c", 0, 0, 20, 10, 12), // idx 2 → untagged, skipped
 		mkRun("d", 7, 0, 30, 10, 12), // idx 3 → MCID 7
 	}
-	idx := newPageRunIndex(runs)
+	idx := newPageRunIndex(runs, layout.PageInfo{})
 	if got, want := len(idx.byMCID[5]), 2; got != want {
 		t.Errorf("byMCID[5] len = %d, want %d", got, want)
 	}
@@ -43,7 +44,7 @@ func TestRunsForMCIDs_PreservesSourceOrder(t *testing.T) {
 		mkRun("second", 5, 10, 0, 10, 12),
 		mkRun("third", 7, 0, 30, 10, 12),
 	}
-	idx := newPageRunIndex(runs)
+	idx := newPageRunIndex(runs, layout.PageInfo{})
 	// Query MCIDs in reverse order to confirm sorted-source-order.
 	out := idx.RunsForMCIDs([]int{7, 5})
 	got := make([]string, 0, len(out))
@@ -64,7 +65,7 @@ func TestRunsForMCIDs_DedupesRunIndices(t *testing.T) {
 		mkRun("a", 5, 0, 0, 10, 12),
 		mkRun("b", 5, 10, 0, 10, 12),
 	}
-	idx := newPageRunIndex(runs)
+	idx := newPageRunIndex(runs, layout.PageInfo{})
 	out := idx.RunsForMCIDs([]int{5, 5, 5})
 	if len(out) != 2 {
 		t.Errorf("RunsForMCIDs len = %d, want 2", len(out))
@@ -166,9 +167,9 @@ func TestCollectMCIDsFromKids_FlattenAndFlagObjref(t *testing.T) {
 func TestNewRunFor_CachesPageIndex(t *testing.T) {
 	t.Parallel()
 	calls := 0
-	rf := newRunFor(func(pi int) ([]text.TextRun, error) {
+	rf := newRunFor(func(pi int) ([]text.TextRun, layout.PageInfo, error) {
 		calls++
-		return []text.TextRun{mkRun("x", 1, 0, 0, 10, 12)}, nil
+		return []text.TextRun{mkRun("x", 1, 0, 0, 10, 12)}, layout.PageInfo{}, nil
 	})
 	if _, err := rf(0); err != nil {
 		t.Fatalf("rf(0) err: %v", err)

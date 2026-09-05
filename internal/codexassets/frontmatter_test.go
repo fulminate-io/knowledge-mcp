@@ -9,23 +9,39 @@ import (
 	"testing"
 )
 
-// repoRoot resolves the knowledge repo root from this test file's
-// location. The codexassets package lives at
-// cmd/knowledge/internal/codexassets, so the root is four parents up.
-// Used to read canonical .claude/ fixtures without hardcoding an
-// absolute path.
+// repoRoot resolves the tree carrying the canonical .claude fixtures by walking
+// up from this test's working directory to the first ancestor holding BOTH a
+// go.mod and .claude/agents.
+//
+// THIS REPLACES A DELIBERATE SKIP, AND OVERTURNS IT RATHER THAN RELAXING IT.
+// The previous form joined a fixed four parents and skipped when .claude/agents
+// was not there. Four parents is the repo root here and a directory ABOVE the
+// mirror root in the published tree, where the sync script copies
+// cmd/knowledge/internal to internal/ — so the four fixture tests hanging off
+// this helper skipped silently in the mirror and asserted nothing about the
+// assets that tree actually ships, while the package still exited 0. The mirror
+// carries .claude/agents beside its own go.mod, so a walk for the fixture tree
+// itself resolves in both layouts and the tests RUN in both. It fails loudly at
+// the filesystem root rather than skipping, because a fixture the walk cannot
+// find is now a defect in either layout.
 func repoRoot(t *testing.T) string {
 	t.Helper()
-	wd, err := os.Getwd()
+	dir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
-	// .../cmd/knowledge/internal/codexassets → up 4 to repo root.
-	root := filepath.Clean(filepath.Join(wd, "..", "..", "..", ".."))
-	if _, err := os.Stat(filepath.Join(root, ".claude", "agents")); err != nil {
-		t.Skipf("canonical .claude/agents not found at %s (skip in synced OSS tree): %v", root, err)
+	for {
+		if _, statErr := os.Stat(filepath.Join(dir, "go.mod")); statErr == nil {
+			if _, statErr := os.Stat(filepath.Join(dir, ".claude", "agents")); statErr == nil {
+				return dir
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatalf("walked to the filesystem root from the test working directory without finding .claude/agents beside a go.mod")
+		}
+		dir = parent
 	}
-	return root
 }
 
 // parseFrontmatter on .claude/agents/planner.md
@@ -68,7 +84,7 @@ func TestParseFrontmatter_PlannerAgent(t *testing.T) {
 }
 
 // a file with no leading --- returns ok=false and
-// body==full content (mirrors parseInstructionFrontmatter fallthrough).
+// body==full content (the parser's documented tolerant fallthrough).
 func TestParseFrontmatter_NoFrontmatter(t *testing.T) {
 	content := "# Just a heading\n\nSome body text with no frontmatter.\n"
 	fm, body, ok := parseFrontmatter(content)

@@ -25,8 +25,10 @@ import "io"
 type SegmentFormat[Q, S any] interface {
 	// Name identifies the format (used to tag SegmentBlob.Format for routing).
 	Name() string
-	// Build seals an immutable Segment from a batch of live documents.
-	Build(docs []Document) (Segment[Q, S], error)
+	// Build seals an immutable Segment from a batch of live documents. The
+	// BuildReport carries anything the format CONTAINED while building — see
+	// BuildReport; a format with nothing to report returns the zero value.
+	Build(docs []Document) (Segment[Q, S], BuildReport, error)
 	// Decode reconstructs a Segment from its encoded bytes. A decoded segment is
 	// indistinguishable from a freshly built one and is fully merge-eligible.
 	Decode(blob []byte) (Segment[Q, S], error)
@@ -60,6 +62,24 @@ type SegmentFormat[Q, S any] interface {
 	// AggregateStats computes the corpus-wide stats over the current segment set.
 	// BM25 sums document frequencies for IDF; HNSW returns struct{}{}.
 	AggregateStats(segs []Segment[Q, S]) S
+}
+
+// BuildReport is what a format tells the engine about a build BESIDES the
+// segment it produced.
+//
+// IT IS A VALUE, NOT AN ERROR. A build that dropped one document still produced
+// a valid segment for all the rest, so the drop cannot ride the error return
+// without discarding work that succeeded. A format with nothing to report
+// returns the ZERO VALUE, whose Degraded is nil — empty and absent are one
+// state, so a clean build is indistinguishable from one by a format that has no
+// degrade classes at all.
+//
+// Degraded is the SAME fixed-vocabulary shape collectorwire.CollectResult.Degraded
+// uses on the collect path (class name → count), so an operator reads one census
+// vocabulary across the product rather than two. The engine does not interpret
+// the keys: the vocabulary belongs to the format that produced it.
+type BuildReport struct {
+	Degraded map[string]int
 }
 
 // Segment is one immutable, sealed index shard. Sealed segments are never

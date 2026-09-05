@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -24,15 +23,15 @@ import (
 // fresh random op-stream over propGraphsPerStream real HNSW engines for
 // propOpsPerStream ops, asserting the invariant after every op. Tuned so all
 // propSeeds streams finish well under Go's 10m default (target ≤ ~90s): small
-// per-add corpora + short streams + a tight merge-quiescence window, multiplied
-// across many seeds. Deterministic: the same propBaseSeed yields the same
-// propSeeds streams every run; set RECLAIM_PROP_SEED=<n> to replay ONE seed.
+// per-add corpora + short streams + a per-op wait that returns as soon as the
+// reclaim has finished, multiplied across many seeds. Deterministic: the same
+// propBaseSeed yields the same propSeeds streams every run; set
+// RECLAIM_PROP_SEED=<n> to replay ONE seed.
 const (
-	propBaseSeed         = int64(0x5E6E70F0)
-	propSeeds            = 16 // distinct interleavings explored per invocation
-	propOpsPerStream     = 18 // ops per stream (kept short; breadth via propSeeds)
-	propGraphsPerStream  = 2  // real HNSW engines interleaved per stream
-	propQuiesceStableFor = 40 * time.Millisecond
+	propBaseSeed        = int64(0x5E6E70F0)
+	propSeeds           = 16 // distinct interleavings explored per invocation
+	propOpsPerStream    = 18 // ops per stream (kept short; breadth via propSeeds)
+	propGraphsPerStream = 2  // real HNSW engines interleaved per stream
 )
 
 // propGraph is one graph under test in the randomized property test: a real HNSW
@@ -53,15 +52,24 @@ type propGraph struct {
 // logged before it runs, so any failure is reproducible. Set RECLAIM_PROP_SEED=<n>
 // to replay a single failing seed deterministically.
 //
-// DELIBERATELY NOT PARALLEL. Shared resource: CPU scheduling, which this test
-// reads as a signal. Every assertion here is taken after a wall-clock quiescence
-// window — propQuiesceStableFor of no change in the merge counter — and the
-// invariant it then asserts requires the reclaim hook to have finished writing L2
-// for the merge that counter recorded. Peers saturating the cores stretch the gap
-// between the counter's increment and the hook's completion, so a parallel run
-// can report an invariant violation that is really a scheduling artifact. The
-// window is not the thing to widen; the contention is the thing to keep out.
+// IT RUNS IN PARALLEL, AND IT DID NOT USED TO. The reason it was held out is worth
+// recording, because it was a real one and it is now gone. Every assertion here
+// used to be taken after a WALL-CLOCK quiescence window — no change in the merge
+// counter for 40ms — while the invariant it asserts needs the reclaim hook to have
+// FINISHED writing L2 for the merge that counter recorded. Those are different
+// events, and peers saturating the cores stretched the gap between them, so a
+// parallel run could report an invariant violation that was really a scheduling
+// artifact.
+//
+// The window is gone. checkAll now waits on reclaim COMPLETION — published merges
+// equal settled merges, and the engine would pick no new target — which is a
+// property of the engine's state rather than of how much CPU the hook happened to
+// get. Contention can make the wait take longer; it can no longer make it return
+// early. So the contention no longer has to be kept out, and this test rejoins the
+// parallel pool with the rest of the reclaim family.
 func TestReclaimPropertyRandomized(t *testing.T) {
+	t.Parallel()
+
 	if override, ok := os.LookupEnv("RECLAIM_PROP_SEED"); ok {
 		seed, err := strconv.ParseInt(override, 0, 64)
 		require.NoErrorf(t, err, "RECLAIM_PROP_SEED=%q must be a base-0 integer (e.g. 0x... or decimal)", override)
@@ -101,22 +109,23 @@ func runPropertyWithSeed(t *testing.T, seed int64) {
 
 	// checkAll settles every graph, then asserts the invariant on every graph.
 	//
-	// THE WAITS OVERLAP; THE WINDOW DOES NOT SHRINK. Each graph polls its OWN
-	// engine's merge counter and must still observe propQuiesceStableFor of no
-	// change before it returns, so nothing about what quiescence MEANS is
-	// weakened here — only the dead time spent watching one graph settle while
-	// another is already settling. Waiting serially made the per-op floor the SUM
-	// of the per-graph windows rather than the longest of them, which is what
-	// dominated this test's wall clock (it burns almost no CPU).
+	// THE WAITS OVERLAP; NOTHING ABOUT THE WAIT IS WEAKENED. Each graph waits on its
+	// OWN engine's reclaim completion, so the per-op floor is the LONGEST of the
+	// per-graph waits rather than their sum — which is what dominated this test's
+	// wall clock (it burns almost no CPU). Overlapping them changes when the waits
+	// run, never what they wait for.
 	//
 	// ASSERTIONS STAY ON THE TEST GOROUTINE. require's failure path calls
 	// t.FailNow, which is only valid there; asserting from the wait goroutines
 	// would turn a real invariant violation into an undefined-behavior report.
+	// waitReclaimSettled's own deadline arm is Errorf for exactly this reason: it
+	// marks the test failed from the wait goroutine without calling FailNow, and the
+	// failure reaches the test goroutine at the wg.Wait below.
 	checkAll := func() {
 		var wg sync.WaitGroup
 		for _, g := range graphs {
 			wg.Go(func() {
-				waitMergeQuiesceWindow(g.dm.engine.MergeCount, propQuiesceStableFor)
+				waitReclaimSettled(t, g.dm.engine)
 			})
 		}
 		wg.Wait()
@@ -144,8 +153,8 @@ func runPropertyWithSeed(t *testing.T, seed int64) {
 			// survivors and is never the empty (v1) blob the engine's Decode rejects on
 			// reload (a pre-existing engine constraint, orthogonal to reclaim). We do NOT
 			// block on the merge here: the background merger fires it on its ticker and
-			// the per-op checkAll's quiescence settles it before the next assertion —
-			// blocking on a specific +1 was the dominant per-stream cost.
+			// the per-op checkAll waits for the reclaim to finish before the next
+			// assertion — blocking on a specific +1 was the dominant per-stream cost.
 			if id, ok := anyLiveDocID(g.dm); ok && liveDocCount(g.dm) >= 6 {
 				g.dm.engine.Delete(id)
 			}

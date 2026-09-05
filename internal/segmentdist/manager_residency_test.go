@@ -173,13 +173,17 @@ func TestStrictReloadErrorsRatherThanServingAShortList(t *testing.T) {
 
 		// A merge that was already in flight when the pool was evicted now completes,
 		// consolidating all three constituents into one durable blob.
-		seg, err := mockFormat{}.Build([]searchengine.Document{
+		seg, _, err := mockFormat{}.Build([]searchengine.Document{
 			doc("d1", "alpha"), doc("d2", "alpha"), doc("d3", "alpha"),
 		})
 		require.NoError(t, err)
 		mergedBytes, err := seg.Encode()
 		require.NoError(t, err)
-		const mergedID = "merged-after-eviction-0001"
+		// THE MERGED ID IS ITS OWN CONTENT HASH. reclaimMerged Puts this blob, and
+		// Put now verifies that the bytes hash to the id — a readable placeholder
+		// is refused, so the reclaim would silently fail to store it and the
+		// reload below would error for a reason this test is not about.
+		mergedID := sha256Hex(mergedBytes)
 
 		// The superseded constituents are genuinely unrecoverable once the merge has
 		// reclaimed them — which is precisely why a strict reload still naming them

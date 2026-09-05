@@ -163,6 +163,19 @@ func TestRestart_BareSpawnsDaemon(t *testing.T) {
 	if !strings.Contains(out, "reconnect to the daemon's endpoint on their next session") {
 		t.Fatalf("expected editor-reconnect note; got %q", out)
 	}
+	// THE OPERATOR IS TOLD THE DURABLE SINK. The daemon's lines reach this
+	// terminal too, through the inherited stderr, but that stream ends with the
+	// terminal while the file is what remains — and is where the daemon records
+	// the notice if the stream dies under it. The argv half of the same property
+	// is asserted by TestSpawnedChildrenAreToldTheirLogFile.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("resolve home: %v", err)
+	}
+	wantLog := filepath.Join(home, ".knowledge", "knowledge-daemon.log")
+	if !strings.Contains(out, wantLog) {
+		t.Fatalf("the restart must name the daemon's log file %q in its operator output; got %q", wantLog, out)
+	}
 }
 
 // TestRestart_StopBeforeSpawn: the owner-routed stop

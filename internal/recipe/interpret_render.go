@@ -100,11 +100,17 @@ func headingPath(row *Row, edgeType, field, sep string, sv *sourceView) string {
 // yields the ordered immediate children; a larger depth renders the whole
 // subtree.
 //
-// THE DEPTH IS THE POINT for a section render. The page-body flattener the web
-// collector runs deliberately drops code blocks, tables, images and quotes, so
-// a page's own description never contains them. This walk visits every child
-// node type, which is why a section rendered through it carries the code the
-// flattened body left out.
+// THIS IS THE PAGE-BODY PATH, not a workaround for one. The web collector used
+// to compose a page-level flatten that dropped code blocks, tables, images and
+// quotes, and this walk was the way to get them back. That flatten is retired:
+// a page carries no body at all, because a page IS its chunks. So a recipe that
+// wants a page's prose calls this function over the CONTAINS edges, and what it
+// gets is every child node type rather than one projection's idea of prose.
+//
+// THE DEPTH IS THEREFORE LOAD-BEARING for a whole page as much as for a
+// section: a depth of one reaches a page's immediate sections and no deeper,
+// which on a sectioned document composes almost nothing. The six migrated web
+// recipes pass 6.
 //
 // A depth of zero or less returns "". Cycles terminate via a visited set.
 func subtreeConcat(row *Row, edgeType, field, sep, maxDepthStr string, sv *sourceView) (string, error) {

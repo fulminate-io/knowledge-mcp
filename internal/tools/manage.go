@@ -265,14 +265,20 @@ func handleServerStatus(ctx context.Context, deps ClientDeps, format string) kgt
 		// in-process — render it so `manage(status)` always carries the client
 		// line (no daemon line, no skew line without a daemon to compare).
 		clientVer := clientVersionOnly(deps)
+		// The installed server BINARY is readable with no daemon running — its
+		// version comes off disk, not off a live process — so the binary-skew
+		// line is available on this branch even though the daemon line is not.
+		serverBinVer, serverBinKnown := serverBinarySection(deps)
 		if format == "json" {
 			m := map[string]any{"status": "not_running"}
-			addVersionJSON(m, clientVer, "", false)
+			addVersionJSON(m, clientVer, "", false, serverBinVer, serverBinKnown)
+			addClientVersionStateJSON(m)
 			return jsonResult(m)
 		}
-		return textResult("Graph server: NOT RUNNING" + renderVersionLines(clientVer, "", false))
+		return textResult("Graph server: NOT RUNNING" + renderVersionLines(clientVer, "", false, serverBinVer, serverBinKnown) + renderClientVersionStateLines())
 	}
 	clientVer, daemonVer, daemonKnown := versionSection(deps)
+	serverBinVer, serverBinKnown := serverBinarySection(deps)
 	if format == "json" {
 		// All the local-daemon facts (pid/graph_path/counts + pipeline counters +
 		// coverage[] + doctor[] + transcript + collect_runs) go through the shared
@@ -280,7 +286,8 @@ func handleServerStatus(ctx context.Context, deps ClientDeps, format string) kgt
 		m := map[string]any{}
 		addLocalDaemonJSON(ctx, deps, m)
 		m["status"] = "running"
-		addVersionJSON(m, clientVer, daemonVer, daemonKnown)
+		addVersionJSON(m, clientVer, daemonVer, daemonKnown, serverBinVer, serverBinKnown)
+		addClientVersionStateJSON(m)
 		return jsonResult(m)
 	}
 	// TEXT branch: fetch the local status directly for the human render (the JSON
@@ -306,6 +313,9 @@ func handleServerStatus(ctx context.Context, deps ClientDeps, format string) kgt
 	if th, ok := transcriptUploadHealth(deps); ok {
 		transcriptBlock = renderTranscriptHealthText(th)
 	}
+	if uh, ok := updateCheckHealth(deps); ok {
+		transcriptBlock += renderUpdateHealthText(uh)
+	}
 	doctorBlock := ""
 	if checks, ok := doctorChecks(ctx, deps); ok {
 		doctorBlock = renderDoctorText(checks)
@@ -314,7 +324,7 @@ func handleServerStatus(ctx context.Context, deps ClientDeps, format string) kgt
 		"Graph server: RUNNING\n  PID: %.0f\n  Nodes: %.0f\n  Edges: %.0f\n  Vectors: %.0f\n  BM25 docs: %.0f\n  Path: %s\n%s%s%s%s%s%s",
 		status["pid"], status["nodes"], status["edges"], status["binary_vectors"], status["bm25_docs"], status["graph_path"],
 		pipelineLine, renderLLMCoverage(ctx, deps), transcriptBlock, collectRunSection(deps), doctorBlock,
-		renderVersionLines(clientVer, daemonVer, daemonKnown)))
+		renderVersionLines(clientVer, daemonVer, daemonKnown, serverBinVer, serverBinKnown)+renderClientVersionStateLines()))
 }
 
 // handleCloudStatus reports the CLOUD graph stats for a logged-in user via
@@ -345,6 +355,7 @@ func handleCloudStatus(ctx context.Context, deps ClientDeps, host, format string
 	}
 	stats := resp.GetGraphStats()
 	clientVer, daemonVer, daemonKnown := versionSection(deps)
+	serverBinVer, serverBinKnown := serverBinarySection(deps)
 	if format == "json" {
 		// Local-daemon facts first (pid/graph_path/pipeline/coverage[]/doctor[]/
 		// transcript/collect_runs + any local node/edge counts) …
@@ -358,17 +369,21 @@ func handleCloudStatus(ctx context.Context, deps ClientDeps, host, format string
 		m["nodes"] = stats.GetNodeCount()
 		m["edges"] = stats.GetEdgeCount()
 		m["binary_vectors"] = stats.GetBinaryVectorCount()
-		addVersionJSON(m, clientVer, daemonVer, daemonKnown)
+		addVersionJSON(m, clientVer, daemonVer, daemonKnown, serverBinVer, serverBinKnown)
+		addClientVersionStateJSON(m)
 		return jsonResult(m)
 	}
 	transcriptBlock := ""
 	if th, ok := transcriptUploadHealth(deps); ok {
 		transcriptBlock = renderTranscriptHealthText(th)
 	}
+	if uh, ok := updateCheckHealth(deps); ok {
+		transcriptBlock += renderUpdateHealthText(uh)
+	}
 	return textResult(fmt.Sprintf(
 		"## Graph server: cloud\n  Backend: cloud (%s)\n\n%s%s%s%s%s",
 		host, engine.RenderStatsBreakdown(stats), renderLLMCoverage(ctx, deps), transcriptBlock, collectRunSection(deps),
-		renderVersionLines(clientVer, daemonVer, daemonKnown)))
+		renderVersionLines(clientVer, daemonVer, daemonKnown, serverBinVer, serverBinKnown)+renderClientVersionStateLines()))
 }
 
 // transcriptUploadHealth reads the background transcript-upload loop's health snapshot.

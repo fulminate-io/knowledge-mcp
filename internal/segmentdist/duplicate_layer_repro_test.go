@@ -189,6 +189,7 @@ func presentMemberIDs(dm *distManager[[]byte, struct{}], ids []searchengine.Docu
 //
 // RED TODAY, by an unmissable margin: the drain returns roughly half the corpus.
 func TestDuplicateIdMergeKeepsEveryDistinctMember(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()
@@ -234,6 +235,7 @@ func TestDuplicateIdMergeKeepsEveryDistinctMember(t *testing.T) {
 //
 // RED TODAY: 30 segments over 16 partitions.
 func TestRepartitionConvergesToOnePerPartition(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

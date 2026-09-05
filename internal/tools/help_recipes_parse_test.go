@@ -3,14 +3,29 @@
 package tools
 
 import (
+	_ "embed"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/assets"
 	"github.com/fulminate-io/knowledge-mcp/internal/recipe"
 )
+
+// docsRecipesGuide is the MIRRORED copy of docs/guides/recipes.md that
+// scripts/sync-assets.sh writes into this package's testdata, gitignored like
+// the other mirrors.
+//
+// THE EMBED IS THE WHOLE POINT, not a convenience. The gate below used to
+// resolve the repo root at run time and os.ReadFile the guide, which sits ABOVE
+// this module — and the Go test cache tracks IN-MODULE inputs only. Measured on
+// this tree: corrupting the guide's recipe body and re-running the same -run key
+// replayed `ok ... (cached)` three times, while a cache-miss run of the very
+// same tree failed. An embed is a build input, so a change to the mirror
+// rebuilds the package and this gate re-reads the bytes it exists to check.
+//
+//go:embed testdata/recipes-guide.md
+var docsRecipesGuide []byte
 
 // TestHelpRecipes_WorkedExamplesParse runs recipe.Parse over every complete
 // recipe body embedded in the help text users read.
@@ -46,14 +61,20 @@ func TestHelpRecipes_WorkedExamplesParse(t *testing.T) {
 // `recipe_body` payload in the /ingest-patterns skill. Those are literal
 // strings a user is instructed to paste, so one that does not parse is a
 // broken instruction shipped to every consumer.
+//
+// IT READS THE EMBEDDED ASSETS TREE, not the repo-root source, and that is
+// strictly more correct as well as cache-correct: assets.Files is the tree
+// install-claude-assets writes verbatim, so this gate now covers the bytes that
+// actually reach a consumer. The former repo-root resolver also carried a
+// t.Skipf on a missing .claude/skills — a silent-skip path this gate no longer
+// has.
 func TestSkillRecipeBodies_Parse(t *testing.T) {
-	root := recipesRepoRoot(t)
-	path := filepath.Join(root, ".claude", "skills", "ingest-patterns", "SKILL.md")
-	data, err := os.ReadFile(path) //nolint:gosec // trusted in-repo skill path
+	const path = "skills/ingest-patterns/SKILL.md"
+	data, err := assets.Files.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
+		t.Fatalf("read %s from the embedded assets tree: %v — run scripts/sync-assets.sh", path, err)
 	}
-	bodies := extractRecipeBodyPayloads(string(data))
+	bodies := extractJSONStringValues(string(data), "recipe_body")
 	if len(bodies) == 0 {
 		t.Fatal("no recipe_body payloads found in SKILL.md — extractor is broken or the skill lost its examples")
 	}
@@ -104,12 +125,43 @@ func extractRecipeBlocks(s string) []string {
 	return out
 }
 
-// extractRecipeBodyPayloads pulls the JSON string value of every
-// "recipe_body" key out of the skill markdown and unescapes it, so the
-// bytes tested are the bytes a user would paste.
-func extractRecipeBodyPayloads(s string) []string {
+// TestDocsRecipeExamples_Parse runs recipe.Parse over the recipe body shipped
+// in the docs guide.
+//
+// NO GATE HAS EVER PARSED IT, which is precisely how the legacy example there
+// drifted: the guide's body sits as the JSON string value of a "content" key
+// inside a two-space-indented block, so extractRecipeBlocks (which wants a
+// four-space indent and a leading `select `) and the skill extractor (which
+// keyed on the literal "recipe_body") both returned ZERO over it — measured,
+// against a same-run control of four bodies from helpRecipes.
+func TestDocsRecipeExamples_Parse(t *testing.T) {
+	bodies := extractJSONStringValues(string(docsRecipesGuide), "content")
+	// THE FATAL-ON-EMPTY GUARD ITS TWO SIBLINGS ALREADY CARRY. Without it a run
+	// that extracted nothing prints a PASS line, and the gate is satisfied by a
+	// test that parsed no bytes at all.
+	if len(bodies) == 0 {
+		t.Fatal("no recipe bodies found in docs/guides/recipes.md — extractor is broken or the guide lost its example")
+	}
+	for i, b := range bodies {
+		t.Run(firstLine(b), func(t *testing.T) {
+			if _, err := recipe.Parse([]byte(b)); err != nil {
+				t.Errorf("docs guide recipe %d does not parse: %v\n---\n%s", i, err, b)
+			}
+		})
+	}
+	t.Logf("parsed %d recipe bodies from docs/guides/recipes.md", len(bodies))
+}
+
+// extractJSONStringValues pulls the JSON string value of every occurrence of
+// the named key out of markdown and unescapes it, so the bytes tested are the
+// bytes a user would paste.
+//
+// IT IS PARAMETERIZED ON THE KEY rather than duplicated per carrier: the skill
+// keys on "recipe_body" and the docs guide on "content", and two near-copies of
+// this scanner would drift the moment one of them was fixed.
+func extractJSONStringValues(s, key string) []string {
 	var out []string
-	const key = `"recipe_body":`
+	key = `"` + key + `":`
 	for idx := strings.Index(s, key); idx >= 0; idx = strings.Index(s, key) {
 		s = s[idx+len(key):]
 		q := strings.Index(s, `"`)
@@ -139,17 +191,4 @@ func firstLine(s string) string {
 		return before
 	}
 	return s
-}
-
-func recipesRepoRoot(t *testing.T) string {
-	t.Helper()
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	root := filepath.Clean(filepath.Join(wd, "..", "..", "..", ".."))
-	if _, err := os.Stat(filepath.Join(root, ".claude", "skills")); err != nil {
-		t.Skipf("canonical .claude/skills not found at %s: %v", root, err)
-	}
-	return root
 }

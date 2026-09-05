@@ -154,6 +154,10 @@ func (g *gatedSegReader) LiveResidentDocCount(gt kgtypes.GraphType, name string)
 	return g.coveredByKey[probeSegKey(gt, name)]
 }
 
+// BM25DegradeCounts reports no drops: this fake exercises the coverage counts,
+// not the drop census.
+func (g *gatedSegReader) BM25DegradeCounts(kgtypes.GraphType, string) map[string]int { return nil }
+
 func (g *gatedSegReader) RepairVerification(kgtypes.GraphType, string) (RepairVerification, bool) {
 	return RepairVerification{}, false
 }
@@ -244,6 +248,12 @@ func (r *randomDelaySegReader) ResidentDocCount(gt kgtypes.GraphType, name strin
 
 func (r *randomDelaySegReader) LiveResidentDocCount(gt kgtypes.GraphType, name string) int {
 	return r.coveredByKey[probeSegKey(gt, name)]
+}
+
+// BM25DegradeCounts reports no drops: this fake exercises the coverage counts,
+// not the drop census.
+func (r *randomDelaySegReader) BM25DegradeCounts(kgtypes.GraphType, string) map[string]int {
+	return nil
 }
 
 func (r *randomDelaySegReader) RepairVerification(kgtypes.GraphType, string) (RepairVerification, bool) {

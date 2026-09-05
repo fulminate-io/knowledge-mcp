@@ -35,9 +35,11 @@ func truncateRunes(s string, maxRunes int) string {
 // Mirrors internal/llm/anthropic/anthropic.go (var _ llm.Client = (*Service)(nil)).
 var _ backends.Backend = (*Backend)(nil)
 
-// resolvedTeam holds team UUID + workflow state map + label-name→id map
-// for a single team. Used by methods that need team-scoped resolution
-// (issue creates/updates with status or labels; project label updates).
+// resolvedTeam holds team UUID + workflow state map for a single team. Used
+// by methods that need team-scoped resolution (issue creates/updates with
+// status or labels; project label updates). It carries NO label map: labels
+// are resolved one name at a time against the tracker (see ensureLabels), so
+// there is nothing team-wide to hold.
 //
 // Result is fresh per call — we don't cache across calls because (a) state
 // maps change as Linear admins add/remove states, (b) per-call caching is
@@ -48,13 +50,13 @@ type resolvedTeam struct {
 	ID     string
 	Key    string            // optional; useful for error messages
 	States map[string]string // state name → UUID
-	Labels map[string]string // label name → UUID
 }
 
-// resolveTeamByKey fetches a team's UUID + workflow states + labels by team
-// key. Used by CreateProject / CreateTicket where the caller supplies the
-// group key explicitly. Returns *ErrGroupNotFound if Linear's response has
-// resp.Team == nil — wrapped as *backends.Error{Reason: ReasonNotFound}.
+// resolveTeamByKey fetches a team's UUID + workflow states by team key. Used
+// by CreateProject / CreateTicket where the caller supplies the group key
+// explicitly. Labels are NOT read here — ensureLabels resolves them per name
+// off the ID this returns. Returns *ErrGroupNotFound if Linear's response has
+// no matching team — wrapped as *backends.Error{Reason: ReasonNotFound}.
 func (b *Backend) resolveTeamByKey(ctx context.Context, groupKey string) (*resolvedTeam, error) {
 	var resp teamByKeyResponse
 	if err := b.Client.do(ctx, teamByKeyQuery, map[string]any{"key": groupKey}, &resp); err != nil {
@@ -71,9 +73,10 @@ func (b *Backend) resolveTeamByKey(ctx context.Context, groupKey string) (*resol
 	return normalizeTeam(&resp.Teams.Nodes[0]), nil
 }
 
-// resolveTeamByID fetches a team's workflow states + labels by team UUID.
-// Used by UpdateTicket (which derives team UUID via issueByID) and
-// UpdateProject (which derives team UUID via projectByID's first team).
+// resolveTeamByID fetches a team's workflow states by team UUID. Used by
+// UpdateTicket (which derives team UUID via issueByID) and UpdateProject
+// (which derives team UUID via projectByID's first team). Labels are NOT read
+// here — ensureLabels resolves them per name off the ID this returns.
 // Returns *backends.Error{Reason: ReasonNotFound, Cause: *ErrGroupNotFound}
 // if Linear's response has resp.Team == nil.
 func (b *Backend) resolveTeamByID(ctx context.Context, teamID string) (*resolvedTeam, error) {
@@ -91,20 +94,16 @@ func (b *Backend) resolveTeamByID(ctx context.Context, teamID string) (*resolved
 	return normalizeTeam(resp.Team), nil
 }
 
-// normalizeTeam flattens the wire-shape teamWithStatesLabels into the
-// adapter's internal name→UUID maps.
-func normalizeTeam(t *teamWithStatesLabels) *resolvedTeam {
+// normalizeTeam flattens the wire-shape teamWithStates into the adapter's
+// internal state-name→UUID map.
+func normalizeTeam(t *teamWithStates) *resolvedTeam {
 	out := &resolvedTeam{
 		ID:     t.ID,
 		Key:    t.Key,
 		States: make(map[string]string, len(t.States.Nodes)),
-		Labels: make(map[string]string, len(t.Labels.Nodes)),
 	}
 	for _, s := range t.States.Nodes {
 		out.States[s.Name] = s.ID
-	}
-	for _, l := range t.Labels.Nodes {
-		out.Labels[l.Name] = l.ID
 	}
 	return out
 }
@@ -141,14 +140,49 @@ func (b *Backend) resolveStatus(team *resolvedTeam, status, groupKey string) (st
 	return id, nil
 }
 
-// ensureLabels ensures every label name in `commaList` exists on the team,
-// creating any missing ones via issueLabelCreate. Returns the slice of
-// label UUIDs in declaration order.
+// ensureLabels resolves every label name in `commaList` to a label UUID on
+// the team, creating the ones the team genuinely does not have. Returns the
+// UUIDs in the caller's DECLARATION ORDER, which is the order they reach
+// issueCreate / issueUpdate as input.labelIds.
+//
+// Each name is resolved by ONE filtered lookup against the tracker
+// (teamLabelByNameQuery), keyed on the team UUID this already holds. The
+// adapter does no case folding of its own: eqIgnoreCase makes the comparison
+// Linear's, which is the only comparison that agrees with the duplicate-name
+// rule Linear enforces at create time. Reading the team's labels in bulk was
+// the earlier shape and it was wrong — a team can hold more labels than one
+// page returns, so a label past the page looked absent, was re-created, and
+// Linear rejected the create as a duplicate, losing the whole write.
+//
+// TWO PASSES, and the order is the contract. Pass one resolves every DISTINCT
+// requested name; pass two creates the ones the team lacks. A name the caller
+// wrote more than once is ONE label: it is looked up once and created at most
+// once, and the definition of "more than once" is the tracker's own (see
+// indexOfSameLabel). Creating once per OCCURRENCE would send the tracker a
+// create for a name it had just been given, which it rejects as a duplicate —
+// stranding the first label with no ticket landed. Resolving and creating
+// name-by-name instead would let a list like "brand-new,Bug" create brand-new
+// and only then refuse on the ambiguous Bug, leaving a label written on the
+// tracker with no ticket landed. Nothing removes it: the locked contract is
+// that this adapter does not clean up after itself. R1 refuses BEFORE ANY
+// CREATE, and R2 forbids a ticket landing on a partial set; a label written
+// ahead of a refusal is a partial write of the same kind.
+//
+// The four match arms, all evaluated in pass one:
+//   - exactly one  → reuse it; no issueLabelCreate is sent.
+//   - zero         → remember it for pass two (see the HARD-ERROR note below).
+//   - two or more  → REFUSE, naming every match with its scope, with nothing
+//     created. Picking one would be a silent guess, and an unwanted label is
+//     invisible after the fact.
+//   - lookup error → propagate, naming the label, with nothing created. A
+//     failed lookup is not an absent label; treating it as one would create a
+//     duplicate.
 //
 // CONTRACT: FIRST line MUST be the empty-list return-fast. Empty-list-with-
 // nil-team is the legitimate CreateProject-without-labels path; an
 // implementation that derefs `team` before checking commaList would
-// nil-panic on this path.
+// nil-panic on this path. It is also what keeps a label-free write at ZERO
+// lookup requests.
 //
 // Defensive secondary check: non-empty list with nil team returns wrapped
 // ErrInvalidArgument — programmer-error path, but wrapped rather than
@@ -169,31 +203,166 @@ func (b *Backend) ensureLabels(ctx context.Context, team *resolvedTeam, commaLis
 		}
 	}
 	parts := strings.Split(commaList, ",")
-	out := make([]string, 0, len(parts))
+
+	// PASS ONE — resolve every DISTINCT name. Nothing is written to the tracker
+	// in this loop, so any refusal or failure below leaves it untouched.
+	// `declared` records which resolved entry each DECLARED occurrence maps to,
+	// so a repeated name costs one lookup while still contributing one id per
+	// occurrence to the caller's list, which is what the caller asked for.
+	resolved := make([]resolvedLabel, 0, len(parts))
+	declared := make([]int, 0, len(parts))
 	for _, raw := range parts {
 		name := strings.TrimSpace(raw)
 		if name == "" {
 			continue
 		}
-		if id, ok := team.Labels[name]; ok {
-			out = append(out, id)
+		if i := indexOfSameLabel(resolved, name); i >= 0 {
+			declared = append(declared, i)
 			continue
 		}
-		// Missing — create it on the team. HARD-ERROR on failure.
+		matches, more, err := b.lookupLabel(ctx, team, name)
+		if err != nil {
+			return nil, err
+		}
+		if len(matches) > 1 {
+			return nil, &backends.Error{
+				Transient: false,
+				Reason:    backends.ReasonInvalidArgument,
+				Cause:     &ErrAmbiguousLabel{Requested: name, Matches: matches, More: more},
+			}
+		}
+		id := ""
+		if len(matches) == 1 {
+			id = matches[0].ID
+		}
+		resolved = append(resolved, resolvedLabel{Name: name, ID: id})
+		declared = append(declared, len(resolved)-1)
+	}
+
+	// PASS TWO — create the distinct names the team genuinely lacks, in
+	// declared order. Reaching here means every name resolved cleanly, so no
+	// create here can be stranded by a later refusal on an earlier name.
+	for i := range resolved {
+		if resolved[i].ID != "" {
+			continue
+		}
+		// Genuinely absent — create it on the team. HARD-ERROR on failure.
 		var resp issueLabelCreateResponse
 		input := map[string]any{
-			"name":   name,
+			"name":   resolved[i].Name,
 			"teamId": team.ID,
 		}
 		if err := b.Client.do(ctx, issueLabelCreateMutation,
 			map[string]any{"input": input}, &resp); err != nil {
-			return nil, fmt.Errorf("linear: create label %q on team %q: %w", name, team.ID, err)
+			return nil, fmt.Errorf("linear: create label %q on team %q: %w", resolved[i].Name, team.ID, err)
 		}
-		newID := resp.IssueLabelCreate.IssueLabel.ID
-		team.Labels[name] = newID
-		out = append(out, newID)
+		resolved[i].ID = resp.IssueLabelCreate.IssueLabel.ID
+	}
+
+	out := make([]string, 0, len(declared))
+	for _, i := range declared {
+		out = append(out, resolved[i].ID)
 	}
 	return out, nil
+}
+
+// indexOfSameLabel returns the index in resolved of an already-resolved
+// request for the same label as name, or -1 when name is new to this list.
+//
+// SAME MEANS WHAT THE TRACKER MEANS, AS CLOSELY AS THIS SIDE CAN. The lookup
+// filters with eqIgnoreCase, so the tracker returns the same row for two
+// spellings that differ only in case. Whether it also REJECTS a create of the
+// second as a duplicate of the first is the ticket's premise P14, which is
+// unverified and cannot be settled read-only, so this fold is a defensive
+// approximation of the tracker's rule and not a restatement of it. This
+// adapter collapses two such entries into one request, carrying the FIRST
+// spelling the caller wrote.
+//
+// THIS IS NOT THE CLIENT DECIDING WHETHER A LABEL EXISTS. That comparison is
+// still the tracker's, and it remains the only thing that decides reuse
+// against create. This fold answers a narrower question the tracker is never
+// asked: whether two entries in ONE caller's list are the same request.
+// Without it "dup,dup" issues two creates, the tracker rejects the second, and
+// the write hard-errors with the first label already written and no ticket
+// landed — the partial write the two-pass shape exists to prevent, reached by
+// a different road.
+//
+// strings.EqualFold is Unicode simple case folding, an approximation of
+// whatever eqIgnoreCase does exactly, which the tracker documents nowhere. The
+// approximation is only ever applied WITHIN one caller-supplied list, and for
+// the exact-repeat case that prompted it any fold at all collapses the pair.
+//
+// WHERE THE APPROXIMATION CAN DIVERGE, both directions named so a later reader
+// does not have to derive them. strings.EqualFold folds U+017F LONG S to 's',
+// which Go's own strings.ToLower does not, and it folds U+212A KELVIN SIGN to
+// 'k', which an ASCII-only fold does not (Go's ToLower folds that one too, so
+// do not reach for lower() to tell the two comparators apart). On a pair the
+// tracker keeps apart this side collapses two labels into one, and the caller
+// receives one id where it asked for two. It does NOT fold sharp-s against SS,
+// which a full-folding comparator would: on such a pair pass two sends two
+// creates and the tracker rejects the second, which is the partial write this
+// fold exists to prevent. Neither pair has a live instance and neither is a
+// regression (the bulk-map shape under-folded on every non-identical
+// spelling). Settling it needs a case-differing label create on the tracker.
+//
+// A NOTE FOR WHOEVER STRENGTHENS THE FIXTURE: the fold test drives the Kelvin
+// pair, which separates EqualFold from an ASCII-only fold. Long s separates it
+// from an ASCII fold AND from Go's ToLower, so a fixture built on long s would
+// pin one more axis at no cost.
+func indexOfSameLabel(resolved []resolvedLabel, name string) int {
+	for i := range resolved {
+		if strings.EqualFold(resolved[i].Name, name) {
+			return i
+		}
+	}
+	return -1
+}
+
+// resolvedLabel is one requested name after pass one of ensureLabels. An empty
+// ID means the tracker holds no label by that name and pass two must create
+// it; a set ID is an existing label to reuse.
+type resolvedLabel struct {
+	Name string
+	ID   string
+}
+
+// lookupLabel asks the tracker which labels on this team match `name`,
+// returning them in the order Linear returned them plus whether Linear
+// reported further matches past the page read. The comparison is the
+// tracker's (eqIgnoreCase); the caller's spelling is sent verbatim.
+//
+// EVERY failure arm — transport, GraphQL errors[], and a 200 whose team is
+// null — is an error NAMING THE LABEL. That is deliberate: a lookup that
+// failed is not a label that is absent, and the two must never converge,
+// because reading a failure as an absence is what sends a duplicate create.
+//
+// One request per name, issued serially. That is right here: the calls sit on
+// a single write path, the list is a handful of names, and the package has no
+// parallel primitive — do not add one for this.
+func (b *Backend) lookupLabel(ctx context.Context, team *resolvedTeam, name string) ([]LabelMatch, bool, error) {
+	var resp teamLabelByNameResponse
+	if err := b.Client.do(ctx, teamLabelByNameQuery,
+		map[string]any{"id": team.ID, "name": name}, &resp); err != nil {
+		// client.do already pre-wraps as *backends.Error.
+		return nil, false, fmt.Errorf("linear: look up label %q on team %q: %w", name, team.ID, err)
+	}
+	if resp.Team == nil {
+		return nil, false, &backends.Error{
+			Transient: false,
+			Reason:    backends.ReasonNotFound,
+			Cause: fmt.Errorf("linear: look up label %q: %w", name,
+				&ErrGroupNotFound{GroupKey: team.ID}),
+		}
+	}
+	matches := make([]LabelMatch, 0, len(resp.Team.Labels.Nodes))
+	for _, n := range resp.Team.Labels.Nodes {
+		scope := workspaceLabelScope
+		if n.Team != nil {
+			scope = "team " + n.Team.Key
+		}
+		matches = append(matches, LabelMatch{ID: n.ID, Name: n.Name, Scope: scope})
+	}
+	return matches, resp.Team.Labels.PageInfo.HasNextPage, nil
 }
 
 // isInvalidEnumError reports whether err looks like a Linear GraphQL

@@ -5,9 +5,11 @@ package render
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -22,11 +24,25 @@ import (
 // Ported as a free function with store reads swapped for wire-shape
 // calls. The tree rides AssembleSubtree's two batched wire calls rather
 // than a per-node walk, so its cost is independent of plan size.
-func assemblePlan(ctx context.Context, gc GraphCaller, node *knowledgev1.Node) kgtools.ToolResult {
+func assemblePlan(ctx context.Context, gc GraphCaller, node *knowledgev1.Node, sectionStart, sectionEnd *int) kgtools.ToolResult {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "# Plan: %s\n\n", node.SymbolName)
 	childIndex, byID, dependsOn, truncated := AssembleSubtree(ctx, gc, node.Id, 4)
-	RenderTreeFromIndex(&sb, node, 0, 4, childIndex, dependsOn)
+	// A sectioned plan's sections carry reviewer annotations, which hang off the
+	// section by relates-to and so are invisible to the contains traversal above.
+	// Two extra wire calls, and only when the plan HAS sections: a plan with none
+	// takes the empty-input short-circuit and issues neither.
+	annotations, annotationsTruncated, aerr := FetchSectionAnnotations(ctx, gc, SectionIDsOf(byID))
+	if aerr != nil {
+		// Degrade rather than fail the whole assemble, matching what
+		// AssembleSubtree's two calls already do — the tree is still worth
+		// rendering — but the verdict rides out so the caller is told the render
+		// is incomplete rather than told there are no annotations.
+		slog.Warn("assemble plan: annotation read failed; rendering without annotation lines", "id", node.Id, "error", aerr)
+		annotations = nil
+	}
+	truncated = truncated || annotationsTruncated
+	RenderTreeFromIndex(&sb, node, 0, 4, childIndex, dependsOn, AnnotationLines(annotations))
 
 	// Follow EdgeInformedBy edges to linked research, and EdgeAudits
 	// edges to language patterns. One IterEdges call (no type
@@ -42,7 +58,7 @@ func assemblePlan(ctx context.Context, gc GraphCaller, node *knowledgev1.Node) k
 			languagePatternIDs = append(languagePatternIDs, e.ToId)
 		}
 	}
-	linked, linkedTruncated, _ := FetchNodesByIDs(ctx, gc, append(append([]string{}, researchIDs...), languagePatternIDs...))
+	linked, linkedTruncated, _ := foundation.FetchNodesByIDs(ctx, gc, "", "", append(append([]string{}, researchIDs...), languagePatternIDs...), foundation.IncludeTombstones)
 	truncated = truncated || linkedTruncated
 
 	if len(researchIDs) > 0 {
@@ -67,5 +83,21 @@ func assemblePlan(ctx context.Context, gc GraphCaller, node *knowledgev1.Node) k
 		}
 	}
 	renderLanguagePatternsSection(node, languagePatterns, &sb)
-	return AppendTruncationNotice(kgtools.TextResult(sb.String()), truncated, len(byID)+len(linked))
+	renderSectionIndex(&sb, childIndex[node.Id], annotations)
+	// The section BODIES ride only when the caller asked for a range. Without one
+	// the assemble stays the index-plus-tree read it has always been, which is
+	// what keeps it a few hundred bytes on a plan of any size; with one it returns
+	// exactly the pages asked for.
+	if sectionStart != nil || sectionEnd != nil {
+		if err := writeSectionRange(&sb, childIndex[node.Id], annotations, sectionStart, sectionEnd); err != nil {
+			return kgtools.ErrorResult(err.Error())
+		}
+	}
+	// TWO DISCLOSURES, TWO CAUSES. The truncation notice speaks for a server row
+	// ceiling; the annotation-failure notice speaks for a read that errored. They
+	// are separate because a caller acts on them differently and because the
+	// truncation notice's remedy — a smaller `limit` — is not even a parameter
+	// this tool accepts.
+	out := AppendTruncationNotice(kgtools.TextResult(sb.String()), truncated, len(byID)+len(linked))
+	return AppendAnnotationReadFailureNotice(out, aerr)
 }

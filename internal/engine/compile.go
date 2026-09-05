@@ -11,8 +11,12 @@
 // the legacy gc.Call wire UNCHANGED.
 //
 // This package owns intent→plan translation PLUS the type-aware normalization
-// moved client-side: per-graph edge casing (canonicalEdgeCasing) and the
-// resource_type post-filter (filterByResourceTypePrefix). Multi-query score-sum
+// moved client-side: the resource_type post-filter
+// (filterByResourceTypePrefix). It NO LONGER folds edge-type casing per graph
+// family — a caller's spelling is resolved against the target graph's own edge
+// vocabulary in the Dispatch seam (edge_type_resolve.go) before any plan is
+// compiled, and the compilers here pass the resolved spelling through
+// verbatim. Multi-query score-sum
 // fusion, the unified default limit, the traverse-both union, and depth-1
 // hydration stay in the engine. Type-aware mutate(create) body validation is NO
 // LONGER a client concern: the server engine enforces it in
@@ -28,7 +32,6 @@ package engine
 import (
 	"encoding/base64"
 	"encoding/json"
-	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
@@ -96,32 +99,9 @@ func base64Decode(s string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(s)
 }
 
-// canonicalEdgeCasing returns the canonical-casing form of a single edge-type
-// string for the given graph: code / cloud / cicd / linkage / logs graphs use
-// UPPERCASE edge types (CALLS, MOUNTS_SECRET, ...); knowledge / practice / thought
-// edges are lowercase (contains, relates-to). The engine uses edge_types AS-GIVEN,
-// so the client produces the canonical casing here before it rides the wire.
-//
-// An empty graph string means knowledge → lowercase, matching the engine's
-// envelope-routing empty-graph=knowledge default.
-func canonicalEdgeCasing(graph, t string) string {
-	upper := graph == "code" || graph == "cloud" || graph == "cicd" ||
-		graph == "linkage" || graph == "logs"
-	if upper {
-		return strings.ToUpper(t)
-	}
-	return strings.ToLower(t)
-}
-
-// canonicalEdgeCasings maps canonicalEdgeCasing over a slice.
-// Returns the input unchanged for an empty slice.
-func canonicalEdgeCasings(graph string, ts []string) []string {
-	if len(ts) == 0 {
-		return ts
-	}
-	out := make([]string, len(ts))
-	for i, t := range ts {
-		out[i] = canonicalEdgeCasing(graph, t)
-	}
-	return out
-}
+// The per-graph edge-casing fold that used to live here is GONE. It was a
+// function of the graph NAME, which cannot answer what casing a given graph
+// actually stores — a graph can carry two casing families at once. Edge types
+// are now RESOLVED against the target graph's own vocabulary in the Dispatch
+// seam before compilation (edge_type_resolve.go), so every compiler below
+// receives an already-resolved spelling and passes it through verbatim.

@@ -178,7 +178,7 @@ func (r *readCloserLimited) bytesIn() int64             { return r.lr.BytesIn }
 //     is set.
 //   - err: transport, gzip, or tar failures. The dispatcher logs and
 //     skips. err is mutually exclusive with warning.
-func fetchCodeloadTarball(ctx context.Context, fc *fetchClient, info githubURLInfo, maxBytes int64) (
+func fetchCodeloadTarball(ctx context.Context, fc *fetchClient, info githubURLInfo, maxBytes int64, counts *unpackCounts) (
 	rootDir string, cleanup func(), warning *materializerWarning, err error,
 ) {
 	ref := info.Ref
@@ -231,7 +231,7 @@ func fetchCodeloadTarball(ctx context.Context, fc *fetchClient, info githubURLIn
 	}
 	cleanup = func() { _ = os.RemoveAll(tmpDir) }
 
-	if w := unpackTar(uncompressedReader, tmpDir); w != nil {
+	if w := unpackTar(uncompressedReader, tmpDir, counts); w != nil {
 		stampUnpackWarning(w, tarURL, info, body, uncompressed)
 		cleanup()
 		return "", nil, w, nil
@@ -255,7 +255,7 @@ func fetchCodeloadTarball(ctx context.Context, fc *fetchClient, info githubURLIn
 //     into TypeReg automatically, so no explicit case is needed)
 //   - TypeDir → mkdir
 //   - everything else (symlinks, devices, fifos) → skipped silently
-func unpackTar(r io.Reader, dstDir string) *materializerWarning {
+func unpackTar(r io.Reader, dstDir string, counts *unpackCounts) *materializerWarning {
 	tr := tar.NewReader(r)
 	for {
 		hdr, err := tr.Next()
@@ -266,7 +266,8 @@ func unpackTar(r io.Reader, dstDir string) *materializerWarning {
 			if errors.Is(err, errSizeExceeded) {
 				return &materializerWarning{Reason: "size_cap_mid_stream"}
 			}
-			slog.Debug("github_materializer: tar.Next failed", "err", err)
+			slog.Warn("github_materializer: tar.Next failed, remaining entries lost", "err", err)
+			counts.tarReadFailed()
 			return nil
 		}
 		stripped := stripCodeloadTopDir(hdr.Name)
@@ -274,25 +275,80 @@ func unpackTar(r io.Reader, dstDir string) *materializerWarning {
 			continue // top-level dir entry itself
 		}
 		if isUnsafeTarPath(stripped) {
-			slog.Debug("github_materializer: rejected unsafe tar path", "path", hdr.Name)
+			slog.Warn("github_materializer: rejected unsafe tar path", "path", hdr.Name)
+			counts.unsafePath()
 			continue
 		}
 		dst := filepath.Join(dstDir, filepath.FromSlash(stripped))
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(dst, 0o750); err != nil {
-				slog.Debug("github_materializer: mkdir failed", "path", dst, "err", err)
+				slog.Warn("github_materializer: mkdir failed, entry lost", "path", dst, "err", err)
+				counts.unpackFailed()
 			}
 		case tar.TypeReg:
 			if err := writeTarFile(tr, dst); err != nil {
 				if errors.Is(err, errSizeExceeded) {
 					return &materializerWarning{Reason: "size_cap_mid_stream"}
 				}
-				slog.Debug("github_materializer: write failed", "path", dst, "err", err)
+				slog.Warn("github_materializer: write failed, entry lost", "path", dst, "err", err)
+				counts.unpackFailed()
 			}
 		default:
-			// symlinks, devices, fifos, char-special, hardlinks → skip silently
+			// symlinks, devices, fifos, char-special, hardlinks
+			slog.Warn("github_materializer: non-regular tar entry skipped",
+				"path", hdr.Name, "typeflag", hdr.Typeflag)
+			counts.nonRegular()
 		}
+	}
+}
+
+// unpackCounts is the per-entry loss report unpackTar fills, threaded down
+// from materializeRepo three frames above.
+//
+// IT IS A PARAMETER RATHER THAN A RETURN because unpackTar already returns a
+// warning that stops the unpack, and these are losses the unpack CONTINUES
+// past: a rejected path, a skipped symlink and a failed write each drop one
+// entry and keep going, so they have to accumulate somewhere the early return
+// does not discard.
+//
+// A NIL RECEIVER IS A NO-OP, so a caller that does not care about the census —
+// every test that only wants the unpack — passes nil and reads unchanged.
+//
+// THE BUMPS ARE ONE METHOD PER CLASS RATHER THAN ONE METHOD TAKING A FIELD
+// POINTER, and the difference is not cosmetic: `c.bump(&c.UnsafePath)`
+// dereferences a nil c AT THE CALL SITE, before any guard inside the method can
+// run, so the nil-receiver contract this comment promises would panic on the
+// first non-regular entry of any caller that took it up. Measured, not
+// reasoned — TestUnpackTar_SkipsSymlinks segfaulted on exactly that shape.
+type unpackCounts struct {
+	UnsafePath    int
+	UnpackFailed  int
+	NonRegular    int
+	TarReadFailed int
+}
+
+func (c *unpackCounts) unsafePath() {
+	if c != nil {
+		c.UnsafePath++
+	}
+}
+
+func (c *unpackCounts) unpackFailed() {
+	if c != nil {
+		c.UnpackFailed++
+	}
+}
+
+func (c *unpackCounts) nonRegular() {
+	if c != nil {
+		c.NonRegular++
+	}
+}
+
+func (c *unpackCounts) tarReadFailed() {
+	if c != nil {
+		c.TarReadFailed++
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	internalpdf "github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/internal/pdfcpu"
@@ -127,7 +128,15 @@ func TestHybridFallback_DropsResidueOverlap(t *testing.T) {
 }
 
 // TestHybridFallback_KeepsResidueDisjoint asserts disjoint residue
-// blocks survive the overlap filter and merge in Y order.
+// blocks survive the overlap filter and merge in READING ORDER.
+//
+// COORDINATE FRAME, named so the next reader does not re-invert it:
+// both inputs are in PDF user space, where +y points UP. The block
+// highest on the page therefore has the LARGEST Y1, and reading order
+// is Y1 DESCENDING. This test previously asserted Y0 ascending, which
+// is the page returned bottom-first — it pinned the defect rather than
+// catching it, and the tagged path was unreachable in production so
+// nothing else noticed.
 func TestHybridFallback_KeepsResidueDisjoint(t *testing.T) {
 	t.Parallel()
 	tagged := []layout.Block{makeBlock("H1", 700, 200, 720, "1")}
@@ -143,14 +152,18 @@ func TestHybridFallback_KeepsResidueDisjoint(t *testing.T) {
 	if len(got) < 2 {
 		t.Fatalf("expected ≥2 blocks, got %d", len(got))
 	}
-	// Confirm blocks are Y0-ascending after merge.
 	if !sort.SliceIsSorted(got, func(i, j int) bool {
-		if got[i].BBox.Y0 != got[j].BBox.Y0 {
-			return got[i].BBox.Y0 < got[j].BBox.Y0
+		if got[i].BBox.Y1 != got[j].BBox.Y1 {
+			return got[i].BBox.Y1 > got[j].BBox.Y1
 		}
 		return got[i].BBox.X0 < got[j].BBox.X0
 	}) {
-		t.Errorf("merged blocks not Y-ascending: %+v", got)
+		t.Errorf("merged blocks not in reading order (Y1 descending, X0 ascending): %+v", got)
+	}
+	// The tagged H1 sits at the top of the page, so reading order puts
+	// it FIRST. A bottom-first merge puts it last.
+	if got[0].StructRole != "H1" {
+		t.Errorf("first block in reading order has StructRole %q, want the top-of-page H1 - the page came back bottom-first", got[0].StructRole)
 	}
 }
 
@@ -241,7 +254,7 @@ func TestHybridFallback_PartialTaggedFixture(t *testing.T) {
 	if len(tagged) != 1 {
 		t.Fatalf("Walk produced %d tagged blocks, want 1", len(tagged))
 	}
-	runs, err := extractRunsForPage(ctx, 0)
+	runs, _, err := extractRunsForPage(ctx, 0)
 	if err != nil {
 		t.Fatalf("extractRunsForPage: %v", err)
 	}
@@ -276,4 +289,74 @@ func TestHybridFallback_PartialTaggedFixture(t *testing.T) {
 	if !residueFound {
 		t.Errorf("merged result has no residue block; want untagged paragraph in residue")
 	}
+}
+
+// TestHybridFallback_ResidueIsGroupedAtElementScale pins the scale the
+// residue clustering runs at.
+//
+// The runs no structure element claimed are, on a well-tagged page,
+// one or two: a footer, a folio, a stray label. Clustering them with
+// the PAGE-scale grouper applies its few-runs guard and emits one
+// block per run, which splits a two-run footer in half. Measured
+// through this same function before the fix, the fixture below came
+// back as three blocks with the footer as "Chapter 3 | " and "42"
+// separately; the chrome-shape detector requires a single line in a
+// single block, so it could never fire on the running footers Phase 4
+// exists to retain.
+func TestHybridFallback_ResidueIsGroupedAtElementScale(t *testing.T) {
+	t.Parallel()
+	tagged := []layout.Block{makeBlock("P", 700, 400, 712, "1")}
+	runs := []text.TextRun{
+		makeRun("body", 1, 100, 700, 100, 12),
+		// A two-run footer on ONE baseline.
+		makeRun("Chapter 3 | ", 0, 100, 60, 70, 12),
+		makeRun("42", 0, 172, 60, 12, 12),
+	}
+
+	got, err := HybridFallback(tagged, runs, defaultPageInfo())
+	if err != nil {
+		t.Fatalf("HybridFallback: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d blocks, want 2 (the tagged body plus ONE footer block) - the two-run footer was split", len(got))
+	}
+	var footer strings.Builder
+	for _, l := range got[1].Lines {
+		for _, r := range l.Runs {
+			footer.WriteString(r.Text)
+		}
+	}
+	if footer.String() != "Chapter 3 | 42" {
+		t.Errorf("footer block text = %q, want %q", footer.String(), "Chapter 3 | 42")
+	}
+	if len(got[1].Lines) != 1 {
+		t.Errorf("footer block has %d lines, want 1 - the chrome-shape detector requires a single line", len(got[1].Lines))
+	}
+	t.Logf("residue grouped at element scale: blocks=%d footer=%q lines=%d", len(got), footer.String(), len(got[1].Lines))
+
+	// THE PLAUSIBLE-WRONG THIRD INPUT: the page-scale entry point on
+	// the SAME two runs. A near-empty page really is a case where a
+	// two-sample median cannot be trusted, so ClusterWithParams must
+	// keep its guard and keep emitting one line per run. The two
+	// entry points differing on identical input is what shows the fix
+	// changed the SCALE rather than removing the guard everywhere.
+	//
+	// Measured, both directions, on the same-baseline pair used above:
+	// page scale gives 2 blocks / 2 lines, element scale gives 1 / 1.
+	pageRuns := []text.TextRun{
+		makeRun("Chapter 3 | ", 0, 100, 60, 70, 12),
+		makeRun("42", 0, 172, 60, 12, 12),
+	}
+	pageBlocks, err := layout.ClusterWithParams(pageRuns, defaultPageInfo(), layout.DefaultLayoutParams)
+	if err != nil {
+		t.Fatalf("ClusterWithParams: %v", err)
+	}
+	pageLines := 0
+	for _, b := range pageBlocks {
+		pageLines += len(b.Lines)
+	}
+	if pageLines != 2 {
+		t.Errorf("page-scale clustering of 2 same-baseline runs produced %d lines, want 2 - the element-scale fix leaked into the page entry point", pageLines)
+	}
+	t.Logf("page-scale control intact: 2 same-baseline runs -> %d blocks / %d lines", len(pageBlocks), pageLines)
 }

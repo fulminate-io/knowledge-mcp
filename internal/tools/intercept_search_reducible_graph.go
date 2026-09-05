@@ -64,8 +64,8 @@ func searchReducibleQueryText(a searchReducibleArgs) string {
 // interceptSearchReducibleGraph claims the SEARCH-tool arms for the reducible
 // graphs OTHER than knowledge/code/logs. practice/cloud/cicd are served by the
 // CLIENT segment engine; web/pdf are served by the client-computed BM25 read
-// over the drained raw graph; linkage, transformers and checks carry no ranked
-// index and are REFUSED by name. Returns (false,_) for any other graph
+// over the drained raw graph; linkage carries no ranked index and is REFUSED by
+// name. Returns (false,_) for any other graph
 // (knowledge/default flows past to the embed/rerank tail). NO server
 // RETURN_MODE_SEARCH is emitted for any claimed graph.
 //
@@ -75,12 +75,24 @@ func searchReducibleQueryText(a searchReducibleArgs) string {
 // claimed by nobody: it fell out of the interceptor entirely and compiled to a
 // server RETURN_MODE_SEARCH, which the server treats as informational. The caller
 // got rows with no error and no disclosure that ranking never ran, and any
-// query_vector was discarded with the plan. transformers and checks sat in that
-// gap — too builtin for the custom branch, absent from the switch — until they
-// were claimed here.
+// query_vector was discarded with the plan. checks sat in that gap — too builtin
+// for the custom branch, absent from the switch — until it was claimed here.
+//
+// A RETIRED BUILTIN IS REFUSED AHEAD OF THE DEFAULT BRANCH. Once a family is
+// removed, IsBuiltinGraphType stops claiming its name, so it would reach the
+// registered-custom branch and be answered "client segment engine unavailable" —
+// a message about an index, for a graph type that no longer exists.
 func interceptSearchReducibleGraph(ctx context.Context, deps ClientDeps, graph string, raw json.RawMessage) (bool, kgtools.ToolResult) {
+	// A RETIRED BUILTIN IS CLAIMED AND REFUSED BEFORE THE ARG DECODE, on the same
+	// reasoning as the no-index graph below it: the answer depends on no field of
+	// the payload. It sits ahead of the switch because the name is no longer
+	// builtin, so it would otherwise fall into the registered-custom default.
+	if reason, retired := kgtypes.RetiredGraphTypeReason(graph); retired {
+		return true, errorResult(graph + " search: graph type is retired: " + reason)
+	}
+
 	switch graph {
-	case "practice", "cloud", "cicd", "linkage", "web", "pdf", "transformers", "checks":
+	case "practice", "cloud", "cicd", "linkage", "web", "pdf", "checks":
 	default:
 		// A CUSTOM graph (non-empty, non-builtin) is claimed here and served by the
 		// CLIENT segment engine — its shipped segments ARE the index (the server
@@ -120,15 +132,13 @@ func interceptSearchReducibleGraph(ctx context.Context, deps ClientDeps, graph s
 			kgtypes.GraphType(graph), ca.Name, sa)
 	}
 
-	// The two no-index graphs are refused BEFORE the arg decode: their answer
-	// depends on no field of the payload, and refusing first is what keeps the
-	// refusal free of any read, wire call or embed. checks used to be a third; it
-	// now carries segments for its check findings and is SERVED below.
+	// The no-index graph is refused BEFORE the arg decode: its answer depends on
+	// no field of the payload, and refusing first is what keeps the refusal free
+	// of any read, wire call or embed. checks used to be a second; it now carries
+	// segments for its check findings and is SERVED below.
 	switch graph {
 	case "linkage":
 		return true, rankedSearchRetiredResult(graph)
-	case "transformers":
-		return true, transformersSearchUnavailableResult()
 	case "checks":
 		return true, checksSearchArm(ctx, deps, raw)
 	}
@@ -165,32 +175,4 @@ func interceptSearchReducibleGraph(ctx context.Context, deps ClientDeps, graph s
 	default: // web, pdf — client-computed BM25 over the drained raw graph.
 		return true, searchRawGraphArm(ctx, deps, graph, raw, query, a)
 	}
-}
-
-// transformersSearchUnavailableResult is the transformers graph's self-describing
-// refusal, on the rankedSearchRetiredResult precedent: state what the graph IS,
-// state that ranked search is not on offer for it, and name the access path that
-// works — so a caller who reached for search leaves with the call they wanted
-// rather than a zero they have to interpret.
-//
-// THE "NO SEGMENTS" CLAIM IS THE REPO'S OWN PREDICATE, not an inference from the
-// empty result: pipeline.bm25ArmEnabledFor gates the BM25 collector on
-// kgtypes.HasRebuildableSegments, which excludes transformers, so the graph gets
-// no client search segments at all and there is nothing for a ranked query to read.
-//
-// THE BROWSE NAMED HERE IS THE ONE THE PRODUCT ITSELF DRIVES: recipe
-// loadRecipeByName reads the corpus through exactly this (graph, name, type)
-// triple against the single recipes bucket, so the path handed to the caller is
-// the path the loader depends on rather than one composed for the message.
-func transformersSearchUnavailableResult() kgtools.ToolResult {
-	return textResult(
-		"Ranked search for the transformers graph is not available. The transformers " +
-			"graph is the recipe store: DSL transformer bodies held as graph-resident " +
-			"recipe nodes in the single \"recipes\" bucket, authored and edited through " +
-			"mutate CRUD — mutate(operation:\"create\", graph:\"transformers\", " +
-			"type:\"recipe\", name:..., content:...). It carries no client search " +
-			"segments, so there is no ranked index for a query to read. Working access " +
-			"paths: query(graph:\"transformers\", name:\"recipes\", type:\"recipe\") " +
-			"browses every stored recipe, and query(graph:\"transformers\", " +
-			"name:\"recipes\", id:\"<recipe-id>\") reads one.")
 }

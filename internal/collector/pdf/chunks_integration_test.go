@@ -34,9 +34,7 @@ func TestChunksIntegration_OpenFileToChunks_ParagraphMode(t *testing.T) {
 			HeadingMinBoldOnly:   true,
 			CodeMonospaceRatio:   0.8,
 		},
-		SkipHeadersFooters: true, // T5 not shipped — graceful no-op
-		SkipFootnotes:      false,
-		MinChunkChars:      0,
+		MinChunkChars: 0,
 	})
 	if err != nil {
 		t.Fatalf("doc.Chunks: %v", err)

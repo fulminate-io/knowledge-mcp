@@ -70,21 +70,21 @@ func TestRenderRawGraphResults_PDFHitCarriesItsPageLocality(t *testing.T) {
 		Description: "this chunk discusses connection pooling at length",
 		Metadata:    map[string]string{"page_first": "4", "page_last": "5"},
 	}
-	out := RenderRawGraphResults("pdf", "paper", "pooling", []RawGraphHit{rawHit(chunk, "")})
+	out := RenderRawGraphResults("pdf", "paper", "pooling", []RawGraphHit{rawHit(chunk, "")}, "BM25-only")
 	require.NotEmpty(t, out.Content)
 	body := out.Content[0].Text
 
 	assert.Contains(t, body, "pp. 4-5", "a pdf chunk's page span must render as locality context")
 	assert.Contains(t, body, "pdf/paper", "the context line must name the source graph and instance")
 	assert.Contains(t, body, "this chunk discusses connection pooling",
-		"a pdf chunk's body lives in Description and must render")
+		"this hit exercises the Description fallback rung and must render")
 	assert.Contains(t, body, "ID: c1")
 
 	// KNOWN NEGATIVE for the span assertion: the same renderer over a node
 	// carrying no page keys must NOT invent one, so "pp." above is the metadata
 	// speaking rather than the renderer always printing a span.
 	web := &knowledgev1.Node{Id: "p1", Type: "paragraph", Content: "a web paragraph body"}
-	webBody := RenderRawGraphResults("web", "doc", "pooling", []RawGraphHit{rawHit(web, "")}).Content[0].Text
+	webBody := RenderRawGraphResults("web", "doc", "pooling", []RawGraphHit{rawHit(web, "")}, "BM25-only").Content[0].Text
 	assert.NotContains(t, webBody, "pp. ", "a web node carries no page keys and must render no span")
 	assert.NotContains(t, webBody, "p. ", "a web node must render no single-page locality either")
 }
@@ -127,7 +127,7 @@ func TestRenderRawGraphResults_LabelFallsBackThroughEveryRung(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			body := RenderRawGraphResults("web", "doc", "q",
-				[]RawGraphHit{rawHit(tc.node, tc.heading)}).Content[0].Text
+				[]RawGraphHit{rawHit(tc.node, tc.heading)}, "BM25-only").Content[0].Text
 			assert.Contains(t, body, tc.wantIn)
 			if tc.wantOut != "" {
 				assert.NotContains(t, body, tc.wantOut,
@@ -151,7 +151,7 @@ func TestRenderRawGraphResults_ContextAndBodyComeFromTheNode(t *testing.T) {
 			},
 		}
 		body := RenderRawGraphResults("web", "doc", "q",
-			[]RawGraphHit{rawHit(n, "Connection Pooling")}).Content[0].Text
+			[]RawGraphHit{rawHit(n, "Connection Pooling")}, "BM25-only").Content[0].Text
 
 		for _, want := range []string{
 			"web/doc", "under: Connection Pooling",
@@ -167,7 +167,7 @@ func TestRenderRawGraphResults_ContextAndBodyComeFromTheNode(t *testing.T) {
 	t.Run("absent_segments_are_absent_not_empty", func(t *testing.T) {
 		n := &knowledgev1.Node{Id: "p1", Type: "paragraph", Content: "body"}
 		body := RenderRawGraphResults("web", "doc", "q",
-			[]RawGraphHit{rawHit(n, "")}).Content[0].Text
+			[]RawGraphHit{rawHit(n, "")}, "BM25-only").Content[0].Text
 
 		assert.NotContains(t, body, "under: ")
 		// The anchor is checked as its RENDERED segment rather than as a bare
@@ -185,7 +185,7 @@ func TestRenderRawGraphResults_ContextAndBodyComeFromTheNode(t *testing.T) {
 	t.Run("description_is_the_body_fallback", func(t *testing.T) {
 		n := &knowledgev1.Node{Id: "c1", Type: "chunk", Description: "described body only"}
 		body := RenderRawGraphResults("pdf", "paper", "q",
-			[]RawGraphHit{rawHit(n, "")}).Content[0].Text
+			[]RawGraphHit{rawHit(n, "")}, "BM25-only").Content[0].Text
 		assert.Contains(t, body, "described body only")
 	})
 
@@ -194,30 +194,48 @@ func TestRenderRawGraphResults_ContextAndBodyComeFromTheNode(t *testing.T) {
 	t.Run("no_body_renders_no_body_line", func(t *testing.T) {
 		n := &knowledgev1.Node{Id: "s1", Type: "section", SymbolName: "Heading Only"}
 		body := RenderRawGraphResults("web", "doc", "q",
-			[]RawGraphHit{rawHit(n, "")}).Content[0].Text
+			[]RawGraphHit{rawHit(n, "")}, "BM25-only").Content[0].Text
 		assert.Contains(t, body, "web/doc\nID: s1")
 	})
 }
 
 // TestRenderRawGraphResults_HeaderCountsAndFooterDiscloses covers the two things
-// the function writes outside the per-hit loop. The footer is an unconditional
-// disclosure that no vector arm ran, so it must survive the empty case too —
-// a render that only emitted it alongside hits would let a zero-result read look
-// like an ordinary hybrid miss.
+// the function writes outside the per-hit loop. The footer discloses THE ARMS
+// THAT ACTUALLY RAN, computed by the caller and passed in — it used to be a fixed
+// "BM25-only" literal spelled in the renderer, which was true only while raw
+// graphs were never embedded and became a falsehood the moment they were enrolled
+// embed-only. So the footer legs below pin three separable things: that the
+// passed label reaches the footer VERBATIM rather than a literal the renderer
+// chose, that the disclosure survives a zero-result render, and that an empty
+// label writes no footer at all rather than an empty one.
 func TestRenderRawGraphResults_HeaderCountsAndFooterDiscloses(t *testing.T) {
 	hits := []RawGraphHit{
 		rawHit(&knowledgev1.Node{Id: "a", Type: "paragraph", Content: "one"}, ""),
 		rawHit(&knowledgev1.Node{Id: "b", Type: "paragraph", Content: "two"}, ""),
 	}
-	body := RenderRawGraphResults("web", "doc", "connection pooling", hits).Content[0].Text
+	// The label is deliberately NOT the old hardcoded literal. A renderer that
+	// still spelled "BM25-only" itself would fail here, which is what makes this
+	// leg evidence that the caller's label is what reaches the reader.
+	body := RenderRawGraphResults("web", "doc", "connection pooling", hits, "vector+text").Content[0].Text
 
 	assert.Contains(t, body, `## web/doc — 2 results for "connection pooling"`)
-	assert.Contains(t, body, "_search mode: BM25-only_")
+	assert.Contains(t, body, "_search mode: vector+text_")
+	assert.NotContains(t, body, "BM25-only",
+		"the retired hardcoded literal must not survive anywhere in the render")
 	// Ranks are 1-based and in order.
 	assert.Less(t, strings.Index(body, "### 1."), strings.Index(body, "### 2."))
 
-	empty := RenderRawGraphResults("pdf", "paper", "nothing", nil).Content[0].Text
+	empty := RenderRawGraphResults("pdf", "paper", "nothing", nil, "BM25-only").Content[0].Text
 	assert.Contains(t, empty, `## pdf/paper — 0 results for "nothing"`)
 	assert.Contains(t, empty, "_search mode: BM25-only_",
 		"the arm disclosure must render even when nothing matched")
+
+	// KNOWN NEGATIVE for both legs above: the same renders with NO label must
+	// carry no footer line at all. Without this, a renderer that appended
+	// "_search mode: _" unconditionally would satisfy every Contains above.
+	unlabeled := RenderRawGraphResults("web", "doc", "connection pooling", hits, "").Content[0].Text
+	assert.Contains(t, unlabeled, `## web/doc — 2 results for "connection pooling"`,
+		"an absent label must suppress only the footer, not the render")
+	assert.NotContains(t, unlabeled, "_search mode:",
+		"a caller with nothing to disclose must write no footer rather than an empty one")
 }

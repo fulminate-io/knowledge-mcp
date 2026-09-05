@@ -33,3 +33,33 @@ func VersionSkewLine(clientVer, daemonVer string) (line string, skewed bool) {
 		"version skew: running daemon %s, installed client %s — restart the daemon (brew services restart knowledge)",
 		daemonVer, clientVer), true
 }
+
+// ServerBinarySkewLine reports whether a KNOWN client version and a KNOWN
+// knowledge-server BINARY version disagree.
+//
+// It is a SEPARATE function from VersionSkewLine rather than a widening of it,
+// because the two answer different questions and their remedies differ. The
+// daemon stamp is a RUNNING PROCESS's compiled-in value, so a difference there
+// is fixed by restarting that process. The server-binary stamp is a FILE ON
+// DISK, so a difference there means the two binaries on this machine came from
+// different releases and no restart repairs it — the remedy is re-running the
+// install, which is what this line says.
+//
+// The unknown and equal cases behave exactly as the sibling's: either side
+// empty means unknown and never skews (a missing or unreadable server binary
+// returns "", so it never reads as a mismatch), and equal is quiet.
+//
+// Both stamps come from the same release pipeline, injected into each binary's
+// own version var from the same tag — which is precisely why a difference
+// between them is meaningful and worth surfacing.
+func ServerBinarySkewLine(clientVer, serverBinVer string) (line string, skewed bool) {
+	if clientVer == "" || serverBinVer == "" {
+		return "", false
+	}
+	if clientVer == serverBinVer {
+		return "", false
+	}
+	return fmt.Sprintf(
+		"binary skew: installed knowledge-server %s, installed client %s — the two binaries are from different releases; re-run `knowledge install`",
+		serverBinVer, clientVer), true
+}

@@ -30,6 +30,19 @@ type Args struct {
 	NewRun     bool   `json:"new_run"`
 	RunSession string `json:"run_session"`
 	Format     string `json:"format"`
+
+	// SectionStart and SectionEnd are the inclusive section range of a CHUNKED
+	// plan: the paging primitive that lets a caller read a whole plan in bounded
+	// pages instead of asking for one read that returns all of it.
+	//
+	// POINTERS because 0 is a legal index: a plain int could not tell
+	// "section 0" from "no bound supplied", and an absent bound has a different
+	// meaning from a zero one (from the first section, versus that one section).
+	// An out-of-bounds, inverted or negative range ERRORS naming the bound —
+	// never clamps, because a clamp hands a reader a page they did not ask for
+	// with nothing in the result to say so.
+	SectionStart *int `json:"section_start"`
+	SectionEnd   *int `json:"section_end"`
 }
 
 // Handle is the top-level entry point for the client-side assemble
@@ -90,13 +103,23 @@ func Handle(ctx context.Context, gc GraphCaller, args json.RawMessage) kgtools.T
 	// belongs, and no arm can forget it. The truncation notice goes the other
 	// way — it is appended inside each arm, because only the arm holds both its
 	// result and its own truncation verdict.
+	// A section range on a node that is NOT a chunked plan is bad input rather
+	// than a harmless extra: silently ignoring it would hand the caller a result
+	// they did not ask for, and the params-are-routed rule this package follows
+	// says an unroutable param errors naming itself.
+	if (a.SectionStart != nil || a.SectionEnd != nil) && kgtypes.NodeType(node.Type) != kgtypes.NodePlan {
+		return kgtools.ErrorResult(fmt.Sprintf(
+			"assemble: section_start/section_end apply to a plan, but %s is a %s — a section range pages a chunked plan's sections",
+			node.Id, node.Type))
+	}
+
 	var res kgtools.ToolResult
 	if a.Format == "json" {
-		res = assembleJSON(ctx, gc, node)
+		res = assembleJSON(ctx, gc, node, a.SectionStart, a.SectionEnd)
 	} else {
 		switch kgtypes.NodeType(node.Type) {
 		case kgtypes.NodePlan:
-			res = assemblePlan(ctx, gc, node)
+			res = assemblePlan(ctx, gc, node, a.SectionStart, a.SectionEnd)
 		case kgtypes.NodeProject:
 			res = assembleProjectContainer(ctx, gc, node)
 		case kgtypes.NodeTicket:
@@ -109,6 +132,8 @@ func Handle(ctx context.Context, gc GraphCaller, args json.RawMessage) kgtools.T
 			res = assembleInstruction(ctx, gc, node)
 		case kgtypes.NodeDecision:
 			res = assembleDecision(ctx, gc, node)
+		case kgtypes.NodePlanSection:
+			res = assembleSection(ctx, gc, node)
 		case kgtypes.NodePattern:
 			res = assemblePatternIn(ctx, gc, node, graphType, graphName)
 		default:
@@ -128,6 +153,7 @@ func Handle(ctx context.Context, gc GraphCaller, args json.RawMessage) kgtools.T
 // the gate covers it with an explicit row for an unrecognized type instead.
 var handleDispatchNodeTypes = []kgtypes.NodeType{
 	kgtypes.NodePlan,
+	kgtypes.NodePlanSection,
 	kgtypes.NodeProject,
 	kgtypes.NodeTicket,
 	kgtypes.NodeTestPlan,

@@ -9,8 +9,9 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/backends"
 )
 
-// CreateTicket — group-key-driven team resolution; status resolves
-// against team workflow; labels resolve against team labels.
+// CreateTicket — group-key-driven team resolution; status resolves against
+// team workflow; each label resolves through its own filtered lookup on the
+// team's label connection (see ensureLabels).
 func (b *Backend) CreateTicket(ctx context.Context, args backends.TicketCreateArgs) (backends.RemoteRef, error) {
 	team, err := b.resolveTeamByKey(ctx, args.GroupKey)
 	if err != nil {
@@ -54,8 +55,8 @@ func (b *Backend) CreateTicket(ctx context.Context, args backends.TicketCreateAr
 
 // UpdateTicket — interface stays as locked: no groupKey parameter.
 // Issue.team is a non-null singular field in Linear; we resolve via
-// issueByID to get the team UUID, then use teamByID for workflow states
-// and labels.
+// issueByID to get the team UUID, then use teamByID for workflow states.
+// Labels resolve per name off that team UUID (see ensureLabels).
 func (b *Backend) UpdateTicket(ctx context.Context, ref backends.RemoteRef, diff backends.TicketDiff) error {
 	team, err := b.lookupTicketTeam(ctx, ref, diff)
 	if err != nil {

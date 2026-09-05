@@ -68,6 +68,7 @@ func l2HNSWIDs(cacheDir, name string) map[searchengine.SegmentID]struct{} {
 // Removing that reload reproduces the collapse, which is the same shape the original
 // server-side false-prune had.
 func TestFreshProcessCannotRetireAPriorCorpus(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 	ctx := context.Background()
 
@@ -149,6 +150,7 @@ func TestFreshProcessCannotRetireAPriorCorpus(t *testing.T) {
 // process's two-segment tail retiring a four-thousand-segment corpus, which is the
 // actual incident shape.
 func TestPartialLayerNeverRetiresAGoodLayer(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 	ctx := context.Background()
 
@@ -235,6 +237,7 @@ func TestLegitimateMergeStillReclaims(t *testing.T) {
 // bounded, and "bounded" is the thing under test: an unbounded version accumulates
 // dead .seg files forever.
 func TestPostLoadMergeLeakIsReclaimedByTheNextRebuild(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 	ctx := context.Background()
 
@@ -287,6 +290,7 @@ func keysOf(m map[searchengine.SegmentID]struct{}) []searchengine.SegmentID {
 // set — prune-cache above all — would see a short set and treat the remainder as
 // orphaned. A short import and a false prune are the same bug one step apart.
 func TestRestartLoadImportsTheFullL2Corpus(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 	ctx := context.Background()
 

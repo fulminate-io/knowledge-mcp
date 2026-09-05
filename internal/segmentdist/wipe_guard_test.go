@@ -64,6 +64,7 @@ func TestEmptyLayerNeverRetiresAGoodLayer(t *testing.T) {
 // produce. Nothing else in the suite looks at the .seg files under a graph's cache
 // root after a rebuild, so the loss would otherwise be invisible.
 func TestSupersededBlobsAreEvictedFromL2(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

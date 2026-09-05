@@ -40,6 +40,7 @@ func stageBM25Reset(t *testing.T, ctx context.Context, mgr *Manager, gt kgtypes.
 // what fails against that; the non-empty dropped set is what proves the retirement was
 // REPORTED rather than merely implied by a coincidence of counts.
 func TestBM25ResetRetiresPriorLayer(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()
@@ -99,6 +100,7 @@ func TestBM25ResetRetiresPriorLayer(t *testing.T) {
 // ORDERING rather than on a final state, because the final state is identical either
 // way: what differs is only whether the ship happened first.
 func TestReplaceLayerShipsBeforeSwapping(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

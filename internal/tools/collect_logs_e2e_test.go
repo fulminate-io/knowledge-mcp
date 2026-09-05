@@ -30,17 +30,22 @@ import (
 // called.
 type fakeDeps struct {
 	sink collector.Sink
-	crud GraphTypeCRUDAPI // optional: registered-type dispatch tests inject a stub
+	// fetcher is the cloud-subgraph read seam runLogsCollect resolves through.
+	// Left nil by every test that never drives the logs collector — those
+	// exercise the consumer's nil guard, not the fetch.
+	fetcher CloudSubgraphFetcher
+	crud    GraphTypeCRUDAPI // optional: registered-type dispatch tests inject a stub
 	// pipelineNotReady flips PipelineReady() to false so a test can exercise the
 	// bind-first wiring-window gate (bind-first startup) on the collect intercept. Zero value
 	// keeps the pipeline ready.
 	pipelineNotReady bool
 }
 
-func (d *fakeDeps) LocalLiveness() LocalLiveness    { return nil }
-func (d *fakeDeps) Sink() collector.Sink            { return d.sink }
-func (d *fakeDeps) RootDir() string                 { return "" }
-func (d *fakeDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+func (d *fakeDeps) LocalLiveness() LocalLiveness          { return nil }
+func (d *fakeDeps) Sink() collector.Sink                  { return d.sink }
+func (d *fakeDeps) SubgraphFetcher() CloudSubgraphFetcher { return d.fetcher }
+func (d *fakeDeps) RootDir() string                       { return "" }
+func (d *fakeDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
 
 func (d *fakeDeps) PropReady() bool     { return true }
 func (d *fakeDeps) PipelineReady() bool { return !d.pipelineNotReady }
@@ -186,7 +191,8 @@ func TestRunLogsCollect_E2E(t *testing.T) {
 	srv, captured, handler := startInProcessIngestServer(t, buildSubgraphResponse(t), nil)
 	t.Cleanup(srv.close)
 
-	deps := &fakeDeps{sink: remote.NewUploadSink(srv.client)}
+	uploader := remote.NewUploadSink(srv.client)
+	deps := &fakeDeps{sink: uploader, fetcher: uploader}
 
 	result := runLogsCollect(opCtx(), deps, collectArgs{
 		Type:     "logs",
@@ -273,7 +279,8 @@ func TestRunLogsCollect_FetchSubgraphError(t *testing.T) {
 	srv, captured, _ := startInProcessIngestServer(t, nil, fetchErr)
 	t.Cleanup(srv.close)
 
-	deps := &fakeDeps{sink: remote.NewUploadSink(srv.client)}
+	uploader := remote.NewUploadSink(srv.client)
+	deps := &fakeDeps{sink: uploader, fetcher: uploader}
 
 	result := runLogsCollect(opCtx(), deps, collectArgs{
 		Type:     "logs",

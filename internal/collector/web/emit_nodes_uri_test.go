@@ -5,6 +5,7 @@ package web
 import (
 	"strings"
 	"testing"
+	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
@@ -100,7 +101,7 @@ func uriOfNode(t *testing.T, nodes []*knowledgev1.Node, nodeType, ident string) 
 }
 
 func TestEmitFromPage_URIStampedOnEveryNode(t *testing.T) {
-	nodes, _ := emitFromPage(uriTestPage())
+	nodes, _ := mustEmitFromPage(t, uriTestPage(), time.Time{})
 
 	// Known-positive on the node set itself: a vacuous slice would make the
 	// "every node carries a uri" loop pass without measuring anything.

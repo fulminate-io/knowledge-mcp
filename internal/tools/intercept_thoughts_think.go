@@ -102,7 +102,7 @@ type composeThoughtArgs struct {
 // agent--produced-->thought origin hub edge) ATOMICALLY, the post-create
 // EdgeNext-from-prev session lineage link, and the optional by-id status
 // chase-up. The developer-origin role is ALWAYS stamped as `origin` metadata
-// (empty => "main"); when it resolves to a seeded agent node, the EdgeProduced
+// (empty => "main"); when it resolves to a user-authored agent node, the EdgeProduced
 // hub edge also rides the batch. Code referents mechanically extracted from
 // summary+content are resolve-or-dropped and born-linked on the same batch.
 //
@@ -279,13 +279,13 @@ func composeThoughtEdges(ctx context.Context, gc GraphCaller, a composeThoughtAr
 		}
 	}
 
-	// Origin hub edge: when the origin resolves to a seeded agent node, an
+	// Origin hub edge: when the origin resolves to a user-authored agent node, an
 	// agent--produced-->thought edge rides the SAME create_batch (see
 	// originHubEdges). An unresolvable origin writes no edge — never blocking.
 	return append(edges, originHubEdges(ctx, gc, a.Origin, in.originVal)...)
 }
 
-// originHubEdges resolves the developer-origin role to a seeded agent node and,
+// originHubEdges resolves the developer-origin role to a user-authored agent node and,
 // on a hit, returns the agent--produced-->thought hub edge to ride the SAME
 // create_batch (atomic, the EXACT existing-node-From shape as the session-contains
 // edge). An unresolvable origin (e.g. "main"/"orchestrator"/a custom value with no

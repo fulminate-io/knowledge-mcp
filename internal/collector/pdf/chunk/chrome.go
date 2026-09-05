@@ -10,38 +10,44 @@
 // every page it appears, polluting the section tree with hundreds of
 // duplicate "section" nodes.
 //
-// stripRepeatedChrome detects this case by fingerprinting block text
-// across pages: any block whose digit-normalized text recurs on >= 3
-// distinct pages is treated as chrome and removed. The threshold is
-// deliberately lenient — real running headers always span multiple
-// pages, while real body content (even repeated callouts) rarely
-// crosses the >=3-page boundary verbatim. Title-page headings escape
-// because they appear on a single page even when their text recurs
-// elsewhere via a running header (the running header carries an
-// appended "| <pagenum>" or leading "<pagenum> | " that distinguishes
-// it from the title-page heading after digit-normalization).
+// stampRepeatedChrome detects this case by fingerprinting block text
+// across pages, and STAMPS what it finds rather than acting on it: any
+// block whose digit-normalized text recurs on two or more distinct
+// pages gains page_repeat_count, chrome_repeat_shaped and, where the
+// occurrence matches the "<text> | <pagenum>" running-header form,
+// chrome_shape. Nothing is removed.
 //
-// Limitations:
+// WHY STAMPING RATHER THAN DELETING. The rule this replaced deleted
+// every block whose fingerprint recurred on three or more pages, with
+// no log and no counter, which meant three separate problems. Content
+// that legitimately repeats verbatim was destroyed exactly as
+// thoroughly as a running header. A pure-text running header without a
+// page number collided with the chapter-title-page heading and took the
+// heading with it. And a consumer who disagreed with any of it had
+// nothing to disagree with, because the evidence was gone by the time
+// they saw the document. A stamped signal has none of those failure
+// modes: the caller decides, and IsPageChrome reproduces the old
+// verdict exactly for a caller who wants it.
 //
-//   - Pure-text running headers without page numbers (rare) collide with
-//     the chapter-title-page heading. Both get flagged as chrome — the
-//     legitimate title-page heading is lost.
-//   - Repetitive callout boxes ("Note:", "Warning:") with identical
-//     boilerplate across >=3 pages would be flagged. In practice these
-//     have distinct body text below the marker, which keeps the block
-//     fingerprint distinct.
+// The stamp is unconditional. Retention is lossless, so there is no
+// configuration under which suppressing the signal is the better
+// answer; any blocks the upstream Document.PageHeadersFooters returns
+// were subtracted independently, and that leg is gone.
 //
-// The detector runs only when opts.SkipHeadersFooters is true (the
-// default). Callers can disable it by setting the option false; any
-// blocks the upstream Document.PageHeadersFooters returns are still
-// subtracted independently.
+// What the fingerprint still cannot distinguish, which the stamp
+// discloses rather than resolves: repetitive callout boxes ("Note:",
+// "Warning:") with identical boilerplate across several pages carry a
+// repeat count like a running header does. In practice their distinct
+// body text below the marker keeps the fingerprint distinct.
 
 package chunk
 
 import (
+	"strconv"
 	"strings"
 	"unicode"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/classify"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/layout"
 )
 
@@ -63,6 +69,41 @@ const chromeMinPagesShaped = 2
 // inflate the per-fingerprint page set.
 const chromeFingerprintMinLen = 3
 
+// Chrome signal metadata keys. Named as constants because the emitter,
+// the accuracy harness, the wire-byte gate and any recipe preset that
+// filters running chrome all have to agree with each other about the
+// spelling.
+const (
+	// ChromeKeyPageRepeatCount is the number of DISTINCT pages the
+	// block's fingerprint occurs on. Its spelling is defined in the
+	// classify package, which also reads the key and cannot import this
+	// one — the dependency points one way.
+	ChromeKeyPageRepeatCount = classify.ChromeStampKey
+
+	// ChromeKeyShape names the running-header form THIS occurrence
+	// matched, or is absent when it matched none.
+	ChromeKeyShape = "chrome_shape"
+
+	// ChromeKeyRepeatShaped is a FINGERPRINT-level fact: whether ANY
+	// occurrence of this fingerprint anywhere in the document matched
+	// the running-header shape.
+	ChromeKeyRepeatShaped = "chrome_repeat_shaped"
+)
+
+// ChromeSignalKeys lists every metadata key the chrome stamp writes.
+// These ride only the blocks a repeated fingerprint applies to, unlike
+// the nine always-on layout signals.
+var ChromeSignalKeys = []string{
+	ChromeKeyPageRepeatCount,
+	ChromeKeyShape,
+	ChromeKeyRepeatShaped,
+}
+
+// chromeShapePageNumberPipe is the value ChromeKeyShape takes for the
+// "text pipe number" running-header form — the only shape the detector
+// recognizes today.
+const chromeShapePageNumberPipe = "page_number_pipe"
+
 // chromeEntry tracks one block-by-fingerprint occurrence: page index,
 // block index within the page, and whether the block matches the
 // strict chrome shape ("digits | text" or "text | digits").
@@ -81,8 +122,10 @@ type chromeIndex struct {
 
 // indexChromeFingerprints walks every block, computes its
 // digit-normalized fingerprint, and records page + shape data per
-// fingerprint. Building the index up front lets stripRepeatedChrome
-// stay flat — the threshold + drop logic reads from this struct.
+// fingerprint. Building the index up front lets stampRepeatedChrome
+// stay flat — the stamping logic reads from this struct, as does
+// dropSetFromChromeIndex, which retains the retired rule as the oracle
+// the stamped predicate is proven against.
 func indexChromeFingerprints(perPage [][]layout.Block) chromeIndex {
 	idx := chromeIndex{
 		pages:    make(map[string]map[int]struct{}),
@@ -109,11 +152,17 @@ func indexChromeFingerprints(perPage [][]layout.Block) chromeIndex {
 	return idx
 }
 
-// dropSetFromChromeIndex returns the set of (page,blk) coordinates to
-// drop given the indexed fingerprint occurrences. A fingerprint
-// qualifies as chrome when its block count crosses the per-shape
-// threshold; only entries matching the chrome shape are dropped (real
-// headings on title pages share the fingerprint but aren't shaped).
+// dropSetFromChromeIndex returns the set of (page,blk) coordinates the
+// RETIRED deletion rule would have removed. A fingerprint qualifies as
+// chrome when its block count crosses the per-shape threshold; only
+// entries matching the chrome shape are dropped (real headings on title
+// pages share the fingerprint but aren't shaped).
+//
+// Nothing in production calls it any more — retention replaced
+// deletion. It survives as the ORACLE the stamped predicate is proven
+// against: IsPageChrome must select exactly these coordinates from the
+// stamped metadata alone, and the equivalence test is what catches a
+// stamp that loses one of the rule's three inputs.
 func dropSetFromChromeIndex(idx chromeIndex) map[struct{ page, blk int }]struct{} {
 	drop := make(map[struct{ page, blk int }]struct{})
 	for f, pages := range idx.pages {
@@ -134,31 +183,87 @@ func dropSetFromChromeIndex(idx chromeIndex) map[struct{ page, blk int }]struct{
 	return drop
 }
 
-// stripRepeatedChrome returns a copy of perPage with running-header /
-// running-footer blocks removed. Detection: a block is chrome if its
-// digit-normalized fingerprint recurs on >= chromeMinPages distinct
-// pages.
-func stripRepeatedChrome(perPage [][]layout.Block) [][]layout.Block {
-	drop := dropSetFromChromeIndex(indexChromeFingerprints(perPage))
-	if len(drop) == 0 {
-		return perPage
-	}
-	out := make([][]layout.Block, len(perPage))
-	for pi, blocks := range perPage {
-		if len(blocks) == 0 {
-			out[pi] = blocks
+// chromeStampMinPages is the repetition floor for STAMPING. It is
+// deliberately lower than either drop threshold: the stamp is a
+// disclosure, not a verdict, so anything that recurs at all is worth
+// reporting and the consumer decides where to cut.
+const chromeStampMinPages = 2
+
+// stampRepeatedChrome walks the fingerprint index and writes the three
+// chrome signals onto every block whose fingerprint recurs on
+// chromeStampMinPages or more distinct pages. Blocks are MUTATED IN
+// PLACE and nothing is removed.
+//
+// This replaced a rule that deleted those blocks outright, with no log
+// and no counter. Deletion destroyed content that legitimately repeats
+// verbatim exactly as thoroughly as it removed a running header, and a
+// consumer who disagreed had nothing to disagree with. Retention is
+// lossless: the same information is now a signal a recipe can filter
+// on, and IsPageChrome below reproduces the old verdict for anyone who
+// wants it.
+func stampRepeatedChrome(perPage [][]layout.Block) {
+	idx := indexChromeFingerprints(perPage)
+	for f, pages := range idx.pages {
+		if len(pages) < chromeStampMinPages {
 			continue
 		}
-		kept := make([]layout.Block, 0, len(blocks))
-		for bi, b := range blocks {
-			if _, dropped := drop[struct{ page, blk int }{pi, bi}]; dropped {
+		count := strconv.Itoa(len(pages))
+		shapedFP := idx.shapedFP[f]
+		for _, e := range idx.entries[f] {
+			if e.page < 0 || e.page >= len(perPage) || e.blk < 0 || e.blk >= len(perPage[e.page]) {
 				continue
 			}
-			kept = append(kept, b)
+			b := &perPage[e.page][e.blk]
+			if b.Metadata == nil {
+				b.Metadata = make(map[string]string, 3)
+			}
+			b.Metadata[ChromeKeyPageRepeatCount] = count
+			b.Metadata[ChromeKeyRepeatShaped] = strconv.FormatBool(shapedFP)
+			if e.shaped {
+				b.Metadata[ChromeKeyShape] = chromeShapePageNumberPipe
+			}
 		}
-		out[pi] = kept
 	}
-	return out
+}
+
+// IsPageChrome reports whether a block carrying the stamped chrome
+// signals is what the retired deletion rule would have removed. It is
+// the ONE copy of that rule: the accuracy harness and any other Go
+// consumer call this rather than re-deriving the two thresholds, and a
+// recipe expresses the same predicate over the same three keys.
+//
+// The rule reads:
+//
+//	count >= (repeat_shaped ? chromeMinPagesShaped : chromeMinPages)
+//	AND (NOT repeat_shaped OR this occurrence is itself shaped)
+//
+// ALL THREE KEYS ARE LOAD-BEARING, which is why the fingerprint-level
+// chrome_repeat_shaped exists alongside the per-occurrence
+// chrome_shape. repeat_shaped selects the threshold — two pages for a
+// shaped fingerprint, three otherwise — AND drives the sparing clause
+// in the second line, which keeps a chapter title-page heading alive
+// when its own text also runs as a header on later pages. A predicate
+// over the count and the per-occurrence shape alone cannot express
+// either, and measured on a real book it over-filters eighteen
+// substantive headings while under-filtering twenty-seven running
+// headers.
+func IsPageChrome(md map[string]string) bool {
+	if md == nil {
+		return false
+	}
+	count, err := strconv.Atoi(md[ChromeKeyPageRepeatCount])
+	if err != nil {
+		return false
+	}
+	repeatShaped := md[ChromeKeyRepeatShaped] == "true"
+	threshold := chromeMinPages
+	if repeatShaped {
+		threshold = chromeMinPagesShaped
+	}
+	if count < threshold {
+		return false
+	}
+	return !repeatShaped || md[ChromeKeyShape] != ""
 }
 
 // hasChromeShape reports whether b's raw text matches the

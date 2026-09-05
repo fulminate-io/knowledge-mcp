@@ -126,9 +126,9 @@ func TestIsLayoutTable_Classification(t *testing.T) {
 			t.Errorf("case %s: no <table> inside the case wrapper", tc.id)
 			continue
 		}
-		got := isLayoutTable(tbl)
+		got := classifyTable(tbl).Layout
 		if got != tc.want {
-			t.Errorf("case %s: isLayoutTable = %v, want %v (%s)", tc.id, verdict(got), verdict(tc.want), tc.ruleNote)
+			t.Errorf("case %s: classifyTable().Layout = %v, want %v (%s)", tc.id, verdict(got), verdict(tc.want), tc.ruleNote)
 		}
 	}
 }
@@ -171,7 +171,7 @@ func TestIsLayoutTable_RaggedHeaderedTableIsData(t *testing.T) {
 		t.Fatalf("premise broken: the fixture table has no block-bearing cell, so rule 4 would not misclassify it and rule 2 would stay untested")
 	}
 
-	if isLayoutTable(tbl) {
+	if classifyTable(tbl).Layout {
 		t.Errorf("a ragged th-bearing data table classified LAYOUT — the header signal (rule 2) is the only rule that keeps it DATA, and its rows would be destroyed")
 	}
 }
@@ -188,8 +188,17 @@ func verdict(layout bool) string {
 // the reproduction pass while destroying every table record on the page.
 //
 // The th-bearing taxonomy table and BOTH header-less label-value grids must
-// still emit tableRecords with their cell pairings intact, while the
-// MainPane wrapper — which holds the whole page — must emit none.
+// still emit tableRecords with their cell pairings intact, and the MainPane
+// wrapper — which holds the whole page — must emit one TOO, carrying the
+// layout verdict.
+//
+// THE WRAPPER ASSERTION WAS INVERTED WHEN THE VERDICT BECAME A SIGNAL. It
+// previously required the wrapper to emit NO record, which encoded the
+// behaviour this ticket reverses: a layout table is page furniture, and page
+// furniture is part of the source document, so it is emitted WITH its verdict
+// rather than deleted. What has not changed, and is still asserted below, is
+// that the wrapper's subtree is walked — the near-miss this test exists for is
+// a classifier that swallows data tables, and that remains fully gated.
 func TestParsePage_TableLayoutPage_DataTableStillEmitsTable(t *testing.T) {
 	t.Parallel()
 	got := collectRecords(parseFixture(t, "cwe_table_layout.html"))
@@ -199,8 +208,11 @@ func TestParsePage_TableLayoutPage_DataTableStillEmitsTable(t *testing.T) {
 		byID[tbl.Attrs.ID] = tbl
 	}
 
-	if _, swallowed := byID["MainPane"]; swallowed {
-		t.Errorf("the MainPane layout wrapper emitted a tableRecord — it holds the whole page and must be recursed into, not recorded")
+	wrapper, recorded := byID["MainPane"]
+	if !recorded {
+		t.Errorf("the MainPane layout wrapper emitted no tableRecord — a layout verdict is a signal, not a deletion; saw table ids %v", tableIDs(got.tables))
+	} else if !wrapper.Signals.Layout {
+		t.Errorf("the MainPane wrapper was recorded but classified %s — it holds the whole page and must carry the LAYOUT verdict", verdict(wrapper.Signals.Layout))
 	}
 
 	taxonomy, ok := byID["RelatedWeaknesses"]

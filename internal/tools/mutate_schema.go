@@ -135,12 +135,24 @@ func mutateBatchProperties() map[string]kgtools.Property {
 			"file":    {Type: "string", Description: "File path cited (alternative to url)"},
 			"node_id": {Type: "string", Description: "Knowledge node ID cited (alternative to url/file)"},
 		}}},
-		"items": {Type: "array", Description: "For operation=update_batch: per-item array; each entry carries {id, summary, keywords, binary_vector (base64), metadata}. Single store.Txn wraps every item — all-or-nothing. Per-item validation mirrors single-item update (length checks on binary_vector, backend-tagged metadata rejection). Used by the client-side LLM pipeline for high-throughput writeback so per-batch RPC count stays at 1.", Items: &kgtools.Property{Type: "object", Description: "Per-item shape: {id (required), summary?, keywords?, binary_vector? (base64 → 32 bytes), metadata?}", AdditionalProperties: &falseValue, Properties: map[string]kgtools.Property{
-			"id":            {Type: "string", Description: "Target node ID (required)"},
-			"summary":       {Type: "string", MaxLength: 500, Description: "Search-optimized one-line summary"},
-			"keywords":      {Type: "string", Description: "BM25 keyword-token boost string"},
-			"binary_vector": {Type: "string", Description: "Base64-encoded binary embedding (32 bytes / 256-bit decoded)"},
-			"metadata":      {Type: "object", Description: "Key-value metadata pairs merged per-key"},
+		// THE DECLARED SET IS THE WHOLE SET THE DECODER HONORS, and the two are
+		// checked against each other by the undeclared-key guard, which reads its
+		// vocabulary off this map rather than a hand-listed copy — so this map is
+		// the ONE place a per-item key is declared, and adding one here is what
+		// moves it out of the refused set. `status` and `embed_identity` were
+		// absent here while engine.batchItem and the proto UpdateItem carried
+		// both: a caller reading this schema could not learn that a per-item
+		// status write exists, and the guard would have refused a call the
+		// compiler handles.
+		"items": {Type: "array", Description: "For operation=update_batch: per-item array; each entry carries {id, summary, keywords, description, binary_vector (base64), metadata, status, embed_identity}. Single store.Txn wraps every item — all-or-nothing. Per-item validation mirrors single-item update (length checks on binary_vector, backend-tagged metadata rejection). An entry carrying any OTHER key is REFUSED naming it — an undeclared key is dropped at decode, so accepting it would return success having written none of it. Used by the client-side LLM pipeline for high-throughput writeback so per-batch RPC count stays at 1.", Items: &kgtools.Property{Type: "object", Description: "Per-item shape: {id (required), summary?, keywords?, description?, binary_vector? (base64 → 32 bytes), metadata?, status?, embed_identity?}", AdditionalProperties: &falseValue, Properties: map[string]kgtools.Property{
+			"id":             {Type: "string", Description: "Target node ID (required)"},
+			"summary":        {Type: "string", MaxLength: 500, Description: "Search-optimized one-line summary"},
+			"keywords":       {Type: "string", Description: "BM25 keyword-token boost string"},
+			"description":    {Type: "string", Description: "Node body to set (unset = untouched, present-and-empty = a deliberate clear). This is the per-item carrier for a plan section's body, so revising several sections of a chunked plan is one batch rather than one call each. It is BM25-indexed, so an item setting it is re-indexed."},
+			"binary_vector":  {Type: "string", Description: "Base64-encoded binary embedding (32 bytes / 256-bit decoded)"},
+			"metadata":       {Type: "object", Description: "Key-value metadata pairs merged per-key"},
+			"status":         {Type: "string", Description: "Status to set on this item (nil = untouched)"},
+			"embed_identity": {Type: "object", Description: "The embedder that produced binary_vector. A writeback under an identity the target graph did not record is refused rather than stored; unset on summary and metadata writes, which produce no vector."},
 		}}},
 		"nodes": {Type: "array", Description: "For operation=create_batch: per-node array; each entry carries {type, name, description, summary, content, status, metadata}. Created in a single store.Txn alongside the edges[] payload — all-or-nothing. Returns {ids:[...]} of length len(nodes). Knowledge-graph only.", Items: &kgtools.Property{Type: "object", Description: "Per-node shape: {type (required), name, description, summary, content, status, metadata}", AdditionalProperties: &falseValue, Properties: map[string]kgtools.Property{
 			"type":        {Type: "string", Description: "Node type (required)"},
@@ -151,12 +163,24 @@ func mutateBatchProperties() map[string]kgtools.Property {
 			"status":      {Type: "string", Description: "Initial status"},
 			"metadata":    {Type: "object", Description: "Initial key-value metadata pairs"},
 		}}},
-		"edges": {Type: "array", Description: "For operation=create_batch: per-edge array; each entry carries {from_idx, to_idx, from_id, to_id, type}. An endpoint is either a slot index into nodes[] (from_idx/to_idx >= 0) OR an existing node ID (from_id/to_id). Use -1 / absent for the slot index when supplying an ID instead. Created atomically inside the same store.Txn as the nodes payload. ATTACHING A CRITERION TO A STEP TAKES A PAIR OF EDGES, not one: step--contains-->criterion AND criterion--verifies-->step, the same pair create_plan and mutate(create, type:criterion) both emit. plan_tree walks contains only, so a criterion attached by verifies alone is invisible in the rendered tree. A batch carrying one direction without its partner is REJECTED pre-write, naming the missing edge — the pair is never auto-completed.", Items: &kgtools.Property{Type: "object", Description: "Per-edge shape: {from_idx?, to_idx?, from_id?, to_id?, type (required)}", AdditionalProperties: &falseValue, Properties: map[string]kgtools.Property{
+		"edges": {Type: "array", Description: "For operation=create_batch: per-edge array; each entry carries {from_idx, to_idx, from_id, to_id, type} plus the optional edge-metadata carriers {weight, confidence, method, evidence, last_validated}. An endpoint is either a slot index into nodes[] (from_idx/to_idx >= 0) OR an existing node ID (from_id/to_id). Use -1 / absent for the slot index when supplying an ID instead. Created atomically inside the same store.Txn as the nodes payload. ATTACHING A CRITERION TO A STEP TAKES A PAIR OF EDGES, not one: step--contains-->criterion AND criterion--verifies-->step, the same pair create_plan and mutate(create, type:criterion) both emit. plan_tree walks contains only, so a criterion attached by verifies alone is invisible in the rendered tree. A batch carrying one direction without its partner is REJECTED pre-write, naming the missing edge — the pair is never auto-completed.", Items: &kgtools.Property{Type: "object", Description: "Per-edge shape: {from_idx?, to_idx?, from_id?, to_id?, type (required), weight?, confidence?, method?, evidence?, last_validated?}", AdditionalProperties: &falseValue, Properties: map[string]kgtools.Property{
 			"from_idx": {Type: "integer", Description: "Slot index into nodes[] for the edge source (-1/absent when using from_id)"},
 			"to_idx":   {Type: "integer", Description: "Slot index into nodes[] for the edge target (-1/absent when using to_id)"},
 			"from_id":  {Type: "string", Description: "Existing node ID for the edge source (alternative to from_idx)"},
 			"to_id":    {Type: "string", Description: "Existing node ID for the edge target (alternative to to_idx)"},
 			"type":     {Type: "string", Description: "Relationship type (required)"},
+			// THE EDGE-METADATA CARRIERS THE ARM HAS ALWAYS ACCEPTED. engine.edgeBody
+			// declares all five and TestCompileMutate_CreateBatchEdgeMetadata has
+			// asserted since before this change that they land on the compiled edge;
+			// they were simply undeclared here, so a caller reading the schema could
+			// not learn they exist. Declaring them is what lets a caller write a
+			// coherent plan_annotation attachment — which the coherence guard now
+			// requires — from the documentation alone.
+			"weight":         {Type: "number", Description: "Caller-asserted edge weight, stored verbatim."},
+			"confidence":     {Type: "number", Description: "Caller-asserted 0.0-1.0 confidence, stored verbatim."},
+			"method":         {Type: "string", Description: "Short tag describing how the edge was derived (e.g. 'manual', 'plan-section'). A relates-to edge from a plan_annotation MUST carry 'plan-annotation'."},
+			"evidence":       {Type: "string", Description: "Evidence backing the edge (a file path, a snippet, a JSON payload). A relates-to edge from a plan_annotation MUST carry that annotation's kind and tier here, or the write is refused naming the exact value to send."},
+			"last_validated": {Type: "string", Description: "RFC3339 timestamp the linker stamps when (re-)asserting the edge."},
 		}}},
 		"updates": {Type: "array", Description: "For operation=bulk_update_metadata: per-item array; each entry carries {id (required), metadata (required, non-empty)}. Single store.Txn wraps every item — all-or-nothing. Backend-tagged metadata rejects the whole batch. Used by client-side cluster persistence + propagation writeback so per-batch RPC count stays at 1 regardless of node count.", Items: &kgtools.Property{Type: "object", Description: "Per-item shape: {id (required), metadata (required, non-empty map)}", AdditionalProperties: &falseValue, Properties: map[string]kgtools.Property{
 			"id":       {Type: "string", Description: "Target node ID (required)"},

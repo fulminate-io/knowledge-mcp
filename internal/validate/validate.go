@@ -26,6 +26,18 @@ import (
 // concise line; 500 chars is the upper bound.
 const SummaryMaxLen = 500
 
+// ProjectNameMaxRunes caps a PROJECT name at 80 RUNES. Linear enforces this
+// limit on project names and rejects an over-cap name with a GraphQL
+// validation error after a full network round trip, so refusing client-side
+// fails fast for the same reason Name's newline check does.
+//
+// It is a PROJECT-only cap and it is deliberately not inside Name: Name has
+// ten call sites, and ticket titles are measurably longer than 80 runes on a
+// real tracker (a majority of one live team's issue titles exceed it, while
+// none of its project names do), so capping every Name caller would refuse
+// titles the tracker accepts.
+const ProjectNameMaxRunes = 80
+
 // MinStepDescriptionLen is the lower bound for step Description length.
 // 2 chars matches the "single-character or empty descriptions"
 // wording — rejects "x" (1
@@ -223,6 +235,40 @@ func Name(toolName, name string) error {
 	}
 	if strings.ContainsAny(trimmed, "\r\n") {
 		return fmt.Errorf("%s: name must not contain newline characters (got %q) — names render in markdown tables, search snippets, and external backends (e.g., Linear) reject embedded newlines", toolName, name)
+	}
+	return nil
+}
+
+// ProjectName is Name plus the project-name length cap: it delegates every
+// arm Name owns (empty, whitespace-only, embedded newline) and adds the
+// 80-RUNE ProjectNameMaxRunes limit, counted with utf8.RuneCountInString so a
+// multibyte name is measured in characters and not bytes.
+//
+// NOTHING IS CLAMPED. An over-cap name is refused with the limit and the
+// offending name named, because a silently shortened project name is a
+// different project name than the caller asked for, and the caller would
+// never learn it changed.
+//
+// Apply at the create_project dispatch site, ahead of any backend call, so
+// the behaviour is identical with and without a tracker configured.
+func ProjectName(toolName, name string) error {
+	if err := Name(toolName, name); err != nil {
+		return err
+	}
+	// COUNT THE RAW NAME, not a trimmed copy. Nothing between this guard and
+	// the tracker trims the value: the create_project intercept hands us the
+	// caller's name and passes that same value to the backend, which sends it
+	// as input.name. So the string the tracker measures is this one, its
+	// surrounding whitespace included, and a guard that counted a trimmed copy
+	// would wave through a name the tracker then rejects — after a network
+	// round trip, which is the whole thing failing fast here exists to avoid.
+	//
+	// TRIMMING HERE INSTEAD was the alternative and is refused: sending a
+	// different name than the caller asked for is a silent coercion. This path
+	// refuses and says why; it never rewrites the input.
+	if n := utf8.RuneCountInString(name); n > ProjectNameMaxRunes {
+		return fmt.Errorf("%s: name exceeds %d characters (got %d): %q — project names are capped at %d by the tracker; shorten it (nothing is truncated for you)",
+			toolName, ProjectNameMaxRunes, n, name, ProjectNameMaxRunes)
 	}
 	return nil
 }

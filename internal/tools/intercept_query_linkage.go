@@ -153,7 +153,16 @@ func renderLinkageProxyBreakdown(ctx context.Context, gc statsRPC) string {
 // listLinkageGraphs enumerates the loaded linkage graphs + the topology hint.
 func listLinkageGraphs(ctx context.Context, gc statsRPC) kgtools.ToolResult {
 	// The linkage graph is a single instance (empty name); fetch its counts.
-	nodes, edges := graphCounts(ctx, gc, "linkage", "")
+	nodes, edges, err := graphCounts(ctx, gc, "linkage", "")
+	// A FAILED READ IS NOT AN ABSENT GRAPH, and this listing is where conflating
+	// the two did the most damage: graphCounts used to answer (0, 0) on any error,
+	// which fell straight into the zero check below and reported the graph as NOT
+	// FOUND. The error is taken FIRST, ahead of that check, so an unreachable
+	// graph is never rendered as a missing one.
+	if err != nil {
+		return errorResult(fmt.Sprintf(
+			"linkage list-graphs: could not read the linkage graph's counts: %v — this is a READ FAILURE, not an absent graph", err))
+	}
 	if nodes == 0 && edges == 0 {
 		return textResult("No linkage graph found. Linkage graphs are created by the tier-1 linker when code-to-cloud relationships are detected.")
 	}

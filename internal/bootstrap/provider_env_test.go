@@ -59,8 +59,7 @@ func TestMain(m *testing.M) {
 		}
 	}
 	// THE LEAK GATE. The client daemon's wiring is almost entirely background
-	// work: runServe spawns wireRuntimesBackground (daemon.go:469), which spawns
-	// the deferred instruction bootstrap (daemon.go:375), and
+	// work: runServe spawns wireRuntimesBackground, and within it
 	// maybeStartTranscriptUpload spawns both the boot delay and the upload loop
 	// (client_transcript_upload.go:148-149). Each outlives the call that started
 	// it by design, so a test that wires a client and returns leaks whatever those

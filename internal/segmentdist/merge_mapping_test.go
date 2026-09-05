@@ -93,6 +93,7 @@ func (r *mappingRecorder) count() int {
 // output-sized insertion structure by algorithm — but its merged payload is
 // mapping-backed after this change, and that is what is asserted of it.
 func TestMergedPayloadIsMappingBackedNotHeapBacked(t *testing.T) {
+	requireMeasurementRun(t)
 	rec := &mappingRecorder{}
 	rec.install(t)
 

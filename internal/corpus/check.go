@@ -84,6 +84,15 @@ const (
 	// MetaLLMOnly marks prose that has no deterministic expression. It is
 	// exclusive with every check key: a node claiming both is a coerced check.
 	MetaLLMOnly = "llm_only"
+	// MetaAppliesToTests declares that the check's defect class lives in TEST
+	// files, so the scan widens its walk for this check alone rather than
+	// requiring every caller to pass a run-wide knob. Absent means false; the
+	// only admitted value is "true".
+	//
+	// IT IS A WALK-SCOPE CONTROL, NOT A DESCRIPTIVE KEY, which is why it joins
+	// the llm_only exclusivity sweep below: an llm_only check never walks a
+	// tree, so the declaration on one would be a control its executor ignores.
+	MetaAppliesToTests = "applies_to_tests"
 )
 
 // CheckType is the closed set of execution kinds a check may declare.
@@ -100,6 +109,15 @@ const (
 // llmOnlyTrue is the only admitted value of MetaLLMOnly. A key present with any
 // other value is an error rather than a false.
 const llmOnlyTrue = "true"
+
+// appliesToTestsTrue is the only admitted value of MetaAppliesToTests, on the
+// same rule as llmOnlyTrue: one literal, and ABSENCE is the other state.
+//
+// "false" IS REFUSED RATHER THAN READ AS A FALSE, deliberately. Admitting it
+// would create a second spelling of the default that every reader of a check
+// node then has to keep in agreement with the first, and the boolean-by-admitted
+// -literal idiom already in this contract exists precisely so there is one.
+const appliesToTestsTrue = "true"
 
 // admittedCheckTypes is the closed set, in the order error messages enumerate it.
 var admittedCheckTypes = []CheckType{
@@ -121,12 +139,19 @@ var admittedSeverities = []foundation.Severity{
 }
 
 // llmOnlyExcludedKeys are the keys a valid llm_only node must not carry.
+//
+// MetaAppliesToTests IS ON THIS LIST even though the set is otherwise the
+// check-BODY keys, and the reason is the same one that put the others here: it
+// is not a description of the guidance, it is a control over a walk, and an
+// llm_only entry never walks. Accepting it would hand an author a knob whose
+// executor ignores it.
 var llmOnlyExcludedKeys = []string{
 	MetaCheckType,
 	MetaDSLPattern,
 	MetaCheckWhere,
 	MetaFixtureBad,
 	MetaFixtureGood,
+	MetaAppliesToTests,
 }
 
 // Check is the machine half of a check-carrying node: everything an
@@ -154,6 +179,10 @@ type Check struct {
 	FixtureBad string
 	// FixtureGood names the node the check must be silent on.
 	FixtureGood string
+	// AppliesToTests is the validated declaration that this check's defect class
+	// lives in test files. The scan widens THIS check's walk when it is set,
+	// leaving every other check in the same run untouched.
+	AppliesToTests bool
 }
 
 // ParseCheck classifies a node against the check contract, returning the machine
@@ -165,6 +194,22 @@ func ParseCheck(n *knowledgev1.Node) (Check, bool, error) {
 		return Check{}, false, nil
 	}
 	md := n.GetMetadata()
+	// THE VALUE CHECK RUNS AHEAD OF BOTH BRANCHES, and what that buys is narrower
+	// than it looks, so it is worth stating exactly. It is NOT what protects the
+	// llm_only lane: a declaration on an llm_only node is refused by the
+	// exclusivity sweep inside parseLLMOnly, on PRESENCE, whatever its value, and
+	// moving this call below leaves every llm_only test green.
+	//
+	// What running ahead buys is the THIRD population, the one neither branch
+	// reaches: a node carrying no llm_only and no check_type. Below the branches
+	// that node returns not-a-check at the check_type lookup, carrying a
+	// malformed declaration nobody looked at. ParseCheck runs for every node the
+	// checks graph returns, so that population is real rather than hypothetical,
+	// and admitting bad input there is what this ordering refuses.
+	appliesToTests, err := parseAppliesToTests(md)
+	if err != nil {
+		return Check{}, false, err
+	}
 	if raw, ok := md[MetaLLMOnly]; ok {
 		c, err := parseLLMOnly(n.GetId(), raw, md)
 		if err != nil {
@@ -176,11 +221,27 @@ func ParseCheck(n *knowledgev1.Node) (Check, bool, error) {
 	if !ok {
 		return Check{}, false, nil
 	}
-	c, err := parseCheckBody(n.GetId(), rawType, md)
+	c, err := parseCheckBody(n.GetId(), rawType, md, appliesToTests)
 	if err != nil {
 		return Check{}, false, err
 	}
 	return c, true, nil
+}
+
+// parseAppliesToTests validates the declaration's VALUE on every node, whatever
+// lane it belongs to. An absent key is legal and means false; the only admitted
+// value is "true"; anything else is refused naming the offending value and the
+// vocabulary, never coerced to a false.
+func parseAppliesToTests(md map[string]string) (bool, error) {
+	raw, present := md[MetaAppliesToTests]
+	if !present {
+		return false, nil
+	}
+	if raw != appliesToTestsTrue {
+		return false, fmt.Errorf("corpus: %s=%q is not admitted (the only admitted value is %q; omit the key to leave the check's walk narrowed to non-test files)",
+			MetaAppliesToTests, raw, appliesToTestsTrue)
+	}
+	return true, nil
 }
 
 // parseLLMOnly validates row 2. The exclusivity sweep is the whole point: a node
@@ -219,7 +280,11 @@ func parseLLMOnly(id, raw string, md map[string]string) (Check, error) {
 
 // parseCheckBody validates row 1: the discriminant, then the value vocabularies,
 // then the fixtures, then the per-type body.
-func parseCheckBody(id, rawType string, md map[string]string) (Check, error) {
+//
+// appliesToTests arrives already value-validated from ParseCheck; what happens
+// to it HERE is the language check, which needs a resolved language and so
+// cannot happen at the same place the value is read.
+func parseCheckBody(id, rawType string, md map[string]string, appliesToTests bool) (Check, error) {
 	ct, err := parseCheckType(rawType)
 	if err != nil {
 		return Check{}, err
@@ -236,14 +301,18 @@ func parseCheckBody(id, rawType string, md map[string]string) (Check, error) {
 	if err != nil {
 		return Check{}, err
 	}
+	if err := validateAppliesToTestsLanguage(appliesToTests, lang); err != nil {
+		return Check{}, err
+	}
 	c := Check{
-		ID:          id,
-		Type:        ct,
-		Severity:    sev,
-		Language:    lang,
-		Pattern:     md[MetaDSLPattern],
-		FixtureBad:  bad,
-		FixtureGood: good,
+		ID:             id,
+		Type:           ct,
+		Severity:       sev,
+		Language:       lang,
+		Pattern:        md[MetaDSLPattern],
+		FixtureBad:     bad,
+		FixtureGood:    good,
+		AppliesToTests: appliesToTests,
 	}
 	if where := md[MetaCheckWhere]; where != "" {
 		c.Where = []byte(where)
@@ -254,6 +323,24 @@ func parseCheckBody(id, rawType string, md map[string]string) (Check, error) {
 		}
 	}
 	return c, nil
+}
+
+// validateAppliesToTestsLanguage refuses the declaration for a language ast
+// carries no test-file convention for, following the ast tool's own hard
+// refusal exactly.
+//
+// The alternative is a documented control that is accepted and then does
+// nothing: with no convention there is nothing to filter BY, so the walk admits
+// every file at either setting and the declaration decides nothing. The admitted
+// set is rendered from the LIVE registry at call time, so a language that gains
+// a convention starts accepting the declaration in the same commit without a
+// second table to update here.
+func validateAppliesToTestsLanguage(appliesToTests bool, lang treesitter.Language) error {
+	if !appliesToTests || ast.HasTestFilePredicate(lang) {
+		return nil
+	}
+	return fmt.Errorf("corpus: %s is not supported for %s=%q — ast has no test-file convention registered for it, so the declaration would widen nothing. Languages that do: %s",
+		MetaAppliesToTests, MetaLanguage, lang, strings.Join(ast.TestFilePredicateLanguages(), ", "))
 }
 
 // parseCheckType enforces the closed set and enumerates it on refusal.

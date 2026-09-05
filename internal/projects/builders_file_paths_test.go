@@ -54,7 +54,8 @@ func TestBuildPlanGraph_FilePathsEmitNoStepFileEdge(t *testing.T) {
 		}},
 	}
 
-	nodes, edges := BuildPlanGraph(plan, nil, nil)
+	nodes, edges, err := BuildPlanGraph(plan, nil, nil)
+	require.NoError(t, err)
 
 	for _, e := range edges {
 		assert.NotEqualf(t, kgtypes.EdgeKGImplements, e.Type,

@@ -135,17 +135,7 @@ func validateCreateBodies(a manageChecksArgs) error {
 // check_type / severity / language vocabularies and the ast body's parse-and-
 // compile proof all come from the contract and none of them is restated here.
 func parseCandidateCheck(a manageChecksArgs) (corpus.Check, error) {
-	md := map[string]string{
-		corpus.MetaCheckType:   a.CheckType,
-		corpus.MetaSeverity:    a.Severity,
-		corpus.MetaLanguage:    a.Language,
-		corpus.MetaDSLPattern:  a.DSLPattern,
-		corpus.MetaFixtureBad:  pendingFixtureBad,
-		corpus.MetaFixtureGood: pendingFixtureGood,
-	}
-	if a.CheckWhere != "" {
-		md[corpus.MetaCheckWhere] = a.CheckWhere
-	}
+	md := checkNodeMetadata(a, pendingFixtureBad, pendingFixtureGood)
 	c, isCheck, err := corpus.ParseCheck(&knowledgev1.Node{
 		Id:         "the check being created",
 		Type:       string(kgtypes.NodeFinding),
@@ -162,6 +152,40 @@ func parseCandidateCheck(a manageChecksArgs) (corpus.Check, error) {
 			corpus.MetaCheckType)
 	}
 	return c, nil
+}
+
+// checkNodeMetadata builds a check node's contract metadata from the create
+// arguments, with the fixture bindings supplied by the caller.
+//
+// IT IS ONE FUNCTION BECAUSE THERE ARE TWO MAPS AND THEY MUST NOT DRIFT. The
+// create path builds a check's metadata twice — once as the CANDIDATE the
+// admission gate runs, once as the node that is PERSISTED — and the two were
+// hand-duplicated with nothing tying them together. A key present in one and
+// missing from the other means the check that passed admission is not the check
+// that was written, and a read-back of the written node cannot see the direction
+// where the candidate is the poorer one. The fixture ids are the ONLY legitimate
+// difference between the two, so they are the parameter and everything else is
+// shared.
+//
+// AN OPTIONAL KEY IS ABSENT RATHER THAN EMPTY. The contract reads a missing key
+// as the default; writing an empty or "false" value would invent a second
+// spelling of that default which every reader then has to know about.
+func checkNodeMetadata(a manageChecksArgs, badID, goodID string) map[string]string {
+	md := map[string]string{
+		corpus.MetaCheckType:   a.CheckType,
+		corpus.MetaSeverity:    a.Severity,
+		corpus.MetaLanguage:    a.Language,
+		corpus.MetaDSLPattern:  a.DSLPattern,
+		corpus.MetaFixtureBad:  badID,
+		corpus.MetaFixtureGood: goodID,
+	}
+	if a.CheckWhere != "" {
+		md[corpus.MetaCheckWhere] = a.CheckWhere
+	}
+	if a.AppliesToTests {
+		md[corpus.MetaAppliesToTests] = "true"
+	}
+	return md
 }
 
 // checksCreateArgs is the wire envelope for a create_batch into the checks graph.
@@ -222,17 +246,7 @@ func fixtureNodeBody(f *manageChecksFixtureArgs, language string) persistBatchNo
 // The edges stay DISPLAY-ONLY. The fixture binding is metadata and only
 // metadata; no executor consults these edges and none may start to.
 func writeCheckNode(ctx context.Context, gc GraphCaller, a manageChecksArgs, badID, goodID string) (string, error) {
-	md := map[string]string{
-		corpus.MetaCheckType:   a.CheckType,
-		corpus.MetaSeverity:    a.Severity,
-		corpus.MetaLanguage:    a.Language,
-		corpus.MetaDSLPattern:  a.DSLPattern,
-		corpus.MetaFixtureBad:  badID,
-		corpus.MetaFixtureGood: goodID,
-	}
-	if a.CheckWhere != "" {
-		md[corpus.MetaCheckWhere] = a.CheckWhere
-	}
+	md := checkNodeMetadata(a, badID, goodID)
 	ids, err := executeChecksCreate(ctx, gc, checksCreateArgs{
 		Operation: "create_batch",
 		Graph:     string(kgtypes.GraphChecks),

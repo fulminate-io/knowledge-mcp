@@ -66,8 +66,10 @@
 // kgtypes.EdgeImplements and treesitter.EdgeImplements. NO PROTO CHANGE — the
 // engine proto declares the edge type as an open-vocabulary verbatim string, and
 // the in-tree precedent is TEST_CALLS. Client-side traverse also needs no table
-// entry: canonicalEdgeCasing upper-cases every edge type for graph=="code", so
-// traverse(graph:"code", edge_types:["implements"]) reaches IMPLEMENTS. NOTE,
+// entry: the client RESOLVES a caller's edge-type spelling against the graph's
+// OWN stored vocabulary, so traverse(graph:"code", edge_types:["implements"])
+// reaches IMPLEMENTS by unique case-insensitive match — not by the per-graph
+// uppercase fold that used to do it, which no longer exists. NOTE,
 // per V11: TEST_CALLS' zero-server-reference property does NOT carry to
 // IMPLEMENTS, which already appears in server test files.
 //

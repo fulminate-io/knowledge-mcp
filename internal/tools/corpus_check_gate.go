@@ -73,9 +73,20 @@ func guardCheckIDQualified(id, language string, exists bool) error {
 			"on one id in the single checks graph", id, prefix+"<name>")
 }
 
-// contractKeys is the step-1.1 vocabulary, used ONLY for the cheap skip below.
+// contractKeys is the check vocabulary, used ONLY for the cheap skip below.
 // A payload mentioning none of these cannot change any check's validity, so it
 // pays no reads at all.
+//
+// THE TEST-FILE DECLARATION IS ON THE LIST, and it is the one entry whose place
+// here is a judgement rather than an obvious fact. It changes no pattern and no
+// fixture binding; what it changes is WHICH FILES the check walks, which is the
+// scope its fixtures were admitted under. The conservative arm is taken
+// deliberately: admission already runs fixtures with tests included, so
+// re-running it costs two fixture reads and one in-memory validation on an
+// authoring path and nothing at all on any scan — while the alternative is a
+// skip list that decides, key by key, which writes may bypass a gate. A list
+// like that is one omission away from admitting a check nobody validated, which
+// is the shape the bad-input-always-errors rule exists to refuse.
 var contractKeys = []string{
 	corpus.MetaCheckType,
 	corpus.MetaSeverity,
@@ -85,6 +96,7 @@ var contractKeys = []string{
 	corpus.MetaFixtureBad,
 	corpus.MetaFixtureGood,
 	corpus.MetaLLMOnly,
+	corpus.MetaAppliesToTests,
 }
 
 // updateShapedOps are the operations whose metadata MERGES per key with what the

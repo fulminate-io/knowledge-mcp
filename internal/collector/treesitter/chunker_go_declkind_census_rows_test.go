@@ -14,10 +14,12 @@ package treesitter
 //
 // THE PROPERTY IS "THIS FILE IS GO CODE THAT FILTERS ON A CLOSED SET OF GO
 // DECLARATION KINDS". THE SUBJECT SET IS DERIVED FROM THE TREE, never
-// hand-listed: the walk below reads both internal trees for non-test .go files
-// naming any of the three Go declaration kinds AS A QUOTED GO STRING. The
-// quoting is the detector, and it is what separates a Go string comparison from
-// the same token inside a tree-sitter query pattern.
+// hand-listed: the walk in chunker_go_declkind_census_test.go reads THIS
+// MODULE's internal tree for non-test .go files naming any of the three Go
+// declaration kinds AS A QUOTED GO STRING, and the walk in
+// chunker_go_declkind_census_server_test.go reads the server module's. The
+// quoting is the detector, and it is what separates a Go string comparison
+// from the same token inside a tree-sitter query pattern.
 //
 // BOTH DETECTOR PROBES WERE RUN AGAINST THE REAL TREE, and this census is the
 // worked example of an under-match probe that CONFIRMS a scoping rather than
@@ -54,7 +56,10 @@ package treesitter
 //
 // EVERY REASON BELOW WAS READ IN CURRENT SOURCE, not inherited from a plan.
 type declKindConsumerRow struct {
-	// Path is repo-relative and must match a file the walk finds.
+	// Path is relative to the root the half that declares the row walks:
+	// MODULE-relative here (internal/...), REPO-relative in the staging-only
+	// server half (cmd/knowledge-server/internal/...). Either way it must match
+	// a file that half's walk finds.
 	Path        string
 	Disposition testCallsDisposition
 	// Reason is MANDATORY. A disposition with no reason is indistinguishable
@@ -63,15 +68,22 @@ type declKindConsumerRow struct {
 	Reason string
 }
 
+// THE TABLE IS SPLIT BY MODULE, and this file carries THIS MODULE's rows with
+// MODULE-relative paths — the one spelling correct both here, where the tree is
+// cmd/knowledge/internal, and in the published mirror, where the sync script
+// copies it to internal/. The server module's single row lives in
+// chunker_go_declkind_census_server_test.go, which the sync removes from the
+// published tree because the mirror is the client module alone. Both halves run
+// in this repository, so the pair covers exactly what the two-tree census did.
 var goDeclKindConsumerCensus = []declKindConsumerRow{
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/types.go",
+		Path:        "internal/collector/treesitter/types.go",
 		Disposition: dispositionProducer,
 		Reason: "Declares Chunk.ChunkType and documents it as the raw tree-sitter node type. It " +
 			"enumerates nothing and filters nothing; a disposition here would be a decision about a doc comment.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_identity.go",
+		Path:        "internal/collector/treesitter/chunker_identity.go",
 		Disposition: dispositionOptsIn,
 		Reason: "declParentName now carries a second Go branch routing method_elem to " +
 			"goInterfaceParentName, so a spec takes its interface as ParentName by the same rule a " +
@@ -79,7 +91,7 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 			"empty, and admitting a kind there would change parent resolution for every Go declaration.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_go.go",
+		Path:        "internal/collector/treesitter/chunker_go.go",
 		Disposition: dispositionOptsIn,
 		Reason: "Declares goInterfaceParentName, the method_elem ascent, beside extractGoReceiver. " +
 			"classifyTestKindGo in the same file routes any non-function_declaration in a _test.go " +
@@ -87,14 +99,14 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 			"treatment a method_declaration already gets there, and intended rather than incidental.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_test_kind.go",
+		Path:        "internal/collector/treesitter/chunker_test_kind.go",
 		Disposition: dispositionExcluded,
 		Reason: "Holds the testKindClassifier SIGNATURE and the per-language registry; the kinds appear " +
 			"only in its doc comment describing the chunkType argument. The Go classification decision " +
 			"itself lives in chunker_go.go and is censused there.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/chunker.go",
+		Path:        "internal/collector/treesitter/chunker.go",
 		Disposition: dispositionOptsIn,
 		Reason: "emitDeclarationChunk sets Context.Signature for Go on function_declaration, " +
 			"method_declaration AND method_elem, so a spec renders the same human-readable signature " +
@@ -105,7 +117,7 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 			"chunker_go_typefacts.go.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_kind_symbols.go",
+		Path:        "internal/collector/treesitter/chunker_kind_symbols.go",
 		Disposition: dispositionOptsIn,
 		Reason: "The Go kind-class TABLE: it maps node-kind spellings to class codes so a hot-path arm " +
 			"classifies by SYMBOL ID rather than by a cgo call returning a fresh string. The " +
@@ -120,7 +132,7 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 			"full on the const block in the file itself.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_go_typefacts.go",
+		Path:        "internal/collector/treesitter/chunker_go_typefacts.go",
 		Disposition: dispositionOptsIn,
 		Reason: "goTypeFacts carries a method_elem arm setting Sig and nothing else: a spec declares " +
 			"no locals and no fields, and its results are half of its IDENTITY rather than a call's " +
@@ -128,7 +140,7 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 			"`type` field and declining a grouped declaration outright.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_emit.go",
+		Path:        "internal/collector/treesitter/chunker_emit.go",
 		Disposition: dispositionExcluded,
 		Reason: "Only the EMBEDS arm is kind-gated (chunkType == \"type_declaration\"), and it stays " +
 			"that way because a METHOD SPEC has no embedded elements of its own — an interface's " +
@@ -140,7 +152,7 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 			"type's, not duplicates, so a higher USES_TYPE count is the intended finer grain.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_java_kinds.go",
+		Path:        "internal/collector/treesitter/chunker_java_kinds.go",
 		Disposition: dispositionExcluded,
 		Reason: "A per-language SYMBOL-CLASS TABLE for the JAVA grammar: it maps java node-kind " +
 			"spellings onto class codes so the java arms classify by symbol id rather than by a cgo " +
@@ -150,7 +162,7 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 			"the file filters Go declaration kinds.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_kotlin_kinds.go",
+		Path:        "internal/collector/treesitter/chunker_kotlin_kinds.go",
 		Disposition: dispositionExcluded,
 		Reason: "A per-language SYMBOL-CLASS TABLE for the KOTLIN grammar. \"function_declaration\" here is " +
 			"KOTLIN's own kind — it covers both a concrete function and an interface member — and " +
@@ -158,7 +170,7 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 			"matched this file because the quoted token is SHAPED like a Go kind name.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_scala_kinds.go",
+		Path:        "internal/collector/treesitter/chunker_scala_kinds.go",
 		Disposition: dispositionExcluded,
 		Reason: "A per-language SYMBOL-CLASS TABLE for the SCALA grammar. \"function_declaration\" here " +
 			"is SCALA's own kind for a trait's ABSTRACT member, distinct from function_definition, " +
@@ -166,7 +178,7 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 			"detector matched this file because the quoted token is SHAPED like a Go kind name.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_csharp_kinds.go",
+		Path:        "internal/collector/treesitter/chunker_csharp_kinds.go",
 		Disposition: dispositionExcluded,
 		Reason: "A per-language SYMBOL-CLASS TABLE for the C# grammar. \"method_declaration\" here is " +
 			"C#'s own kind, and method_elem is a Go kind that cannot appear in a csharp parse tree. " +
@@ -174,7 +186,7 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 			"name.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_php_kinds.go",
+		Path:        "internal/collector/treesitter/chunker_php_kinds.go",
 		Disposition: dispositionExcluded,
 		Reason: "A per-language SYMBOL-CLASS TABLE for the PHP grammar. \"method_declaration\" here is " +
 			"PHP's own kind, and method_elem is a Go kind that cannot appear in a php parse tree. " +
@@ -182,7 +194,7 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 			"name.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_groovy.go",
+		Path:        "internal/collector/treesitter/chunker_groovy.go",
 		Disposition: dispositionExcluded,
 		Reason: "resolveDeclNameGroovy switches on GROOVY chunk kinds — class_definition, " +
 			"function_definition and function_declaration, the last being an interface's abstract " +
@@ -190,7 +202,7 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 			"grammar's own vocabulary; a Go method spec cannot appear in a groovy parse tree.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_groovy_kinds.go",
+		Path:        "internal/collector/treesitter/chunker_groovy_kinds.go",
 		Disposition: dispositionExcluded,
 		Reason: "A per-language SYMBOL-CLASS TABLE for the GROOVY grammar. \"function_declaration\" " +
 			"here is GROOVY's own kind for an interface's ABSTRACT member, distinct from " +
@@ -199,20 +211,20 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 			"Go kind name.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_elm.go",
+		Path:        "internal/collector/treesitter/chunker_elm.go",
 		Disposition: dispositionExcluded,
 		Reason: "\"type_declaration\" here is ELM's own grammar kind in the Elm declaration-name " +
 			"resolver, beside type_alias_declaration. It is not Go's vocabulary and shares only the spelling.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_javascript_imports.go",
+		Path:        "internal/collector/treesitter/chunker_javascript_imports.go",
 		Disposition: dispositionExcluded,
 		Reason: "Filters JavaScript's function_declaration / class_declaration / " +
 			"generator_function_declaration while resolving re-export targets. A Go interface's " +
 			"method spec cannot appear in a JavaScript parse tree.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_ecma_kinds.go",
+		Path:        "internal/collector/treesitter/chunker_ecma_kinds.go",
 		Disposition: dispositionExcluded,
 		Reason: "The typescript / tsx / javascript kind-class TABLES. \"function_declaration\" here is " +
 			"the ECMAScript grammars' own kind, mapped to an ECMAScript class code and read only by " +
@@ -221,7 +233,7 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 			"requires every mapped name to be a REGULAR symbol of the grammar the table is built for.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_ecma_typefacts.go",
+		Path:        "internal/collector/treesitter/chunker_ecma_typefacts.go",
 		Disposition: dispositionExcluded,
 		Reason: "ecmaTypeFacts switches on the ECMAScript chunkType vocabulary — its " +
 			"\"function_declaration\" is the ECMAScript kind, alongside method_definition and " +
@@ -231,19 +243,19 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 			"before any kind is read.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_php.go",
+		Path:        "internal/collector/treesitter/chunker_php.go",
 		Disposition: dispositionExcluded,
 		Reason: "Gates on PHP's method_declaration / function_definition for PHP signature extraction. " +
 			"Different grammar; Go kinds never reach it.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_swift.go",
+		Path:        "internal/collector/treesitter/chunker_swift.go",
 		Disposition: dispositionExcluded,
 		Reason: "Gates on Swift's function_declaration for Swift signature extraction. Different " +
 			"grammar; Go kinds never reach it.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/collector/treesitter/chunker_swift_qualtypes.go",
+		Path:        "internal/collector/treesitter/chunker_swift_qualtypes.go",
 		Disposition: dispositionExcluded,
 		Reason: "swiftKindNames maps SWIFT node-kind spellings to swift class codes, and swift spells " +
 			"two of its kinds the same way Go spells its own — function_declaration and " +
@@ -253,7 +265,7 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 			"grammar's vocabulary from another's once per-language kind tables exist.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/tools/ast_hydrator.go",
+		Path:        "internal/tools/ast_hydrator.go",
 		Disposition: dispositionExcluded,
 		Reason: "functionishTypeSet enumerates CALLABLE declarations with bodies, so an ast match " +
 			"inside an interface body still reports no enclosing functionish declaration — unchanged " +
@@ -262,31 +274,31 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 			"interface declaration, which is not functionish either. The set stays as it is.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/tools/ast_handlers.go",
+		Path:        "internal/tools/ast_handlers.go",
 		Disposition: dispositionExcluded,
 		Reason: "The kind appears only in a comment about bare-kind where-leaves. The ast where-tree's " +
 			"`kind` leaf is validated against the LANGUAGE'S OWN node-kind vocabulary from tree-sitter, " +
 			"not against any list in this file, so `method_elem` is already expressible with no change.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/tools/ast_schema.go",
+		Path:        "internal/tools/ast_schema.go",
 		Disposition: dispositionExcluded,
 		Reason: "The kinds appear only as EXAMPLES in the tool's JSON-schema prose. Examples teach the " +
 			"shape of a kind leaf; they do not constrain which kinds are accepted.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/tools/help_content_ast.go",
+		Path:        "internal/tools/help_content_ast.go",
 		Disposition: dispositionExcluded,
 		Reason:      "Same as the schema: the kinds appear only as examples in help text, with no filter behind them.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/ast/where_json.go",
+		Path:        "internal/ast/where_json.go",
 		Disposition: dispositionExcluded,
 		Reason: "The kind appears once inside a doc comment illustrating a malformed where-leaf. The " +
 			"parser accepts any kind string and defers validation to the language's node-kind vocabulary.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/topology/dead_code_review.go",
+		Path:        "internal/topology/dead_code_review.go",
 		Disposition: dispositionExcluded,
 		Reason: "functionishTypes drives the dead-code join, and a method spec is deliberately absent. " +
 			"WHAT A USER SEES: interface method specs never appear in the dead-code review. That is " +
@@ -296,7 +308,7 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 			"contract as dead code.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/topology/graph/god_object.go",
+		Path:        "internal/topology/graph/god_object.go",
 		Disposition: dispositionExcluded,
 		Reason: "typeishNodeTypes enumerates CLASS-LIKE declarations; method_elem is a MEMBER, and " +
 			"adding it would make every interface method its own god-object candidate. Go's " +
@@ -306,7 +318,7 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 			"the true size of the method set instead of zero.",
 	},
 	{
-		Path:        "cmd/knowledge/internal/topology/corpusscan/assertion.go",
+		Path:        "internal/topology/corpusscan/assertion.go",
 		Disposition: dispositionExcluded,
 		Reason: "It filters on NO closed set of declaration kinds at all: a graph-shaped corpus check " +
 			"names its node_type as free text in the check body, and the parser validates only that the " +
@@ -316,15 +328,5 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 			"subject set is the example in node_type's doc comment. The absence of a candidate node of " +
 			"the requested kind is caught at runtime by the non-empty-candidate-set control in " +
 			"exec_graph.go rather than by a compile-time enumeration.",
-	},
-	{
-		Path:        "cmd/knowledge-server/internal/store/node_type_eligibility_table.go",
-		Disposition: dispositionExcluded,
-		Reason: "The kinds appear only in comments describing the DYNAMIC-GRAMMAR fall-through. The " +
-			"code graph opts unknown node types IN, so a method_elem node is summarizable and " +
-			"embeddable with no table entry — and that is the intended outcome: a spec is a real " +
-			"declaration exactly like the method_declaration and function_declaration also absent " +
-			"from the deterministic low-information list. Adding an entry would be a no-op that " +
-			"implied the fall-through does not cover it.",
 	},
 }

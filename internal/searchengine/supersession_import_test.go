@@ -38,7 +38,7 @@ func mergedWithConstituents(t *testing.T) (constituents []SegmentBlob, merged Se
 	}
 	require.Len(t, constituents, 2, "FIXTURE: two single-doc constituents before the merge")
 
-	require.Positive(t, waitForMerge(e), "FIXTURE: the background merge must actually fire")
+	waitForMerge(t, e) // FIXTURE: the background merge must actually fire
 	results := pollResults(recorder, 1)
 	require.Len(t, results, 1, "FIXTURE: exactly one merge")
 	require.Len(t, results[0].Removed, 2, "FIXTURE: it must supersede both constituents")

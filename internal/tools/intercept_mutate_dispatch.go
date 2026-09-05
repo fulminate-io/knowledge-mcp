@@ -17,9 +17,9 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
 
-// handleGraphPassthroughMutate claims a practice/transformers CRUD mutation that
+// handleGraphPassthroughMutate claims a practice/checks CRUD mutation that
 // carries no link_graph. With no link_graph these are engine-reducible, lowering
-// to a Target-routed MutationPlan (Target.Graph == practice/transformers), so
+// to a Target-routed MutationPlan (Target.Graph == practice/checks), so
 // they route through engine.Dispatch: a reducible op compiles→Execute→render and
 // a non-reducible one falls back to legacy. The `link` op is intentionally
 // excluded — the cross-graph link composer upstream owns that decision tree.
@@ -32,7 +32,7 @@ func handleGraphPassthroughMutate(
 	a mutateArgs,
 	params kgtools.CallToolParams,
 ) (bool, kgtools.ToolResult) {
-	if a.Graph != "practice" && a.Graph != "transformers" && a.Graph != checksGraphSelector {
+	if a.Graph != "practice" && a.Graph != checksGraphSelector {
 		return false, kgtools.ToolResult{}
 	}
 	if a.LinkGraph != "" {
@@ -52,7 +52,7 @@ func handleGraphPassthroughMutate(
 	//
 	// checks is in this arm's graph set above precisely so this call can fire.
 	// The guard self-filters on graph=="checks", so admitting only practice and
-	// transformers here would leave it permanently inert on the one path it
+	// checks here would leave it permanently inert on the one path it
 	// exists to protect, while still looking like a live gate.
 	if err := guardCorpusCheckWrite(ctx, gc, a); err != nil {
 		return true, errorResult(err.Error())
@@ -61,7 +61,14 @@ func handleGraphPassthroughMutate(
 	if eerr != nil {
 		return true, errorResult("mutate(" + a.Operation + "): " + eerr.Error())
 	}
-	res, err := engine.Dispatch(ctx, ex.Execute, "mutate", params.Arguments)
+	// The Execute seam comes from persistExecutor, but the STATS seam comes from
+	// gc, which is in scope on the same path: the executor is the persistence
+	// wrapper, and the vocabulary read is a plain per-call routed RPC.
+	stats, serr := statsFnOf(gc)
+	if serr != nil {
+		return true, errorResult("mutate(" + a.Operation + "): " + serr.Error())
+	}
+	res, err := engine.Dispatch(ctx, ex.Execute, stats, "mutate", params.Arguments)
 	if err != nil {
 		return true, errorResult("mutate(" + a.Operation + "): " + err.Error())
 	}
@@ -77,6 +84,13 @@ func handleGraphPassthroughMutate(
 // fires earlier in the chain. Split out of InterceptMutate to keep its decision
 // tree inside the complexity gate.
 func dispatchClientMutateCreate(ctx context.Context, deps ClientDeps, a mutateArgs) (bool, kgtools.ToolResult) {
+	// ABOVE the type switch so ONE call covers both arms a plan_annotation can
+	// take: the context-linked arm, which is how `links:[<section>]` attaches it,
+	// and the fallthrough. A guard placed inside either arm would leave the other
+	// ungated while still looking like a live gate.
+	if err := guardPlanAnnotationCreate(a); err != nil {
+		return true, errorResult(err.Error())
+	}
 	switch a.Type {
 	case "finding":
 		if err := accountMutateParams(armCreateFinding, a); err != nil {
@@ -127,11 +141,21 @@ func accountDefaultBucketMutate(a mutateArgs) error {
 		if err := accountMutateParams(armCreateBatch, a); err != nil {
 			return err
 		}
-		return guardCreateBatchCriterionPair(a.raw)
+		if err := guardCreateBatchCriterionPair(a.raw); err != nil {
+			return err
+		}
+		return guardCreateBatchPlanAnnotations(a.raw)
 	case "upsert":
 		return accountMutateParams(armUpsert, a)
 	case "update_batch":
-		return accountMutateParams(armUpdateBatchItems, a)
+		if err := accountMutateParams(armUpdateBatchItems, a); err != nil {
+			return err
+		}
+		// The second payload-shape check at this seam, beside create_batch's pair.
+		// The accounting table answers "is this top-level param routed"; a
+		// well-formed params set can still carry an items[] entry whose key
+		// nothing reads, and that is what this refuses.
+		return guardUpdateBatchItemKeys(a.raw)
 	case "bulk_update_metadata":
 		return accountMutateParams(armBulkUpdateMetadata, a)
 	case "unlink":

@@ -194,3 +194,86 @@ func TestInterceptMutate_RollupHold_ResponseNamesHeldNodes(t *testing.T) {
 	assert.Contains(t, body, heldNodesLiteral, "the success line must introduce the held bucket")
 	assert.Contains(t, body, "step-1", "the held node must be named so the caller can act on it")
 }
+
+// rollupDiamondFake seeds plan-1 -> {step-a, step-b} with ONE criterion reached
+// by BOTH steps through positioned contains edges. posA and posB are the two
+// positions, and they are the one field the pair below differs in.
+//
+// THE DIAMOND IS ON THE CRITERION, not on the step, because that is where the
+// attribution actually moves the answer: hasUnevaluatedCriterion reads
+// childIndex[step], so which step the criterion lands under is what decides which
+// container is HELD out of a completed cascade.
+func rollupDiamondFake(posA, posB string) *fakeRollupGraphCaller {
+	// The edge literal is built INLINE rather than returned from a helper:
+	// knowledgev1.Edge value-embeds the proto MessageState, so returning one by
+	// value copies a lock (go vet copylocks), which is why this file's other
+	// fixtures also construct their edges in place.
+	positioned := func(pos string) string {
+		if pos == "" {
+			return ""
+		}
+		return `{"position":"` + pos + `"}`
+	}
+	return &fakeRollupGraphCaller{
+		rootNode: knowledgev1.Node{Id: "plan-1", Type: string(kgtypes.NodePlan)},
+		descendants: []knowledgev1.Node{
+			{Id: "step-a", Type: string(kgtypes.NodeStep), Status: "pending"},
+			{Id: "step-b", Type: string(kgtypes.NodeStep), Status: "pending"},
+			{Id: "crit-pending", Type: string(kgtypes.NodeCriterion), Status: "pending"},
+		},
+		structureEdges: []knowledgev1.Edge{
+			{FromId: "plan-1", ToId: "step-a", Type: string(kgtypes.EdgeKGContains)},
+			{FromId: "plan-1", ToId: "step-b", Type: string(kgtypes.EdgeKGContains)},
+			// step-a is reached FIRST in traversal order; the positions decide.
+			{FromId: "step-a", ToId: "crit-pending", Type: string(kgtypes.EdgeKGContains), Evidence: positioned(posA)},
+			{FromId: "step-b", ToId: "crit-pending", Type: string(kgtypes.EdgeKGContains), Evidence: positioned(posB)},
+		},
+	}
+}
+
+// TestInterceptMutate_RollupHold_DiamondAttributionFollowsPosition is RED-FIRST.
+// Before the ordering change the partitioner attributed a two-parent criterion by
+// TRAVERSAL ORDER, so step-a was held whatever the positions said. Attribution
+// now follows POSITION by definition: the position-0 claim wins, step-b is held
+// and step-a cascades.
+//
+// No plan write can produce a two-parent positioned child — a section has exactly
+// one container — but the raw collectors can, and this pins the behavior as
+// defined rather than incidental.
+func TestInterceptMutate_RollupHold_DiamondAttributionFollowsPosition(t *testing.T) {
+	fc := rollupDiamondFake("1", "0")
+	res := completePlanOne(t, fc)
+	require.False(t, res.IsError, "the rollup should succeed: %s", toolResultText(res))
+	require.NotNil(t, fc.lastUpdate, "an UPDATE Mutation must have fired")
+	assert.ElementsMatch(t, []string{"plan-1", "step-a"}, fc.lastUpdate.GetSelection().GetIds(),
+		"the position-0 edge from step-b claims the criterion, so step-b is held and step-a cascades")
+}
+
+// TestInterceptMutate_RollupHold_DiamondPositionSwappedHoldsTheOther is the
+// ONE-FIELD-DIFFERS CONTROL for the test above: the identical fixture with the
+// two positions SWAPPED must hold the OTHER container. Without it the assertion
+// above cannot be told apart from one that passes under any input — step-a is
+// also what traversal order would have held.
+func TestInterceptMutate_RollupHold_DiamondPositionSwappedHoldsTheOther(t *testing.T) {
+	fc := rollupDiamondFake("0", "1")
+	res := completePlanOne(t, fc)
+	require.False(t, res.IsError, "the rollup should succeed: %s", toolResultText(res))
+	require.NotNil(t, fc.lastUpdate, "an UPDATE Mutation must have fired")
+	assert.ElementsMatch(t, []string{"plan-1", "step-b"}, fc.lastUpdate.GetSelection().GetIds(),
+		"swapping the two positions moves the hold to the other container — the sort is what decides, not traversal order")
+}
+
+// TestInterceptMutate_RollupHold_DiamondWithNoPositionsIsUnchanged is a
+// CHARACTERIZATION GUARD — green before and after. With NEITHER edge positioned
+// the stable sort leaves the arrival order alone and the first contains edge
+// still attributes the criterion, exactly as it did before the ordering change.
+// This is the clause that keeps every existing tree, and the rest of this
+// package's cascade suite, untouched.
+func TestInterceptMutate_RollupHold_DiamondWithNoPositionsIsUnchanged(t *testing.T) {
+	fc := rollupDiamondFake("", "")
+	res := completePlanOne(t, fc)
+	require.False(t, res.IsError, "the rollup should succeed: %s", toolResultText(res))
+	require.NotNil(t, fc.lastUpdate, "an UPDATE Mutation must have fired")
+	assert.ElementsMatch(t, []string{"plan-1", "step-b"}, fc.lastUpdate.GetSelection().GetIds(),
+		"unpositioned: step-a is reached first and holds the criterion, so step-b cascades")
+}

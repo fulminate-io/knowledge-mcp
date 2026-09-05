@@ -18,6 +18,7 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/backends"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
+	"github.com/fulminate-io/knowledge-mcp/internal/collector/logs/cloudresolver"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -75,6 +76,18 @@ type LocalLiveness interface {
 	Status() (map[string]any, error)
 }
 
+// CloudSubgraphFetcher is the narrow read seam the logs collector pulls the
+// in-memory cloud-resource slice through to drive its CloudResolver and
+// DependencyChecker. Satisfied in production by *remote.UploadSink.
+//
+// It is its own seam rather than a second method on collector.Sink because
+// collector.Sink is implemented by every sink AND every sink wrapper: adding a
+// cloud-fetch method there would force each of them to carry a capability it
+// never serves. Widening collector.Sink is out of scope by design.
+type CloudSubgraphFetcher interface {
+	FetchCloudSubgraph(ctx context.Context, graphNames []string, typePrefixes []string) (*cloudresolver.CloudSubgraph, error)
+}
+
 // ClientDeps is the narrow surface the cmd/knowledge main package exposes
 // to this internal/tools package. Keep it minimal — every new accessor
 // widens the coupling. The accessors cover:
@@ -118,6 +131,15 @@ type LocalLiveness interface {
 type ClientDeps interface {
 	LocalLiveness() LocalLiveness
 	Sink() collector.Sink
+	// SubgraphFetcher returns the cloud-subgraph read seam the logs collector
+	// resolves its CloudResolver and DependencyChecker inputs through. In
+	// production this is the SAME ingest sink the collect sink wraps, so the
+	// fetch rides the per-call login-routed picker while the admission wrapper
+	// stays in front of every WriteResult. Returns nil when the client was
+	// constructed without an ingest sink (router-less / headless fixture) — the
+	// logs collector surfaces a loud error on nil rather than degrading to a
+	// collect with no cloud enrichment.
+	SubgraphFetcher() CloudSubgraphFetcher
 	RootDir() string
 	// UsageAnalyzer returns the client-side agent-flow analyzer (the pure-Go
 	// transcriptanalytics engine over the local transcript parquet cache) the

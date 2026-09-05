@@ -43,7 +43,7 @@ func acceptExcept(dead ...string) func(searchengine.ExternalID) bool {
 // property is high recall@k over a sample, not deterministic single-query top-1.
 func TestBuildSearchBasic(t *testing.T) {
 	docs := vecDocs(500)
-	seg, err := Format{}.Build(docs)
+	seg, _, err := Format{}.Build(docs)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestBuildSearchBasic(t *testing.T) {
 // recall for the live set). Criterion: Phase 2 Step 1.
 func TestSearchAcceptFiltersDeadID(t *testing.T) {
 	docs := vecDocs(800)
-	seg, err := Format{}.Build(docs)
+	seg, _, err := Format{}.Build(docs)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestBuildToleratesEmptyVectors(t *testing.T) {
 		mixed = append(mixed, searchengine.Document{ID: "empty" + d.ID + string(rune('a'+i))})
 	}
 
-	seg, err := Format{}.Build(mixed)
+	seg, _, err := Format{}.Build(mixed)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestBuildToleratesEmptyVectors(t *testing.T) {
 	}
 
 	// Empty batch must not panic and yields a searchable zero-hit segment.
-	emptySeg, err := Format{}.Build([]searchengine.Document{{ID: "x"}, {ID: "y"}})
+	emptySeg, _, err := Format{}.Build([]searchengine.Document{{ID: "x"}, {ID: "y"}})
 	if err != nil {
 		t.Fatalf("Build all-empty: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestBuildToleratesEmptyVectors(t *testing.T) {
 // (Decode reconstructs the same concrete type).
 func TestEncodeDecodeRoundTrip(t *testing.T) {
 	docs := vecDocs(400)
-	seg, err := Format{}.Build(docs)
+	seg, _, err := Format{}.Build(docs)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -187,11 +187,11 @@ func TestMergeUnionOfLiveMembers(t *testing.T) {
 	// shares a vector — otherwise an A query would tie with its B twin.
 	docsB := vecDocsSeed(300, 0x9e37, 0x79b9, "b")
 
-	segA, err := Format{}.Build(docsA)
+	segA, _, err := Format{}.Build(docsA)
 	if err != nil {
 		t.Fatalf("Build A: %v", err)
 	}
-	segB, err := Format{}.Build(docsB)
+	segB, _, err := Format{}.Build(docsB)
 	if err != nil {
 		t.Fatalf("Build B: %v", err)
 	}

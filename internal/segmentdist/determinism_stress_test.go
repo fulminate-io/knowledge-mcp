@@ -55,6 +55,7 @@ func shipDeterministicAndExport(t *testing.T, docs []searchengine.Document) sear
 // the registry dedups to a single copy at refcount-N. This is what the deterministic
 // builder exists to deliver (and what the segment_rebuild path relies on).
 func TestDeterministicConvergenceAcrossWriters(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	docs := detStressDocs(1024)
@@ -74,6 +75,7 @@ func TestDeterministicConvergenceAcrossWriters(t *testing.T) {
 // content hash + bytes equal the first — flushing out any residual run-to-run
 // non-determinism that a single A-vs-B comparison might miss.
 func TestDeterministicConvergenceRepeated(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	docs := detStressDocs(1024)

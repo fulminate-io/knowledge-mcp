@@ -207,9 +207,19 @@ func TestPipelineDrainsType_ChecksIsDrainedDeliberately(t *testing.T) {
 	require.True(t, pipelineDrainsType(kgtypes.GraphChecks),
 		"the checks graph is embed-eligible on the server; a client filter that drops it strands every check node at embedded=0 with nothing reporting the gap")
 
-	// Controls: the raw/ingest-only builtins stay out — a fix that widens the
-	// filter to every builtin would erase the distinction the list encodes.
-	for _, gt := range []kgtypes.GraphType{kgtypes.GraphLogs, kgtypes.GraphWebRaw, kgtypes.GraphPDFRaw, kgtypes.GraphLinkage} {
+	// THE RAW GRAPHS ARE NOW DRAINED TOO, for the identical reason and with the
+	// identical measured consequence if they are not: web and pdf are enrolled
+	// embed-only on the server, so a client filter that drops them strands every
+	// collected chunk at embedded=0 with nothing reporting the gap.
+	for _, gt := range []kgtypes.GraphType{kgtypes.GraphWebRaw, kgtypes.GraphPDFRaw} {
+		require.True(t, pipelineDrainsType(gt),
+			"builtin %q is embed-eligible on the server; dropping it here strands every raw chunk at embedded=0", gt)
+	}
+
+	// Controls: the builtins that genuinely enrich nothing stay out — a fix that
+	// widened the filter to every builtin would erase the distinction the list
+	// encodes, and these two are what still separate a filter from a pass-through.
+	for _, gt := range []kgtypes.GraphType{kgtypes.GraphLogs, kgtypes.GraphLinkage} {
 		require.False(t, pipelineDrainsType(gt), "builtin %q must stay un-drained", gt)
 	}
 }

@@ -29,7 +29,9 @@ func TestServerSpawnArgvPprofBothDirections(t *testing.T) {
 
 	// --log-file is part of the DEFAULT argv, not an opt-in: the server tees that
 	// file with its inherited stderr, and dropping the flag would silently retire
-	// the durable half of the log.
+	// the durable half of the log AND the lumberjack rotator, which the server
+	// constructs only when this flag is set — the 50MB size cap, the three
+	// retained backups, the thirty-day prune and the gzip all hang off it.
 	want := []string{
 		"--port", "15022", "--root", "/workspace", "--graph-storage", "/data/.knowledge",
 		"--log-file", "/data/.knowledge/server.log",

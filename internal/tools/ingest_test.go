@@ -58,18 +58,52 @@ func (c *capturingSink) last() *collectorwire.CollectResult {
 
 // h2cClient returns an *http.Client that dials plain TCP and speaks HTTP/2
 // prior-knowledge (h2c) to the httptest server — what the real MCP client does.
-// It takes t so it can drop its idle connections at cleanup: an httptest server's
-// Close does not unwind an h2c serverConn while a client still holds the connection
-// pooled, so an abandoned client pins that goroutine for the rest of the binary.
+// It takes t so it can close the connections it dialed at cleanup: an httptest
+// server's Close does not unwind an h2c serverConn while a client still holds the
+// connection, so an abandoned client pins that goroutine for the rest of the
+// binary and lands on this package's goleak gate with no failing test to name it.
+//
+// IT CLOSES WHAT IT DIALED RATHER THAN RELEASING THE POOL. CloseIdleConnections
+// reaches only connections the transport already considers idle, and a test that
+// asserts and returns has not waited for the transport to retire the stream its
+// last call used; this transport also sets no idle timeout, so what the release
+// skips nothing else reaps. Recording the connection at dial time is the only
+// handle a caller gets on it.
+//
+// The bookkeeping is duplicated from graphclient's ownedConns deliberately: that
+// type is unexported in a package this one only consumes, and a shared helper
+// package would be a third home for fifteen lines.
 func h2cClient(t *testing.T) *http.Client {
 	t.Helper()
+	var (
+		mu     sync.Mutex
+		dialed []net.Conn
+	)
 	tr := &http2.Transport{
 		AllowHTTP: true,
-		DialTLSContext: func(_ context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-			return net.Dial(network, addr)
+		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+			var d net.Dialer
+			conn, err := d.DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			dialed = append(dialed, conn)
+			return conn, nil
 		},
 	}
-	t.Cleanup(tr.CloseIdleConnections)
+	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, conn := range dialed {
+			// A connection the peer already reset closes with an error saying so;
+			// it is gone either way, which is what the cleanup wanted.
+			_ = conn.Close()
+		}
+		dialed = nil
+		tr.CloseIdleConnections()
+	})
 	return &http.Client{Transport: tr}
 }
 

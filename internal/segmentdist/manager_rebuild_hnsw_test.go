@@ -49,6 +49,7 @@ func refieldedDocs(docs []searchengine.Document) []searchengine.Document {
 // fixture cannot distinguish a replaced layer from an accumulated one by cardinality
 // alone, which is the assertion doing the work here.
 func TestHNSWResetRoutesThroughReplaceLayer(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()
@@ -148,6 +149,7 @@ func TestHNSWResetRoutesThroughReplaceLayer(t *testing.T) {
 // is what proves the fixture actually reached the asymmetry; without it a run that
 // retired both formats would satisfy the BM25 assertion and say nothing about the defect.
 func TestFinalizeReportsPerFormatRetirement(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()
@@ -226,6 +228,7 @@ func TestFinalizeReportsPerFormatRetirement(t *testing.T) {
 // leave them present and fail here. The pre-assertion is the known-positive — without it
 // the absence afterwards could just mean the blob was never there.
 func TestInvalidateLocalEvictsFromTheServingCache(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

@@ -14,5 +14,7 @@ narrowed
 skipped_parse_error
 skipped_parse_limit
 skipped_read
+test_files_excluded
+test_files_scanned
 total
 walked_root

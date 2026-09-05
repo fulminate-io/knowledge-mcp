@@ -39,8 +39,10 @@ import (
 //
 // The key is "name", not "language": handleClientRebuildSegments refuses an empty
 // a.Name, and it ACCEPTS graph="practice" because kgtypes.HasRebuildableSegments
-// admits every sync-eligible graph except linkage and transformers. A message
-// naming language: instead would be an unactionable instruction.
+// admits it. That predicate is no longer derived from sync-eligibility — it is an
+// independent exclusion of logs and linkage, which is what lets the
+// raw graphs carry segments without ever syncing. practice is admitted either way.
+// A message naming language: instead would be an unactionable instruction.
 //
 // "reset":true IS LOAD-BEARING, NOT A FLOURISH — MEASURED 2026-08-25. Without it
 // the command REFUSES in exactly the state that produces this message: the rebuild

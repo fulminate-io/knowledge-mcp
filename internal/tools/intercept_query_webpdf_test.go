@@ -14,35 +14,67 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
 // rawGraphFake is a purpose-built GraphCaller for the raw-graph arms. The shared
 // fakeGraphCaller answers a Match scan only when the plan carries a NodeType, and
-// the discovery drain is deliberately match-all (it ranks every node type at
-// once), so that fake would return nothing here and the tests would assert
-// against an empty corpus.
+// these arms read by id, so that fake would return nothing here and the tests
+// would assert against an empty corpus.
+//
+// IT ANSWERS EACH READ FOR WHAT IT ASKED. The segment-backed arm issues FOUR
+// reads with three different shapes — the collected-graph catalog, the bulk hit
+// hydrate, the CONTAINS pivot, and the bulk parent hydrate — and a fake that
+// served one canned node set to all of them would hand the parent section back on
+// the HIT hydrate, resolving the heading whether or not the parent hydrate exists.
+// The ids[] arm therefore returns ONLY the ids it was given.
 type rawGraphFake struct {
-	nodes      []*knowledgev1.Node
-	edges      []*knowledgev1.Edge
-	stats      *knowledgev1.GraphStats
+	nodes []*knowledgev1.Node
+	edges []*knowledgev1.Edge
+	stats *knowledgev1.GraphStats
+	// graphNames is the COLLECTED catalog the arm's existence gate reads. Nil is
+	// the never-collected state, so a fixture meaning "this graph exists" says so.
+	graphNames []string
 	nodeReads  int
 	edgeReads  int
+	nameReads  int
 	statsReads int
 	targets    []*knowledgev1.GraphSelector
+	// idTargets records the target of each ids[] NODE read alone. The catalog read
+	// runs FIRST and carries no instance name, so targets[0] no longer witnesses
+	// which graph the ranked read actually addressed.
+	idTargets []*knowledgev1.GraphSelector
 }
 
 func (f *rawGraphFake) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
 	f.targets = append(f.targets, req.GetTarget())
-	if req.GetQuery().GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
+	q := req.GetQuery()
+	switch q.GetReturnMode() {
+	case knowledgev1.ReturnMode_RETURN_MODE_GRAPH_NAMES:
+		f.nameReads++
+		infos := make([]*knowledgev1.GraphInfo, 0, len(f.graphNames))
+		for _, n := range f.graphNames {
+			infos = append(infos, &knowledgev1.GraphInfo{Name: n})
+		}
+		return &knowledgev1.ExecuteResponse{GraphNames: infos}, nil
+	case knowledgev1.ReturnMode_RETURN_MODE_EDGES:
 		f.edgeReads++
 		return &knowledgev1.ExecuteResponse{Edges: f.edges}, nil
+	default:
+		f.nodeReads++
+		f.idTargets = append(f.idTargets, req.GetTarget())
+		want := map[string]bool{}
+		for _, id := range q.GetIds() {
+			want[id] = true
+		}
+		out := make([]*knowledgev1.Node, 0, len(f.nodes))
+		for _, n := range f.nodes {
+			if want[n.GetId()] {
+				out = append(out, n)
+			}
+		}
+		return &knowledgev1.ExecuteResponse{Nodes: out}, nil
 	}
-	f.nodeReads++
-	// Every page after the first is empty, so the keyset drain terminates.
-	if f.nodeReads > 1 {
-		return &knowledgev1.ExecuteResponse{}, nil
-	}
-	return &knowledgev1.ExecuteResponse{Nodes: f.nodes}, nil
 }
 
 func (f *rawGraphFake) Stats(_ context.Context, req *knowledgev1.StatsRequest) (*knowledgev1.StatsResponse, error) {
@@ -115,12 +147,19 @@ func rawPDFCorpus() []*knowledgev1.Node {
 }
 
 // TestRouteWebPDF_RankedTextReturnsRankedResults proves a web/pdf ranked text
-// query now returns RANKED RESULTS with the arm disclosure, rather than the
+// query returns RANKED RESULTS with the arm disclosure, rather than the
 // retirement notice it used to return.
 //
 // Each family brings its OWN corpus and its own locality expectation, because
 // the two families locate a hit differently: web through the containing
 // section's heading, pdf through the chunk's page span.
+//
+// WHAT THIS TEST NOW OWNS, AFTER THE SEGMENT CUTOVER: the RENDERING of a hit for
+// each family. Which node wins is the segment engine's job and is asserted where
+// that engine is driven; here the ranked set is supplied by the fake searcher, so
+// the non-matching node is absent because it was never ranked in. The claim kept
+// alive here is that a ranked id survives hydrate, heading resolution and render
+// with its family's locality intact.
 func TestRouteWebPDF_RankedTextReturnsRankedResults(t *testing.T) {
 	webNodes, webEdges := rawGraphCorpus()
 	pdfNodes := rawPDFCorpus()
@@ -151,8 +190,9 @@ func TestRouteWebPDF_RankedTextReturnsRankedResults(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.graph, func(t *testing.T) {
-			fake := &rawGraphFake{nodes: tc.nodes, edges: tc.edges}
-			deps := interceptTestDeps{gc: fake}
+			fake := &rawGraphFake{nodes: tc.nodes, edges: tc.edges, graphNames: []string{"doc-slug"}}
+			mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: tc.wantHit, Score: 0.9}}}
+			deps := interceptTestDeps{gc: fake, searcher: mgr}
 
 			handled, res := routeWebPDFClient(opCtx(), deps,
 				queryArgs{Graph: tc.graph, Name: "doc-slug", Text: "connection pooling"},
@@ -161,19 +201,24 @@ func TestRouteWebPDF_RankedTextReturnsRankedResults(t *testing.T) {
 			body := textBodyTools(res)
 
 			assert.NotContains(t, body, "retired", "the retirement notice must be gone")
+			// No embedder is wired on these deps, so no vector arm ran and the
+			// COMPUTED label must say so — the same string the retired hardcoded
+			// literal used to print, now derived rather than asserted.
 			assert.Contains(t, body, "_search mode: BM25-only_",
-				"the arm disclosure must say no vector arm ran")
-			assert.Contains(t, body, tc.wantHit, "the matching node must be ranked in")
-			assert.NotContains(t, body, tc.wantAbsent, "the non-matching node must not be returned")
+				"the arm disclosure must report the arms that actually ran")
+			assert.Contains(t, body, tc.wantHit, "the ranked node must be rendered")
+			assert.NotContains(t, body, tc.wantAbsent, "an unranked node must not be returned")
 			assert.Contains(t, body, tc.wantLocality,
 				"the %s family's locality context must be rendered", tc.graph)
-			assert.Positive(t, fake.nodeReads, "the ranked read must actually drain the graph")
+			assert.Equal(t, int64(1), mgr.calls.Load(),
+				"the ranked read must go through the segment engine")
 
-			// The drain must target the NAMED graph: a raw graph is keyed by its
-			// source slug and there is no default instance.
-			require.NotEmpty(t, fake.targets)
-			assert.Equal(t, tc.graph, fake.targets[0].GetGraph())
-			assert.Equal(t, "doc-slug", fake.targets[0].GetName())
+			// The HYDRATE must target the NAMED graph: a raw graph is keyed by its
+			// source slug and there is no default instance. The catalog read runs
+			// first and carries no instance, so this reads the ids[] reads alone.
+			require.NotEmpty(t, fake.idTargets, "no ids[] hydrate was issued")
+			assert.Equal(t, tc.graph, fake.idTargets[0].GetGraph())
+			assert.Equal(t, "doc-slug", fake.idTargets[0].GetName())
 		})
 	}
 }
@@ -196,14 +241,22 @@ func TestRouteWebPDF_JSONArmCarriesTheSyntheticHeadingKey(t *testing.T) {
 	// would make this test fail on a ranking change it makes no claim about.
 	runJSON := func(t *testing.T, text string, fields []string) map[string]map[string]any {
 		t.Helper()
-		fake := &rawGraphFake{nodes: nodes, edges: edges}
+		fake := &rawGraphFake{nodes: nodes, edges: edges, graphNames: []string{"doc-slug"}}
+		// BOTH PARAGRAPHS ARE RANKED IN AND THE SECTION IS NOT, deliberately: every
+		// row these legs look up is a paragraph, and leaving sec1 out of the ranked
+		// set means para1's heading can only arrive through the PARENT HYDRATE. A
+		// ranked section would have been handed back by the hit hydrate and the
+		// heading would resolve either way.
+		mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{
+			{ID: "para1", Score: 0.9}, {ID: "para2", Score: 0.8},
+		}}
 		args := map[string]any{"graph": "web", "name": "doc-slug", "text": text, "format": "json"}
 		a := queryArgs{Graph: "web", Name: "doc-slug", Text: text, Format: "json"}
 		if len(fields) > 0 {
 			args["fields"] = fields
 			a.Fields = fields
 		}
-		handled, res := routeWebPDFClient(opCtx(), interceptTestDeps{gc: fake}, a,
+		handled, res := routeWebPDFClient(opCtx(), interceptTestDeps{gc: fake, searcher: mgr}, a,
 			webPDFParams(t, args).Arguments)
 		require.True(t, handled)
 
@@ -269,15 +322,20 @@ func TestRouteWebPDF_JSONArmCarriesTheSyntheticHeadingKey(t *testing.T) {
 }
 
 // TestRouteWebPDF_IndexFreeOpsFallThrough proves the claimed set did NOT widen:
-// by-id, type-browse and mode:modules still fall through to engine dispatch.
-// mode:stats is deliberately absent from this list — it is now claimed, and the
-// stats test below is what asserts that.
+// by-id, type-browse and the bare call still fall through to engine dispatch.
+//
+// mode:stats and mode:modules are deliberately absent from this list — both are
+// now CLAIMED. The stats test below asserts the first;
+// TestWebPDFModules_ReportsPerGraphCollectStamp asserts the second. modules was
+// pinned here as index-free until the listing existed, because engine dispatch
+// could lower it to GRAPH_NAMES; it is claimed now because that envelope's
+// sync_time comes from a different stamper than the collect and so cannot say
+// how stale a raw graph is.
 func TestRouteWebPDF_IndexFreeOpsFallThrough(t *testing.T) {
 	for _, graph := range []string{"web", "pdf"} {
 		for _, args := range []queryArgs{
 			{Graph: graph, ID: "n1"},        // by-id getNode
 			{Graph: graph, Type: "finding"}, // type-browse
-			{Graph: graph, Mode: "modules"}, // list-graphs
 			{Graph: graph},                  // bare
 		} {
 			fake := &rawGraphFake{}
@@ -308,7 +366,14 @@ func TestInterceptQueryWebPDF_StatsRenderedClientSide(t *testing.T) {
 		assert.Contains(t, body, "## Web Graph: doc-slug")
 		assert.Contains(t, body, "12", "the node count must render")
 		assert.Equal(t, 1, fake.statsReads, "exactly one Stats RPC")
-		assert.Zero(t, fake.nodeReads, "the stats arm must not drain the graph")
+		// EXACTLY ONE bounded node read, and it is the collector_schema_version
+		// resolution off the graph's root (Limit 1, SkipTotal). This assertion
+		// used to require ZERO; the property it was written to protect is
+		// "the stats arm must not DRAIN the graph", and a drain pages the whole
+		// graph rather than reading one root. One is the ceiling, so a
+		// per-node-type loop or a re-introduced drain still fails here.
+		assert.Equal(t, 1, fake.nodeReads,
+			"the stats arm reads only the graph root for its schema version — never a drain")
 	})
 
 	t.Run("pdf uses its own header", func(t *testing.T) {

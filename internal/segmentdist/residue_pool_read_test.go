@@ -107,6 +107,7 @@ func readResidueInventory(
 // Asserting that the payload decodes AND that the whole blob does not is what makes
 // this a test of the split rather than of the format.
 func TestSegmentPayloadStripsAnEnvelopeTheFormatWouldRefuse(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

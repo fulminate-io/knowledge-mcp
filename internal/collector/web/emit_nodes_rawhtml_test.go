@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"google.golang.org/protobuf/proto"
@@ -69,7 +70,7 @@ func TestEmitFromPage_RawHTMLRoundTripsToContentHash(t *testing.T) {
 	const body = `<html><body><h1>Only Section</h1><p>some prose</p><!-- a comment the walker drops --></body></html>`
 	p := rawHTMLPage("https://example.com/retained", body)
 
-	nodes, edges := emitFromPage(p)
+	nodes, edges := mustEmitFromPage(t, p, time.Time{})
 	raw := onlyRawHTMLNode(t, nodes)
 
 	// 1. The retained bytes decode back to the served body, byte for byte.
@@ -161,8 +162,8 @@ func TestEmitFromPage_RawHTMLNodesGroupIntoBoundedChunks(t *testing.T) {
 	bigA := "<html><body>" + strings.Repeat("aaaaaaaa", 4096) + "</body></html>"
 	bigB := "<html><body>" + strings.Repeat("bbbbbbbb", 4096) + "</body></html>"
 
-	nodesA, _ := emitFromPage(rawHTMLPage("https://example.com/page-a", bigA))
-	nodesB, _ := emitFromPage(rawHTMLPage("https://example.com/page-b", bigB))
+	nodesA, _ := mustEmitFromPage(t, rawHTMLPage("https://example.com/page-a", bigA), time.Time{})
+	nodesB, _ := mustEmitFromPage(t, rawHTMLPage("https://example.com/page-b", bigB), time.Time{})
 	combined := append(append([]*knowledgev1.Node{}, nodesA...), nodesB...)
 
 	const maxBytes = 8192
@@ -242,7 +243,7 @@ func TestEmitFromPage_RawHTMLNeverEntersBM25VisibleFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsePage: %v", err)
 	}
-	nodes, _ := emitFromPage(p)
+	nodes, _ := mustEmitFromPage(t, p, time.Time{})
 
 	// KNOWN POSITIVE, same read path: the sentinel IS retained. Without this
 	// leg the absence assertion is satisfied by retention doing nothing.
@@ -296,6 +297,13 @@ func TestEmitFromPage_RawHTMLNeverEntersBM25VisibleFields(t *testing.T) {
 // same bytes in ordinary page text would land in a paragraph node's Content
 // and fail the marshal against a CORRECT implementation, making this a test
 // about sanitization instead of about retention.
+//
+// THE KNOWN NEGATIVE BELOW STAYS TRUE and is deliberately left as it is: it
+// builds a node directly and never routes it through the sink, so it states
+// that the sanitizer can be bypassed only by construction. The matching
+// assertion — that the SANITIZED path marshals — lives in package remote, in
+// TestSanitizeNodeText_CoversMetadataKeysAndValues, because sanitizeNodeText is
+// unexported there and this package cannot call it.
 func TestEmitFromPage_NonUTF8BodyStillMarshals(t *testing.T) {
 	badBytes := string([]byte{0xFF, 0xFE})
 	body := "<html><body><script>var b = \"" + badBytes + "\";</script>" +
@@ -310,7 +318,7 @@ func TestEmitFromPage_NonUTF8BodyStillMarshals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsePage: %v", err)
 	}
-	nodes, _ := emitFromPage(p)
+	nodes, _ := mustEmitFromPage(t, p, time.Time{})
 	if len(nodes) == 0 {
 		t.Fatal("no nodes emitted; the marshal loop below would be vacuous")
 	}

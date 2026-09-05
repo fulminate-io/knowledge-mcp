@@ -88,6 +88,159 @@ func TestMapMirrorPath_ClassifiesMirrorOnly(t *testing.T) {
 	}
 }
 
+// TestMapPath_ShipSetAdditionsRoundTrip drives the two ship-set members the sync
+// script gained when the mirror's CI was repaired: the SHARED test vectors under
+// testdata/ and the lint config .golangci.yml. Both are placed at the mirror ROOT
+// under the same name they carry here, so each direction must return the path as
+// its own counterpart, classified mapped.
+//
+// WHY THIS IS A TEST AT ALL: nothing derives this table from the sync script, so
+// a ship-set addition with no rule here silently degrades every alert on the new
+// file to "no counterpart in this repo". This is the only instrument that fires
+// on that.
+//
+// KNOWN-NEGATIVES IN THE SAME RUN, because a rule widened past its member is the
+// failure a positive-only assertion cannot see. A path merely NAMED like the
+// lint config must stay unmapped, and a testdata directory INSIDE the client
+// module must map through the internal/ rule rather than through the new
+// root-testdata one — which is what keeps the new prefix from swallowing every
+// package fixture directory in the tree.
+func TestMapPath_ShipSetAdditionsRoundTrip(t *testing.T) {
+	for _, p := range []string{
+		"testdata/contribution_hash_vector.json",
+		"testdata/practice_graph_name_canonical_cases.json",
+		".golangci.yml",
+	} {
+		internal, class, err := MapMirrorPath(p)
+		if err != nil {
+			t.Fatalf("MapMirrorPath(%s): %v", p, err)
+		}
+		if internal != p || class != PathMapped {
+			t.Errorf("MapMirrorPath(%s) = (%q,%s), want (%q,%s)", p, internal, class, p, PathMapped)
+		}
+		mirror, backClass, backErr := MapInternalPath(p)
+		if backErr != nil {
+			t.Fatalf("MapInternalPath(%s): %v", p, backErr)
+		}
+		if mirror != p || backClass != PathMapped {
+			t.Errorf("MapInternalPath(%s) = (%q,%s), want (%q,%s)", p, mirror, backClass, p, PathMapped)
+		}
+	}
+
+	// KNOWN-NEGATIVE ONE: near-misses on the exact-match lint rule.
+	for _, p := range []string{"scripts/.golangci.yml", ".golangci.yml.bak"} {
+		if _, class, err := MapMirrorPath(p); err != nil {
+			t.Fatalf("MapMirrorPath(%s): %v", p, err)
+		} else if class == PathMapped {
+			t.Errorf("MapMirrorPath(%s) classified mapped; the lint rule is file-exact, not a suffix match", p)
+		}
+	}
+
+	// THE THIRD SHIP-SET ADDITION IS DELIBERATELY NOT A RULE, and this case is
+	// what pins that decision so a later reader does not "fix" it.
+	//
+	// The sync places docs/guides/recipes.md a SECOND time, inside the module at
+	// internal/tools/testdata/recipes-guide.md, because a //go:embed there is a
+	// build input. No rule is added for that destination, on two grounds.
+	//
+	// FIRST, CONSISTENCY: it is a generated in-module mirror, and the table
+	// already maps every other one through the internal/ prefix rule without
+	// chasing its generator — internal/assets/agents/planner.md maps to
+	// cmd/knowledge/internal/assets/agents/planner.md, a gitignored copy of
+	// .claude/agents/planner.md, and nothing points it at the canonical file.
+	// One exception among them would be a rule no reader could predict.
+	//
+	// SECOND, AMBIGUITY: an exact rule pointing this destination at
+	// docs/guides/recipes.md is truthful mirror-to-internal, but the rule list is
+	// scanned in ONE order for BOTH directions, so the same rule would then claim
+	// the internal-to-mirror direction too and docs/guides/recipes.md — a file
+	// that genuinely ships to two places — would answer with the testdata copy
+	// instead of its own identity. Truthful one way and false the other is worse
+	// than consistent.
+	//
+	// ADDING that rule is the mutation this case exists to catch, which is the
+	// inverse of the deletion the two rules above are proven against.
+	const recipesMirror = "internal/tools/testdata/recipes-guide.md"
+	internalRecipes, class, err := MapMirrorPath(recipesMirror)
+	if err != nil {
+		t.Fatalf("MapMirrorPath(%s): %v", recipesMirror, err)
+	}
+	if want := "cmd/knowledge/" + recipesMirror; internalRecipes != want || class != PathMapped {
+		t.Errorf("MapMirrorPath(%s) = (%q,%s), want (%q,%s) — the generated in-module mirror maps through the internal/ prefix rule like every other one",
+			recipesMirror, internalRecipes, class, want, PathMapped)
+	}
+	// And the canonical guide keeps its own identity in BOTH directions, which is
+	// what an exact rule for the destination above would take away.
+	const canonicalGuide = "docs/guides/recipes.md"
+	if got, gotClass, gerr := MapMirrorPath(canonicalGuide); gerr != nil {
+		t.Fatalf("MapMirrorPath(%s): %v", canonicalGuide, gerr)
+	} else if got != canonicalGuide || gotClass != PathMapped {
+		t.Errorf("MapMirrorPath(%s) = (%q,%s), want (%q,%s)", canonicalGuide, got, gotClass, canonicalGuide, PathMapped)
+	}
+	if got, gotClass, gerr := MapInternalPath(canonicalGuide); gerr != nil {
+		t.Fatalf("MapInternalPath(%s): %v", canonicalGuide, gerr)
+	} else if got != canonicalGuide || gotClass != PathMapped {
+		t.Errorf("MapInternalPath(%s) = (%q,%s), want (%q,%s) — the guide ships to two places and this direction must stay the canonical one",
+			canonicalGuide, got, gotClass, canonicalGuide, PathMapped)
+	}
+
+	// KNOWN-NEGATIVE TWO: a package fixture directory named testdata inside the
+	// module maps through the internal/ rule, so the new root-testdata prefix is
+	// anchored at the root rather than matching a path segment anywhere.
+	const pkgFixture = "internal/collector/pdf/testdata/corpus/code-heavy/NOTES.md"
+	internal, class, err := MapMirrorPath(pkgFixture)
+	if err != nil {
+		t.Fatalf("MapMirrorPath(%s): %v", pkgFixture, err)
+	}
+	if want := "cmd/knowledge/" + pkgFixture; internal != want || class != PathMapped {
+		t.Errorf("MapMirrorPath(%s) = (%q,%s), want (%q,%s)", pkgFixture, internal, class, want, PathMapped)
+	}
+}
+
+// TestMapPath_GovernanceClassifiesAsClaudeAsset drives the FLAT governance file
+// in BOTH directions: the sync script ships it at an identical path, so each
+// direction must return the path as its own counterpart, classified mapped.
+//
+// The leak gate's scan set derives from these classifications, so a governance
+// file the map does not recognize is a shipped file the gate never sees.
+//
+// KNOWN-NEGATIVE, and it is the whole reason this is a test rather than a grep
+// for the literal: a sibling FLAT file under .claude/skills/ that the sync
+// script does NOT ship must stay unmapped. A classifier widened to the whole
+// directory — ".claude/skills/*.md" instead of the equality this asserts —
+// passes the positive half and fails here.
+func TestMapPath_GovernanceClassifiesAsClaudeAsset(t *testing.T) {
+	const governance = ".claude/skills/GOVERNANCE.md"
+
+	internal, class, err := MapMirrorPath(governance)
+	if err != nil {
+		t.Fatalf("MapMirrorPath(%s): %v", governance, err)
+	}
+	if class != PathMapped || internal != governance {
+		t.Errorf("MapMirrorPath(%s) = (%q,%s), want (%q,%s)", governance, internal, class, governance, PathMapped)
+	}
+
+	mirror, class, err := MapInternalPath(governance)
+	if err != nil {
+		t.Fatalf("MapInternalPath(%s): %v", governance, err)
+	}
+	if class != PathMapped || mirror != governance {
+		t.Errorf("MapInternalPath(%s) = (%q,%s), want (%q,%s)", governance, mirror, class, governance, PathMapped)
+	}
+
+	const unshipped = ".claude/skills/NOT_SHIPPED.md"
+	if _, class, err := MapMirrorPath(unshipped); err != nil {
+		t.Fatalf("MapMirrorPath(%s): %v", unshipped, err)
+	} else if class == PathMapped {
+		t.Errorf("MapMirrorPath(%s) classified mapped; the classifier is directory-wide, not file-exact", unshipped)
+	}
+	if _, class, err := MapInternalPath(unshipped); err != nil {
+		t.Fatalf("MapInternalPath(%s): %v", unshipped, err)
+	} else if class == PathMapped {
+		t.Errorf("MapInternalPath(%s) classified mapped; the classifier is directory-wide, not file-exact", unshipped)
+	}
+}
+
 // TestMapInternalPath_ClassifiesInternalOnly is the mirror image of the control
 // above, for the direction the reporting half consumes. The sync script never
 // copies the server binary, the deploy tree or the proto sources.

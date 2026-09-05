@@ -23,8 +23,7 @@ func TestCreateTicket_Success(t *testing.T) {
 		    {"id":"state_uuid_1","name":"Todo"},
 		    {"id":"state_uuid_2","name":"In Review"},
 		    {"id":"state_uuid_3","name":"Done"}
-		  ]},
-		  "labels":{"nodes":[]}
+		  ]}
 		}]}}}`,
 		// issueCreate
 		`{"data":{"issueCreate":{"issue":{"id":"issue_uuid_1","identifier":"ABC-1","title":"T","url":"http://l/i1","state":{"name":"In Review"}}}}}`,
@@ -92,8 +91,7 @@ func TestCreateTicket_UnknownStatus(t *testing.T) {
 		// teamByKey returns a team WITHOUT the requested state — wrapped in
 		// the teams(filter:){nodes[]} envelope.
 		`{"data":{"teams":{"nodes":[{"id":"team_uuid_1","key":"ABC",
-		  "states":{"nodes":[{"id":"state_uuid_1","name":"Todo"}]},
-		  "labels":{"nodes":[]}
+		  "states":{"nodes":[{"id":"state_uuid_1","name":"Todo"}]}
 		}]}}}`,
 	})
 	b := backendForServer(srv)
@@ -120,8 +118,7 @@ func TestUpdateTicket_StatusOnly(t *testing.T) {
 		`{"data":{"issue":{"id":"issue_uuid_1","team":{"id":"team_uuid_1","key":"ABC"}}}}`,
 		// teamByID
 		`{"data":{"team":{"id":"team_uuid_1","key":"ABC",
-		  "states":{"nodes":[{"id":"state_uuid_2","name":"In Review"}]},
-		  "labels":{"nodes":[]}
+		  "states":{"nodes":[{"id":"state_uuid_2","name":"In Review"}]}
 		}}}`,
 		// issueUpdate
 		`{"data":{"issueUpdate":{"issue":{"id":"issue_uuid_1","state":{"name":"In Review"}}}}}`,
@@ -175,97 +172,108 @@ func TestUpdateTicket_NoLookupOnNonStatusDiff(t *testing.T) {
 	}
 }
 
-// TestUpdateTicket_LabelCreateOnTheFly_Success — UpdateTicket with a
-// new label exercises the team-resolution → ensureLabels →
-// issueLabelCreate → issueUpdate happy path.
+// TestUpdateTicket_LabelCreateOnTheFly_Success — UpdateTicket with a mix of
+// a held label and a new one exercises the team-resolution → ensureLabels →
+// per-name lookup → issueLabelCreate → issueUpdate happy path.
+//
+// Rescripted onto opServer: the positional scriptedServer cannot express this
+// sequence any more, because inserting a per-name lookup between the team
+// read and the label create shifts every later response by one.
 func TestUpdateTicket_LabelCreateOnTheFly_Success(t *testing.T) {
-	srv, calls := scriptedServer(t, []string{
-		// issueByID
-		`{"data":{"issue":{"id":"issue_uuid_1","team":{"id":"team_uuid_1","key":"ABC"}}}}`,
-		// teamByID — only "bug" exists; "new-label" must be created
-		`{"data":{"team":{"id":"team_uuid_1","key":"ABC",
-		  "states":{"nodes":[]},
-		  "labels":{"nodes":[{"id":"label_uuid_bug","name":"bug"}]}
-		}}}`,
-		// issueLabelCreate succeeds
-		`{"data":{"issueLabelCreate":{"issueLabel":{"id":"label_uuid_new","name":"new-label"}}}}`,
-		// issueUpdate
-		`{"data":{"issueUpdate":{"issue":{"id":"issue_uuid_1","state":{"name":"Todo"}}}}}`,
+	srv, reqs := opServer(t, map[string]func(int, map[string]any) string{
+		"IssueByID": func(int, map[string]any) string {
+			return `{"data":{"issue":{"id":"issue_uuid_1","team":{"id":"team_uuid_1","key":"ABC"}}}}`
+		},
+		"TeamByID": func(int, map[string]any) string { return teamByIDBody },
+		// Only "bug" exists on the team; "new-label" resolves to nothing and
+		// must be created.
+		"TeamLabelByName": func(_ int, vars map[string]any) string {
+			if name, _ := vars["name"].(string); name == "bug" {
+				return labelLookupBody(false,
+					labelMatch{ID: "label_uuid_bug", Name: "bug", TeamID: "team_uuid_1", TeamKey: "ABC"})
+			}
+			return labelLookupBody(false)
+		},
+		"IssueLabelCreate": func(_ int, _ map[string]any) string {
+			return `{"data":{"issueLabelCreate":{"issueLabel":{"id":"label_uuid_new","name":"new-label"}}}}`
+		},
+		"IssueUpdate": func(int, map[string]any) string {
+			return `{"data":{"issueUpdate":{"issue":{"id":"issue_uuid_1","state":{"name":"Todo"}}}}}`
+		},
 	})
 	b := backendForServer(srv)
 	err := b.UpdateTicket(context.Background(),
 		backends.RemoteRef{ID: "issue_uuid_1"},
 		backends.TicketDiff{Labels: new("bug,new-label")})
 	if err != nil {
-		t.Fatalf("UpdateTicket: %v", err)
+		t.Fatalf("UpdateTicket: %v (ops: %v)", err, opsOf(*reqs))
 	}
-	if len(*calls) != 4 {
-		t.Fatalf("calls = %d, want 4 (issueByID, teamByID, issueLabelCreate, issueUpdate)", len(*calls))
+	if got := countOp(*reqs, "TeamLabelByName"); got != 2 {
+		t.Errorf("filtered label lookups = %d, want 2 (one per declared name) (ops: %v)", got, opsOf(*reqs))
 	}
-	// Verify issueLabelCreate input.
-	var lc struct {
-		Variables struct {
-			Input struct {
-				Name   string `json:"name"`
-				TeamID string `json:"teamId"`
-			} `json:"input"`
-		} `json:"variables"`
+	// Only the genuinely absent label is created.
+	labelCreates := reqsFor(*reqs, "IssueLabelCreate")
+	if len(labelCreates) != 1 {
+		t.Fatalf("issueLabelCreate sent %d time(s), want 1 — only \"new-label\" is absent (ops: %v)", len(labelCreates), opsOf(*reqs))
 	}
-	if err := json.Unmarshal((*calls)[2], &lc); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	input, _ := labelCreates[0].Vars["input"].(map[string]any)
+	if got := input["name"]; got != "new-label" {
+		t.Errorf("issueLabelCreate input.name = %v, want new-label", got)
 	}
-	if lc.Variables.Input.Name != "new-label" {
-		t.Errorf("issueLabelCreate input.name = %q, want new-label", lc.Variables.Input.Name)
+	if got := input["teamId"]; got != "team_uuid_1" {
+		t.Errorf("issueLabelCreate input.teamId = %v, want team_uuid_1", got)
 	}
-	if lc.Variables.Input.TeamID != "team_uuid_1" {
-		t.Errorf("issueLabelCreate input.teamId = %q, want team_uuid_1", lc.Variables.Input.TeamID)
+	updates := reqsFor(*reqs, "IssueUpdate")
+	if len(updates) != 1 {
+		t.Fatalf("issueUpdate sent %d time(s), want 1 (ops: %v)", len(updates), opsOf(*reqs))
 	}
-	// Verify issueUpdate input has both label UUIDs.
-	var iu struct {
-		Variables struct {
-			Input map[string]any `json:"input"`
-		} `json:"variables"`
-	}
-	if err := json.Unmarshal((*calls)[3], &iu); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	labelIDs, ok := iu.Variables.Input["labelIds"].([]any)
-	if !ok || len(labelIDs) != 2 {
-		t.Fatalf("issueUpdate input.labelIds = %v, want [label_uuid_bug label_uuid_new]", iu.Variables.Input["labelIds"])
-	}
-	if labelIDs[0] != "label_uuid_bug" || labelIDs[1] != "label_uuid_new" {
-		t.Errorf("labelIds = %v, want [label_uuid_bug label_uuid_new] in declaration order", labelIDs)
+	got := labelIDsOf(t, updates[0])
+	if len(got) != 2 || got[0] != "label_uuid_bug" || got[1] != "label_uuid_new" {
+		t.Errorf("labelIds = %v, want [label_uuid_bug label_uuid_new] in declaration order", got)
 	}
 }
 
-// TestUpdateTicket_LabelCreateOnTheFly_HardErrorOnCreate — issueLabelCreate
-// fails; ensureLabels HARD-ERRORS and UpdateTicket returns wrapped error
-// (no issueUpdate call).
+// TestUpdateTicket_LabelCreateOnTheFly_HardErrorOnCreate — the lookup finds
+// nothing, issueLabelCreate fails, ensureLabels HARD-ERRORS and UpdateTicket
+// returns the wrapped error with no issueUpdate call. The locked contract is
+// unchanged by the lookup; the lookup-count assertion is what pins this test
+// to the CREATE-failure arm rather than a lookup-failure arm that would
+// satisfy the same error assertions.
 func TestUpdateTicket_LabelCreateOnTheFly_HardErrorOnCreate(t *testing.T) {
-	srv, calls := scriptedServer(t, []string{
-		// issueByID
-		`{"data":{"issue":{"id":"issue_uuid_1","team":{"id":"team_uuid_1","key":"ABC"}}}}`,
-		// teamByID — no labels
-		`{"data":{"team":{"id":"team_uuid_1","key":"ABC",
-		  "states":{"nodes":[]},
-		  "labels":{"nodes":[]}
-		}}}`,
-		// issueLabelCreate fails
-		`{"data":null,"errors":[{"message":"label create rejected"}]}`,
+	srv, reqs := opServer(t, map[string]func(int, map[string]any) string{
+		"IssueByID": func(int, map[string]any) string {
+			return `{"data":{"issue":{"id":"issue_uuid_1","team":{"id":"team_uuid_1","key":"ABC"}}}}`
+		},
+		"TeamByID": func(int, map[string]any) string { return teamByIDBody },
+		"TeamLabelByName": func(int, map[string]any) string {
+			return labelLookupBody(false) // genuinely absent
+		},
+		"IssueLabelCreate": func(int, map[string]any) string {
+			return `{"data":null,"errors":[{"message":"label create rejected"}]}`
+		},
+		"IssueUpdate": func(int, map[string]any) string {
+			return `{"data":{"issueUpdate":{"issue":{"id":"issue_uuid_1","state":{"name":"Todo"}}}}}`
+		},
 	})
 	b := backendForServer(srv)
 	err := b.UpdateTicket(context.Background(),
 		backends.RemoteRef{ID: "issue_uuid_1"},
 		backends.TicketDiff{Labels: new("brand-new-label")})
 	if err == nil {
-		t.Fatalf("expected error, got nil")
+		t.Fatalf("expected error, got nil (ops: %v)", opsOf(*reqs))
 	}
 	if !strings.Contains(err.Error(), "brand-new-label") {
 		t.Errorf("err = %v, want wrapped error mentioning the label name", err)
 	}
+	if got := countOp(*reqs, "TeamLabelByName"); got != 1 {
+		t.Errorf("filtered label lookups = %d, want 1 — this is the CREATE-failure arm (ops: %v)", got, opsOf(*reqs))
+	}
+	if got := countOp(*reqs, "IssueLabelCreate"); got != 1 {
+		t.Errorf("issueLabelCreate sent %d time(s), want 1 (ops: %v)", got, opsOf(*reqs))
+	}
 	// HARD-ERROR contract: NO issueUpdate call after the create failure.
-	if len(*calls) != 3 {
-		t.Errorf("calls = %d, want 3 (issueByID, teamByID, issueLabelCreate; NO issueUpdate)", len(*calls))
+	if got := countOp(*reqs, "IssueUpdate"); got != 0 {
+		t.Errorf("issueUpdate sent %d time(s), want 0 after a label-create failure (ops: %v)", got, opsOf(*reqs))
 	}
 }
 

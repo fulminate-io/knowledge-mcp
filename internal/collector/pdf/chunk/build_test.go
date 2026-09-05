@@ -43,30 +43,6 @@ func TestBuild_ParagraphMode_FlatOutput(t *testing.T) {
 	}
 }
 
-// TestBuild_SkipHeadersFooters_GracefullyHandlesErrNotImplemented
-// drives a fakeDoc whose PageHeadersFooters returns
-// ErrPageMethodNotImplemented; Build still emits body chunks without
-// erroring.
-func TestBuild_SkipHeadersFooters_GracefullyHandlesErrNotImplemented(t *testing.T) {
-	t.Parallel()
-	doc := &fakeDoc{
-		pages: [][]layout.Block{
-			{
-				{Kind: layout.BlockParagraph, PageIndex: 0,
-					Lines: []layout.Line{{Runs: []text.TextRun{txtRun("body chunk after skip")}}}},
-			},
-		},
-		headersErr: map[int]error{0: ErrPageMethodNotImplemented},
-	}
-	chunks, err := Build(doc, Options{Mode: ModeParagraph, SkipHeadersFooters: true})
-	if err != nil {
-		t.Fatalf("Build returned error on ErrPageMethodNotImplemented: %v", err)
-	}
-	if len(chunks) != 1 {
-		t.Fatalf("len(chunks) = %d, want 1", len(chunks))
-	}
-}
-
 // TestBuild_EmptyPagesSkippedSilently runs a 3-page fakeDoc where
 // page 1 has 0 blocks; Build returns chunks from pages 0 and 2 only,
 // no error.

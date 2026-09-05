@@ -111,11 +111,29 @@ func newMergeWriter(f searchengine.MergeSink, tail int64) *mergeWriter {
 
 // store places b at off, coalescing it into an open run where it can.
 //
-// THE ROUTING ORDER IS LOAD-BEARING. An in-range write is matched BEFORE a
-// contiguous-extend, so a write landing exactly at another run's start is
-// absorbed by that run rather than growing this one on top of it. Two runs can
-// therefore never hold overlapping ranges, and the order they flush in cannot
-// change what the file ends up holding.
+// THE ROUTING ORDER IS LOAD-BEARING, IN BOTH OF ITS RELATIONS.
+//
+// An in-range write is matched BEFORE everything else, so a write landing
+// exactly at another run's start is absorbed by that run rather than growing
+// this one on top of it, and the two runs cannot then disagree about those
+// bytes. That is a statement about this arm, not a global one: the extend arm
+// does not flush overlapping runs, so a store that extends one run across
+// another's range still leaves both live and overlapping. flushOverlapping on
+// arms (2) and (4) is what keeps such a pair from reaching the sink out of
+// order.
+//
+// A pass-through write is matched BEFORE a contiguous-extend, and THAT relation
+// is what keeps every window inside the single backing array newMergeWriter
+// hands out. A store larger than a window that arrives contiguous with a live
+// run matches both arms; extend-first takes it, flushes the run to make room,
+// and then appends len(b) bytes onto a slice whose cap is exactly mergeRunBytes
+// — so append allocates, and flushRun's r.buf = r.buf[:0] retains the fresh
+// array for the rest of the writer's life. Measured on this package's own suite
+// while the arms were the other way round: 17 such stores per suite run, 15
+// fresh reallocations totaling 271,616 bytes, and up to 2 of the 8 slots
+// detached at once. This order costs one extra sink write per contiguous
+// oversize store — 47 rather than 46 on a production-shape merge — and that is
+// the trade that buys back the fixed allocation.
 func (w *mergeWriter) store(off int64, b []byte) {
 	if w.err != nil || len(b) == 0 {
 		return
@@ -132,7 +150,17 @@ func (w *mergeWriter) store(off int64, b []byte) {
 		}
 	}
 
-	// (2) Extends an open run, possibly across a small alignment gap. An
+	// (2) A write too large to fit a window alongside a maximal alignment gap is
+	// passed straight through: buffering it would grow a run past the bound the
+	// fixed window exists to enforce. It is tested BEFORE (3), which is the
+	// relation the routing order above exists to state.
+	if len(b)+mergeRunMaxGap > mergeRunBytes {
+		w.flushOverlapping(off, end)
+		w.writeThrough(off, b)
+		return
+	}
+
+	// (3) Extends an open run, possibly across a small alignment gap. An
 	// emptied-but-live run matches here too, which is what keeps a stream on its
 	// own slot across the flushes it triggers.
 	for i := range w.runs {
@@ -148,8 +176,11 @@ func (w *mergeWriter) store(off int64, b []byte) {
 		// one pre-sized backing array with cap exactly mergeRunBytes, so appending
 		// past that cap would make append allocate a fresh buffer — reintroducing
 		// per-write heap growth, which is the cost this whole mechanism exists to
-		// remove. Flushing first leaves len zero, and case (3) guarantees what
-		// follows fits.
+		// remove. Flushing first leaves len zero, and case (2) guarantees what
+		// follows fits: anything reaching here failed (2)'s predicate, so
+		// len(b)+mergeRunMaxGap <= mergeRunBytes, and flushRun advances start by
+		// exactly what it wrote, so the recomputed gap is the same gap the bound
+		// above already accepted.
 		if len(r.buf)+int(gap)+len(b) > mergeRunBytes {
 			w.flushRun(r)
 			gap = off - r.start
@@ -161,15 +192,6 @@ func (w *mergeWriter) store(off int64, b []byte) {
 		if len(r.buf) >= mergeRunBytes {
 			w.flushRun(r)
 		}
-		return
-	}
-
-	// (3) A write too large to fit a window alongside a maximal alignment gap is
-	// passed straight through: buffering it would grow a run past the bound the
-	// fixed window exists to enforce.
-	if len(b)+mergeRunMaxGap > mergeRunBytes {
-		w.flushOverlapping(off, end)
-		w.writeThrough(off, b)
 		return
 	}
 

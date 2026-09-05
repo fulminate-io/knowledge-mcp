@@ -3,6 +3,7 @@ package structtree
 import (
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/font"
 	internalpdf "github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/internal/pdfcpu"
+	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/layout"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/text"
 )
 
@@ -12,29 +13,35 @@ import (
 // (text.ExtractRuns → font.Decode) — Page.TextRuns lives in the
 // top-level pdf package, which structtree cannot import without a
 // cycle. The duplication is small and stable.
-func extractRunsForPage(ctx *internalpdf.Context, pageIndex int) ([]text.TextRun, error) {
+func extractRunsForPage(ctx *internalpdf.Context, pageIndex int) ([]text.TextRun, layout.PageInfo, error) {
 	if pageIndex < 0 || pageIndex >= ctx.PageCount() {
-		return nil, nil
+		return nil, layout.PageInfo{}, nil
 	}
 	page, err := ctx.Page(pageIndex)
 	if err != nil {
-		return nil, err
+		return nil, layout.PageInfo{}, err
+	}
+	mb := page.MediaBox()
+	info := layout.PageInfo{
+		PageIndex: pageIndex,
+		MediaBox:  layout.Rect{X0: mb.X0, Y0: mb.Y0, X1: mb.X1, Y1: mb.Y1},
+		Rotation:  page.Rotation(),
 	}
 	runs, err := text.ExtractRuns(page)
 	if err != nil {
-		return nil, err
+		return nil, info, err
 	}
 	if len(runs) == 0 {
-		return runs, nil
+		return runs, info, nil
 	}
 	wrapped := make([]font.Run, len(runs))
 	for i := range runs {
 		wrapped[i] = textRunAdapter{r: &runs[i]}
 	}
 	if err := font.Decode(wrapped, page); err != nil {
-		return nil, err
+		return nil, info, err
 	}
-	return runs, nil
+	return runs, info, nil
 }
 
 // textRunAdapter is the structtree-package's font.Run adapter. The

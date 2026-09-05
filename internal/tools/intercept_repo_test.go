@@ -34,10 +34,11 @@ type repoTestDeps struct {
 	gc      GraphCaller
 }
 
-func (d *repoTestDeps) LocalLiveness() LocalLiveness    { return nil }
-func (d *repoTestDeps) Sink() collector.Sink            { return nil }
-func (d *repoTestDeps) RootDir() string                 { return d.rootDir }
-func (d *repoTestDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+func (d *repoTestDeps) LocalLiveness() LocalLiveness          { return nil }
+func (d *repoTestDeps) Sink() collector.Sink                  { return nil }
+func (d *repoTestDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
+func (d *repoTestDeps) RootDir() string                       { return d.rootDir }
+func (d *repoTestDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
 
 func (d *repoTestDeps) PropReady() bool     { return true }
 func (d *repoTestDeps) PipelineReady() bool { return true }
@@ -103,9 +104,6 @@ func gitRepoFixture(t *testing.T) string {
 	dir := t.TempDir()
 	for _, args := range [][]string{
 		{"init", "--initial-branch=main"},
-		{"config", "user.email", "test@example.invalid"},
-		{"config", "user.name", "test"},
-		{"config", "commit.gpgsign", "false"},
 	} {
 		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
 		cmd.Env = hermeticGitEnv()
@@ -116,7 +114,16 @@ func gitRepoFixture(t *testing.T) string {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello"), 0o600))
 	for _, args := range [][]string{
 		{"add", "a.txt"},
-		{"commit", "-m", "initial"},
+		{
+			// Identity per-command with -c: the `git config user.*` form
+			// PERSISTS into the target repository's config, and under a leaked
+			// GIT_DIR the target is the developer's own checkout. -c writes
+			// nothing anywhere.
+			"-c", "user.email=test@example.invalid",
+			"-c", "user.name=test",
+			"-c", "commit.gpgsign=false",
+			"commit", "-m", "initial",
+		},
 	} {
 		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
 		cmd.Env = hermeticGitEnv()

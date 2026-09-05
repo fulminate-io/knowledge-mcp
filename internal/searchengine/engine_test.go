@@ -127,7 +127,7 @@ func TestParallelSearchCorrectness(t *testing.T) {
 	got := e.Search(mockQuery{term: "term"}, k)
 
 	// Baseline: build all docs into ONE mock segment and search it.
-	baseSeg, err := mockFormat{}.Build(all)
+	baseSeg, _, err := mockFormat{}.Build(all)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,14 +380,14 @@ func TestLiveDocsFromTombstones(t *testing.T) {
 
 func TestSegmentSetCOW(t *testing.T) {
 	f := mockFormat{}
-	seg1, _ := f.Build([]Document{doc("a", "x")})
+	seg1, _, _ := f.Build([]Document{doc("a", "x")})
 	e1 := &segmentEntry[mockQuery, mockStats]{
 		payload: seg1, live: newLiveDocs(1), members: idSet{"a": 0},
 		meta: SegmentMeta{ID: "seg1", DocCount: 1},
 	}
 	base := newSegmentSet[mockQuery, mockStats](f, []*segmentEntry[mockQuery, mockStats]{e1})
 
-	seg2, _ := f.Build([]Document{doc("b", "x")})
+	seg2, _, _ := f.Build([]Document{doc("b", "x")})
 	e2 := &segmentEntry[mockQuery, mockStats]{
 		payload: seg2, live: newLiveDocs(1), members: idSet{"b": 0},
 		meta: SegmentMeta{ID: "seg2", DocCount: 1},
@@ -412,7 +412,7 @@ func TestSegmentSetCOW(t *testing.T) {
 
 func TestMockFormat(t *testing.T) {
 	f := mockFormat{}
-	seg, err := f.Build([]Document{doc("a", "go go"), doc("b", "go"), doc("c", "rust")})
+	seg, _, err := f.Build([]Document{doc("a", "go go"), doc("b", "go"), doc("c", "rust")})
 	if err != nil {
 		t.Fatal(err)
 	}

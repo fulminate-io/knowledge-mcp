@@ -59,9 +59,10 @@ func (Format) Name() string { return formatName }
 // The sealed accumulator is encoded immediately and the OFFSET-ADDRESSED reader
 // over those bytes is what is returned; the map-shaped accumulator is dropped
 // here and never published.
-func (Format) Build(docs []searchengine.Document) (searchengine.Segment[Query, *CorpusStats], error) {
-	results := tokenizeDocsParallel(docs, numWorkers())
-	return publishSegment(buildSegment(results))
+func (Format) Build(docs []searchengine.Document) (searchengine.Segment[Query, *CorpusStats], searchengine.BuildReport, error) {
+	results, degraded := tokenizeDocsParallel(docs, numWorkers())
+	seg, err := publishSegment(buildSegment(results))
+	return seg, searchengine.BuildReport{Degraded: degraded}, err
 }
 
 // publishSegment encodes a build-time accumulator and opens the result, which is

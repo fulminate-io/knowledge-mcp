@@ -50,7 +50,7 @@ func TestV2SegmentsAreRejectedWithTheRebuildRemedy(t *testing.T) {
 	// KNOWN-POSITIVE in the same run: the identical Decode call ACCEPTS a blob this
 	// tree writes. Without it, a Decode that rejected everything — or one wired to a
 	// nil graph — would satisfy every assertion above.
-	seg, err := Format{}.Build(vecDocs(8))
+	seg, _, err := Format{}.Build(vecDocs(8))
 	require.NoError(t, err)
 	fresh, err := seg.Encode()
 	require.NoError(t, err)

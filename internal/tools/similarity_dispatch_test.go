@@ -146,10 +146,11 @@ type similarityDispatchDeps struct {
 	propNotReady bool
 }
 
-func (d similarityDispatchDeps) LocalLiveness() LocalLiveness    { return nil }
-func (d similarityDispatchDeps) Sink() collector.Sink            { return nil }
-func (d similarityDispatchDeps) RootDir() string                 { return "" }
-func (d similarityDispatchDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+func (d similarityDispatchDeps) LocalLiveness() LocalLiveness          { return nil }
+func (d similarityDispatchDeps) Sink() collector.Sink                  { return nil }
+func (d similarityDispatchDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
+func (d similarityDispatchDeps) RootDir() string                       { return "" }
+func (d similarityDispatchDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
 
 func (d similarityDispatchDeps) PropReady() bool     { return !d.propNotReady }
 func (d similarityDispatchDeps) PipelineReady() bool { return true }

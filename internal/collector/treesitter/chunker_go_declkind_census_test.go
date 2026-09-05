@@ -119,22 +119,26 @@ func TestNonGoOutputUnchangedByImplements(t *testing.T) {
 	})
 }
 
-// TestGoDeclKindConsumerCensus walks both internal trees for files filtering on
-// a closed set of Go declaration kinds, and requires each to carry a stated
-// disposition toward the new method_elem kind.
+// TestGoDeclKindConsumerCensus walks THIS MODULE's internal tree for files
+// filtering on a closed set of Go declaration kinds, and requires each to carry
+// a stated disposition toward the new method_elem kind.
+//
+// THE ROOT IS THE MODULE ROOT, which is what makes this half publishable:
+// repoRoot walks to the first go.mod, cmd/knowledge here and the mirror root in
+// the published tree, so <module>/internal is the same tree in both layouts and
+// every path is module-relative. The server module's consumers are censused by
+// chunker_go_declkind_census_server_test.go, which the sync script removes from
+// the published tree.
 func TestGoDeclKindConsumerCensus(t *testing.T) {
-	root := repoRootForCensus(t)
+	root := repoRoot(t)
 
 	found := map[string]bool{}
 	// namesMethodElem records, per subject file, whether it names the new
 	// vocabulary at all. It is what turns each row's disposition from a claim
 	// into an assertion.
 	namesMethodElem := map[string]bool{}
-	for _, tree := range []string{
-		filepath.Join("cmd", "knowledge", "internal"),
-		filepath.Join("cmd", "knowledge-server", "internal"),
-	} {
-		walkRoot := filepath.Join(root, tree)
+	{
+		walkRoot := filepath.Join(root, "internal")
 		require.DirExists(t, walkRoot, "census control: the consumer tree exists")
 		err := filepath.WalkDir(walkRoot, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
@@ -187,6 +191,12 @@ func TestGoDeclKindConsumerCensus(t *testing.T) {
 		// fail loudly here rather than pass as a clean census.
 		require.NotEmpty(t, found, "census control: the walk found at least one Go decl-kind consumer")
 		require.NotEmpty(t, goDeclKindConsumerCensus, "census control: the disposition table is not empty")
+		// AND A NAMED FILE THE WALK MUST FIND, because non-emptiness is satisfied
+		// by any one file and this half is compiled in two layouts. The Go chunker
+		// is the opts_in consumer that DECLARES the method_elem ascent, so a walk
+		// that misses it fails both directions of the census at once.
+		require.True(t, found["internal/collector/treesitter/chunker_go.go"],
+			"census control: the walk must find the Go chunker BY NAME, not merely find something")
 	})
 
 	t.Run("every_subject_has_a_row", func(t *testing.T) {

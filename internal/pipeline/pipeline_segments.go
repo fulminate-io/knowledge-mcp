@@ -91,6 +91,18 @@ func (p *Pipeline) AttachBalanceFactory(fn func(kgtypes.GraphType, string) func(
 	p.balanceFactory = fn
 }
 
+// AttachGraphEvictor wires the client's working-set eviction. Called once at
+// construction (bootstrap) before Start.
+//
+// It is what the collector's durable-not-found arm reaches when the server
+// reports that a graph this client is scanning does not exist. Leaving it unset
+// leaves the arm able to END a lane but unable to stop the catalog re-registering
+// its collector on the next refresh, so the phantom would come back — which is
+// why bootstrap wires it rather than treating it as optional.
+func (p *Pipeline) AttachGraphEvictor(fn func(gt kgtypes.GraphType, name, reason string)) {
+	p.evictGraph = fn
+}
+
 // AttachWorkingSet wires the client's interaction-earned working set, which is
 // where every catalog pass now gets its wanted set. Called once at construction
 // (bootstrap) before Start.

@@ -17,7 +17,7 @@ func TestVocabulary_ContractKeysMatchTheContract(t *testing.T) {
 	// The expected count is a hand-pinned constant rather than len() of the map
 	// under test: comparing the map against itself would stay green if a whole
 	// row were deleted from both the transcription and the walk.
-	const wantKeys = 8
+	const wantKeys = 9
 	if got := len(contractMetaKeys); got != wantKeys {
 		t.Fatalf("contractMetaKeys holds %d keys, want %d — a key was added or dropped without updating this gate", got, wantKeys)
 	}

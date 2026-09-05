@@ -85,6 +85,8 @@ func TestInterceptSync_Push_PresignSealPutConfirm(t *testing.T) {
 	assert.Equal(t, 1, exp.exportCalls, "ExportGraph fetched once (local serialize)")
 	assert.Equal(t, 1, backend.presignCalls, "presign called once")
 	assert.Equal(t, 1, backend.confirmCalls, "confirm called once")
+	assert.Equal(t, 1, backend.jobStatusCalls,
+		"the 202 from confirm is followed by a job-status poll — the push is not done when confirm answers")
 
 	// The uploaded GCS object must be CIPHERTEXT (not the plaintext bytes), and
 	// the backend's confirm (unwrap + GCM-open) must recover the original bytes.
@@ -137,10 +139,11 @@ type pullDeps struct {
 	crud   GraphTypeCRUDAPI
 }
 
-func (d pullDeps) LocalLiveness() LocalLiveness    { return nil }
-func (d pullDeps) Sink() collector.Sink            { return nil }
-func (d pullDeps) RootDir() string                 { return "" }
-func (d pullDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+func (d pullDeps) LocalLiveness() LocalLiveness          { return nil }
+func (d pullDeps) Sink() collector.Sink                  { return nil }
+func (d pullDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
+func (d pullDeps) RootDir() string                       { return "" }
+func (d pullDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
 
 func (d pullDeps) PropReady() bool     { return true }
 func (d pullDeps) PipelineReady() bool { return true }

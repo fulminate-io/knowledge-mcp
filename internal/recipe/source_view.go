@@ -5,7 +5,7 @@ package recipe
 import (
 	"context"
 	"fmt"
-	"sort"
+	"sync"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -35,7 +35,10 @@ const (
 // cannot afford over the wire.
 //
 // All four indexes share the same *knowledgev1.Node / knowledgev1.Edge values
-// FetchAllNodes / FetchEdges decoded; the view is read-only after load.
+// FetchAllNodes / FetchEdges decoded; the four indexes are read-only after load,
+// and the two memo fields below (censusCached and docOrder) are lazily-built
+// CACHES over them — each computed at most once per run, from the indexes, and
+// never writing back to them.
 type sourceView struct {
 	// byID maps node ID → the hydrated node. Powers nodeByID (the by-id
 	// hydrate the server did via store.ByID).
@@ -50,6 +53,30 @@ type sourceView struct {
 	// one by value trips copylocks — the index always holds *knowledgev1.Edge.
 	outEdges map[string][]*knowledgev1.Edge
 	inEdges  map[string][]*knowledgev1.Edge
+
+	// graphType / name are the identity of the graph the four indexes were drawn
+	// from. Every refusal validate_source.go raises names the graph it checked
+	// against as "<graphType>/<name>", so the vocabulary and the identity of its
+	// source travel together on one value and cannot drift apart. Keeping them
+	// here rather than on Interpret's signature is also what leaves that
+	// signature — and its direct callers — untouched.
+	graphType kgtypes.GraphType
+	name      string
+
+	// censusOnce / censusCached memoize the vocabulary census; censusWalks counts
+	// how many times the graph was actually WALKED to build it. The counter is
+	// incremented inside buildCensus, never in census(), so "computed once per
+	// run" is a measurement rather than a restatement of what sync.Once
+	// guarantees structurally.
+	censusOnce   sync.Once
+	censusCached *sourceCensus
+	censusWalks  int
+
+	// docOrder memoizes the per-run reading-order index (document_order.go).
+	// Built lazily on first use rather than in loadSourceView, because this
+	// package's tests construct sourceView literals directly and an eager build
+	// would leave every such fixture with a nil index.
+	docOrder *documentOrder
 }
 
 // loadSourceView materializes the source graph identified by (graphType, name)
@@ -82,10 +109,12 @@ func loadSourceView(
 	}
 
 	sv := &sourceView{
-		byID:     make(map[string]*knowledgev1.Node, len(nodes)),
-		byType:   make(map[string][]*knowledgev1.Node),
-		outEdges: make(map[string][]*knowledgev1.Edge),
-		inEdges:  make(map[string][]*knowledgev1.Edge),
+		byID:      make(map[string]*knowledgev1.Node, len(nodes)),
+		byType:    make(map[string][]*knowledgev1.Node),
+		outEdges:  make(map[string][]*knowledgev1.Edge),
+		inEdges:   make(map[string][]*knowledgev1.Edge),
+		graphType: graphType,
+		name:      name,
 	}
 	for _, n := range nodes {
 		if n == nil {
@@ -163,6 +192,44 @@ func (sv *sourceView) edgesFrom(id, edgeType string, dir edgeDirection) []string
 	return out
 }
 
+// neighborEdge pairs a reachable neighbor's node ID with the edge that reached
+// it, so a walker can build a row that knows which edge produced it.
+type neighborEdge struct {
+	NodeID string
+	Edge   *knowledgev1.Edge
+}
+
+// edgesAlong is edgesFrom with the edge KEPT rather than projected away.
+//
+// ITS DIRECTION ARMS MIRROR edgesFrom's EXACTLY — out-edges contribute ToId,
+// in-edges contribute FromId, bothEdges unions in that order — so a rowset built
+// through either walker visits the same neighbors in the same order. A
+// divergence here would make `edge.…` readable over a row set that differs from
+// the one every other builtin walks.
+//
+// IT SITS BESIDE edgesFrom RATHER THAN REPLACING IT, for the reason
+// childEdgesOrdered gives below for the same choice: edgesFrom's four remaining
+// callers want IDs and should not start allocating a struct per neighbor.
+// edgesFrom is left exactly as it was.
+func (sv *sourceView) edgesAlong(id, edgeType string, dir edgeDirection) []neighborEdge {
+	var out []neighborEdge
+	if dir == outgoingEdges || dir == bothEdges {
+		for _, e := range sv.outEdges[id] {
+			if e.Type == edgeType {
+				out = append(out, neighborEdge{NodeID: e.ToId, Edge: e})
+			}
+		}
+	}
+	if dir == incomingEdges || dir == bothEdges {
+		for _, e := range sv.inEdges[id] {
+			if e.Type == edgeType {
+				out = append(out, neighborEdge{NodeID: e.FromId, Edge: e})
+			}
+		}
+	}
+	return out
+}
+
 // childEdgesOrdered returns the outgoing edges of the given type from id, in
 // DOCUMENT ORDER rather than materialization order.
 //
@@ -172,17 +239,21 @@ func (sv *sourceView) edgesFrom(id, edgeType string, dir edgeDirection) []string
 // left exactly as it was: the concat builtins, the ancestor check and the
 // traversal rule all depend on its current behaviour.
 //
-// THE POSITION COMES FROM THE EDGE, NOT THE NODE, and that is the only choice
-// that covers both raw collectors. Both stamp a position on every contains edge
-// they emit. On the NODE, the web collector's content nodes carry a position
-// key but its section nodes do not, and pdf nodes carry no position key at all —
-// so the edge is the single source that covers every node of either source.
+// THE POSITION IS READ NODE FIRST AND EDGE SECOND, and both carriers are real:
+// the pdf emitter stamps `position` on every chunk node and the web emitter on
+// every section node, while both stamp one on every contains EDGE they emit. The
+// child node's own key wins when it parses as an integer; otherwise the key
+// falls back to the edge's Evidence. On a graph collected by either raw
+// collector the two agree, so the precedence is observable only where they
+// disagree or one is absent.
 //
-// ORDERING RULE: ascending by parsed position; an edge whose Evidence yields no
-// parseable position sorts AFTER every positioned edge and keeps materialization
-// order among its unpositioned peers. The sort is stable, so a fixed source
-// graph renders in a fixed order across runs — which matters because extract
-// output is read by people who compare one run against another.
+// ORDERING RULE: ascending by that key; an edge yielding no key sorts AFTER
+// every keyed edge and keeps materialization order among its unkeyed peers. The
+// sort is stable, so a fixed source graph renders in a fixed order across runs —
+// which matters because extract output is read by people who compare one run
+// against another. THE COMPARATOR ITSELF LIVES IN document_order.go as
+// sortEdgesByOrderKey, shared with the reading-order index so the two cannot
+// order the same children differently.
 func (sv *sourceView) childEdgesOrdered(id, edgeType string) []*knowledgev1.Edge {
 	all := sv.outEdges[id]
 	out := make([]*knowledgev1.Edge, 0, len(all))
@@ -191,16 +262,6 @@ func (sv *sourceView) childEdgesOrdered(id, edgeType string) []*knowledgev1.Edge
 			out = append(out, e)
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		pi, oki := positionFromEvidence(out[i].Evidence)
-		pj, okj := positionFromEvidence(out[j].Evidence)
-		if oki != okj {
-			return oki // a positioned edge precedes an unpositioned one
-		}
-		if !oki {
-			return false // both unpositioned: stable sort keeps their order
-		}
-		return pi < pj
-	})
+	sv.sortEdgesByOrderKey(out)
 	return out
 }

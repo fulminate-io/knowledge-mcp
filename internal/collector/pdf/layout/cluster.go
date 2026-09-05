@@ -53,10 +53,50 @@ func Cluster(runs []text.TextRun, page PageInfo) ([]Block, error) {
 
 // ClusterWithParams is the orchestrator: rotation normalize → Y-flip
 // → medianHeight (once) → groupRunsToLines → groupLinesToBlocks →
-// per-block dehyphenate → un-flip Y → denormalize BBoxes. The
-// algorithm is documented in the package godoc above; per-rule
-// citations live in lines.go and blocks.go.
+// per-block dehyphenate → un-flip and denormalize the BBOXES ONLY.
+// Line.Runs and Block-level runs stay in the internal top-down frame,
+// so a run's Y is not comparable with the BBox beside it; see the
+// coordinate-frame note on layout.Line.Runs. LinesFromRuns differs
+// here deliberately and un-flips its runs too. The algorithm is
+// documented in the package godoc above; per-rule citations live in
+// lines.go and blocks.go.
 func ClusterWithParams(runs []text.TextRun, page PageInfo, lp LayoutParams) ([]Block, error) {
+	return clusterAtScale(runs, page, lp, groupRunsToLines)
+}
+
+// BlocksFromRuns is the ELEMENT-SCALE peer of ClusterWithParams. It
+// runs the identical pipeline and differs in exactly one respect: line
+// grouping skips the page-scale few-runs guard, so a residue of one or
+// two runs is banded like any other input instead of becoming one
+// block per run.
+//
+// The caller this exists for is the structure-tree reader's hybrid
+// merge, which clusters the runs no structure element claimed. On a
+// well-tagged page that residue is routinely one or two runs — a
+// footer, a folio, a stray label — which is precisely the input the
+// page-scale guard mishandles. Measured through HybridFallback before
+// this existed: a two-run untagged footer "Chapter 3 | " and "42" on
+// one baseline came back as TWO blocks, so two chunk nodes, and the
+// chrome-shape detector (which requires a single line in a single
+// block) could never fire on the running footers it was written for.
+//
+// Everything else matches ClusterWithParams, deliberately, including
+// leaving Line.Runs in the internal top-down frame: this is a fix to
+// the grouping SCALE, not to the coordinate frame, and its output is
+// merged with Cluster's own on the same page.
+//
+// Use ClusterWithParams for a whole page. Its guard is right there: a
+// page with fewer than three runs is near-empty, and a median drawn
+// from one or two samples is dominated by its own outliers.
+func BlocksFromRuns(runs []text.TextRun, page PageInfo, lp LayoutParams) ([]Block, error) {
+	return clusterAtScale(runs, page, lp, bandRunsToLines)
+}
+
+// clusterAtScale is the shared body. group selects the line-grouping
+// entry point, which is the ONLY difference between the page-scale and
+// element-scale callers; everything downstream of it is identical, so
+// the two cannot drift.
+func clusterAtScale(runs []text.TextRun, page PageInfo, lp LayoutParams, group func([]text.TextRun, float64, LayoutParams) []Line) ([]Block, error) {
 	if err := validateRotation(page.Rotation); err != nil {
 		return nil, err
 	}
@@ -89,10 +129,10 @@ func ClusterWithParams(runs []text.TextRun, page PageInfo, lp LayoutParams) ([]B
 		medianHeight = 1.0
 	}
 
-	// 4. Stage 1 — runs → lines (passes medianHeight). For very
-	//    small inputs (n<3) groupRunsToLines's internal short-
-	//    circuit emits one Line per run (Rule 1.5).
-	lines := groupRunsToLines(flipped, medianHeight, lp)
+	// 4. Stage 1 — runs → lines (passes medianHeight). Which grouper
+	//    runs is the caller's scale choice: groupRunsToLines applies
+	//    the page-scale few-runs guard, bandRunsToLines does not.
+	lines := group(flipped, medianHeight, lp)
 
 	// 5. Stage 2 — lines → blocks (computes medianGap inside).
 	//    groupLinesToBlocks handles the single-line short-circuit
@@ -127,7 +167,7 @@ func validateRotation(rotation int) error {
 	case 0, 90, 180, 270:
 		return nil
 	default:
-		return fmt.Errorf("layout.Cluster: invalid PageInfo.Rotation %d (must be one of 0, 90, 180, 270)", rotation)
+		return fmt.Errorf("layout: invalid PageInfo.Rotation %d (must be one of 0, 90, 180, 270)", rotation)
 	}
 }
 

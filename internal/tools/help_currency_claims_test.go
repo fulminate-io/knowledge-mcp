@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // help_currency_claims_test.go pins the OPERATIONAL claims a currency sweep
@@ -387,5 +389,109 @@ func TestHelpAndSchemas_NoDerivationClaims(t *testing.T) {
 			"the retired wording spoke of a derivation")
 		assert.Contains(t, summary.Description, "mutate(answer) requires it too",
 			"the answer arm now takes a summary and the schema is where an author reads that")
+	})
+}
+
+// helpTopicText returns one help topic's rendered text, read from the SAME
+// registry help() dispatches through, so a test cannot assert about a topic the
+// tool would not serve.
+func helpTopicText(t *testing.T, topic string) string {
+	t.Helper()
+	text, ok := helpTopics[topic]
+	require.Truef(t, ok, "help topic %q is not registered", topic)
+	require.NotEmptyf(t, text, "help topic %q is empty", topic)
+	return text
+}
+
+// TestHelp_AnnotationRulesAgreeAcrossTopics pins that the two help topics
+// describing plan_annotation writes tell the same story, and that both match the
+// code.
+//
+// WHY IT EXISTS. help("node_types") and help("mutate") each describe when an
+// annotation write is refused, and they drifted: node_types kept asserting that
+// create_batch's edges[] "cannot carry a method or evidence" — the premise a
+// later commit retracted, and the one the batch guard was rebuilt to stop
+// believing — and listed upsert under the metadata-key rule when the code refuses
+// it by TYPE. A caller reading the two topics got two different systems.
+//
+// THE ASSERTIONS ARE AGAINST THE CODE'S OWN CONSTANTS AND SCHEMA where it can be,
+// not against a transcription, so this cannot become a third copy that drifts.
+func TestHelp_AnnotationRulesAgreeAcrossTopics(t *testing.T) {
+	nodeTypes := helpTopicText(t, "node_types")
+	mutate := helpTopicText(t, "mutate")
+
+	t.Run("neither says create_batch edges cannot carry the severity", func(t *testing.T) {
+		for name, text := range map[string]string{"node_types": nodeTypes, "mutate": mutate} {
+			assert.NotContains(t, text, "cannot carry a method or evidence",
+				"help(%q) states the retracted premise; engine.edgeBody decodes method and evidence "+
+					"and TestCompileMutate_CreateBatchEdgeMetadata asserts they land", name)
+		}
+	})
+
+	t.Run("both name the edge carriers create_batch actually accepts", func(t *testing.T) {
+		edges, ok := MutateToolDef().InputSchema.Properties["edges"]
+		require.True(t, ok)
+		require.NotNil(t, edges.Items)
+		for _, key := range []string{"method", "evidence"} {
+			require.Contains(t, edges.Items.Properties, key,
+				"the schema must declare %q, or the help below is describing something that does not exist", key)
+		}
+		assert.Contains(t, mutate, "method", "help(mutate) names the carriers a coherent annotation edge uses")
+		assert.Contains(t, mutate, "evidence")
+	})
+
+	t.Run("both describe the upsert refusal as a TYPE rule", func(t *testing.T) {
+		assert.Contains(t, nodeTypes, "refused BY TYPE",
+			"help(node_types) must say upsert is refused by type, which is what the code does")
+		assert.NotContains(t, nodeTypes, "bulk_update_metadata/upsert",
+			"listing upsert among the metadata-key operations is the mis-statement this test closes")
+	})
+
+	t.Run("neither claims the replacement text lives in the body", func(t *testing.T) {
+		for name, text := range map[string]string{"node_types": nodeTypes, "mutate": mutate} {
+			assert.NotContains(t, text, "the text itself lives in the body",
+				"help(%q) names a second carrier for the replacement text; the guard reads metadata.%s and "+
+					"nothing reads a body", name, kgtypes.AnnotationReplacementKey)
+		}
+	})
+}
+
+// TestHelp_SectionReadsAreDocumentedPerFormat pins that wherever the two render
+// formats of a chunked-plan read differ, the documentation SAYS which does what.
+//
+// THE DEFECT IT CLOSES was documentation with no format qualifier over behavior
+// that had one: the schema, help(assemble) and the generated guide all said
+// supplying neither section bound returns the plan's index and tree alone, and
+// that held for text and not for json, where the same call returned every body —
+// 76,093 bytes against 2,458 on a ten-section fixture of realistic size, and above
+// the point where a result spills. A caller following the documentation got
+// exactly the outcome the paging requirement exists to prevent.
+//
+// THE ASSERTIONS READ THE SCHEMA rather than a transcription of it, so this cannot
+// become another copy that drifts from the tool.
+func TestHelp_SectionReadsAreDocumentedPerFormat(t *testing.T) {
+	assembleText := helpTopicText(t, "assemble")
+	nodeTypes := helpTopicText(t, "node_types")
+
+	t.Run("the schema names what each format does with no range", func(t *testing.T) {
+		props := AssembleToolDef().InputSchema.Properties
+		end, ok := props["section_end"]
+		require.True(t, ok, "section_end must be declared, or the handler's read of it is undeclared")
+		assert.Contains(t, end.Description, "BOTH FORMATS",
+			"the default is documented without a format qualifier unless it says it holds for both")
+		assert.Contains(t, end.Description, "body_omitted",
+			"and names the marker a json reader sees, so an absent body is not read as an empty section")
+	})
+
+	t.Run("help(assemble) says the rules hold in both formats", func(t *testing.T) {
+		assert.Contains(t, assembleText, "THE SAME RULES HOLD IN BOTH FORMATS")
+		assert.Contains(t, assembleText, "body_omitted")
+		assert.Contains(t, assembleText, "ANNOTATIONS REACH EVERY FORMAT",
+			"annotation state is documented as format-independent because it now is")
+	})
+
+	t.Run("help(node_types) qualifies the section read by format", func(t *testing.T) {
+		assert.Contains(t, nodeTypes, "in BOTH text and json",
+			"a section read returns its body and annotations in either format, and the help must say so")
 	})
 }

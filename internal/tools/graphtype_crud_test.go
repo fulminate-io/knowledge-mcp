@@ -91,10 +91,11 @@ type graphTypeTestDeps struct {
 	crud GraphTypeCRUDAPI
 }
 
-func (d graphTypeTestDeps) LocalLiveness() LocalLiveness    { return nil }
-func (d graphTypeTestDeps) Sink() collector.Sink            { return nil }
-func (d graphTypeTestDeps) RootDir() string                 { return "" }
-func (d graphTypeTestDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+func (d graphTypeTestDeps) LocalLiveness() LocalLiveness          { return nil }
+func (d graphTypeTestDeps) Sink() collector.Sink                  { return nil }
+func (d graphTypeTestDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
+func (d graphTypeTestDeps) RootDir() string                       { return "" }
+func (d graphTypeTestDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
 
 func (d graphTypeTestDeps) PropReady() bool     { return true }
 func (d graphTypeTestDeps) PipelineReady() bool { return true }

@@ -15,6 +15,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
+	"github.com/fulminate-io/knowledge-mcp/internal/clientver"
 )
 
 // NewCloudGraphClient builds a *GraphClient pointed at the Fulminate cloud
@@ -133,7 +134,9 @@ func (b *bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusUnauthorized {
-		b.classifyAccountRejection(ctx, resp)
+		if refusal := b.classifyGatewayRejection(ctx, resp); refusal != nil {
+			return nil, refusal
+		}
 		return resp, nil
 	}
 
@@ -157,46 +160,95 @@ func (b *bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	if retryErr != nil {
 		return nil, retryErr
 	}
-	b.classifyAccountRejection(ctx, retried)
+	if refusal := b.classifyGatewayRejection(ctx, retried); refusal != nil {
+		return nil, refusal
+	}
 	return retried, nil
 }
 
-// classifyAccountRejection inspects a non-401 4xx response for a gateway
-// account rejection and marks the selection invalid when the rejection settles
-// its validity, so the NEXT cloud call fails fast locally.
+// classifyGatewayRejection inspects a non-401 4xx response for the two gateway
+// rejections this client must act on locally: a VERSION refusal, which it
+// returns as an error so the call fails instructively, and an ACCOUNT
+// rejection, which marks the selection invalid so the NEXT cloud call fails
+// fast locally.
 //
 // This lives here rather than in the request interceptor because a Connect
 // interceptor cannot see the gateway's rejection body: connect-go parses a
 // non-200 body into a wire error declaring only code/message/details, so the
-// gateway's error/error_description/upgrade_url body unmarshals cleanly with
-// the message left EMPTY. This round-tripper is the one place on the chain
-// holding the raw *http.Response.
+// gateway's JSON body unmarshals cleanly with the message left EMPTY. This
+// round-tripper is the one place on the chain holding the raw *http.Response.
+// The version refusal has EXACTLY that shape and for exactly that reason: the
+// gateway emits it as a plain HTTP response before forwarding, so it never
+// spoke connect's wire format either.
 //
-// It never alters routing: there is no retry-without-the-header and no retry
-// against another account. Dropping the header would route the user's writes
-// into a DIFFERENT account than the one they selected.
+// The version refusal is classified BEFORE and INDEPENDENTLY of the account
+// selection: it is a statement about this binary, not about which account was
+// selected, and a client with no selection is refused over its version just the
+// same.
+//
+// It never alters routing: there is no retry-without-the-header for either
+// rejection and no retry against another account. Dropping the account header
+// would route the user's writes into a DIFFERENT account than the one they
+// selected; dropping the version header is what the gateway refuses over.
 //
 // The original body is DRAINED AND CLOSED before the replayable copy is
 // substituted. io.LimitReader stops at the cap WITHOUT reaching EOF, so a
 // rejection body larger than the cap would otherwise leave the original body
 // unread and unclosed and the underlying connection would never be released —
 // the same reason the 401 branch above drains and closes.
-func (b *bearerRoundTripper) classifyAccountRejection(ctx context.Context, resp *http.Response) {
-	if b.sel == nil || resp.StatusCode < 400 || resp.StatusCode >= 500 {
-		return
+func (b *bearerRoundTripper) classifyGatewayRejection(ctx context.Context, resp *http.Response) error {
+	if resp.StatusCode < 400 || resp.StatusCode >= 500 {
+		return nil
 	}
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, auth.MaxErrorBodyBytes))
+	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, auth.MaxErrorBodyBytes))
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 	resp.Body = io.NopCloser(bytes.NewReader(raw))
 
+	// THE HEADERS TRAVEL WITH THE BYTES, and on THIS transport that is the whole
+	// difference between a remedy and a shrug. connect-go sets `Accept-Encoding:
+	// gzip` on every unary call, which turns OFF net/http's transparent
+	// decompression — so the bytes above are whatever encoding the gateway chose,
+	// and a classifier handed the bytes alone parses gzip as JSON, fails, and
+	// reports the gateway's perfectly good refusal as unreadable.
+	//
+	// resp.Body keeps the bytes AS THEY ARRIVED, undecoded, because the
+	// non-refusal 4xx path below returns the response to connect, which reads it
+	// against these same headers. Decoding happens inside the classifier, on a
+	// copy, and never rewrites what the caller sees.
+	if refusal, ok := auth.LatchVersionRefusal(auth.RefusalObservation{
+		Status:    resp.StatusCode,
+		Header:    resp.Header,
+		Body:      raw,
+		ReadErr:   readErr,
+		Transport: "connect",
+		Path:      responsePath(resp),
+	}); ok {
+		return refusal
+	}
+
+	if b.sel == nil {
+		return nil
+	}
 	reason, latch := auth.ClassifyAccountRejection(resp.StatusCode, raw)
 	if !latch {
-		return
+		return nil
 	}
 	if id := b.sel.ID(ctx); id != "" {
 		b.sel.MarkInvalid(id, reason)
 	}
+	return nil
+}
+
+// responsePath names the route a response came from, for error text. A
+// *http.Response built by a RoundTripper always carries its Request, but the
+// type permits nil, and a refusal error whose text said "<nil>" would be worse
+// than one that says the route is unknown.
+func responsePath(resp *http.Response) string {
+	if resp.Request == nil || resp.Request.URL == nil {
+		return "(unknown route)"
+	}
+	return resp.Request.URL.Path
 }
 
 // captureBody reads the request body fully into memory and replaces
@@ -235,5 +287,9 @@ func cloneRequestWithBearer(req *http.Request, body []byte, token string) *http.
 		clone.Header = make(http.Header)
 	}
 	clone.Header.Set("Authorization", "Bearer "+token)
+	// The client's build identity rides every cloud-bound request. Stamping it
+	// HERE rather than in RoundTrip is what puts it on the 401-refresh retry as
+	// well as the first dispatch — both go through this clone.
+	clientver.Stamp(clone.Header)
 	return clone
 }

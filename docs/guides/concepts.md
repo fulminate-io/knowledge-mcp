@@ -106,7 +106,7 @@ practice graph). The families and their roles:
 | `linkage` | Cross-graph proxy edges that connect the other families into one whole. |
 | `cicd` | CI/CD pipelines and runs (one graph per account). |
 | `logs` | Ephemeral, per-query graphs built from structured log entries; never sent to the summarizer or embedder. |
-| `transformers` | Recipe DSL bodies — the executable transformer recipes, stored in the graph. |
+| `checks` | Deterministic corpus checks and their fixture examples, across every language — one graph, with `language` a node label. |
 | `web` | Raw per-source graphs emitted by the web collector; the raw text is never embedded directly. |
 | `pdf` | Raw per-source graphs emitted by the PDF collector; likewise never embedded directly. |
 
@@ -116,14 +116,14 @@ Two sub-groupings within them are worth knowing, because they govern what a grap
 can *do*:
 
 - **Sync-eligible (can be pushed to Fulminate Cloud): the first seven —
-  `knowledge`, `code`, `cloud`, `cicd`, `practice`, `linkage`, `transformers`.**
-  `transformers` *is* sync-eligible. The only families excluded are the raw,
-  LLM-skipped graphs `logs`, `web`, and `pdf`.
+  `knowledge`, `code`, `cloud`, `cicd`, `practice`, `linkage`, `checks`.**
+  The only families excluded are the raw, LLM-skipped graphs `logs`, `web`,
+  and `pdf`.
 - **Embeddable / rebuildable-segments (carry search segments that can be
   regenerated from embedded nodes): `knowledge`, `code`, `cloud`, `cicd`,
-  `practice`.** This is the embeddable subset — `linkage` and `transformers` are
-  sync-eligible but carry no embedded vectors, so they have no rebuildable search
-  segments, and the raw `logs` / `web` / `pdf` graphs are excluded entirely.
+  `practice`, `checks`, `web`, `pdf`.** This is the embeddable subset —
+  `linkage` is sync-eligible but carries no embedded vectors, so it has no
+  rebuildable search segments, and `logs` is excluded entirely.
 
 ## The selector vocabulary
 

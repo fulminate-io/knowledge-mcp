@@ -37,12 +37,13 @@ func TestCollect_GitHubTreeURL_EndToEnd(t *testing.T) {
 	seed := "https://github.com/owner/repo/tree/main"
 
 	opts := CrawlOptions{
-		Source:           "test-gh-tree",
-		SeedURLs:         []string{seed},
-		MaxDepth:         0,
-		MaxPages:         1,
-		PolitenessMs:     0,
-		MaxDownloadBytes: 50 << 20,
+		Source:            "test-gh-tree",
+		SeedURLs:          []string{seed},
+		MaxDepth:          0,
+		MaxPages:          1,
+		PolitenessMs:      0,
+		MaterializeGithub: true, // seed-time materialization is caller-requested
+		MaxDownloadBytes:  50 << 20,
 	}
 	ctx := WithCrawlOptions(context.Background(), opts)
 
@@ -103,12 +104,13 @@ func TestCollect_GitHubBlobURL_EndToEnd(t *testing.T) {
 	seed := "https://github.com/owner/repo/blob/main/pkg/foo.go"
 
 	opts := CrawlOptions{
-		Source:           "test-gh-blob",
-		SeedURLs:         []string{seed},
-		MaxDepth:         0,
-		MaxPages:         1,
-		PolitenessMs:     0,
-		MaxDownloadBytes: 50 << 20,
+		Source:            "test-gh-blob",
+		SeedURLs:          []string{seed},
+		MaxDepth:          0,
+		MaxPages:          1,
+		PolitenessMs:      0,
+		MaterializeGithub: true, // seed-time materialization is caller-requested
+		MaxDownloadBytes:  50 << 20,
 	}
 	ctx := WithCrawlOptions(context.Background(), opts)
 
@@ -177,12 +179,13 @@ func TestCollect_GitHubSizeCap_EmitsWarning(t *testing.T) {
 	seed := "https://github.com/owner/repo/tree/main"
 
 	opts := CrawlOptions{
-		Source:           "test-gh-sizecap",
-		SeedURLs:         []string{seed},
-		MaxDepth:         0,
-		MaxPages:         1,
-		PolitenessMs:     0,
-		MaxDownloadBytes: 1 << 20, // 1 MiB cap, fixture is 200 MiB
+		Source:            "test-gh-sizecap",
+		SeedURLs:          []string{seed},
+		MaxDepth:          0,
+		MaxPages:          1,
+		PolitenessMs:      0,
+		MaterializeGithub: true,    // seed-time materialization is caller-requested
+		MaxDownloadBytes:  1 << 20, // 1 MiB cap, fixture is 200 MiB
 	}
 	ctx := WithCrawlOptions(context.Background(), opts)
 
@@ -227,12 +230,13 @@ func TestCollect_URICensus_MaterializedNodesCarryURI(t *testing.T) {
 	seed := "https://github.com/owner/repo/tree/main"
 
 	opts := CrawlOptions{
-		Source:           "test-gh-uri-census",
-		SeedURLs:         []string{seed},
-		MaxDepth:         0,
-		MaxPages:         1,
-		PolitenessMs:     0,
-		MaxDownloadBytes: 50 << 20,
+		Source:            "test-gh-uri-census",
+		SeedURLs:          []string{seed},
+		MaxDepth:          0,
+		MaxPages:          1,
+		PolitenessMs:      0,
+		MaterializeGithub: true, // seed-time materialization is caller-requested
+		MaxDownloadBytes:  50 << 20,
 	}
 	ctx := WithCrawlOptions(context.Background(), opts)
 
@@ -311,12 +315,13 @@ func TestCollect_URICensus_MaterializerWarningCarriesURI(t *testing.T) {
 	seed := "https://github.com/owner/repo/tree/main"
 
 	opts := CrawlOptions{
-		Source:           "test-gh-warn-uri",
-		SeedURLs:         []string{seed},
-		MaxDepth:         0,
-		MaxPages:         1,
-		PolitenessMs:     0,
-		MaxDownloadBytes: 1 << 20, // 1 MiB cap, fixture is 200 MiB
+		Source:            "test-gh-warn-uri",
+		SeedURLs:          []string{seed},
+		MaxDepth:          0,
+		MaxPages:          1,
+		PolitenessMs:      0,
+		MaterializeGithub: true,    // seed-time materialization is caller-requested
+		MaxDownloadBytes:  1 << 20, // 1 MiB cap, fixture is 200 MiB
 	}
 	ctx := WithCrawlOptions(context.Background(), opts)
 

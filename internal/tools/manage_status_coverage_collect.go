@@ -1,24 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// manage_status_coverage_collect.go — the coverage table's ASSEMBLY half: which
-// graph instances the table covers, the bounded concurrent Stats fan-out that reads
-// their counts, and the per-row backstop-verification lookup.
+// manage_status_coverage_collect.go — the coverage table's ASSEMBLY half: the
+// bounded concurrent Stats fan-out that reads each target's counts, the segment
+// probes, the optional stall/working-set seam readers, and the per-row
+// backstop-verification lookup.
 //
 // Split from manage_status_coverage.go for the 500-line cap, along the seam between
-// GATHERING the facts and INTERPRETING them. Its sibling keeps the CoverageRow wire
+// GATHERING the facts and INTERPRETING them. That sibling keeps the CoverageRow wire
 // contract, the disposition vocabulary, the verified formula and the renderers — so
-// "what is this row" and "how do we say it" stay together, and only the RPC walk
-// lives here. Same package, no signature changed.
+// "what is this row" and "how do we say it" stay together.
+//
+// WHICH GRAPHS EXIST AT ALL is a THIRD file, manage_status_coverage_targets.go: the
+// type walk, the per-instance enumeration and the branch-overlay round. It was
+// split out when the enumeration stopped walking the sync-eligible subset and grew
+// past the same cap. Same package, no signature changed.
 package tools
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
@@ -86,7 +89,7 @@ const coverageProbeConcurrency = 6
 //
 // The enumeration: the default knowledge graph is emitted explicitly via the
 // empty-name selector (its empty instance name is dropped by listGraphNamesOfType),
-// then every other SyncEligibleGraphType is enumerated via listGraphNamesOfType +
+// then every other BUILTIN graph type is enumerated via listGraphNamesOfType +
 // graphsel.GraphSelectorFor, then every code base graph's BRANCH GRAPHS are
 // enumerated through the same seam with overlay_of set (coverageTargets).
 //
@@ -218,9 +221,14 @@ func collectCoverageRows(ctx context.Context, deps ClientDeps) []CoverageRow {
 		}
 		verified := repairVerifiedFor(deps, t.gt, t.name, now)
 		rebuildAge, mergeAge := consumerAgesFor(deps, t.gt, t.name, now)
-		rows = append(rows, newCoverageRow(t.label, stats[i], probes[i].covered, probes[i].liveResident,
+		row := newCoverageRow(t.label, stats[i], probes[i].covered, probes[i].liveResident,
 			probes[i].hasSeg, verified, inWorkingSetFor(deps, t.gt, t.name), poolEvictedFor(deps, t.gt, t.name),
-			segmentStalledSinceFor(deps, t.gt, t.name), rebuildAge, mergeAge))
+			segmentStalledSinceFor(deps, t.gt, t.name), rebuildAge, mergeAge)
+		// Assigned AFTER the constructor returns rather than threaded through it:
+		// newCoverageRow already takes eleven positional parameters and three of its
+		// four callers cannot supply a twelfth.
+		row.Degraded = probes[i].degraded
+		rows = append(rows, row)
 	}
 	return rows
 }
@@ -234,6 +242,9 @@ type segProbe struct {
 	covered      int
 	liveResident int
 	hasSeg       bool
+	// degraded is read on the SAME bounded worker as the two counts above, so the
+	// serial assembly loop stays free of it.
+	degraded map[string]int
 }
 
 // collectSegProbes runs the per-row segment-coverage probes CONCURRENTLY, bounded
@@ -272,11 +283,25 @@ func collectSegProbes(
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			covered, liveResident, hasSeg := segCoveredFor(ctx, deps, t.gt, t.name)
-			probes[i] = segProbe{covered: covered, liveResident: liveResident, hasSeg: hasSeg}
+			probes[i] = segProbe{
+				covered: covered, liveResident: liveResident, hasSeg: hasSeg,
+				degraded: bm25DegradeFor(deps, t.gt, t.name),
+			}
 		})
 	}
 	wg.Wait()
 	return probes
+}
+
+// bm25DegradeFor reads one graph's accumulated BM25 drop census through the same
+// nil-safe seam segCoveredFor uses. An unwired seam reports no drops, which is the
+// only honest answer available to a reader with no way to look.
+func bm25DegradeFor(deps ClientDeps, gt kgtypes.GraphType, name string) map[string]int {
+	sr := deps.SegmentCoverage()
+	if sr == nil {
+		return nil
+	}
+	return sr.BM25DegradeCounts(gt, name)
 }
 
 // repairVerifiedFor answers whether the backstop has verified this graph's band,
@@ -342,156 +367,4 @@ func inWorkingSetFor(deps ClientDeps, gt kgtypes.GraphType, name string) bool {
 		return true
 	}
 	return r.InWorkingSet(gt, name)
-}
-
-// coverageTargets enumerates every graph instance the coverage table covers, in
-// the table's deterministic order: the default knowledge graph first (explicit
-// empty-name selector — its empty instance name is dropped by
-// listGraphNamesOfType), then every other SyncEligibleGraphType in order, each
-// instance in enumeration order, and finally every code BRANCH GRAPH in base order
-// then enumeration order. The per-type name enumerations are independent RPCs, so
-// they run concurrently; a failed enumeration drops that type's rows, same as the
-// historical sequential walk.
-//
-// THE BRANCH GRAPHS ARE A SECOND ROUND because their enumeration depends on the
-// base list the first round produces: each base's overlays are listed by asking the
-// SAME RETURN_MODE_GRAPH_NAMES seam with overlay_of set. Without it the enumeration
-// returns base instances only and a first-class branch graph appears on no
-// inventory surface at all.
-func coverageTargets(ctx context.Context, deps ClientDeps) []coverageTarget {
-	types := kgtypes.SyncEligibleGraphTypes()
-	perType := make([][]catalogEntry, len(types))
-	var wg sync.WaitGroup
-	for i, gt := range types {
-		if gt == kgtypes.GraphKnowledge {
-			// Emitted explicitly below via the empty-name selector; enumerating
-			// it again would skip the empty-name default and/or double-count.
-			continue
-		}
-		wg.Go(func() {
-			entries, err := listCatalogOfType(ctx, deps, string(gt))
-			if err != nil {
-				return
-			}
-			perType[i] = entries
-		})
-	}
-	wg.Wait()
-
-	var codeBases []string
-	if ci := codeTypeIndex(types); ci >= 0 {
-		codeBases = catalogNames(perType[ci])
-	}
-	overlayKeys := coverageOverlayKeys(ctx, deps, codeBases)
-
-	targets := []coverageTarget{{
-		label: "knowledge",
-		gt:    kgtypes.GraphKnowledge,
-		// The Stats SELECTOR uses the empty instance name (that is the stats wire
-		// contract for the default graph), but the segment probe is a different key
-		// space: the default knowledge graph's segments live under "default", which
-		// the segment reconcile seeds explicitly for this exact reason — the default
-		// instance enumerates an empty name that ListGraphNamesOfType drops. Leaving
-		// this empty probes a key nothing writes, reporting the primary corpus as
-		// uncovered however well covered it is, and makes the reader lazily
-		// construct a manager for an instance that does not exist.
-		name:   "default",
-		target: &knowledgev1.GraphSelector{Graph: ""},
-		// Membership is asked about "default" — the same name the segment probe uses
-		// — because the working set normalizes knowledge's "" and "default" to one
-		// Ref, so the two spellings cannot become two different answers.
-		managed: inWorkingSetFor(deps, kgtypes.GraphKnowledge, "default"),
-	}}
-	for i, gt := range types {
-		for _, e := range perType[i] {
-			t := newCoverageTarget(gt, e.name, false)
-			t.managed = inWorkingSetFor(deps, gt, e.name)
-			t.imageBytes = e.imageBytes
-			targets = append(targets, t)
-		}
-	}
-	for i, base := range codeBases {
-		for _, key := range overlayKeys[i] {
-			bare := bareOverlayName(base, key)
-			if bare == "" {
-				continue
-			}
-			// A key STILL carrying an "@" after normalization did not belong to
-			// this base — the enumeration is base-scoped, so this is defensive.
-			// Recomposing one would fabricate a graph identity in an inventory row.
-			if left, _, ok := atSplit(bare); ok && left != base {
-				continue
-			}
-			bt := newCoverageTarget(kgtypes.GraphCode, base+"@"+bare, true)
-			// A branch row's ADMISSION follows its base's — the working set cuts a name
-			// at the first "@", so this asks about the base, which is the graph a
-			// collect would have admitted when it produced the branch.
-			bt.managed = inWorkingSetFor(deps, kgtypes.GraphCode, base)
-			targets = append(targets, bt)
-		}
-	}
-	return targets
-}
-
-// newCoverageTarget builds one row's target from its type and instance name. It is
-// the SINGLE producer of the row label, so a base row and a branch row cannot drift
-// into two spellings of the same identity.
-func newCoverageTarget(gt kgtypes.GraphType, name string, overlay bool) coverageTarget {
-	return coverageTarget{
-		label:   fmt.Sprintf("%s/%s", gt, name),
-		gt:      gt,
-		name:    name,
-		target:  graphsel.GraphSelectorFor(gt, name, false),
-		overlay: overlay,
-	}
-}
-
-// codeTypeIndex reports where the code type sits in the sync-eligible type order,
-// so the overlay round reads the base list the first round filled for it. Returns
-// -1 when code is not eligible, which yields no overlay round at all.
-func codeTypeIndex(types []kgtypes.GraphType) int {
-	for i, gt := range types {
-		if gt == kgtypes.GraphCode {
-			return i
-		}
-	}
-	return -1
-}
-
-// coverageOverlayKeys enumerates each code base graph's overlay keys, one bounded
-// goroutine per base, and returns them BY BASE INDEX so the row order stays
-// deterministic however the enumerations interleave.
-//
-// THE BOUND IS OWED HERE IN A WAY IT IS NOT OWED BY THE PER-TYPE ROUND. That round's
-// width is the sync-eligible type count, a compile-time constant; this one's width is
-// the number of code base graphs, which is user data and unbounded — an install with
-// fifty repos would otherwise open fifty concurrent enumerations against the server
-// from a single status call. It reuses the Stats fan-out's own semaphore idiom and
-// its coverageStatsConcurrency bound rather than introducing a second number.
-//
-// THE ENUMERATION IS CODE-ONLY, and not merely by preference. Overlays of the other
-// families are knowledge session overlays — ephemeral working state rather than
-// inventory — and the server's selector validation rejects a knowledge selector
-// whose name is not a root alias, so such a target would error and drop its own row
-// after doing the work.
-//
-// A failed enumeration leaves that base's slice nil and drops only that base's branch
-// rows, matching the failure semantics of the per-type enumeration above.
-func coverageOverlayKeys(ctx context.Context, deps ClientDeps, codeBases []string) [][]string {
-	keys := make([][]string, len(codeBases))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, coverageStatsConcurrency)
-	for i, base := range codeBases {
-		wg.Go(func() {
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			found, err := listOverlayKeysOfBase(ctx, deps, string(kgtypes.GraphCode), base)
-			if err != nil {
-				return
-			}
-			keys[i] = found
-		})
-	}
-	wg.Wait()
-	return keys
 }

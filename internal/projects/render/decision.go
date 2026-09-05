@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -52,7 +53,7 @@ func assembleDecision(ctx context.Context, gc GraphCaller, node *knowledgev1.Nod
 	for _, e := range inEdges {
 		peerIDs = append(peerIDs, e.FromId)
 	}
-	peers, truncated, _ := FetchNodesByIDs(ctx, gc, peerIDs)
+	peers, truncated, _ := foundation.FetchNodesByIDs(ctx, gc, "", "", peerIDs, foundation.IncludeTombstones)
 
 	var informed []*knowledgev1.Node
 	for _, e := range outEdges {

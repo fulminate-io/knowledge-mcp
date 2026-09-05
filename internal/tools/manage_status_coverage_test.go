@@ -263,6 +263,10 @@ func (r *coverageSegReader) LiveResidentDocCount(gt kgtypes.GraphType, name stri
 	return r.residentByKey[key]
 }
 
+// BM25DegradeCounts reports no drops: this fake exercises the coverage counts,
+// not the drop census.
+func (r *coverageSegReader) BM25DegradeCounts(kgtypes.GraphType, string) map[string]int { return nil }
+
 // LoadRebuildState / LoadMergeWatermark serve this client's two consumer
 // positions. An UNSET key reports zero, which is the "never recorded a position"
 // case the row must render as "never" rather than as an age.

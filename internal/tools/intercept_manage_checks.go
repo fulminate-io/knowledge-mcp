@@ -28,6 +28,11 @@ type manageChecksArgs struct {
 	IDs        []string `json:"ids,omitempty"`
 	PathPrefix string   `json:"path_prefix,omitempty"`
 	TopK       int      `json:"top_k,omitempty"`
+	// IncludeTests is a POINTER because the run knob has three states, not two:
+	// omitted, explicitly true, explicitly false. An omitted flag is legal for
+	// every language while an explicit one is refused for a language with no
+	// test-file convention, and a plain bool cannot tell those apart.
+	IncludeTests *bool `json:"include_tests,omitempty"`
 
 	Name        string `json:"name,omitempty"`
 	Summary     string `json:"summary,omitempty"`
@@ -37,6 +42,10 @@ type manageChecksArgs struct {
 	CheckType   string `json:"check_type,omitempty"`
 	DSLPattern  string `json:"dsl_pattern,omitempty"`
 	CheckWhere  string `json:"check_where,omitempty"`
+	// AppliesToTests needs no third state: on the create path an omitted flag
+	// and an explicit false both mean "write no declaration", which is what the
+	// check contract reads as false.
+	AppliesToTests bool `json:"applies_to_tests,omitempty"`
 
 	FixtureBad  *manageChecksFixtureArgs `json:"fixture_bad,omitempty"`
 	FixtureGood *manageChecksFixtureArgs `json:"fixture_good,omitempty"`

@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"runtime"
 	"sync"
 	"sync/atomic"
 )
@@ -51,6 +50,13 @@ type SegmentedIndex[Q, S any] struct {
 	done        chan struct{}
 	mergeSignal chan struct{}
 	mergeCnt    atomic.Uint64
+	// settleCnt counts merges whose doMerge has RETURNED, which is the publish plus
+	// everything doMerge still owed afterwards — including the OnMerge hook on the
+	// arms that fire it. mergeCnt moves at the CAS publish and settleCnt moves when
+	// the work that publish set in motion is done, so the difference between them is
+	// exactly "merges published whose completion work is still running". Pure
+	// observability: nothing in the merge path reads it. See doMerge.
+	settleCnt atomic.Uint64
 }
 
 // New constructs an engine over the given format and options. It seeds an empty
@@ -135,7 +141,8 @@ func (e *SegmentedIndex[Q, S]) Flush() error {
 // segment it created from one it merely named. Retiring an id the batch aliased
 // would drop a segment that was already resident and is not this window's to drop.
 func (e *SegmentedIndex[Q, S]) seal(docs []Document) (SegmentID, bool, error) {
-	seg, err := e.format.Build(dedupeDocsByID(docs))
+	seg, rep, err := e.format.Build(dedupeDocsByID(docs))
+	e.reportDegrade(rep)
 	if err != nil {
 		return "", false, err
 	}
@@ -146,6 +153,17 @@ func (e *SegmentedIndex[Q, S]) seal(docs []Document) (SegmentID, bool, error) {
 	created := e.publishAppend(entry)
 	e.signalMerge()
 	return entry.meta.ID, created, nil
+}
+
+// reportDegrade hands a build's census to the owner. BOTH GUARD CLAUSES ARE
+// LOAD-BEARING: the emptiness check is what keeps the hook a signal rather than
+// a per-build heartbeat, and the nil check is what makes an owner that wired
+// nothing pay nothing. See Options.OnBuildDegrade.
+func (e *SegmentedIndex[Q, S]) reportDegrade(rep BuildReport) {
+	if len(rep.Degraded) == 0 || e.opts.OnBuildDegrade == nil {
+		return
+	}
+	e.opts.OnBuildDegrade(rep)
 }
 
 // dedupeDocsByID collapses a build batch to at most one document per id, LAST-WINS,
@@ -327,39 +345,6 @@ func (e *SegmentedIndex[Q, S]) Delete(id ExternalID) {
 		}
 	}
 	e.activeMu.Unlock()
-}
-
-// Search runs a lock-free, parallel cross-segment query. It loads the immutable
-// set with a SINGLE atomic load (NO mutex, NO RLock — activeMu is never touched
-// here), fans out one goroutine per segment bounded by NumCPU, each writing a
-// preallocated result slot (no shared-slice contention), then merges the global
-// top-k. The liveDocs accept filter excludes deleted ids. The only
-// synchronization is the atomic load + the fan-out WaitGroup/semaphore.
-func (e *SegmentedIndex[Q, S]) Search(q Q, k int) []Hit {
-	set := e.set.Load()
-	if len(set.entries) == 0 || k <= 0 {
-		return nil
-	}
-
-	results := make([][]Hit, len(set.entries))
-	sem := make(chan struct{}, runtime.NumCPU())
-	var wg sync.WaitGroup
-	for i, entry := range set.entries {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(i int, entry *segmentEntry[Q, S]) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			accept := func(id ExternalID) bool {
-				ord, ok := entry.members[id]
-				return ok && entry.live.Live(ord)
-			}
-			results[i] = entry.payload.Search(q, set.stats, k, accept)
-		}(i, entry)
-	}
-	wg.Wait()
-
-	return mergeTopK(results, k)
 }
 
 // ResidentDocCount sums meta.DocCount across every sealed segment currently

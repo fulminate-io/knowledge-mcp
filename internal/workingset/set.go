@@ -109,6 +109,42 @@ func (s *Set) Admit(gt kgtypes.GraphType, name, reason string) bool {
 	return true
 }
 
+// Remove forgets (gt, name) and reports whether it was a member. It is Admit's
+// counterpart, and the set went without one until a dropped graph proved it was
+// needed: nothing ages a member out, so a graph the user has DROPPED would have
+// stayed in the set for the life of the process and every background loop would
+// have kept working on a graph that no longer exists.
+//
+// IT NORMALIZES THROUGH THE SAME Normalize EVERY OTHER OPERATION USES. Without
+// that a caller could delete under an un-canonicalized key while the member sat
+// under the canonical one — the removal would report false, the member would
+// survive, and the two spellings becoming two different members is a drift this
+// area has already produced once.
+//
+// NO WAKE IS SIGNALED. Waiters are registered once at wiring time and filter on
+// a Ref rather than being owned by a membership, so a removal has nothing to
+// clean up and nothing to announce: a wake means "there is new work here", which
+// is the opposite of what just happened.
+//
+// One map delete under the same mutex Members takes. A name Normalize refuses
+// removes nothing and returns false. nil-safe, like every other method here.
+func (s *Set) Remove(gt kgtypes.GraphType, name string) bool {
+	if s == nil {
+		return false
+	}
+	ref, ok := Normalize(gt, name)
+	if !ok {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.members[ref]; !exists {
+		return false
+	}
+	delete(s.members, ref)
+	return true
+}
+
 // Has reports whether (gt, name) is a member. This is the predicate every
 // background loop is gated on. A nil *Set reports false for everything — EMPTY,
 // never unrestricted.
@@ -185,8 +221,7 @@ func (s *Set) Wake() <-chan struct{} {
 // OTHER graph is pure amplification — the propagation family, every read of which
 // targets knowledge/default. It is a SIBLING of Wake, not a replacement: Wake keeps
 // its any-graph broadcast for the consumers that legitimately react to any
-// admission (the pipeline catalog refresh, pipeline_refresh.go:77, and the deferred
-// instruction bootstrap, client_workingset.go:121).
+// admission (the pipeline catalog refresh, pipeline_refresh.go:77).
 //
 // Same registration contract as Wake: call it ONCE at wiring time and hold the
 // channel; a channel registered after an admission does not carry that admission.

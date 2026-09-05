@@ -16,9 +16,17 @@ import (
 // structureEdges are the subtree's parent→child (contains) edges in
 // their traversal discovery order; the caller is responsible for
 // scoping them to the structure edge type (the traversal's EdgeTypes
-// selection already does this). The returned childIndex preserves edge
-// order within each parent; ordering concerns (the text path's
-// depends-on topo-sort) are applied by the caller, not here.
+// selection already does this). THE CALLER'S TYPE FILTER is what makes
+// an edge part of the containment relation — this function never
+// consults the edge type itself.
+//
+// SIBLING ORDER within a parent is the child's POSITION where one is
+// carried (see child_order.go) and edge arrival order otherwise. The
+// sort is stable and ranks an unpositioned edge equal to its unpositioned
+// peers, so a set carrying no position is bit-for-bit unchanged. The
+// text path's depends-on topo-sort is a SEPARATE ordering still applied
+// by the caller, and it OVERRIDES this one where a depends-on chain
+// exists.
 //
 // Two tolerances mirror the per-node walk this replaces:
 //
@@ -28,10 +36,12 @@ import (
 //     logged.
 //   - Diamond dedup: a `placed` visited-set ensures a child reached by
 //     more than one contains edge is attached under exactly ONE parent
-//     — the first edge that reaches it in traversal order. Later edges
-//     to an already-placed child are skipped, so a node with two
-//     contains parents renders once. This is the guard the recursive
-//     per-node walk lacked.
+//     — the first edge that reaches it in SORTED order. Later edges to
+//     an already-placed child are skipped, so a node with two contains
+//     parents renders once. This is the guard the recursive per-node
+//     walk lacked. WHICH parent wins is defined rather than incidental:
+//     two POSITIONED edges are decided by position, and with neither
+//     positioned the first edge in traversal order still wins.
 func BuildChildIndex(
 	rootID string,
 	nodes []*knowledgev1.Node,
@@ -49,7 +59,21 @@ func BuildChildIndex(
 
 	childIndex = make(map[string][]*knowledgev1.Node)
 	placed := make(map[string]bool, len(nodes))
-	for _, e := range structureEdges {
+	// Sibling ordering is applied HERE, before the append loop, so that every
+	// consumer of the index inherits it: the two tree-rendering paths, the
+	// plan_tree json branch, the json assemble, the ticket/project renderers and
+	// the status-cascade partitioner all read childIndex and only some of them
+	// call a tree renderer. The sort is stable and ranks an unpositioned edge
+	// equal to its unpositioned peers, so an edge set carrying no position — every
+	// tree written before positions existed — comes through untouched.
+	//
+	// IT ALSO DECIDES THE DIAMOND. The `placed` guard below attaches a child to
+	// the FIRST edge that reaches it, so ordering the edges redefines which parent
+	// that is: for a child reached by two POSITIONED containment edges,
+	// attribution follows POSITION by definition rather than traversal order. With
+	// neither edge positioned the stable sort leaves the arrival order alone and
+	// the first edge still wins, exactly as before.
+	for _, e := range sortStructureEdgesByPosition(byID, structureEdges) {
 		if e == nil {
 			continue
 		}

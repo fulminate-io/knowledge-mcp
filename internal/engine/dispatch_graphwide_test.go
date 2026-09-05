@@ -34,6 +34,7 @@ func TestDispatchGraphWide_PivotPagedEdgePlan(t *testing.T) {
 	}}
 
 	out, err := Dispatch(context.Background(), s.fn(),
+		nil,
 		"traverse", json.RawMessage(`{"graph":"knowledge","format":"json"}`))
 	require.NoError(t, err)
 
@@ -68,6 +69,7 @@ func TestDispatchGraphWide_DanglingSourceEdgeNotRendered(t *testing.T) {
 	}}
 
 	out, err := Dispatch(context.Background(), s.fn(),
+		nil,
 		"traverse", json.RawMessage(`{"graph":"knowledge","format":"json"}`))
 	require.NoError(t, err)
 	assert.NotContains(t, out.Content[0].Text, "ghost",
@@ -82,6 +84,7 @@ func TestDispatchGraphWide_DanglingSourceEdgeNotRendered(t *testing.T) {
 		s.responses[1],
 	}}
 	outText, err := Dispatch(context.Background(), sText.fn(),
+		nil,
 		"traverse", json.RawMessage(`{"graph":"knowledge"}`))
 	require.NoError(t, err)
 	assert.Contains(t, outText.Content[0].Text, "- edges: 1",
@@ -98,6 +101,7 @@ func TestDispatchGraphWideEdges_TextFormatUsesIDsOnly(t *testing.T) {
 			{Edges: edgesToProtoForTest([]knowledgev1.Edge{{FromId: "n1", ToId: "n2", Type: "contains"}})},
 		}}
 		out, err := Dispatch(context.Background(), s.fn(),
+			nil,
 			"traverse", json.RawMessage(`{"graph":"knowledge"}`))
 		require.NoError(t, err)
 		require.Len(t, s.reqs, 2)
@@ -120,6 +124,7 @@ func TestDispatchGraphWideEdges_TextFormatUsesIDsOnly(t *testing.T) {
 			{Edges: edgesToProtoForTest(nil)},
 		}}
 		out, err := Dispatch(context.Background(), s.fn(),
+			nil,
 			"traverse", json.RawMessage(`{"graph":"knowledge","format":"json"}`))
 		require.NoError(t, err)
 		require.NotEmpty(t, s.reqs)
@@ -139,6 +144,7 @@ func TestDispatchGraphWide_EmptyGraphSkipsEdgeRead(t *testing.T) {
 		enginetest.ResponseWithNodes(),
 	}}
 	_, err := Dispatch(context.Background(), s.fn(),
+		nil,
 		"traverse", json.RawMessage(`{"graph":"knowledge","format":"json"}`))
 	require.NoError(t, err)
 	assert.Equal(t, 1, s.calls, "no nodes → no edge read")
@@ -171,6 +177,7 @@ func TestDispatchGraphWide_CandidateGroups(t *testing.T) {
 			{Edges: edgesToProtoForTest(edges)},
 		}}
 		out, err := Dispatch(context.Background(), s.fn(),
+			nil,
 			"traverse", json.RawMessage(`{"graph":"knowledge","format":"json"}`))
 		require.NoError(t, err)
 		var payload map[string]any

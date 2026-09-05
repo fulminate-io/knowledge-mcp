@@ -31,6 +31,7 @@ import (
 // the other's. This test fails-when-absent either way: with the loss, the
 // require.True(ok) below fails because the HNSW segment is gone.
 func TestDeterministicShipKeepsBothFormatsResolvable(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()
@@ -68,6 +69,7 @@ func TestDeterministicShipKeepsBothFormatsResolvable(t *testing.T) {
 // per-format ships, which is the same cross-format prune exposure. Both formats
 // must survive and the by-id read must resolve.
 func TestEmbedShipKeepsBothFormatsResolvable(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

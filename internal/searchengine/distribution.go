@@ -103,6 +103,23 @@ func (e *SegmentedIndex[Q, S]) Import(blobs []SegmentBlob, tombstones []External
 			// parse of the stored bytes here: the blob arrives already split, from
 			// an engine producer or from the load path, and Bytes is the payload by
 			// the invariant on SegmentBlob.
+			// EVERY FAILURE PATH BELOW RELEASES THE BLOB'S MAPPING. Release is
+			// normally handed to a cleanup keyed on the ENTRY's reachability, but
+			// these paths produce no entry — so without this the mapping is
+			// orphaned with nobody left holding a reference to free it. It leaks
+			// per blob and per attempt, and the retry is not rare: an evicted pool
+			// re-attempts the load on every touch, so a corpus with one unreadable
+			// segment leaks a mapping per touch for as long as it is touched.
+			//
+			// releaseUnattached is the same helper mergeEntry's error paths use,
+			// for the same reason and with the same nil-tolerance.
+			failed := true
+			defer func() {
+				if failed {
+					releaseUnattached(blob.Release)
+				}
+			}()
+
 			rec, err := decodeSupersessionEnvelope(blob.Envelope)
 			if err != nil {
 				errs[i] = fmt.Errorf("decode segment %s: %w", blob.ID, err)
@@ -113,12 +130,34 @@ func (e *SegmentedIndex[Q, S]) Import(blobs []SegmentBlob, tombstones []External
 				errs[i] = fmt.Errorf("decode segment %s: %w", blob.ID, err)
 				return
 			}
-			entries[i] = e.entryFromDecoded(seg, blob, tombstones)
+			// THE LOAD PATH NEEDS THE SAME BOUNDARY THE QUERY PATH HAS, and it
+			// needs it more. entryFromDecoded walks the segment's members to build
+			// the id→ordinal map, resolving per-document data a lazy Decode
+			// deliberately never touches — so a corrupt segment raises HERE, on a
+			// goroutine with nothing above it to recover, and takes the process down
+			// while it is still starting up. That is the WORST arrival of this
+			// failure: the daemon never reaches a state in which anything can be
+			// quarantined, and a supervisor restarting it walks straight back into
+			// the same blob. The crash loop the containment work exists to end
+			// survived here.
+			//
+			// The error lands in this blob's own errs slot, so the offending segment
+			// is named and the batch fails cleanly instead of mid-publish.
+			if cerr := e.containCorrupt(blob.ID, func() error {
+				entries[i] = e.entryFromDecoded(seg, blob, tombstones)
+				return nil
+			}); cerr != nil {
+				errs[i] = cerr
+				return
+			}
 			// THE RECORD IS CARRIED ONTO THE ENTRY, so a segment that is imported and
 			// later re-exported still says what it replaced. An entry that forgot it
 			// would write the record away on the next persist, and the corpus would
 			// quietly return to saying nothing about supersession.
 			entries[i].record = rec
+			// The entry now owns the mapping through its own cleanup, so the
+			// deferred release above must not fire.
+			failed = false
 		}(i, blob)
 	}
 	wg.Wait()

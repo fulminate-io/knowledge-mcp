@@ -28,7 +28,7 @@ func TestBuildRefusesMixedVectorWidth(t *testing.T) {
 			{ID: "b", Vector: make([]byte, 128)},
 			{ID: "c", Vector: make([]byte, 128)},
 		}
-		seg, err := Format{}.Build(wide)
+		seg, _, err := Format{}.Build(wide)
 		require.NoError(t, err, "a uniform batch at a non-default width must build")
 		require.Len(t, seg.IDs(), 3)
 		vec, ok := seg.(*hnswSegment).VectorByID("a")
@@ -42,7 +42,7 @@ func TestBuildRefusesMixedVectorWidth(t *testing.T) {
 			{ID: "b", Vector: make([]byte, 64)},
 			{ID: "c", Vector: make([]byte, 128)},
 		}
-		_, err = Format{}.Build(mixed)
+		_, _, err = Format{}.Build(mixed)
 		require.Error(t, err, "a mixed-width batch must be REFUSED, never coerced to some width")
 		require.ErrorIs(t, err, ErrMixedVectorWidth, "callers must be able to match the sentinel")
 
@@ -55,7 +55,7 @@ func TestBuildRefusesMixedVectorWidth(t *testing.T) {
 		// widths cannot be consolidated into one graph, and the refusal must come
 		// from the width check rather than from a panic deep in the distance
 		// function.
-		narrowSeg, err := Format{}.Build([]searchengine.Document{
+		narrowSeg, _, err := Format{}.Build([]searchengine.Document{
 			{ID: "n1", Vector: make([]byte, 32)},
 			{ID: "n2", Vector: make([]byte, 32)},
 		})
@@ -84,7 +84,7 @@ func TestBuildRefusesMixedVectorWidth(t *testing.T) {
 			{ID: "empty2", Vector: []byte{}},
 			{ID: "c", Vector: make([]byte, 64)},
 		}
-		seg, err := Format{}.Build(batch)
+		seg, _, err := Format{}.Build(batch)
 		require.NoError(t, err, "documents with absent vectors are skipped, not refused")
 
 		ids := seg.IDs()
@@ -96,7 +96,7 @@ func TestBuildRefusesMixedVectorWidth(t *testing.T) {
 		// An ALL-empty batch still yields an empty, searchable, zero-hit segment —
 		// the documented contract, which the width derivation must not turn into an
 		// error for want of a width to report.
-		allEmpty, err := Format{}.Build([]searchengine.Document{
+		allEmpty, _, err := Format{}.Build([]searchengine.Document{
 			{ID: "x", Vector: nil},
 			{ID: "y", Vector: []byte{}},
 		})

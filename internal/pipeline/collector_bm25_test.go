@@ -97,12 +97,12 @@ func bm25Page(live []string, tombstoned []string) *knowledgev1.CorpusDeltaRespon
 }
 
 // TestBM25Arm_GraphGateIsHasRebuildableSegments asserts the gate over an EXPLICIT
-// enumeration of all eleven builtin graph types rather than a sampled pair.
+// enumeration of all ten builtin graph types rather than a sampled pair.
 //
-// A SAMPLED PAIR WOULD MISS THE TRAP this gate exists for: transformers is
-// Summarizable-but-NOT-Embeddable and gets zero segments today, so a hand-rolled
-// "BM25-eligible = not embeddable" predicate would silently grant it segments. The
-// full enumeration is what makes that impossible to pass by accident.
+// A SAMPLED PAIR WOULD MISS THE TRAP this gate exists for: linkage carries no
+// segments at all, so a hand-rolled "BM25-eligible = not embeddable" predicate
+// would silently grant it some. The full enumeration is what makes that
+// impossible to pass by accident.
 //
 // ONE NAMED SUBTEST PER TYPE, not one loop over a table, and the difference is what
 // a reader of a failure sees: a loop reports "graph type X admitted=true" from a
@@ -122,13 +122,17 @@ func TestBM25Arm_GraphGateIsHasRebuildableSegments(t *testing.T) {
 		kgtypes.GraphCICD:      true,
 		kgtypes.GraphPractice:  true,
 		kgtypes.GraphChecks:    true,
+		// The raw graphs are admitted since their embed-only enrollment: server-side
+		// BM25 segments over the collected chunks are what make them searchable.
+		kgtypes.GraphWebRaw: true,
+		kgtypes.GraphPDFRaw: true,
 	}
 	all := []kgtypes.GraphType{
 		kgtypes.GraphKnowledge, kgtypes.GraphCode, kgtypes.GraphCloud, kgtypes.GraphCICD,
-		kgtypes.GraphPractice, kgtypes.GraphLinkage, kgtypes.GraphTransformers,
+		kgtypes.GraphPractice, kgtypes.GraphLinkage,
 		kgtypes.GraphChecks, kgtypes.GraphLogs, kgtypes.GraphWebRaw, kgtypes.GraphPDFRaw,
 	}
-	require.Len(t, all, 11, "the enumeration must cover every builtin graph type")
+	require.Len(t, all, 10, "the enumeration must cover every builtin graph type")
 
 	var admittedCount int
 	for _, gt := range all {
@@ -143,7 +147,7 @@ func TestBM25Arm_GraphGateIsHasRebuildableSegments(t *testing.T) {
 			assert.False(t, bm25ArmEnabledFor(gt, false), "graph type %q with no manager", gt)
 		})
 	}
-	assert.Equal(t, 6, admittedCount, "exactly the six HasRebuildableSegments types are admitted")
+	assert.Equal(t, 8, admittedCount, "exactly the eight HasRebuildableSegments types are admitted")
 }
 
 // TestBM25Arm_RequestsEveryNodeType guards the invariant cursorHighWater's doc calls

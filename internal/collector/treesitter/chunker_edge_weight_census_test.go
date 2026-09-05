@@ -58,10 +58,17 @@ import (
 // serving-architecture internals, and a disposition table enumerating those
 // paths is exactly such a reference. Seven Weight readers sit behind the
 // constraint; they are governed by the private tree's own review, and the walk
-// skips them by reading their build line. Measured: the constraint separates
-// exactly those seven from the other forty-eight, which is the row count of the
-// disposition table in chunker_edge_weight_census_data_test.go — the table is no
-// longer BELOW, it is next door.
+// skips them by reading their build line.
+//
+// THE CENSUS IS SPLIT BY MODULE, and this half walks THIS module alone. Measured
+// over both internal trees at the time of writing: 56 non-test Weight readers,
+// 7 of them behind the constraint, leaving 34 in this module and 15 in the
+// server's. The 34 are the rows of chunker_edge_weight_census_data_test.go, next
+// door; the 15 are the rows of chunker_edge_weight_census_server_test.go, which
+// the sync script removes from the published tree because the mirror is the
+// client module alone. Each half asserts set agreement in BOTH directions over
+// its own tree and carries its own named-file control, so the two together cover
+// exactly what the single two-tree census covered.
 //
 // EVERY REASON BELOW WAS READ IN CURRENT SOURCE.
 type weightReaderRow struct {
@@ -80,33 +87,36 @@ var weightReaderDetector = regexp.MustCompile(`\.Weight|GetWeight\(`)
 // draw its scope boundary without naming a private path.
 var privateBuildConstraint = regexp.MustCompile(`(?m)^//go:build internal$`)
 
-// accessorOnlyWeightReaders are the files that read an edge's Weight through the
-// GENERATED ACCESSOR and match a bare `\.Weight` not at all.
+// accessorOnlyWeightReaders are THIS MODULE's files that read an edge's Weight
+// through the GENERATED ACCESSOR and match a bare `\.Weight` not at all.
 //
-// THEY ARE NAMED, NOT COUNTED. A count leg is satisfied by any six files, so a
-// detector that regressed to the narrow pattern while some unrelated six files
-// drifted in would still pass. The state digest is the load-bearing member —
-// the only one of the six that is not plumbing.
+// THEY ARE NAMED, NOT COUNTED. A count leg is satisfied by any two files, so a
+// detector that regressed to the narrow pattern while some unrelated files
+// drifted in would still pass.
+//
+// FOUR MORE OF THE SIX LIVE IN THE SERVER MODULE, including the state digest —
+// the load-bearing one, the only member that is not plumbing. They are named by
+// accessorOnlyWeightReadersServer in chunker_edge_weight_census_server_test.go,
+// which walks that tree; the under-match class the widened detector exists for
+// is therefore still asserted by name on both sides of the split.
 var accessorOnlyWeightReaders = []string{
-	"cmd/knowledge-server/internal/bootstrap/engine_carrier_convert.go",
-	"cmd/knowledge-server/internal/bootstrap/engine_mutate_decode.go",
-	"cmd/knowledge-server/internal/bootstrap/engine_mutate_decode_predicate.go",
-	"cmd/knowledge-server/internal/store/graph_state_digest.go",
-	"cmd/knowledge/internal/collector/remote/sink_metrics.go",
-	"cmd/knowledge/internal/engine/engine_decode.go",
+	"internal/collector/remote/sink_metrics.go",
+	"internal/engine/engine_decode.go",
 }
 
-// TestEdgeWeightConsumerCensus walks both internal trees for files reading an
-// edge's Weight and requires each to carry a stated disposition.
+// TestEdgeWeightConsumerCensus walks THIS MODULE's internal tree for files
+// reading an edge's Weight and requires each to carry a stated disposition.
+//
+// THE ROOT IS THE MODULE ROOT, which is what makes this half publishable:
+// repoRoot walks to the first go.mod, cmd/knowledge here and the mirror root in
+// the published tree, so <module>/internal names the same tree in both and every
+// path below is module-relative.
 func TestEdgeWeightConsumerCensus(t *testing.T) {
-	root := repoRootForCensus(t)
+	root := repoRoot(t)
 
 	found := map[string]bool{}
-	for _, tree := range []string{
-		filepath.Join("cmd", "knowledge", "internal"),
-		filepath.Join("cmd", "knowledge-server", "internal"),
-	} {
-		walkRoot := filepath.Join(root, tree)
+	{
+		walkRoot := filepath.Join(root, "internal")
 		require.DirExists(t, walkRoot, "census control: the consumer tree exists")
 		err := filepath.WalkDir(walkRoot, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
@@ -176,8 +186,8 @@ func TestEdgeWeightConsumerCensus(t *testing.T) {
 		// reader of the table unable to tell "considered and excluded" from
 		// "never noticed".
 		for _, p := range []string{
-			"cmd/knowledge/internal/tools/intercept_thoughts_charge.go",
-			"cmd/knowledge/internal/tools/intercept_thoughts_simulate.go",
+			"internal/tools/intercept_thoughts_charge.go",
+			"internal/tools/intercept_thoughts_simulate.go",
 		} {
 			row, ok := byPath[p]
 			require.True(t, ok, "%s must carry an explicit exclusion row", p)
@@ -191,22 +201,23 @@ func TestEdgeWeightConsumerCensus(t *testing.T) {
 	t.Run("accessor_readers_present", func(t *testing.T) {
 		// THE UNDER-MATCH CLASS'S NAMED-FILE CONTROL, and the reason this census
 		// uses the widened detector at all. ASSERTED BY NAME, NEVER BY COUNT: a
-		// count leg is satisfied by any six files, so a detector that regressed to
-		// the narrow `\.Weight` pattern could drop all six while every other
-		// subtest stayed green.
+		// count leg is satisfied by any two files, so a detector that regressed to
+		// the narrow `\.Weight` pattern could drop both while every other subtest
+		// stayed green.
+		//
+		// THE SERVER HALF ASSERTS ITS OWN FOUR, the state digest among them, by
+		// the same rule and for the same reason.
+		require.NotEmpty(t, accessorOnlyWeightReaders,
+			"control: the named-file list is not empty, or this subtest asserts nothing")
 		for _, p := range accessorOnlyWeightReaders {
 			assert.True(t, found[p],
 				"%s reads an edge's Weight through the generated accessor and matches a bare "+
 					"`.Weight` not at all. The walk must use the WIDENED detector, or this reader "+
 					"disappears from the census silently.", p)
+			row, ok := byPath[p]
+			require.True(t, ok, "%s must carry a disposition row", p)
+			assert.Equal(t, dispositionOptsIn, row.Disposition,
+				"%s genuinely reads an edge's Weight through the accessor; it is not an over-match", p)
 		}
-		// The load-bearing member, named on its own: the only one of the six that
-		// is not plumbing.
-		require.True(t, found["cmd/knowledge-server/internal/store/graph_state_digest.go"],
-			"the state digest folds an edge's Weight into the divergence hash and MUST be censused")
-		row, ok := byPath["cmd/knowledge-server/internal/store/graph_state_digest.go"]
-		require.True(t, ok)
-		assert.Equal(t, dispositionOptsIn, row.Disposition,
-			"the state digest genuinely reads an edge's Weight; it is not an over-match")
 	})
 }

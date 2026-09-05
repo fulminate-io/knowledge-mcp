@@ -55,7 +55,7 @@ func TestMergeReclaimHappyPath(t *testing.T) {
 		warmExported(dm)
 
 		waitForMerge(t, dm.engine.MergeCount, "count-driven merge must fire")
-		waitMergeQuiesce(dm.engine.MergeCount)
+		waitReclaimSettled(t, dm.engine)
 		warmExported(dm) // ensure the final consolidated blob(s) are L2-backed
 
 		assertReclaimHappened(t, ic)
@@ -78,7 +78,7 @@ func TestMergeReclaimHappyPath(t *testing.T) {
 		warmExported(dm)
 
 		waitForMerge(t, dm.engine.MergeCount, "count-driven merge must fire")
-		waitMergeQuiesce(dm.engine.MergeCount)
+		waitReclaimSettled(t, dm.engine)
 		warmExported(dm)
 
 		assertReclaimHappened(t, ic)
@@ -139,7 +139,7 @@ func TestReclaimContentSharedIdRetained(t *testing.T) {
 	dm.engine.Delete(dirty[0].ID)
 	dm.engine.Delete(dirty[1].ID)
 	waitForMerge(t, dm.engine.MergeCount, "dead-ratio merge must fire")
-	waitMergeQuiesce(dm.engine.MergeCount)
+	waitReclaimSettled(t, dm.engine)
 	warmExported(dm)
 
 	// The clean segment's id was NOT superseded: still live, never Removed, L2 kept.
@@ -180,8 +180,18 @@ func TestReclaimReadOnlyNoRemoval(t *testing.T) {
 	warmExported(dm)
 	beforeIDs := exportedIDSet(dm)
 
-	// Quiesce window with NO writes: the merger ticks but finds no eligible target.
-	waitMergeQuiesce(dm.engine.MergeCount)
+	// A BOUNDED OPPORTUNITY WITH NO WRITES: the merger ticks but finds no eligible
+	// target. The opportunity is explicit here, and it has to be. This test asserts
+	// that the merger DECLINED, and the completion wait below is a terminal-state
+	// predicate: on a corpus that has published nothing and is not eligible it holds
+	// on its first evaluation, at zero elapsed time. "The merger declined" measured
+	// at zero elapsed time is a tautology — it never got a tick. So the merger is
+	// given a bounded run of ticks first, and only then is the wait taken.
+	//
+	// This is not the longer-window fix the ticket rules out: it grants an occasion
+	// at a site that has no flake, rather than widening a window at a site that does.
+	time.Sleep(readOnlyMergeOpportunity)
+	waitReclaimSettled(t, dm.engine)
 
 	require.Equal(t, uint64(0), dm.engine.MergeCount(), "no merge may fire on a read-only corpus")
 	require.Empty(t, ic.removedSet(), "a read-only corpus must produce ZERO cache.Remove calls")
@@ -199,32 +209,27 @@ func exportedIDSet[Q, S any](dm *distManager[Q, S]) map[searchengine.SegmentID]s
 	return out
 }
 
-// waitMergeQuiesce waits until the merge count stays stable across a quiescence
-// window, so async merges have finished before the test inspects final state.
-func waitMergeQuiesce(mergeCount func() uint64) {
-	waitMergeQuiesceWindow(mergeCount, 120*time.Millisecond)
-}
+// readOnlyMergeOpportunity is how long TestReclaimReadOnlyNoRemoval lets the
+// background merger run before asserting that it declined to merge. It is
+// expressed in merger ticks: searchengine's mergeTickInterval is 50ms
+// (searchengine/merge.go, unexported), so this is ten ticks — many evaluations of
+// the trigger policy, and short enough that a test asserting a negative does not
+// become the package's slowest.
+const readOnlyMergeOpportunity = 500 * time.Millisecond
 
-// waitMergeQuiesceWindow is waitMergeQuiesce with a caller-chosen stable window.
-// The property fuzz net passes a tighter window (its merges are tiny multi-doc
-// segments) so it can run many distinct streams within the pre-commit budget,
-// while the default callers keep the conservative 120ms window.
-func waitMergeQuiesceWindow(mergeCount func() uint64, stableFor time.Duration) {
-	last := mergeCount()
-	stableStart := time.Now()
-	// Generous overall cap so a slow -race-instrumented merge is not mistaken for
-	// quiescence before it lands.
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-		cur := mergeCount()
-		if cur != last {
-			last = cur
-			stableStart = time.Now()
-			continue
-		}
-		if time.Since(stableStart) >= stableFor {
-			return
-		}
-	}
-}
+// THE QUIESCENCE WINDOW THAT LIVED HERE IS GONE. waitMergeQuiesce and
+// waitMergeQuiesceWindow returned once the engine's MERGE COUNTER had not moved
+// for a wall-clock window (120ms by default, 40ms for the property fuzz net).
+//
+// THEY OBSERVED THE WRONG EVENT. That counter increments at the CAS publish, before
+// the OnMerge hook that writes the consolidated blob to L2 and removes the segments
+// it superseded, so a stable counter meant "nothing new was published recently" and
+// never "the reclaim finished". A whole window could elapse inside one hook, and
+// the test then inspected a corpus whose live merged segment had no L2 file. Two
+// tests in this family failed that way under parallel load, both reporting an empty
+// removed set after a counted merge.
+//
+// WHAT REPLACED THEM: waitReclaimSettled (reclaim_wait_test.go), which waits on
+// merge COMPLETION — published merges equal settled merges, and the engine would
+// pick no new merge target — and fails the test on its deadline instead of
+// returning quietly. A wider window was never the fix; the event was.

@@ -1,10 +1,8 @@
 package pdf
 
 import (
-	"errors"
 	"testing"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/chunk"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/classify"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/layout"
 )
@@ -33,30 +31,5 @@ func TestDocumentAdapter_PageRuns_ReturnsRunsAndPageInfo(t *testing.T) {
 	}
 	if pr.PageInfo.MediaBox.X1 <= pr.PageInfo.MediaBox.X0 || pr.PageInfo.MediaBox.Y1 <= pr.PageInfo.MediaBox.Y0 {
 		t.Fatalf("PageInfo.MediaBox empty: %+v", pr.PageInfo.MediaBox)
-	}
-}
-
-// TestDocumentAdapter_HeadersFooters_TranslatesErrNotImplemented
-// drives documentAdapter.PageHeadersFooters on the onepage fixture;
-// Page.HeadersFooters currently returns ErrNotImplemented (T5
-// pending). Adapter must translate that to
-// chunk.ErrPageMethodNotImplemented so chunk.Build's errors.Is
-// check fires.
-func TestDocumentAdapter_HeadersFooters_TranslatesErrNotImplemented(t *testing.T) {
-	t.Parallel()
-	doc, err := OpenFile("testdata/onepage.pdf")
-	if err != nil {
-		t.Fatalf("OpenFile: %v", err)
-	}
-	defer doc.Close()
-	adapter := documentAdapter{d: doc}
-	_, err = adapter.PageHeadersFooters(0)
-	if !errors.Is(err, chunk.ErrPageMethodNotImplemented) {
-		t.Fatalf("PageHeadersFooters err = %v, want errors.Is(err, chunk.ErrPageMethodNotImplemented)", err)
-	}
-	// Same for footnotes.
-	_, err = adapter.PageFootnotes(0)
-	if !errors.Is(err, chunk.ErrPageMethodNotImplemented) {
-		t.Fatalf("PageFootnotes err = %v, want errors.Is(err, chunk.ErrPageMethodNotImplemented)", err)
 	}
 }

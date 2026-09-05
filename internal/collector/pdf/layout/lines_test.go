@@ -167,11 +167,15 @@ func TestGroupRunsToLines_LargeSizeDifference_TwoLines(t *testing.T) {
 
 func TestGroupRunsToLines_FewRunsShortCircuit(t *testing.T) {
 	t.Parallel()
-	// 2 runs across 2 baselines → 2 Lines per Rule 1.5 short-circuit
-	// (each run becomes its own Line, regardless of Y proximity).
+	// 2 runs on ONE baseline → 2 Lines, which ONLY the Rule 1.5
+	// short-circuit can produce: banding would put runs sharing a
+	// baseline on the same line. The earlier version of this fixture
+	// used Y=700 and Y=720, a 20pt separation against a 4.8pt
+	// tolerance, so the two runs separated by banding alone and the
+	// test stayed green with the guard deleted — it pinned nothing.
 	runs := []text.TextRun{
 		mkRun(10, 700, 12, 12, "a", gly(1)),
-		mkRun(50, 720, 12, 12, "b", gly(1)),
+		mkRun(50, 700, 12, 12, "b", gly(1)),
 	}
 	lines := groupRunsToLines(runs, 12, dlp)
 	if len(lines) != 2 {

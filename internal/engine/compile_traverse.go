@@ -137,11 +137,11 @@ func compileTraverse(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 
 	sel := &knowledgev1.Selection{FromId: []string{a.Start}}
 	if len(a.EdgeTypes) > 0 {
-		// Client canonicalizes the per-graph edge-type casing:
-		// the engine now uses edge_types AS-GIVEN, so the client produces the
-		// canonical casing (code/cloud/cicd/linkage/logs uppercase, else lowercase)
-		// before it rides the wire.
-		sel.EdgeTypes = canonicalEdgeCasings(a.Graph, a.EdgeTypes)
+		// Verbatim pass-through. The spellings arriving here were already
+		// RESOLVED against this graph's own edge vocabulary in the Dispatch seam
+		// (edge_type_resolve.go), and the engine uses edge_types AS-GIVEN, so any
+		// further transformation here would undo that resolution.
+		sel.EdgeTypes = a.EdgeTypes
 	}
 
 	plan := &knowledgev1.QueryPlan{

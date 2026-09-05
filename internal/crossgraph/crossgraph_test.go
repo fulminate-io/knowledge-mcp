@@ -25,6 +25,23 @@ type fakeCaller struct {
 	plans        []*knowledgev1.ExecuteRequest
 	nodesByGraph map[string]map[string]*knowledgev1.Node // graphType → id → node
 	graphNames   map[string][]string                     // graphType → names
+
+	// edgesByType is the target graph's edge VOCABULARY, which ResolveAndLink
+	// reads through LinkRequest.Stats before declaring an edge type. An empty
+	// map is not a degenerate fixture — it is the BOOTSTRAP case, a graph with
+	// no edges yet, where a write declares a new family; the tests in this file
+	// link into exactly such a graph.
+	edgesByType map[string]int64
+}
+
+// Stats serves the edge vocabulary through the engine.StatsFn seam
+// LinkRequest.Stats requires. A nil edgesByType yields an empty EdgesByType,
+// which is the bootstrap answer: no stored family matches, so a WRITE admits
+// the caller's spelling as the graph's first.
+func (f *fakeCaller) Stats(_ context.Context, _ *knowledgev1.StatsRequest) (*knowledgev1.StatsResponse, error) {
+	return &knowledgev1.StatsResponse{
+		GraphStats: &knowledgev1.GraphStats{EdgesByType: f.edgesByType},
+	}, nil
 }
 
 func (f *fakeCaller) Call(_ context.Context, tool string, _ json.RawMessage) (kgtools.ToolResult, error) {
@@ -78,6 +95,7 @@ func TestResolveAndLink_ProxyUpsertAndLink(t *testing.T) {
 	handled, res, err := ResolveAndLink(context.Background(), f, f, LinkRequest{
 		From: cloudNode.Id, To: "myrepo", Relationship: "BUILDS",
 		TargetGraph: "linkage", Method: "tier1-image", Confidence: 0.9,
+		Stats: f.Stats,
 	})
 	require.NoError(t, err)
 	require.True(t, handled)
@@ -118,11 +136,14 @@ func TestResolveAndLink_ProxyUpsertAndLink(t *testing.T) {
 		"proxy id matches the shared BuildCrossGraphProxy builder")
 
 	// The LINK uses the proxy id as FROM, the raw best-effort id as TO, with the
-	// linkage-canonical UPPERCASE edge type + the edge metadata.
+	// RESOLVED edge type + the edge metadata. The fixture's linkage graph holds
+	// no edges, so the declaration path admits BUILDS as a new family and the
+	// caller's spelling stands — not a casing rule, which no longer exists.
 	spec := link.GetMutation().GetEdgeSpec()
 	assert.Equal(t, []string{wantProxy.Id}, link.GetMutation().GetSelection().GetIds())
 	assert.Equal(t, "myrepo", spec.GetToId(), "non-node TO stays raw (best-effort)")
-	assert.Equal(t, "BUILDS", spec.GetRelationship(), "linkage edge type is UPPERCASE")
+	assert.Equal(t, "BUILDS", spec.GetRelationship(),
+		"an empty linkage vocabulary admits the caller's spelling as the graph's first edge family")
 	assert.Equal(t, "tier1-image", spec.GetMethod())
 	assert.InDelta(t, 0.9, spec.GetConfidence(), 1e-9)
 }
@@ -138,6 +159,7 @@ func TestResolveAndLink_KnowledgeTargetGuards(t *testing.T) {
 	handled, _, err := ResolveAndLink(context.Background(), f, f, LinkRequest{
 		From: "unresolvable-from", To: "unresolvable-to", Relationship: "relates-to",
 		TargetGraph: "knowledge",
+		Stats:       f.Stats,
 	})
 	require.NoError(t, err)
 	assert.False(t, handled, "knowledge target guards on an unresolvable endpoint (→ legacy)")

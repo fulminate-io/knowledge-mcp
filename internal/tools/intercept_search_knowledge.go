@@ -113,7 +113,21 @@ func runKnowledgeOrServerSearch(
 		}
 		return composeKnowledgeSearch(ctx, gc, deps.SegmentManager(), args), nil
 	}
-	return engine.Dispatch(ctx, gc.Execute, "search", args)
+	// A MISSING STATS SEAM IS RETURNED AS AN ERROR, not folded into a ToolResult
+	// here. Every OTHER statsFnOf caller (query.go, intercept_mutate_dispatch.go,
+	// intercept_mutate_link.go) sits in a function whose ONLY return is a
+	// ToolResult, so converting is the only thing those can do. This function also
+	// returns an error, and the very next line propagates engine.Dispatch's error
+	// as an error — so converting here was the one asymmetry, and it read as an
+	// error observed and then dropped. The failure still reaches the user
+	// unchanged in substance: interceptSearchArms renders a non-nil error from
+	// this function into the same IsError ToolResult, as
+	// "search call failed: <msg>", mirroring query.go's dispatch arm.
+	stats, serr := statsFnOf(gc)
+	if serr != nil {
+		return kgtools.ToolResult{}, serr
+	}
+	return engine.Dispatch(ctx, gc.Execute, stats, "search", args)
 }
 
 func composeKnowledgeSearch(

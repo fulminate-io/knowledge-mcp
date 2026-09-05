@@ -69,8 +69,20 @@ const helpMutate = `# mutate — Create, update, and link knowledge nodes
 ## operation: update_batch
   mutate({ "operation": "update_batch", "items": [
     { "id": "n1", "summary": "...", "keywords": "...", "binary_vector": "<base64>" },
-    { "id": "n2", "metadata": { "summary_failure_reason": "" } }
+    { "id": "n2", "metadata": { "summary_failure_reason": "" } },
+    { "id": "n3", "description": "the section body, rewritten" }
   ] })
+
+  items[].description carries the node BODY, under the same set/unset contract as
+  summary, keywords and status: absent leaves it untouched, and a present-but-empty
+  value is a deliberate clear. It is what makes revising several sections of a
+  chunked plan ONE call rather than one call per section. It is BM25-indexed, so an
+  item that sets it is re-indexed with the batch.
+
+  A key items[] does NOT declare is REFUSED naming it, rather than dropped: an
+  undeclared key dies at decode, so accepting it would return success having
+  written none of it. The declared set is {id, summary, keywords, description,
+  binary_vector, metadata, status, embed_identity}.
 
   items[].binary_vector is the ONLY binary-embedding carrier: a base64-encoded
   binary embedding whose decoded length must equal 32 bytes (256-bit), installed
@@ -110,6 +122,15 @@ const helpMutate = `# mutate — Create, update, and link knowledge nodes
   It has NO context-linking: ticket_id, session and links are REJECTED pre-write
   naming the field, because born-linking is a capability this path lacks rather
   than a param it silently drops.
+
+  AN EDGE ALSO CARRIES the optional metadata fields weight, confidence, method,
+  evidence and last_validated, stored verbatim. A relates-to edge whose source is
+  a plan_annotation MUST carry that annotation's kind and tier on method and
+  evidence, in either endpoint spelling, or the batch is refused naming the exact
+  values to send: the annotation's severity is readable from the edge, and an edge
+  disagreeing with its node reports a severity nobody wrote. Attaching an
+  annotation with mutate(create, type:"plan_annotation", links:["<section id>"])
+  writes both carriers for you.
 
 ## operation: upsert
   mutate({ "operation": "upsert", "id": "caller-supplied-id", "type": "worker", ... })

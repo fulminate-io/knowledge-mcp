@@ -20,6 +20,7 @@ import (
 
 // TestSeedBranchBucket_CopiesRebuildRecord covers both fields and the ordering.
 func TestSeedBranchBucket_CopiesRebuildRecord(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 	ctx := context.Background()
 	format := hnsw.New().Name()

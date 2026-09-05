@@ -284,6 +284,7 @@ import (
 // helper the fix uses — that would be a tautology, green whether or not the
 // narrowing happened.
 func TestDeleteWalksOnlySpanningConstituents(t *testing.T) {
+	requireMeasurementRun(t)
 	ctx := context.Background()
 	const name = "delete-union-cost"
 
@@ -378,6 +379,7 @@ func countGroupRebuilds(logged, graphName string) int {
 // produce records. Only the pair separates "nothing was dirtied" from "nothing was
 // watched".
 func TestDeleteFromBuckets_NeverHeldIdsDirtyNoPartitions(t *testing.T) {
+	requireMeasurementRun(t)
 	ctx := context.Background()
 	const name = "delete-never-held"
 

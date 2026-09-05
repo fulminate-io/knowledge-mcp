@@ -39,7 +39,7 @@ func ThoughtsToolDef() kgtools.MCPTool {
 				"branches_from": {Type: "string", Description: "(think) Thought ID this branches from (usually after invalidation of the original)."},
 				"links":         {Type: "array", Description: "(think) Node IDs to link this thought to (decisions, findings, code, etc.).", Items: &kgtools.Property{Type: "string"}},
 				"status":        {Type: "string", Description: "(think initial status / recall filter) Default hypothesized for think.", Enum: []string{"hypothesized", "validated", "invalidated"}},
-				"origin":        {Type: "string", Description: "(think) Developer-origin role of the agent recording this thought — conventional values planner|implementer|reviewer|researcher|tester|orchestrator|main; absent => main. Open string (flex-parsed, NOT an enum gate): a custom value is stored as-is. Stamped as origin metadata, and when it resolves to a seeded agent node, an agent--produced-->thought hub edge is written."},
+				"origin":        {Type: "string", Description: "(think) Developer-origin role of the agent recording this thought — conventional values planner|implementer|reviewer|researcher|tester|orchestrator|main; absent => main. Open string (flex-parsed, NOT an enum gate): a custom value is stored as-is. Stamped as origin metadata, and when it resolves to a user-authored agent node, an agent--produced-->thought hub edge is written."},
 
 				// negation gate (think supersession)
 				"verified_quote": {Type: "string", Description: "(think) Negation-gate proof of work — a TOP-LEVEL param on the call. REQUIRED whenever branches_from is set (a supersession): a verbatim substring of the superseded node's CURRENT source. Consumed by the gate before any write and never persisted."},
@@ -198,21 +198,26 @@ func CollectToolDef() kgtools.MCPTool {
 			"Each collector type handles a specific source (e.g., code repositories, cloud accounts). " +
 			"The collector discovers, chunks, and writes nodes/edges to the appropriate graph. " +
 			"When type=\"logs\", queries a configured log backend (see manage configure_log_backend) " +
-			"via the logs Pipeline. When type=\"web\", fetches the seed URL(s), strips chrome with " +
-			"readability, walks the DOM, and emits typed page/section/paragraph/... nodes into a " +
-			"per-source graph under GraphWebRaw keyed by id. When type=\"pdf\", opens the PDF at " +
+			"via the logs Pipeline. When type=\"web\", fetches the seed URL(s) and walks the WHOLE " +
+			"document — nav, header, footer and aside included, there is no chrome skip list — " +
+			"emitting typed page/section/paragraph/code_block/list/list_item/table/link/image/" +
+			"blockquote/raw_html nodes into a per-source graph under GraphWebRaw keyed by id. " +
+			"Readability contributes the title, byline and publication date only; it does not " +
+			"decide what is walked. When type=\"pdf\", opens the PDF at " +
 			"id (absolute path), runs the chunker, and emits typed document/section/paragraph/" +
 			"code_block/list_item/table/block nodes into a per-source graph under GraphPDFRaw. " +
 			"Collection runs client-side after the binary split — invoking this tool against the " +
 			"graph server returns an error; the knowledge MCP client intercepts and runs the collector " +
 			"locally with a RemoteUploadSink. " +
-			"Required params: type is always required; id is required for every type except type=\"logs\".",
+			"Required params: type is always required; id is required for every type except type=\"logs\" " +
+			"and type=\"web\" when seed_urls is supplied — an omitted web id names the graph after the " +
+			"first seed URL's host.",
 		InputSchema: kgtools.InputSchema{
 			Type: "object",
 			Properties: map[string]kgtools.Property{
 				"type":               {Type: "string", Description: "Collector name (e.g., \"code\", \"aws\", \"gcp\", \"logs\", \"web\", \"pdf\")."},
-				"id":                 {Type: "string", Description: "Opaque identifier parsed by the collector (path, account:region, web source slug, absolute path to a .pdf, etc.). Optional for type=\"logs\"."},
-				"force":              {Type: "boolean", Description: "Skip safety check for existing indexed graphs."},
+				"id":                 {Type: "string", Description: "Opaque identifier parsed by the collector (path, account:region, web source slug, absolute path to a .pdf, etc.). A pdf graph is NAMED AFTER THE FILE — the sanitized basename with no suffix — so for type=\"pdf\" the id is the absolute path to the document, not the graph name. Optional for type=\"logs\", and optional for type=\"web\" when seed_urls is supplied: the graph is then named after the first seed URL's host, with a leading www. stripped and dots mapped to hyphens (www.Go101.org becomes go101-org). A collect into an existing raw graph that was collected from a DIFFERENT source is refused, naming both sources, rather than merged into it."},
+				"force":              {Type: "boolean", Description: "Skip the safety check for existing indexed graphs — the code collector's bypass, and shared by every collect type EXCEPT one. REFUSED with transformer=\"recipe\": a recipe run returns rows and writes nothing, so there is nothing for force to bypass."},
 				"promote":            {Type: "boolean", Description: "Code only: promote this branch to the base graph — land in base regardless of the recorded default branch, overwrite the recorded default branch to the collected branch, and delete the now-redundant same-name overlay. No effect for non-code collectors."},
 				"params":             {Type: "object", Description: "Registered custom_collector types only: opaque param object forwarded to the external collector binary, validated against its param_schema before exec. Built-in types ignore it."},
 				"backend":            {Type: "string", Description: "Logs only: name of a configured log_backend node."},
@@ -236,15 +241,18 @@ func CollectToolDef() kgtools.MCPTool {
 				"max_path_segments":  {Type: "integer", Description: "Web only: cap on the number of non-empty URL path segments a followed link may have; catches recursive-path traps like /a/b/a/b/.... 0 = off (unbounded), the default."},
 				"max_pages_per_host": {Type: "integer", Description: "Web only: cap on pages fetched from any single host within the crawl, independent of max_pages. 0 = off (no per-host cap). When both fire, the crawl stops for a host once either cap hits first."},
 				"politeness_ms":      {Type: "integer", Description: "Web only: per-host request delay in milliseconds."},
+				"max_concurrency":    {Type: "integer", Description: "Web only: number of crawl workers. 0 selects the default (8) and a value above 32 is REFUSED, naming the value and the cap, rather than clamped. Per-host politeness does NOT serialize same-host fetches — it enforces a minimum spacing between request STARTS to one host, so same-host parallelism is bounded by roughly ceil(request_latency / politeness_ms) and capped by max_concurrency, while cross-host parallelism is bounded by max_concurrency alone."},
 				"user_agent":         {Type: "string", Description: "Web only: override for the HTTP User-Agent header."},
 				"transformer":        {Type: "string", Description: "Web/PDF only: optional transformer name."},
-				"recipe":             {Type: "string", Description: "Web/PDF only, transformer=\"recipe\" only: name of a recipe node. The recipe's source_graph_type metadata must match `type`."},
-				"dry_run":            {Type: "boolean", Description: "Web/PDF only, transformer=\"recipe\" only: compute emissions but write nothing."},
-				"extract":            {Type: "boolean", Description: "Web/PDF only, transformer=\"recipe\" only: EXTRACT MODE — write nothing and return the emitted rows for inspection. Bounded by max_rows and max_bytes, with any truncation disclosed in the response."},
-				"recipe_body":        {Type: "string", Description: "Web/PDF only, transformer=\"recipe\" only: an INLINE recipe body to run instead of a saved recipe named by `recipe`. Requires extract=true — a write target comes from a saved recipe node, so to freeze an extraction save the same body as a recipe node and run it by name. Mutually exclusive with `recipe`."},
+				"recipe":             {Type: "string", Description: "REFUSED. It named a SAVED recipe node, which is removed along with the transformers graph family — recipes are ephemeral inline bodies now. Pass the body as `recipe_body` with extract=true instead. The param is still declared so the refusal can name what you sent."},
+				"dry_run":            {Type: "boolean", Description: "REFUSED with transformer=\"recipe\". It meant \"compute the projection but skip the write\"; a recipe run writes nothing, so there is no write to skip. Pass extract=true to read the rows back."},
+				"extract":            {Type: "boolean", Description: "Web/PDF only, transformer=\"recipe\" only, and REQUIRED there: return the emitted rows for inspection. It is the only mode a recipe run has — every run writes nothing. Bounded by max_rows and max_bytes, with any truncation disclosed in the response."},
+				"recipe_body":        {Type: "string", Description: "Web/PDF only, transformer=\"recipe\" only, and REQUIRED there: the inline recipe body to run. Requires extract=true — a recipe run returns rows and writes nothing, so there is no other mode. See help(\"recipes\") for worked bodies to copy."},
 				"max_rows":           {Type: "integer", Description: "Web/PDF only, transformer=\"recipe\" only, extract mode: cap on rows returned. 0 selects the default (200); the response reports rows matched alongside rows returned, so a truncated extract is never mistaken for a short one."},
 				"max_bytes":          {Type: "integer", Description: "Web/PDF only, transformer=\"recipe\" only, extract mode: cap on the rendered response size in bytes. 0 selects the default (65536). Truncation is stated in the response rather than applied silently."},
+				"offset":             {Type: "integer", Description: "Web/PDF only, transformer=\"recipe\" only, extract mode: zero-based index of the first MATCHED row to return, for paging a document larger than one response. Every matched row is still counted, so the header's matched total names the whole population behind the page; the truncation line names the next offset to resume from, and a page starting past the end says so rather than looking like an empty match. Negative values are refused."},
 				"max_download_bytes": {Type: "integer", Description: "Web only: per-(owner,repo,ref) cap on github materialization downloads. 0=default (50 MiB), -1=unlimited, >0=explicit cap (uncompressed bytes)."},
+				"materialize_github": {Type: "boolean", Description: "Web only: OPT IN to materializing github repository seeds into the graph. Off by default — without it a github URL is fetched not at all and is reported in the collect response as a follow-up candidate for you to decide about. Refused when set with no github repository URL among the seeds."},
 			},
 			Required: []string{"type"},
 		},

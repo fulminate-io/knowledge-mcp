@@ -11,6 +11,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
+	"github.com/fulminate-io/knowledge-mcp/internal/collector/remote"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphtypecrud"
@@ -75,6 +76,15 @@ type client struct {
 
 	mcpClient *graphclient.MCPClient // MCP dispatch client (built by the serve daemon, daemon.go)
 	sink      collector.Sink         // remote upload sink for client-side collection
+
+	// subgraphFetcher is the INNER ingest sink c.sink wraps, retained so the
+	// logs collector's cloud-subgraph read is reached BY NAME through the
+	// SubgraphFetcher accessor instead of by downcasting the wrapped sink —
+	// which fails the moment anything decorates the sink. ONE instance, shared
+	// with c.sink: constructClient hoists the uploader and assigns both, so the
+	// fetch and the writes ride the same picker and the same epoch sequence.
+	// nil in a test harness that builds *client directly.
+	subgraphFetcher *remote.UploadSink
 
 	// propReady / pipelineReady are the per-subsystem readiness
 	// flags that distinguish the background-wiring window (Bind-first startup: the daemon
@@ -332,6 +342,14 @@ type client struct {
 	// accessor that the manage(status) surface overlays. nil in test-built clients
 	// (like the other runtime handles) — the accessor nil-guards.
 	transcriptHealth *transcriptsync.UploadHealthTracker
+
+	// updateHealth tracks the background update checker's state — last check,
+	// last install, the failure streak, and the reason a tick took no action.
+	// Constructed in maybeStartUpdateCheck immediately before the loops are
+	// spawned, so a daemon whose disable gate refused leaves it NIL and the
+	// status surface renders no update block at all rather than a healthy zero.
+	// The accessor nil-guards, exactly as the transcript one does.
+	updateHealth *updateHealthTracker
 }
 
 // noopAuthStore is a fallback Store implementation used when auth.NewStore()

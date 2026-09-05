@@ -54,6 +54,7 @@ to one.
       "check_type": "ast_pattern",
       "dsl_pattern": "defer $X.Close()",
       "check_where": "{\"inside_pattern\": {\"of\": \"$match\", \"pattern\": \"for $$$_ { $$$_ }\"}}",
+      "applies_to_tests": false,
       "fixture_bad":  { "name": "...", "summary": "...", "content": "package p\n\nfunc f() { for range xs { defer x.Close() } }\n" },
       "fixture_good": { "name": "...", "summary": "...", "content": "package p\n\nfunc f() { defer x.Close() }\n" }
     })
@@ -90,7 +91,7 @@ never a silent widening back to the whole corpus.
 
 The output leads with one machine-readable verdict line:
 
-    corpus_scan: CLEAN  checks_flagged=0 sites_flagged=0 checks_refused=0 llm_only_not_executed=0 truncated=false
+    corpus_scan: CLEAN  checks_flagged=0 sites_flagged=0 checks_refused=0 llm_only_not_executed=0 test_files_scanned=0 truncated=false
 
 CLEAN means every selected check executed, nothing was withheld and no site was
 flagged. FLAGGED means the run completed and found something. INCONCLUSIVE means
@@ -101,6 +102,60 @@ checks_flagged as "checks that flagged something": a check that executed and
 matched nothing leaves no finding, so it is a floor rather than a completeness
 measure.
 
+top_k BOUNDS ONLY THE RENDERED FINDINGS BODY. It never reaches the
+classification: the verdict line and every count on it are folded over EVERY
+finding the run produced, so a cap can change neither the token nor the counts.
+When a cap withholds findings the output carries the line
+
+    returning 1 of 3 findings
+
+between the verdict line and the body — the first number is what was rendered,
+the second is the total the run produced. truncated on the verdict line is true
+whenever the BODY is incomplete, whether an analyzer render ceiling fired or the
+caller's own cap withheld findings; INCONCLUSIVE is still produced only by a
+refusal or a ceiling and never by a cap, because a capped run answered the
+question completely and merely printed less of the answer. The admitted cap range
+is 0 for no cap or a positive count — a NEGATIVE value is refused naming it,
+rather than read as a second spelling of no cap.
+
+A path_prefix THAT REACHED NO FILE OF THE CORPUS LANGUAGE IS REFUSED, naming the
+prefix, rather than reported as a clean corpus. Prefixes match whole path
+SEGMENTS, so a mistyped or over-specific one resolves to nothing — and a scan
+that opened no file is not a clean scan. The refusal names the actual cause: a
+discovery rule declined the files, this walk's own test-file filter took them,
+or the prefix matched none. The wrong-root case belongs to an unprefixed scan,
+which this refusal never sees. It is a
+PER-CHECK fact: because a check can declare that its class lives in tests and
+walk wider than its neighbors, a run is refused when ANY executed check opened
+no file, and the refusal names that check.
+
+### run — reaching test files
+
+    manage_checks({ "operation": "run", "repo": "knowledge", "language": "go",
+                    "include_tests": true })
+
+By default the walk skips the paths this language's own test-file convention
+claims, so a check whose defect class lives ONLY in test code can never fire on a
+real instance. Two controls change that, and they are deliberately different
+shapes:
+
+  - include_tests on the RUN widens every ast check in that run. Omit it and
+    nothing changes; pass true or false and you have said so explicitly, which is
+    refused for a language ast carries no test-file convention for — there the
+    flag would decide nothing, and being told so beats a control that silently
+    does nothing.
+  - applies_to_tests on a CHECK NODE widens THAT CHECK ALONE, on every run, with
+    no knob at any call site. It is the right control for a class that only ever
+    appears in test code — a wait helper whose deadline arm returns instead of
+    failing the test, say — because every other check in the corpus keeps its
+    narrower scope. Set it at authoring time through create, or on an existing
+    check with a checks-graph update, which re-runs the fixture admission.
+
+test_files_scanned ON THE VERDICT LINE is how a reader tells a run that read your
+test code from one that did not. Zero is a different answer from "found nothing
+there". The number is the most any single check scanned rather than a sum, since
+under per-check scope two checks need not walk the same files.
+
 ## Using a check as a criterion command
 
 The same classification is available from the shell, which is what makes a check
@@ -110,6 +165,11 @@ measures the wrong tree the moment implementation happens in a worktree:
 
     cd "$(git rev-parse --show-toplevel)" || exit 1
     knowledge check run --repo "$(basename "$PWD")" --language go <check node id>
+
+Add --include-tests to widen the walk to test files for the whole run; a check
+carrying applies_to_tests needs no flag. The flag is tri-state at this face too:
+omitting it is legal for every language, while an explicit --include-tests or
+--include-tests=false is refused for a language with no test-file convention.
 
 THE THREE EXIT CODES:
 
@@ -126,6 +186,12 @@ THE THREE EXIT CODES:
 1 and 2 are reserved and never used for a verdict: 1 is any command failure and 2
 is "no valid session", both of which every subcommand can return. So a criterion
 can always tell "the check found something" from "the command could not run".
+
+A REFUSED RUN EXITS 1, not 0 and not 3 or 4. A run refused for an input it
+cannot honor — a scope that reached no file, a corpus that executed nothing —
+produced no verdict at all, so it takes the generic command-failure code rather
+than any verdict code. That is the one outcome which is neither a verdict nor a clean
+corpus, and it is exactly what the promise above is for.
 
 The exit status and the MCP verdict line are computed by the same fold over the
 same findings — there is one classification, with two faces.

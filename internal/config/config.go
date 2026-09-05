@@ -200,6 +200,21 @@ type Config struct {
 	// the proto (an AWS/GCP graph instance); the two are unrelated concepts
 	// that would collide under a `cloud_`-prefixed name.
 	FulminateAccountID string
+	// AutoUpdate is the top-level auto_update key: whether the daemon may
+	// upgrade itself in the background.
+	//
+	// nil means the key is ABSENT, and absent means automatic updates are ON —
+	// that is the chosen default, and the pointer is what keeps absent
+	// distinguishable from an explicit `auto_update = false`. Only an explicit
+	// false disables.
+	//
+	// The config file is the load-bearing surface for this switch rather than a
+	// convenience: a launchd- or systemd-managed daemon is launched with a
+	// fixed argv the setup code generates, so its user can pass no CLI flag and
+	// inject no environment variable reliably. This file is the surface they
+	// actually have. It is read at startup, so a change takes effect on the
+	// next daemon restart.
+	AutoUpdate *bool
 }
 
 // Credentials mirrors the [credentials] TOML table. Every field is

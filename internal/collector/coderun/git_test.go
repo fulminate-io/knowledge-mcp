@@ -34,10 +34,15 @@ func hermeticGitEnv() []string {
 	return append(out, "GIT_TERMINAL_PROMPT=0")
 }
 
-// gitInitFixture creates a temp directory, runs `git init`, configures a
-// throwaway author identity (so the test process doesn't depend on the
-// developer's ~/.gitconfig), and returns the directory. Skips the test
-// when `git` is not on PATH — same posture as other code-graph tests.
+// gitInitFixture creates a temp directory, runs `git init`, and returns the
+// directory. Skips the test when `git` is not on PATH — same posture as other
+// code-graph tests.
+//
+// REASON THIS TEST SPAWNS GIT (approved site, see the git-in-tests allowlist
+// under scripts/testdata/): this file is the regression test proving the
+// collector's git fixtures are hermetic, so it must build real repositories and
+// run real git against them. Every repository is a t.TempDir and every command
+// runs under hermeticGitEnv.
 func gitInitFixture(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -45,10 +50,21 @@ func gitInitFixture(t *testing.T) string {
 	}
 	dir := t.TempDir()
 	mustRun(t, dir, "init", "--initial-branch=main")
-	mustRun(t, dir, "config", "user.email", "test@example.invalid")
-	mustRun(t, dir, "config", "user.name", "test")
-	mustRun(t, dir, "config", "commit.gpgsign", "false")
 	return dir
+}
+
+// throwawayIdentity is the committer identity for fixture commits, passed
+// per-command with -c. It is deliberately NOT written with `git config
+// user.name/user.email`: that form persists the value into the target
+// repository's config, and under a leaked GIT_DIR the target is the developer's
+// own checkout — the exact mechanism that once rewrote a real author identity
+// across a shared history. The -c form writes nothing anywhere.
+func throwawayIdentity() []string {
+	return []string{
+		"-c", "user.email=test@example.invalid",
+		"-c", "user.name=test",
+		"-c", "commit.gpgsign=false",
+	}
 }
 
 func mustRun(t *testing.T, dir string, args ...string) {
@@ -67,7 +83,7 @@ func commitFile(t *testing.T, dir, name, body, message string) string {
 	p := filepath.Join(dir, name)
 	require.NoError(t, os.WriteFile(p, []byte(body), 0o600))
 	mustRun(t, dir, "add", name)
-	mustRun(t, dir, "commit", "-m", message)
+	mustRun(t, dir, append(throwawayIdentity(), "commit", "-m", message)...)
 	revParse := exec.Command("git", "-C", dir, "rev-parse", "HEAD")
 	revParse.Env = hermeticGitEnv()
 	out, err := revParse.Output()
@@ -108,9 +124,6 @@ func TestGitFixture_HermeticUnderSimulatedWorktreeEnv(t *testing.T) {
 	hostDir := t.TempDir()
 	for _, args := range [][]string{
 		{"-C", hostDir, "init", "--initial-branch=main"},
-		{"-C", hostDir, "config", "user.email", "host@example.invalid"},
-		{"-C", hostDir, "config", "user.name", "host"},
-		{"-C", hostDir, "config", "commit.gpgsign", "false"},
 	} {
 		cmd := exec.Command("git", args...)
 		cmd.Env = hermeticGitEnv()
@@ -121,7 +134,8 @@ func TestGitFixture_HermeticUnderSimulatedWorktreeEnv(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(hostDir, "host.txt"), []byte("host"), 0o600))
 	for _, args := range [][]string{
 		{"-C", hostDir, "add", "host.txt"},
-		{"-C", hostDir, "commit", "-m", "host-initial"},
+		append([]string{"-C", hostDir},
+			append(throwawayIdentity(), "commit", "-m", "host-initial")...),
 	} {
 		cmd := exec.Command("git", args...)
 		cmd.Env = hermeticGitEnv()

@@ -1,0 +1,50 @@
+{
+  "spec": "The canonical spelling of a PRACTICE graph instance name. Four transforms, applied in this order: strings.ToLower, then \"/\" to \"-\", then \" \" to \"-\", then \"+\" to \"plus\". The authoritative implementation is store.SlugifyLanguage in cmd/knowledge-server/internal/store/language_detect.go; cmd/knowledge/internal/graphsel.CanonicalGraphName is the client's copy. This file is a DATA file, not a shared Go package: the two binaries are separate modules and share nothing hand-written, so a data file read by a test in EACH module is how the two copies are held to one rule. The table is PRACTICE-ONLY. The singleton families linkage and checks canonicalise to the constant \"default\" rather than by transform, so they are asserted inline in the tests rather than here.",
+  "cases": [
+    {
+      "label": "already_canonical",
+      "input": "go",
+      "canonical": "go"
+    },
+    {
+      "label": "uppercase_initial",
+      "input": "Go",
+      "canonical": "go"
+    },
+    {
+      "label": "all_uppercase",
+      "input": "GO",
+      "canonical": "go"
+    },
+    {
+      "label": "mixed_case_stamp",
+      "input": "20260902T145530Z",
+      "canonical": "20260902t145530z"
+    },
+    {
+      "label": "slash",
+      "input": "JavaScript/TypeScript",
+      "canonical": "javascript-typescript"
+    },
+    {
+      "label": "space",
+      "input": "Design Patterns",
+      "canonical": "design-patterns"
+    },
+    {
+      "label": "plus",
+      "input": "C++",
+      "canonical": "cplusplus"
+    },
+    {
+      "label": "combined",
+      "input": "Go / Design Patterns++",
+      "canonical": "go---design-patternsplusplus"
+    },
+    {
+      "label": "empty",
+      "input": "",
+      "canonical": ""
+    }
+  ]
+}

@@ -279,6 +279,14 @@ func (d *variantDeduper) add(vs []ast.CompiledVariant) {
 //     another pass's breakdown and break files_skipped == sum of its causes.
 //   - FilesWithParseErrors: MAX. MatchesFromDegradedTrees: SUM (every pattern's
 //     matches join the union, so degraded-origin matches total across passes).
+//   - TestFilesScanned and TestFilesExcluded: MAX each, matching FilesScanned,
+//     because every member rediscovers the identical file set and the scope
+//     filter is the same on every pass. EVERY COUNTER NEEDS ITS RULE HERE, and
+//     that is not a style note: this function is a hand-kept per-field policy
+//     with no compiler pointing at it, so a WalkStats field added without a line
+//     below reads zero on every patterns:[...] call — and on every single-pattern
+//     tool call too, since both go through this fold — while the engine reports
+//     it correctly to every other caller.
 //   - The exclusion report + DiscoveryPath: taken from the FIRST walk only —
 //     every pattern rediscovers the identical decline set, so summing would
 //     multiply one exclusion by the member count.
@@ -295,6 +303,12 @@ func mergeWalkStats(dst *ast.WalkStats, w ast.WalkStats) {
 	}
 	if w.FilesWithParseErrors > dst.FilesWithParseErrors {
 		dst.FilesWithParseErrors = w.FilesWithParseErrors
+	}
+	if w.TestFilesScanned > dst.TestFilesScanned {
+		dst.TestFilesScanned = w.TestFilesScanned
+	}
+	if w.TestFilesExcluded > dst.TestFilesExcluded {
+		dst.TestFilesExcluded = w.TestFilesExcluded
 	}
 	dst.MatchesFromDegradedTrees += w.MatchesFromDegradedTrees
 	if dst.DiscoveryPath == "" {

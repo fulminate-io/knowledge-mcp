@@ -9,6 +9,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
+	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -40,7 +41,7 @@ func assembleInstruction(ctx context.Context, gc GraphCaller, node *knowledgev1.
 		sb.WriteString("\n\n")
 	}
 	childIndex, byID, dependsOn, truncated := AssembleSubtree(ctx, gc, node.Id, 3)
-	RenderTreeFromIndex(&sb, node, 0, 3, childIndex, dependsOn)
+	RenderTreeFromIndex(&sb, node, 0, 3, childIndex, dependsOn, nil)
 
 	outEdges, _ := IterEdges(ctx, gc, node.Id, kgwire.OutgoingEdges)
 	inEdges, _ := IterEdges(ctx, gc, node.Id, kgwire.IncomingEdges, kgtypes.EdgeConstrains)
@@ -58,7 +59,7 @@ func assembleInstruction(ctx context.Context, gc GraphCaller, node *knowledgev1.
 	for _, e := range inEdges {
 		peerIDs = append(peerIDs, e.FromId)
 	}
-	peers, peersTruncated, _ := FetchNodesByIDs(ctx, gc, peerIDs)
+	peers, peersTruncated, _ := foundation.FetchNodesByIDs(ctx, gc, "", "", peerIDs, foundation.IncludeTombstones)
 	truncated = truncated || peersTruncated
 
 	// Follow EdgeUses to tool_guides. Walk the edge slice, not the map.

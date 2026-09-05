@@ -11,10 +11,12 @@
 // Every node carries Metadata["source"] = "pdf" so downstream recipes
 // stay source-agnostic.
 //
-// The graph type is kgtypes.GraphPDFRaw, which is excluded from every
-// LLM-backed pipeline (summarization, embedding, dream phases) via
-// SkipsLLMProcessing. Only a downstream stage-2 translator (recipe
-// transformer) is expected to consume the raw graph.
+// The graph type is kgtypes.GraphPDFRaw, which is ENROLLED EMBED-ONLY: it is
+// never summarized, but the chunks that carry their own text in Content are
+// embedded and BM25-indexed so the raw graph is hybrid-searchable. That is what
+// lets a downstream stage-2 translator (recipe transformer) find the passages
+// worth extracting rather than walking the whole document. SkipsLLMProcessing no
+// longer covers this graph type; the promote/dream phase runs for it.
 //
 // Inputs are restricted to absolute filesystem paths; URL fetching is
 // deferred to a future ticket. Encrypted PDFs surface ErrEncrypted from

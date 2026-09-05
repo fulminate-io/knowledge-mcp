@@ -117,22 +117,38 @@ func TestCollect_RegisteredByName(t *testing.T) {
 	}
 }
 
-// TestSourceSlug_Stability pins the slug shape: lowercase, dash-only
-// separators, basename-derived, hash-suffixed for uniqueness. Same
-// path → same slug; different paths sharing a basename → different
-// slugs.
-func TestSourceSlug_Stability(t *testing.T) {
+// TestSourceSlug_IsThePlainBasename pins the slug shape after the hash
+// suffix was retired: lowercase, dash-separated, basename-derived, and
+// NOTHING ELSE. Same path → same slug, as before.
+//
+// THE PATH-SENSITIVITY LEG IS DELIBERATELY INVERTED. This test used to
+// require two documents sharing a basename to derive DIFFERENT slugs; it
+// now requires them to derive the SAME one. That is correct because the
+// name no longer carries the job of telling two documents apart — the
+// collect-time collision refusal does, by comparing the incoming file
+// against the path recorded on the target graph's document root and
+// refusing rather than merging. A name that disambiguated would have to be
+// unreadable to do it, which is the whole defect this replaces.
+//
+// The wanted values are written out as literals rather than computed from
+// SourceSlug, so the production code does not supply its own answer key.
+func TestSourceSlug_IsThePlainBasename(t *testing.T) {
 	t.Parallel()
-	a := sourceSlug("/tmp/Foo Bar.pdf")
-	b := sourceSlug("/tmp/Foo Bar.pdf")
+	a := SourceSlug("/tmp/Foo Bar.pdf")
+	b := SourceSlug("/tmp/Foo Bar.pdf")
 	if a != b {
-		t.Errorf("sourceSlug not deterministic: %q vs %q", a, b)
+		t.Errorf("SourceSlug not deterministic: %q vs %q", a, b)
 	}
-	c := sourceSlug("/other/Foo Bar.pdf")
-	if a == c {
-		t.Errorf("sourceSlug collided across distinct paths sharing basename: both %q", a)
+	if a != "foo-bar" {
+		t.Errorf("SourceSlug(/tmp/Foo Bar.pdf) = %q, want the plain sanitized basename foo-bar", a)
 	}
-	if !strings.HasPrefix(a, "foo-bar-") {
-		t.Errorf("sourceSlug = %q, want lowercase dash-separated basename prefix", a)
+	c := SourceSlug("/other/Foo Bar.pdf")
+	if a != c {
+		t.Errorf("SourceSlug differed across directories sharing a basename: %q vs %q; "+
+			"the name is the basename alone and the collision refusal separates the documents", a, c)
+	}
+	// A basename that sanitizes away entirely still has to name a graph.
+	if got := SourceSlug("/tmp/---.pdf"); got != "pdf" {
+		t.Errorf("SourceSlug(/tmp/---.pdf) = %q, want the pdf fallback", got)
 	}
 }

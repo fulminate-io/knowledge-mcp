@@ -1,1 +1,2 @@
-select page where page.title ~= /oops
+select page
+bind $t := page.title ~= /oops

@@ -45,6 +45,14 @@ type pageRecord struct {
 	// Attrs holds verbatim DOM attributes from the page root; zero
 	// interpretation — transformers decide what they mean.
 	Attrs commonAttrs
+
+	// HiddenPruned and RawLinkFailed are DEGRADE REPORTS carried out of
+	// parsePage, which runs with no access to the crawl state. fetchAndParse
+	// folds both into the per-class census at the first frame that can reach
+	// it. They are on the record rather than threaded as parameters because
+	// parsePage is also called from tests that hold no crawl at all.
+	HiddenPruned  int
+	RawLinkFailed bool
 }
 
 // sectionRecord is a heading and the ordered content beneath it. Depth is
@@ -62,6 +70,17 @@ type sectionRecord struct {
 	// aria-level, or a presentation marker the heuristic pre-pass promoted.
 	// No path reads a <section> or <article> element; zero interpretation.
 	Attrs commonAttrs
+
+	// HeadingSource names WHICH of the three dispatch arms opened this
+	// section: "native", "aria" or "heuristic". The synthetic depth-0 root
+	// section was opened by no arm at all and carries the empty string.
+	HeadingSource string
+
+	// HeuristicInputs carries the measurements behind a heuristic promotion
+	// and is nil on every other arm. Nil is the statement that no calibration
+	// took place, not a missing value: a native h1 was never measured against
+	// anything.
+	HeuristicInputs *headingSignal
 }
 
 // contentRecord is the sealed interface satisfied by every in-section
@@ -76,6 +95,13 @@ type contentRecord interface {
 // code-y tokens without needing the original DOM.
 type paragraphRecord struct {
 	Text string
+
+	// LinksOnly marks a run that carried no text outside its anchors — a
+	// navigation strip. IT IS A RETAINED NODE, NOT PROSE: the node exists so
+	// a recipe can SEE the strip and decide about it, and nothing that reads
+	// prose may read it. Its text is emitted on Description rather than
+	// Content for exactly that reason.
+	LinksOnly bool
 
 	// Attrs holds verbatim DOM attributes from the <p> element; zero
 	// interpretation.
@@ -131,6 +157,13 @@ type listItemRecord struct {
 	// InlineEmphasis lists inline <em>/<strong>/<code>/... spans within
 	// the list item. Zero-valued nil means none recorded.
 	InlineEmphasis []inlineEmphasis
+
+	// LinkOnly is a MEASUREMENT of this item — it carries at least one link
+	// and no text outside a link — and never a verdict about it. The verdict
+	// is the enclosing list's, on listRecord.Signals: one bare-anchor bullet
+	// in a list of prose says nothing about the list, and it is the list that
+	// classifyList judges.
+	LinkOnly bool
 }
 
 func (listItemRecord) recordKind() string { return "list_item" }
@@ -138,10 +171,20 @@ func (listItemRecord) recordKind() string { return "list_item" }
 // listRecord groups listItemRecord entries. Ordered is true for <ol>,
 // false for <ul>/<dl>. Kind is "ul", "ol", or "dl" so the downstream
 // consumer can distinguish description lists from bullet / numeric lists.
+//
+// A NAV LIST IS ALSO A listRecord. The navigation verdict is a signal on the
+// record, not a reason to omit it: page furniture is still part of the source
+// document, and a consumer that wants to ignore it can read the signal and do
+// so, which it cannot do for a node that was never emitted. This is the same
+// footing tableRecord puts a layout table on.
 type listRecord struct {
 	Ordered bool
 	Kind    string
 	Items   []listItemRecord
+
+	// Signals is the list classifier's verdict and the four measurements
+	// behind it.
+	Signals listSignals
 
 	// Attrs holds verbatim DOM attributes from the <ul>/<ol>/<dl>
 	// element; zero interpretation.
@@ -153,9 +196,18 @@ func (listRecord) recordKind() string { return "list" }
 // tableRecord is a simple two-dimensional table. Headers is the first row
 // or the contents of <thead>; Rows is the remaining body rows. Cell text
 // is collapsed to a single line of whitespace-normalized text per cell.
+//
+// A LAYOUT TABLE IS ALSO A tableRecord. The layout verdict is a signal on the
+// record, not a reason to omit it: page furniture is still part of the source
+// document, and a consumer that wants to ignore it can read the signal and do
+// so, which it cannot do for a node that was never emitted.
 type tableRecord struct {
 	Headers []string
 	Rows    [][]string
+
+	// Signals is the table classifier's verdict and the four measurements
+	// behind it.
+	Signals tableSignals
 
 	// Attrs holds verbatim DOM attributes from the <table> element;
 	// zero interpretation.

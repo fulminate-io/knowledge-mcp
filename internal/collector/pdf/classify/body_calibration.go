@@ -5,6 +5,14 @@
 // FontName at that size, plus whether the body cohort is dominantly
 // bold. O(total-runs).
 //
+// The "per-document" in this file's name is true of the CALLER, not
+// just of the walk: CalibrateDocument concatenates every page and
+// hands the result to chunk.Build, which classifies every page against
+// that one reference. Before that caller existed the function was
+// invoked once per page from ClassifyWithParams, so an 8pt page in a
+// 10pt book calibrated to 8pt and this comment described an intent the
+// pipeline did not implement.
+//
 // Glyph weight (NOT rune count) is what was rendered; rune count would
 // require a per-run UTF-8 walk. See plan open-question 1 (resolved).
 
@@ -27,6 +35,48 @@ type calibrationResult struct {
 	// PDFs typeset in a bold sans-serif) trip Rule #2 of
 	// isHeadingCandidate without this gate.
 	BodyIsBold bool
+}
+
+// DocumentCalibration is the exported peer of calibrationResult: the
+// classifier's body-font reference values for a WHOLE document, so
+// every page is classified against the same baseline.
+type DocumentCalibration struct {
+	// BodySize is the modal font size in points across the document.
+	// 0 when the document has no text.
+	BodySize float64
+
+	// BodyFontName is the modal FontName among runs at BodySize.
+	BodyFontName string
+
+	// BodyIsBold is true when at least half the modal-body-cohort
+	// glyphs are bold.
+	BodyIsBold bool
+}
+
+// calibration converts back to the package-internal shape the
+// per-block heading rules consume.
+func (dc DocumentCalibration) calibration() calibrationResult {
+	return calibrationResult(dc)
+}
+
+// CalibrateDocument computes the body-font reference ONCE over every
+// page. calibrateBody is already document-shaped — it walks whatever
+// blocks it is handed — so this concatenates the pages and delegates
+// rather than reimplementing the histogram.
+func CalibrateDocument(perPage [][]layout.Block) DocumentCalibration {
+	var total int
+	for _, page := range perPage {
+		total += len(page)
+	}
+	if total == 0 {
+		return DocumentCalibration{}
+	}
+	all := make([]layout.Block, 0, total)
+	for _, page := range perPage {
+		all = append(all, page...)
+	}
+	cal := calibrateBody(all)
+	return DocumentCalibration(cal)
 }
 
 // calibrateBody returns the calibrationResult for blocks. Empty input

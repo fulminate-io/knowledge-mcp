@@ -201,5 +201,13 @@ func validateRegistration(d *knowledgev1.GraphTypeDef) error {
 	if kgtypes.IsBuiltinGraphType(d.GetName()) {
 		return fmt.Errorf("graphtypecrud: name %q collides with a built-in graph type", d.GetName())
 	}
+	// A RETIRED BUILTIN IS NOT A FREE NAME. IsBuiltinGraphType stops claiming a
+	// removed family, so without this check the name becomes registrable and a
+	// custom graph could adopt the leftover directory an upgrading operator still
+	// has on disk — a removed family silently degrading into a registered one.
+	if reason, retired := kgtypes.RetiredGraphTypeReason(d.GetName()); retired {
+		return fmt.Errorf("graphtypecrud: name %q names a RETIRED built-in graph type and may not be re-registered: %s",
+			d.GetName(), reason)
+	}
 	return nil
 }

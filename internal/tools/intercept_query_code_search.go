@@ -56,6 +56,15 @@ type codeSearchArgs struct {
 	// envelope (via engine.RenderForCaller), anything else stays on the text
 	// path. Decoded by both interceptSearchCode and InterceptQueryCodeSearch.
 	Format string `json:"format"`
+	// Fields is the caller's json projection, the SEARCH-tool and QUERY-tool
+	// sibling of the practice arm's a.Fields. Both tool schemas have advertised
+	// it all along; what was missing was this member, so the composer rendered
+	// with a literal nil projection and every projected code search came back as
+	// the full envelope. It projects on the format:"json" branch alone — the text
+	// path renders its own shape and reads no projection — while its VALIDATION
+	// is format-independent, because an unsupported key is bad input on any
+	// render path (see composeCodeSearch's input gates).
+	Fields []string `json:"fields,omitempty"`
 	// QueryVector is the caller-supplied single query vector for this search's
 	// query/queries set (a caller supplies at most one per call). The Go stdlib
 	// JSON []byte codec base64-decodes it transparently, matching
@@ -158,6 +167,36 @@ func composeCodeSearch(ctx context.Context, deps ClientDeps, exec engine.Execute
 	}
 	includeSource := a.IncludeSource == nil || *a.IncludeSource
 	groupByFile := a.GroupByFile != nil && *a.GroupByFile
+
+	// THE TWO INPUT GATES, both refusals rather than a drop or a default, and
+	// both here rather than in either sub-composer: this is the single chokepoint
+	// the search tool and the query tool funnel through (interceptSearchCode does
+	// no param accounting of its own), and it sits upstream of the single/multi
+	// dispatch below, so one gate covers both repo arms and both render formats.
+	//
+	// (1) An unsupported projection key is refused NAMING the key and the accepted
+	// vocabulary. The json branch would reach the same helper inside
+	// renderForCaller, but the text branch never calls the renderer at all, and a
+	// bad key silently dropped on one render path and refused on the other is the
+	// accepted-and-ignored shape the refusal exists to prevent. Validating here
+	// makes the arm behave like the knowledge arm, which validates ahead of its
+	// own format switch.
+	if len(a.Fields) > 0 {
+		if err := engine.ValidateHitProjection(a.Fields); err != nil {
+			return errorResult(err.Error())
+		}
+	}
+	// (2) include_source:false together with a projection that names `content`
+	// is CONTRADICTORY input: one parameter asks for no source text and the other
+	// asks for the key that carries it. Refuse naming BOTH, so neither silently
+	// wins — a caller who wants the body drops include_source, and a caller who
+	// wants no body drops the key.
+	if !includeSource && projectionNamesBody(a.Fields) {
+		return errorResult(
+			"code search: include_source:false and fields naming \"content\" are contradictory — " +
+				"include_source:false suppresses the source text that \"content\" carries. " +
+				"Drop \"content\" from fields, or drop include_source:false")
+	}
 
 	// Readiness gate (bind-first startup): the per-query code search dereferences the segment
 	// Manager (cdeps.mgr.Search) with NO nil-check, including INSIDE per-repo and
@@ -338,9 +377,12 @@ func composeCodeSearchSingleRepo(ctx context.Context, deps ClientDeps, cdeps cod
 	perQuery := searchAllQueries(ctx, cdeps, target, queries, queryVecs, limit, a.PathPrefix, a.Repo)
 	perQuery = applyCodeResultFilters(perQuery, a)
 
+	// The json branch reads BOTH caller knobs the text render below reads:
+	// includeSource rides into flattenCodeResults, which clears the body on a COPY
+	// of each node, and a.Fields is the projection where a literal nil used to sit.
 	if a.Format == "json" {
 		return appendDegradeContent(
-			engine.RenderForCaller(strings.Join(queries, " "), flattenCodeResults(perQuery), "json", nil, ""),
+			engine.RenderForCaller(strings.Join(queries, " "), flattenCodeResults(perQuery, includeSource), "json", a.Fields, ""),
 			cdeps.degrade)
 	}
 

@@ -65,16 +65,30 @@ Hierarchy: project → ticket → plan → phase → step → criterion.
                   "no_patterns_reason": "straight extension of the existing auth handler" })
 `
 
-const helpCreatePlan = `# create_plan — Batch-create plan → phases → steps → criteria
+const helpCreatePlan = `# create_plan — Batch-create a plan, in either of two shapes
 
-Creates a full plan tree in one call.
+Creates a full plan tree in one call, in EITHER of two shapes. Supply exactly
+one of phases or sections; supplying both, or neither, is a hard error naming
+which you supplied.
+
+  PHASES   plan → phases → steps → criteria. Phases are ordered by array
+           position and chained with depends-on edges; steps within a phase
+           likewise. This is the shape every existing plan is in and it is
+           unchanged.
+  SECTIONS a CHUNKED plan: a root carrying the goal plus one plan_section child
+           per part, on positioned contains edges with no chaining. Each section
+           body is written and read ALONE, so revising one part is one write
+           against one node and every other node stays byte-identical. Reviewers
+           attach plan_annotation nodes to a SECTION rather than to the whole
+           plan, and assemble pages the sections with section_start/section_end.
 
 ## Required fields
-  name, goal, summary, phases — PLUS exactly one of pattern_ids,
-  no_patterns_reason, or proposed_patterns (the architecture-pattern tristate;
-  supplying none or two is a hard error, see help("create_ticket") for the terms
-  and help("patterns") for the catalog). Every phase requires name + summary;
-  every step requires name + description + summary.
+  name, goal, summary — PLUS exactly one of phases or sections, and
+  exactly one of pattern_ids, no_patterns_reason, or proposed_patterns
+  (the architecture-pattern tristate; supplying none or two is a hard error, see
+  help("create_ticket") for the terms and help("patterns") for the catalog).
+  Every phase requires name + summary; every step requires name + description +
+  summary; every section requires name + body + summary.
 
 ## Key fields
   name                            — plan name
@@ -100,6 +114,17 @@ Creates a full plan tree in one call.
   phases[].steps[].criteria[].description — criterion text
   phases[].steps[].criteria[].type        — "automated" or "manual"
   phases[].steps[].criteria[].command     — shell command for automated criteria
+  sections[].name                 — section name (required)
+  sections[].body                 — the section's full text (required). The plan
+                                    root carries none of it
+  sections[].summary              — required search-optimized one-line summary
+  sections[].position             — explicit zero-based position (optional).
+                                    When any section supplies one EVERY section
+                                    must, and the values must be unique. GAPS
+                                    ARE LEGAL: deleting a section leaves a hole,
+                                    and closing it would mean rewriting every
+                                    later section — the whole-plan rewrite the
+                                    chunked shape exists to remove
 
 ## Example
   create_plan({
@@ -117,6 +142,18 @@ Creates a full plan tree in one call.
         "criteria": [{ "description": "Tests pass", "type": "automated", "command": "go test ./pkg/auth/..." }]
       }]
     }]
+  })
+
+## Example — the sectioned shape
+  create_plan({
+    "name": "Auth redesign prefill",
+    "goal": "the implementer's preloaded context",
+    "summary": "touch points, reuse, seams, what to test",
+    "no_patterns_reason": "no new architectural shape",
+    "sections": [
+      { "name": "Touch points", "body": "...", "summary": "every site the change reaches" },
+      { "name": "What to test", "body": "...", "summary": "the list tests are written from" }
+    ]
   })
 `
 
@@ -186,6 +223,8 @@ const helpRecordDecision = `# record_decision — Record a design decision with 
   name         — searchable title (required)
   choice       — what was decided (required)
   rationale    — why (required)
+  summary      — author-supplied one-line searchable summary, max 500 chars (required;
+                 over-cap values are clamped at a word boundary with a warning)
   alternatives — what else was considered and why rejected
   informed_by  — comma-separated node IDs of findings/research that informed this
   ticket_id    — born-link the decision under its work item (ticket--contains-->decision)
@@ -194,9 +233,8 @@ const helpRecordDecision = `# record_decision — Record a design decision with 
                  IDs are linked post-create via the cross-graph linkage
   format       — "text" (default) or "json" ({id, name, warnings})
 
-  There is no summary param: record_decision synthesizes the decision's Summary
-  from choice. An unresolvable ticket_id / link target is dropped with a warning
-  and never blocks the write.
+  An unresolvable ticket_id / link target is dropped with a warning and never
+  blocks the write.
 
 ## Example
   record_decision({
@@ -340,7 +378,13 @@ const helpHelp = `# help — Get documentation about tools, node types, edge typ
 const helpAssemble = `# assemble — Walk a plan/test-plan/agent tree and render it
 
 The node type determines the traversal pattern:
-  plan       — phases → steps → criteria + decisions + findings
+  plan       — phases → steps → criteria + decisions + findings; for a CHUNKED
+               plan, a "## Sections" index naming every section with its size and
+               annotation state, plus the section bodies section_start/section_end
+               selects
+  plan_section — one section: its position, its body in full, and its annotations
+               as SUMMARIES with their ids, kinds, tiers and lanes. A full
+               annotation body is fetched by its id
   test_plan  — steps + criteria; with new_run:true creates test_run nodes
   agent/skill — tool_guides (via uses) + rules (via constrains)
   research   — questions + findings per question + resulting decisions
@@ -354,9 +398,36 @@ The node type determines the traversal pattern:
   new_run     — if true and test_plan, creates test_run nodes (default false)
   run_session — filter or group test runs by session UUID
   format      — "text" (default) or "json" (structured)
+  section_start / section_end — for a CHUNKED plan: the inclusive zero-based
+                range of section BODIES to return, so a whole plan is read in
+                bounded pages. Omit start to begin at the first section, end to
+                run to the last, BOTH to get the index and tree alone. An
+                out-of-bounds, negative or inverted range ERRORS naming the
+                bound — it is never clamped, because a clamp hands a reader a
+                page they did not ask for with nothing in the result to say so.
+                THE SAME RULES HOLD IN BOTH FORMATS, and where the two differ they
+                differ only in how they say it: with no range, a text read shows
+                each section's first 120 characters in the tree and a json read
+                omits the body entirely, marking it "body_omitted":true beside a
+                "body_bytes" count so an absent body is never mistaken for an
+                empty section. A range on a node that is NOT a plan is refused in
+                both formats, with the same message, and so is a range on a plan
+                that HAS no sections: a phase-and-step plan has nothing to page,
+                and answering a page request with the whole plan would be the
+                clamp above wearing a different name
+
+  ANNOTATIONS REACH EVERY FORMAT of every read here. A text render carries the
+  per-section line "annotations: N (kind n, ...)"; a json render carries an
+  "annotations" object with the same count and kinds. Both OMIT it entirely for a
+  section that has none, so a plan written before annotations existed renders the
+  bytes it always did. When the annotation read itself FAILS, both disclose it in
+  their own words and name the error — never as a row-ceiling truncation, which is
+  a different cause with a remedy that would not help
 
 ## Examples
   assemble({ "id": "plan_id" })
+  assemble({ "id": "plan_id", "section_start": 0, "section_end": 2 })
+  assemble({ "id": "section_id" })
   assemble({ "name": "Auth integration tests", "type": "test_plan" })
   assemble({ "id": "test_plan_id", "new_run": true })
   assemble({ "id": "agent_id" })

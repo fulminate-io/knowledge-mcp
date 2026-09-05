@@ -12,12 +12,20 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
-// invariantT is the minimal testing surface assertLiveSetBackedByL2 needs. It is
-// satisfied by *testing.T (the matrix tests pass their real t, so a violation
-// fails the test loudly) AND by the self-test's recorder (which captures the
-// Errorf reports to prove the helper actually trips). Errorf is NON-fatal (no
-// FailNow/Goexit), so the self-test can drive a deliberately-broken state and
-// inspect the result without unwinding the test goroutine.
+// invariantT is the minimal testing surface the reclaim family's shared helpers
+// need — assertLiveSetBackedByL2 and waitReclaimSettled (reclaim_wait_test.go). It
+// is satisfied by *testing.T (the matrix tests pass their real t, so a violation
+// fails the test loudly) AND by recorderT below, which captures the Errorf reports
+// so a self-test can prove the helper actually trips.
+//
+// Errorf is NON-fatal (no FailNow/Goexit), which buys both properties these helpers
+// need: a self-test can drive a deliberately-broken state and inspect the result
+// without unwinding the test goroutine, and a helper may be called from a wait
+// goroutine — where FailNow is invalid — and still mark the test failed.
+//
+// IT IS DELIBERATELY NOT testing.TB. TB carries an unexported method, so no test
+// can implement it; a helper that took one could never have its own failure arm
+// exercised, and the deadline arm of a wait is exactly the arm that has to be.
 type invariantT interface {
 	Helper()
 	Errorf(format string, args ...any)
@@ -103,6 +111,7 @@ func sortedKeys[V any](m map[searchengine.ExternalID]V) []searchengine.ExternalI
 // clause fail. This confirms the assertion detects the false-prune condition it
 // guards and that it type-checks for both [Q,S] shapes.
 func TestAssertLiveSetBackedByL2SelfTest(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	// --- HNSW instantiation ([]byte, struct{}) via a real embed engine. ---

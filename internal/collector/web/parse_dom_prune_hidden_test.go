@@ -13,7 +13,10 @@ import (
 // `hidden` removes the element + subtree. Specifically the Microsoft
 // Learn shape: <div id="unsupported-browser" hidden>...browser
 // boilerplate...</div>. Without the prune, "This browser is no longer
-// supported" leaks into Description on every Azure pattern page.
+// supported" is emitted as its own chunk node on every Azure pattern page,
+// and any recipe composing a page's body from its chunks pulls it into the
+// resulting pattern. The page itself carries no body, so the leak's route is
+// the chunk set rather than a page field.
 func TestPruneHiddenNodes_DropsHiddenAttribute(t *testing.T) {
 	doc := mustParse(t, `<html><body>
 <div id="unsupported-browser" hidden>

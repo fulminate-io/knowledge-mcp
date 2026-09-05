@@ -95,7 +95,8 @@ func TestBuildPlanGraph_EmitsAuditsEdges(t *testing.T) {
 		Phases:           singlePhaseSingleStep(),
 	}
 
-	_, edges := BuildPlanGraph(plan, nil, nil)
+	_, edges, buildErr := BuildPlanGraph(plan, nil, nil)
+	require.NoError(t, buildErr)
 
 	var auditsTargets []string
 	for _, e := range edges {
@@ -117,7 +118,8 @@ func TestBuildPlanGraph_PersistsUnresolvedLanguagePatternsMetadata(t *testing.T)
 		Phases:           singlePhaseSingleStep(),
 	}
 
-	nodes, _ := BuildPlanGraph(plan, nil, []string{"u-1", "u-2"})
+	nodes, _, buildErr := BuildPlanGraph(plan, nil, []string{"u-1", "u-2"})
+	require.NoError(t, buildErr)
 	require.NotEmpty(t, nodes)
 	planNode := nodes[0]
 	assert.Equal(t, "u-1,u-2", kgtypes.Value(planNode, "unresolved_language_patterns"))

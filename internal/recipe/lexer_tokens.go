@@ -2,6 +2,8 @@
 
 package recipe
 
+import "fmt"
+
 // lexArrow handles the three `-` cases: `--[rel]-->`, `-->`, or an
 // error (a bare `-` is not a recipe token in v1).
 func (l *lexer) lexArrow() (Token, error) {
@@ -131,6 +133,70 @@ func (l *lexer) lexRegex() (Token, error) {
 		l.advance()
 	}
 	return Token{}, l.errorf("unterminated regex literal")
+}
+
+// lexWhereJSON consumes the brace-balanced JSON where-tree span that follows
+// `where` or `filter`, from the opening brace to its matching close, and emits
+// it RAW — braces included, escapes untouched — for ParseWhereTree to hand to
+// encoding/json.
+//
+// IT TRACKS STRING STATE, NOT JUST DEPTH. A brace inside a JSON string literal
+// is data, not structure, so `{"matches":{"of":"node.name","regex":"^\\{"}}`
+// must not close early; and a backslash inside a string escapes the next byte,
+// so a pattern ending in `\"` must not be read as leaving the string.
+//
+// NEWLINES INSIDE THE SPAN ARE LEGAL and are consumed through l.advance(), so
+// line:col stays accurate for every token after a multi-line tree.
+//
+// BOTH FAILURES CITE THE OPENING BRACE, never EOF. An author told only that the
+// input ended has to find the span's start themselves; the position that lets
+// them fix it is where the tree began.
+func (l *lexer) lexWhereJSON() (Token, error) {
+	openPos := l.pos()
+	start := l.off
+	depth := 0
+	inString := false
+
+	for l.off < len(l.src) {
+		ch := l.src[l.off]
+		switch {
+		case inString && ch == '\\':
+			// The escaped byte cannot end the string, whatever it is.
+			l.advance()
+			if l.off >= len(l.src) {
+				return Token{}, &LexError{
+					Line: openPos.Line, Col: openPos.Col,
+					Msg: fmt.Sprintf("unterminated string inside the where-tree beginning at %d:%d", openPos.Line, openPos.Col),
+				}
+			}
+			l.advance()
+			continue
+		case ch == '"':
+			inString = !inString
+		case inString:
+			// Any other byte inside a string is data, including braces.
+		case ch == '{':
+			depth++
+		case ch == '}':
+			depth--
+			if depth == 0 {
+				l.advance() // consume the closing brace
+				return Token{Kind: TokWhereJSON, Value: string(l.src[start:l.off]), Pos: openPos}, nil
+			}
+		}
+		l.advance()
+	}
+
+	if inString {
+		return Token{}, &LexError{
+			Line: openPos.Line, Col: openPos.Col,
+			Msg: fmt.Sprintf("unterminated string inside the where-tree beginning at %d:%d", openPos.Line, openPos.Col),
+		}
+	}
+	return Token{}, &LexError{
+		Line: openPos.Line, Col: openPos.Col,
+		Msg: fmt.Sprintf("unterminated where-tree: no matching '}' for the '{' at %d:%d", openPos.Line, openPos.Col),
+	}
 }
 
 // lexIdent consumes an IDENT token. Kept tiny — one loop over

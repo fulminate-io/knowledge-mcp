@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/syncgcs"
 )
@@ -72,6 +73,39 @@ type fakeSyncBackend struct {
 	presignCalls int
 	confirmCalls int
 	pullCalls    int
+
+	// --- the asynchronous confirm: job identity and scripted job states ---
+
+	// confirmJobID is the job id confirm hands back in its 202. Defaults to
+	// "job-1" in newFakeSyncBackend.
+	confirmJobID string
+	// confirmOmitJobID makes confirm answer 202 with NO job id, the one shape
+	// that leaves the client unable to observe the ingest at all.
+	confirmOmitJobID bool
+	// confirmState is the state confirm reports in its 202. Defaults to
+	// in_progress in newFakeSyncBackend; a test sets it to drive the client's
+	// validation of that field.
+	confirmState string
+	// jobStates is the scripted answer sequence for /v1/sync/job-status: one
+	// entry per call, with the LAST entry repeated once the script is
+	// exhausted (so "never completes" is a single in_progress entry). nil
+	// scripts a single complete.
+	jobStates []syncJobStatusResponse
+	// jobStatusNotFound makes every job-status call answer the gateway's 404
+	// for an unknown or other-account job.
+	jobStatusNotFound bool
+	// jobStatusFaults are transport-level failures the job-status route emits
+	// on the FIRST len(faults) calls, before the state script begins. They
+	// stand in for the hiccups a poll meets between a client and a gateway
+	// behind an edge proxy: a 502, a connection dropped mid-answer, and an
+	// error page that is not the JSON the route promises.
+	jobStatusFaults []jobStatusFault
+	// jobStatusCalls counts job-status hits — the only proof the client
+	// polled at all rather than treating the 202 as the end of the push.
+	jobStatusCalls int
+	// lastJobStatusID records the job id the CLIENT asked about, proving the
+	// id from the 202 actually reached the wire.
+	lastJobStatusID string
 	// gcsGets counts GET hits on the object routes, so a test can assert the
 	// unchanged path performed no download at all.
 	gcsGets int
@@ -86,10 +120,11 @@ func newFakeSyncBackend(t *testing.T) *fakeSyncBackend {
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
-	b := &fakeSyncBackend{priv: priv, objects: map[string][]byte{}}
+	b := &fakeSyncBackend{priv: priv, objects: map[string][]byte{}, confirmJobID: "job-1"}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/sync/presign", b.handlePresign)
 	mux.HandleFunc("/v1/sync/confirm", b.handleConfirm)
+	mux.HandleFunc("/v1/sync/job-status", b.handleJobStatus)
 	mux.HandleFunc("/v1/sync/pull", b.handlePull)
 	mux.HandleFunc("/gcs/", b.handleGCS)
 	b.srv = httptest.NewServer(mux)
@@ -135,8 +170,106 @@ func (b *fakeSyncBackend) handleConfirm(w http.ResponseWriter, r *http.Request) 
 	}
 	b.mu.Lock()
 	b.confirmedPlaintext = plaintext
+	omit := b.confirmOmitJobID
+	jobID := b.confirmJobID
+	state := b.confirmState
 	b.mu.Unlock()
-	w.WriteHeader(http.StatusOK)
+	if state == "" {
+		state = syncJobStateInProgress
+	}
+
+	// The asynchronous confirm: the ingest is ENQUEUED, not performed, and the
+	// answer is a 202 carrying the job's identity.
+	resp := syncConfirmResponse{JobID: jobID, State: state}
+	if omit {
+		resp.JobID = ""
+	}
+	w.WriteHeader(http.StatusAccepted)
+	writeTestJSON(w, resp)
+}
+
+// jobStatusFault is one scripted transport-level failure of the job-status
+// route. status is the HTTP status to answer with (0 means 200); body is
+// written verbatim, so a fault can return an error page that is not JSON; and
+// hangUp closes the connection without answering at all, which is what the
+// client sees as an unexpected EOF.
+type jobStatusFault struct {
+	status int
+	body   string
+	hangUp bool
+	// stall holds the request open without answering, so the CLIENT's
+	// per-request timeout is what ends it. That is a different event from the
+	// caller stopping the command, and telling the two apart is the whole point
+	// of this fault kind: both reach the client as context.DeadlineExceeded.
+	//
+	// The sleep watches the request context, so a client that has already given
+	// up does not leave the test server's Close waiting on the handler.
+	stall time.Duration
+}
+
+// handleJobStatus plays POST /v1/sync/job-status: it emits any scripted faults
+// first, then walks the scripted jobStates one entry per call, repeating the
+// last entry once the script is exhausted — so a one-entry in_progress script
+// is a job that never completes.
+func (b *fakeSyncBackend) handleJobStatus(w http.ResponseWriter, r *http.Request) {
+	var req syncJobStatusRequest
+	body, _ := io.ReadAll(r.Body)
+	_ = json.Unmarshal(body, &req)
+
+	b.mu.Lock()
+	b.jobStatusCalls++
+	b.lastJobStatusID = req.JobID
+	notFound := b.jobStatusNotFound
+	call := b.jobStatusCalls - 1
+	faults := b.jobStatusFaults
+	script := b.jobStates
+	b.mu.Unlock()
+
+	if notFound {
+		w.WriteHeader(http.StatusNotFound)
+		writeTestJSON(w, map[string]string{"error": "job_not_found"})
+		return
+	}
+	if call < len(faults) {
+		f := faults[call]
+		if f.stall > 0 {
+			timer := time.NewTimer(f.stall)
+			defer timer.Stop()
+			select {
+			case <-r.Context().Done():
+			case <-timer.C:
+			}
+			return
+		}
+		if f.hangUp {
+			// Drop the connection without answering: the client's read fails,
+			// which is the shape a reset or a proxy hang-up takes.
+			if hj, ok := w.(http.Hijacker); ok {
+				conn, _, err := hj.Hijack()
+				if err == nil {
+					_ = conn.Close()
+					return
+				}
+			}
+			panic("job-status fault: the test server cannot hijack, so hangUp cannot be simulated")
+		}
+		if f.status != 0 {
+			w.WriteHeader(f.status)
+		}
+		_, _ = w.Write([]byte(f.body))
+		return
+	}
+	// The state script is indexed past the faults it followed.
+	idx := call - len(faults)
+	if len(script) == 0 {
+		script = []syncJobStatusResponse{{State: syncJobStateComplete}}
+	}
+	if idx >= len(script) {
+		idx = len(script) - 1
+	}
+	resp := script[idx]
+	resp.JobID = req.JobID
+	writeTestJSON(w, resp)
 }
 
 func (b *fakeSyncBackend) handlePull(w http.ResponseWriter, r *http.Request) {

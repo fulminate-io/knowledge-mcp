@@ -18,8 +18,8 @@ package bootstrap
 //
 // What STAYS ENABLED under headless (deliberately NOT gated here): loading
 // ~/.knowledge/config (loadBootConfig's never-write arm, so [credentials]
-// resolve config-first with env fallback), the loopback /mcp HTTP server, the client query
-// embedder + rerank, and instruction bootstrap (.claude agents/skills seeding).
+// resolve config-first with env fallback), the loopback /mcp HTTP server, and the
+// client query embedder + rerank.
 // Auth is untouched — --headless does NOT couple to --no-auth; machine-auth
 // (--auth-token / KNOWLEDGE_AUTH_TOKEN) and the fail-closed posture are exactly
 // as they are for a normal serve.

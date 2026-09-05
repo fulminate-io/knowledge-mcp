@@ -182,6 +182,17 @@ type SegmentShipper interface {
 	// is one redundant drain. There is no window in which the cursor is ahead of the
 	// documents the engine holds.
 	ResetBM25Cursors(gt kgtypes.GraphType, name string) error
+	// ResetBM25DegradeCounts and BM25DegradeCounts are called AS A PAIR, IN THAT
+	// ORDER, around the finalize: the reset clears the graph's accumulated BM25
+	// drop census immediately before the build, and the read collects what THIS
+	// run's builds then dropped.
+	//
+	// THE READ IS DELIBERATELY NOT A CLEAR. A read-and-clear would blank the
+	// coverage row the moment a rebuild finished, hiding the very drops that
+	// rebuild just recorded against the corpus it published — the two surfaces
+	// carry the same record on purpose, over different windows.
+	ResetBM25DegradeCounts(gt kgtypes.GraphType, name string) error
+	BM25DegradeCounts(gt kgtypes.GraphType, name string) map[string]int
 	// LoadMergeWatermark reads the OTHER client-side consumer's durable position:
 	// the delta-merge horizon. It is here so the retention floor can be taken
 	// across BOTH consumers of the erase feed before any scan reports a position
@@ -368,6 +379,15 @@ type SegmentCoverageReader interface {
 	// no RPC and no proto, which keeps the column's local-read contract intact.
 	LoadRebuildState(gt kgtypes.GraphType, name string) (watermarkNanos int64, tombstoned []searchengine.ExternalID, err error)
 	LoadMergeWatermark(gt kgtypes.GraphType, name string) (int64, error)
+	// BM25DegradeCounts reads the graph's accumulated BM25 drop census. Like its
+	// neighbors it is a LOCAL read — no RPC, no load — which keeps the column's
+	// local-read contract intact.
+	//
+	// IT IS THIS CLIENT'S VIEW, and it has to be: the server cannot know a
+	// document failed to tokenize HERE, which is why the count cannot come off the
+	// Stats RPC the rest of the row is built from. A second client indexing the
+	// same graph keeps its own tally.
+	BM25DegradeCounts(gt kgtypes.GraphType, name string) map[string]int
 }
 
 // RepairVerification is the coverage column's view of the backstop's per-graph

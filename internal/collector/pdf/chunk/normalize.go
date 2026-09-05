@@ -5,7 +5,10 @@
 // per the ticket spec:
 //
 //   - prose / heading / list-item / unknown blocks: trim + collapse
-//     internal whitespace runs to a single space (paragraph reflow);
+//     internal whitespace runs to a single space (paragraph reflow),
+//     with the line-join space SUPPRESSED where the break fell inside a
+//     word — either because layout stripped a hyphen there, or because
+//     a compound word's own hyphen is still sitting at the line end;
 //   - code blocks: preserve '\n' between lines (code structure
 //     matters); within each line collapse internal whitespace; trim
 //     at the block boundaries only;
@@ -27,7 +30,9 @@
 package chunk
 
 import (
+	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/layout"
 )
@@ -39,15 +44,67 @@ func normalizeBlockText(b layout.Block) string {
 		return normalizeCodeBlock(b)
 	}
 	// Prose / heading / list-item / unknown: join lines with a single
-	// space then collapse all whitespace.
+	// space then collapse all whitespace — EXCEPT where the previous
+	// line ended in a word broken across the line break, where a space
+	// is exactly wrong. See joinNeedsSpace.
 	var sb strings.Builder
 	for i, l := range b.Lines {
-		if i > 0 {
+		if i > 0 && joinNeedsSpace(b.Lines[i-1]) {
 			sb.WriteByte(' ')
 		}
 		sb.WriteString(joinLineRuns(l))
 	}
 	return collapseWhitespace(sb.String())
+}
+
+// joinNeedsSpace reports whether a space belongs between prev and the
+// line that follows it. It is false in the two cases where the break
+// falls INSIDE a word, and true everywhere else:
+//
+// CASE 1 — prev.WasDehyphenated. The layout pass already stripped the
+// trailing hyphen because the next line continues the word in
+// lowercase, so the two halves are one word: "sequen" + "tially". A
+// space here produced "sequen tially", which is strictly worse than
+// leaving the hyphen alone. This is the production reader
+// layout.Line.WasDehyphenated was written for.
+//
+// CASE 2 — prev still ENDS in a hyphen-family rune. Layout deliberately
+// leaves those alone when the continuation is not lowercase, which is
+// what a COMPOUND word broken at its own hyphen looks like:
+// "Event-" + "Driven". The hyphen is part of the word and must not be
+// stripped, but a space after it would give "Event- Driven" instead of
+// "Event-Driven".
+//
+// A block whose lines are empty falls through to true, which is the
+// harmless direction: collapseWhitespace removes the redundant space.
+func joinNeedsSpace(prev layout.Line) bool {
+	if prev.WasDehyphenated {
+		return false
+	}
+	r := lineTrailingRune(prev)
+	if r == 0 {
+		return true
+	}
+	return !layout.IsHyphenRune(r)
+}
+
+// lineTrailingRune returns the last non-whitespace rune on the line, or
+// 0 when it has none. It walks the runs BACK TO FRONT and stops at the
+// first one carrying a non-space rune, rather than concatenating the
+// whole line to read one character off the end: this is called once per
+// line boundary of every prose block in the document, and the
+// concatenation it replaces allocated a string per call that nothing
+// else ever read.
+func lineTrailingRune(l layout.Line) rune {
+	for _, v := range slices.Backward(l.Runs) {
+		t := strings.TrimRight(v.Text, " \t")
+		if t == "" {
+			continue
+		}
+		r, _ := utf8.DecodeLastRuneInString(t)
+		return r
+	}
+	return 0
 }
 
 // normalizeCodeBlock joins a code block's lines with '\n' and preserves

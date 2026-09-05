@@ -108,3 +108,47 @@ func TestNodeGraphTypeDef_WireLiteral(t *testing.T) {
 		t.Fatalf("NodeGraphTypeDef literal = %q, want %q (must match the server store const + the proto file's documented wire string)", got, want)
 	}
 }
+
+// TestNodePlanSection_WireLiteral pins the client NodePlanSection literal to the
+// agreed cross-module wire string "plan_section". The server store vocabulary
+// (cmd/knowledge-server/internal/store/node_types_vocab.go) carries an
+// independent copy of this const — a deliberate per-module duplicate (no shared
+// package). This per-module drift-guard plus its server twin
+// (TestNodePlanSection_WireLiteral in store) fail if either literal changes
+// without the other.
+//
+// THE LITERAL IS "plan_section" AND NOT "section" ON PURPOSE: "section" is
+// already a node type in the raw web and pdf graphs (the two raw collectors'
+// emitters), so the plan part carries the qualified name and the two vocabularies
+// stay disjoint.
+func TestNodePlanSection_WireLiteral(t *testing.T) {
+	if got, want := string(NodePlanSection), "plan_section"; got != want {
+		t.Fatalf("NodePlanSection literal = %q, want %q (must match the server store const)", got, want)
+	}
+}
+
+// TestNodePlanAnnotation_WireLiteral pins the client NodePlanAnnotation literal
+// to the agreed cross-module wire string "plan_annotation", for the same reason
+// and with the same server twin as TestNodePlanSection_WireLiteral above.
+func TestNodePlanAnnotation_WireLiteral(t *testing.T) {
+	if got, want := string(NodePlanAnnotation), "plan_annotation"; got != want {
+		t.Fatalf("NodePlanAnnotation literal = %q, want %q (must match the server store const)", got, want)
+	}
+}
+
+// TestPlanPartTypes_AreKnowledgeTypes asserts both new plan-part types classify
+// as knowledge types, which is what keeps IsCodeType from routing them through
+// the code-graph summarization path.
+func TestPlanPartTypes_AreKnowledgeTypes(t *testing.T) {
+	for _, nt := range []NodeType{NodePlanSection, NodePlanAnnotation} {
+		if !nt.isKnowledgeType() {
+			t.Errorf("NodeType %q is not classified as a knowledge type — add it to knowledgeTypes", nt)
+		}
+	}
+	// SAME-RUN CONTROL through the same instrument: a type that is NOT in
+	// knowledgeTypes reports false, so the assertions above are a real
+	// membership test rather than a predicate that answers true for everything.
+	if NodeFile.isKnowledgeType() {
+		t.Errorf("control failed: NodeFile must not classify as a knowledge type")
+	}
+}

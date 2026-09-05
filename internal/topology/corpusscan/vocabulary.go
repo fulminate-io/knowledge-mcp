@@ -30,12 +30,21 @@ import (
 const (
 	// AnalyzerName is the corpus scanner's stable registry identifier.
 	AnalyzerName = "corpus_scan"
-	// ExtraKeyChecks is the ONLY Request.Extra key this analyzer reads: a
+	// ExtraKeyChecks is a Request.Extra key this analyzer reads: a
 	// comma-separated list of check node ids selecting a subset of the corpus.
 	// Absent means every check in the corpus. Node ids passed as a RUNTIME
 	// ARGUMENT are caller data; the prohibition above is about ids written into
 	// source.
 	ExtraKeyChecks = "checks"
+	// ExtraKeyIncludeTests is the run-wide test-file knob: "true" widens every
+	// ast check's walk to this language's test files, "false" is the documented
+	// default spelled out, and ABSENT means the caller did not ask.
+	//
+	// THE THREE STATES ARE NOT TWO. An omitted key misleads nobody and is legal
+	// for every language; an EXPLICIT value for a language ast carries no
+	// test-file convention for is refused, because there the flag would be a
+	// control that decides nothing.
+	ExtraKeyIncludeTests = "include_tests"
 	// MaxFindingsPerCheck caps how many match findings a single check renders
 	// before the per-check truncation notice replaces the rest.
 	MaxFindingsPerCheck = 50
@@ -73,6 +82,12 @@ const (
 	MetaKeyCheckID = "check_id"
 )
 
+// MetricTestFilesScanned is the metric key the test-file disclosure carries its
+// count on. It is a CONSTANT because two packages read it: this one's fold and
+// the disclosure that emits it. A consumer keying on a hand-typed copy is how a
+// counter comes to read zero everywhere it is displayed.
+const MetricTestFilesScanned = "test_files_scanned"
+
 // The locked finding titles. Each is consumed by more than one part of this
 // package — a producer emits it and a test asserts on it — so all five are
 // declared once here and cited everywhere else. THE TRAILING SPACE IS
@@ -96,6 +111,15 @@ const (
 	// accepted-llm_only lane. No trailing space: it describes a set rather than
 	// one check.
 	DisclosureTitleLLMOnly = "corpus_scan: llm_only checks not executed"
+	// DisclosureTitleTestFiles titles the ONE informational finding reporting
+	// that this run's walk reached test files. No trailing space: it describes a
+	// run rather than one check.
+	//
+	// A NEW TITLE IS NOT FREE. ClassifyRun's default arm counts anything it does
+	// not recognize as a FLAGGED SITE, so a disclosure whose title is missing
+	// from that switch adds one to sites_flagged on every run, makes Clean()
+	// false, and renders a clean corpus as FLAGGED with a non-zero exit.
+	DisclosureTitleTestFiles = "corpus_scan: test files scanned"
 )
 
 // contractMetaKeys is the check-node metadata vocabulary this analyzer's corpus
@@ -117,6 +141,7 @@ const (
 // The map exists so an operator error can enumerate the vocabulary and so the
 // drift test has something to walk.
 var contractMetaKeys = map[string]string{
+	"applies_to_tests":   corpus.MetaAppliesToTests,
 	"check_type":         corpus.MetaCheckType,
 	"severity":           corpus.MetaSeverity,
 	"language":           corpus.MetaLanguage,
@@ -158,6 +183,17 @@ func checkVocabulary() string {
 //	declared honoring-analyzer allowlist.
 //
 //	CHECK SUBSET = Extra[ExtraKeyChecks].
+//
+//	TEST-FILE SCOPE = Extra[ExtraKeyIncludeTests], the run-wide knob, folded
+//	per check with the check node's own applies_to_tests declaration. It is an
+//	Extra key rather than a Request field because foundation.Request is ONE
+//	shape shared by every analyzer in the suite: a field there that this
+//	analyzer alone honors is exactly what PathPrefix's honoring allowlist in
+//	the topology dispatcher exists to prevent, and the topology dispatcher
+//	forwards Extra verbatim (tools/intercept_topology.go), so this knob is
+//	honored on that face too rather than dropped there — which a first-class
+//	field could not have been without an allowlist entry. It is parsed
+//	strictly, like the check subset, and never defaulted.
 //
 // THIS FILE DECLARES NO FLOW-EDGE NAMES, DELIBERATELY. The flow-fact edge
 // constants are not landed in kgtypes, and declaring an unlanded vocabulary

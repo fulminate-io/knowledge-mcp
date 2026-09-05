@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -25,7 +26,7 @@ func assembleResearch(ctx context.Context, gc GraphCaller, node *knowledgev1.Nod
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "# Research: %s\n\n", node.SymbolName)
 	childIndex, byID, dependsOn, truncated := AssembleSubtree(ctx, gc, node.Id, 3)
-	RenderTreeFromIndex(&sb, node, 0, 3, childIndex, dependsOn)
+	RenderTreeFromIndex(&sb, node, 0, 3, childIndex, dependsOn, nil)
 
 	// The questions are the node's contains children, already hydrated by the
 	// traversal. Their findings arrive via reverse EdgeAnswers — ONE set-form
@@ -57,7 +58,7 @@ func assembleResearch(ctx context.Context, gc GraphCaller, node *knowledgev1.Nod
 		decisionIDs = append(decisionIDs, e.FromId)
 	}
 
-	linked, linkedTruncated, _ := FetchNodesByIDs(ctx, gc, append(findingIDs, decisionIDs...))
+	linked, linkedTruncated, _ := foundation.FetchNodesByIDs(ctx, gc, "", "", append(findingIDs, decisionIDs...), foundation.IncludeTombstones)
 	truncated = truncated || linkedTruncated
 
 	var hasFinding bool

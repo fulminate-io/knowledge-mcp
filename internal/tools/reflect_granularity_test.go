@@ -79,10 +79,11 @@ func reflectGranularityDeps(gc *reflectFakeCaller) reflectTestDeps {
 	return reflectTestDeps{gc: gc, clusters: clusters, profile: profile}
 }
 
-func (d reflectTestDeps) LocalLiveness() LocalLiveness    { return nil }
-func (d reflectTestDeps) Sink() collector.Sink            { return nil }
-func (d reflectTestDeps) RootDir() string                 { return "" }
-func (d reflectTestDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+func (d reflectTestDeps) LocalLiveness() LocalLiveness          { return nil }
+func (d reflectTestDeps) Sink() collector.Sink                  { return nil }
+func (d reflectTestDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
+func (d reflectTestDeps) RootDir() string                       { return "" }
+func (d reflectTestDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
 
 func (d reflectTestDeps) PropReady() bool     { return true }
 func (d reflectTestDeps) PipelineReady() bool { return true }

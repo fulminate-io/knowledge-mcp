@@ -115,8 +115,11 @@ type CompiledVariant struct {
 // not read or parse, and which parsed only after error recovery, before
 // concluding the pattern found nothing.
 //
-// The field list mirrors WalkStats exactly: Hydrate converts one to the other,
-// so a field added to either without the other stops that conversion compiling.
+// The field list mirrors WalkStats exactly: Hydrate converts one to the other
+// with a struct CONVERSION, so a field added to either without the other — or
+// added in a different position — stops that conversion compiling. The two
+// test-file counters are here for that reason and no other; their meaning is
+// WalkStats' to state.
 // CleanHint rides along for that mirror only — it is replace-path plumbing,
 // always nil on the match+Hydrate path (which never sets EmitParseHint), and is
 // tagged json:"-" on both structs so it never reaches the wire.
@@ -129,6 +132,8 @@ type Stats struct {
 	SkippedParseLimit        int                      `json:"skipped_parse_limit"`
 	FilesWithParseErrors     int                      `json:"files_with_parse_errors"`
 	MatchesFromDegradedTrees int                      `json:"matches_from_degraded_trees"`
+	TestFilesScanned         int                      `json:"test_files_scanned"`
+	TestFilesExcluded        int                      `json:"test_files_excluded"`
 	ExcludedByRule           map[string]int           `json:"excluded_by_rule,omitempty"`
 	ExcludedSamples          map[string][]string      `json:"excluded_samples,omitempty"`
 	ExcludedTruncated        map[string]bool          `json:"excluded_truncated,omitempty"`
@@ -193,18 +198,31 @@ const emptyResultHint = "no matches — read the `compiled` field for the root k
 //     the prefix filter because it is the more specific fact: the caller's scope
 //     did reach a file and a rule then took it away, which lift_exclusions can
 //     undo.
-//  2. PACKAGE_PREFIXES were supplied and nothing of that language survived them.
-//  3. Neither — nothing of that language is under this root at all, which is the
-//     wrong-root case and keeps the original wording.
+//  2. THE WALK'S OWN TEST-FILE FILTER took every candidate. It outranks the
+//     prefix filter for the same reason the discovery rule does — the prefix DID
+//     reach files of this language and this filter is what removed them — and a
+//     hint that blamed the prefix here sent a caller to widen a scope that was
+//     already correct. The remedy is include_tests, not a wider prefix.
+//  3. PACKAGE_PREFIXES were supplied and nothing of that language survived them.
+//  4. None of those — nothing of that language is under this root at all, which
+//     is the wrong-root case and keeps the original wording.
 //
-// The cause is read off the exclusion report the walk already produced. It never
-// re-walks: a hint that costs a second discovery pass would be paid for by every
-// zero-result call, and the report is the record of what discovery declined.
+// The cause is read off the stats the walk already produced: the exclusion
+// report for cause 1 and TestFilesExcluded for cause 2. It never re-walks — a
+// hint that costs a second discovery pass would be paid for by every
+// zero-result call — and it never GUESSES from the scope it was handed: a
+// branch keyed on !scope.IncludeTests alone would name the test filter for
+// every zero scan of a tree that happens to have no test files in it.
 func ZeroScanHint(walkedRoot, language string, scope Scope, stats WalkStats) string {
 	if rule, sample, n := excludedOfLanguage(stats, treesitter.Language(language)); rule != "" {
 		return fmt.Sprintf(
 			"walked %s: nothing scanned because discovery declined %d %s file(s) under the %s rule (e.g. %s) — the root is fine, that rule is why the result is empty; pass lift_exclusions:true to walk them anyway",
 			walkedRoot, n, language, rule, sample)
+	}
+	if stats.TestFilesExcluded > 0 {
+		return fmt.Sprintf(
+			"walked %s: nothing scanned because this walk's own test-file filter dropped %d %s test file(s) and nothing else was in scope — the scope is fine, include_tests is why the result is empty; pass include_tests:true to walk them",
+			walkedRoot, stats.TestFilesExcluded, language)
 	}
 	if len(scope.PackagePrefixes) > 0 {
 		return fmt.Sprintf(

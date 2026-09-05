@@ -3,6 +3,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -66,7 +67,8 @@ func TestCrossGraphLink_KnowledgeFromPracticeTo_MaterializesProxy(t *testing.T) 
 	link := fc.execMutations[1]
 	assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_LINK, link.GetKind())
 	assert.Equal(t, []string{"dec-1"}, link.GetSelection().GetIds(), "from is the edge source")
-	assert.Equal(t, "uses", link.GetEdgeSpec().GetRelationship(), "knowledge edges are lowercase")
+	assert.Equal(t, "Uses", link.GetEdgeSpec().GetRelationship(),
+		"the fixture's knowledge graph carries no edges, so the write DECLARES the family with the caller's spelling")
 	assert.Equal(t, "proxy:practice:go:pat-1", link.GetEdgeSpec().GetToId())
 
 	// The LINK Execute targets the knowledge graph (proxy + edge live there).
@@ -85,10 +87,16 @@ func TestCrossGraphLink_KnowledgeFromPracticeTo_MaterializesProxy(t *testing.T) 
 	assert.Equal(t, "proxy:practice:go:pat-1", fc.execMutations[2].GetNodeBodies()[0].GetId())
 }
 
-// TestCrossGraphLink_ProxySlugParity covers the slug-parity
-// clause: a language with a non-trivial slug ("C++" → "cplusplus") produces the
-// byte-identical proxy id the server's slugifyLanguage would (store.Slugify-
-// Language is the single shared rule).
+// TestCrossGraphLink_ProxySlugParity covers the proxy-id clause: a practice
+// graph whose name is non-trivial ("cplusplus") produces the byte-identical
+// proxy id the server addresses it by.
+//
+// THERE IS NO LONGER A SECOND SIDE TO THIS PARITY, and the comment used to name
+// one. It said the id matched "what the server's slugifyLanguage would" produce;
+// that wrapper is gone, and no resolution path transforms a graph name any more.
+// What actually makes this test pass, unchanged, is that the client proxy path
+// uses the graph NAME the catalog reports — which is already canonical, because
+// every create channel REFUSES a name that is not.
 func TestCrossGraphLink_ProxySlugParity(t *testing.T) {
 	// The practice graph for "C++" is named by its slug ("cplusplus") — that is
 	// what listForeignGraphs reports and what locateForeignNode probes. The slug
@@ -393,6 +401,77 @@ func TestCrossGraphLink_UnresolvableFromFallsThrough(t *testing.T) {
 	})
 	assert.False(t, handled, "an unresolvable FROM falls through to legacy")
 	assert.Empty(t, fc.execMutations, "no proxy Execute on the unresolvable-FROM fall-through")
+}
+
+// statslessCaller is a fakeGraphCaller with the Stats RPC — and ONLY the Stats
+// RPC — hidden. It forwards Call and Execute verbatim and deliberately does NOT
+// embed *fakeGraphCaller, because embedding would promote Stats and defeat the
+// whole fixture. One axis varies, so a leg that passes here passes because of
+// the missing Stats seam and nothing else.
+type statslessCaller struct{ inner *fakeGraphCaller }
+
+func (s *statslessCaller) Call(ctx context.Context, tool string, args json.RawMessage) (kgtools.ToolResult, error) {
+	return s.inner.Call(ctx, tool, args)
+}
+
+func (s *statslessCaller) Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
+	return s.inner.Execute(ctx, req)
+}
+
+// TestCrossGraphLink_StatslessCaller_DeclinesRatherThanClaims pins WHERE the
+// Stats seam is derived, which is a routing property rather than a resolution
+// one.
+//
+// The arm's decline paths are its documented contract: a shape it does not claim
+// returns (false,_) so the engine LINK arm routes it. Deriving the Stats seam
+// above those declines converted every one of them into a CLAIM — a Stats-less
+// caller's ordinary knowledge-to-knowledge link came back refused instead of
+// routed. The two legs are a matched pair on ONE fixture: the same Stats-less
+// caller must be routed on the shape the arm declines and refused on the shape
+// the arm claims, so neither leg can be satisfied by a blanket behaviour.
+func TestCrossGraphLink_StatslessCaller_DeclinesRatherThanClaims(t *testing.T) {
+	t.Run("a knowledge-to-knowledge link is still ROUTED, not claimed and refused", func(t *testing.T) {
+		fc := &fakeGraphCaller{
+			queryResponsesByGraph: map[string]map[string]kgtools.ToolResult{
+				"knowledge": {
+					"dec-1": graphNodeResult(t, "dec-1", "decision", "Dec", "d"),
+					"dec-2": graphNodeResult(t, "dec-2", "decision", "Dec2", "d2"),
+				},
+			},
+		}
+		deps := interceptTestDeps{gc: &statslessCaller{inner: fc}}
+
+		handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
+			Name:      "mutate",
+			Arguments: json.RawMessage(`{"operation":"link","from":"dec-1","to":"dec-2","relationship":"relates-to"}`),
+		})
+		require.False(t, handled,
+			"the both-in-knowledge decline runs BEFORE any Stats derivation, so the call routes on to the engine LINK arm")
+		assert.Empty(t, res.Content, "a declined call composes no result")
+		assert.Empty(t, fc.execMutations, "and writes nothing")
+	})
+
+	t.Run("a cross-graph link that must resolve an edge type is the one that ERRORS", func(t *testing.T) {
+		fc := &fakeGraphCaller{
+			queryResponsesByGraph: map[string]map[string]kgtools.ToolResult{
+				"knowledge": {"dec-1": graphNodeResult(t, "dec-1", "decision", "Dec", "a decision")},
+			},
+			queryResponsesByGraphName: map[graphKey]map[string]kgtools.ToolResult{
+				{Type: "practice", Name: "go"}: {"pat-1": graphNodeResult(t, "pat-1", "pattern", "Pat", "a pattern")},
+			},
+			listGraphsResult: listGraphsResultFor(t, [2]string{"practice", "go"}),
+		}
+		deps := interceptTestDeps{gc: &statslessCaller{inner: fc}}
+
+		handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
+			Name:      "mutate",
+			Arguments: json.RawMessage(`{"operation":"link","from":"dec-1","to":"pat-1","relationship":"uses","graph":"practice","language":"go"}`),
+		})
+		require.True(t, handled, "a genuine cross-graph link IS claimed by this arm")
+		require.NotEmpty(t, res.Content)
+		assert.Contains(t, res.Content[0].Text, "serves no Stats RPC",
+			"and it fails LOUDLY, naming the seam that cannot resolve the edge type")
+	})
 }
 
 // mustProxyID builds the deterministic proxy id the server's BuildCrossGraphProxy

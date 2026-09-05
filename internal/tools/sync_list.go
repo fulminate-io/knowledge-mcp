@@ -3,8 +3,10 @@
 // sync_list.go — client-side `sync(operation:"list")` handler. Prints a table
 // of sync-eligible LOCAL graphs (always) joined against the user's CLOUD
 // account (when logged in), so the operator can see which graphs are synced and
-// when. Eligibility = the builtin kgtypes.SyncEligible set (the
-// !SkipsLLMProcessing complement) PLUS every registered custom graph type whose
+// when. Eligibility = the builtin kgtypes.SyncEligible set, which is now a rule
+// in its own right rather than the !SkipsLLMProcessing complement it used to
+// mirror — raw web/pdf graphs are LLM-processed (they embed) and still never
+// sync, so the two no longer move together — PLUS every registered custom graph type whose
 // GraphTypeDef behavior declares syncable=true; the "Last synced" column comes
 // from the CLOUD GraphInfo.SyncTime ONLY — never the local one (local SyncTime is
 // code-collect time, a different meaning).

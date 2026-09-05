@@ -274,9 +274,19 @@ var truncationDisclosureSites = map[string]disclosureRow{
 		carrierNA,
 		"its results are error / acknowledgement text",
 	},
-	"intercept_mutate_link.go:handleClientCrossGraphLink": {
+	// This row was keyed on handleClientCrossGraphLink until the intra-practice
+	// fast path was extracted into its own function. The Execute went WITH the
+	// extracted body, so the scanned site moved rather than disappeared, and the
+	// declaration follows the code: handleClientCrossGraphLink now holds no
+	// ExecuteResponse and is no longer a census member, while every read the old
+	// row accounted for is still accounted for here or in an existing row.
+	// Nothing left the census — the by-id endpoint probes ride
+	// projects/render's own rows, and the foreign-graph enumeration reached
+	// through crossgraph.ResolveAndLink was always outside these two
+	// directories and carries its boundedness there.
+	"intercept_mutate_link.go:intraPracticeLinkArm": {
 		disclosureCannot,
-		"its own reads are by-id endpoint probes (one row) and the link MUTATION; the foreign-graph enumeration it delegates to lives in the crossgraph package, outside this census's two directories, and carries its own boundedness there",
+		"its two reads are by-id endpoint probes in practice/<language> (one row each) and the in-practice link MUTATION, whose response is an acknowledgement; none of the three can be truncated, and this arm issues no enumeration at all",
 		carrierNA,
 		"renders link acknowledgements as text",
 	},
@@ -316,9 +326,15 @@ var truncationDisclosureSites = map[string]disclosureRow{
 		carrierNA,
 		"delegates its json arm to linkageStatsClient, whose payload is graph statistics rather than rows",
 	},
+	"intercept_query_plan_tree.go:renderPlanTreeJSON": {
+		disclosureHandles,
+		"the json and projected plan_tree envelope, split out of InterceptQueryPlanTree when the annotation read pushed that function over the statement gate. It ORs the traversal verdict it is handed with the annotation read's own, puts `truncated` on the ENVELOPE ROOT unconditionally, and appends the prose notice via render.AppendTruncationNotice — plus a SECOND, separate notice for a failed annotation read, because that notice's text names a row ceiling that did not engage and a `limit` remedy which on this arm is the subtree depth",
+		carrierYes,
+		"the recursive plan-tree payload; the key goes on the envelope root and never inside buildPlanTreeJSON, because truncation is a property of the READ and not of a node",
+	},
 	"intercept_query_plan_tree.go:InterceptQueryPlanTree": {
 		disclosureHandles,
-		"calls render.AppendTruncationNotice — the third declared disclosure helper, permitted because a tree has no pages to walk and plan_tree's `limit` IS the subtree depth, so its action clause deliberately differs from the shared sentence",
+		"calls render.AppendTruncationNotice — the third declared disclosure helper, permitted because a tree has no pages to walk and plan_tree's `limit` IS the subtree depth, so its action clause deliberately differs from the shared sentence. This function now owns the TEXT path only; the json and projected envelope is renderPlanTreeJSON above. On the text path the verdict ORs in the per-section annotation read, and a FAILED annotation read gets its own notice rather than riding this one, because a row-ceiling message names a cause that did not occur and a remedy that would not address it",
 		carrierYes,
 		"the recursive plan-tree payload rides a traversal verdict bound at intercept_query_plan_tree.go:88; the key goes on the ENVELOPE ROOT, never inside buildPlanTreeJSON, because truncation is a property of the READ and not of a node",
 	},
@@ -377,7 +393,13 @@ var truncationDisclosureSites = map[string]disclosureRow{
 	},
 	"plan.go:assemblePlan": {
 		disclosureHandles,
-		"binds the traversal verdict off render.AssembleSubtree and returns through render.AppendTruncationNotice; a clamped traversal shortens the rendered phase and step tree",
+		"binds the traversal verdict off render.AssembleSubtree and returns through render.AppendTruncationNotice; a clamped traversal shortens the rendered phase and step tree. For a SECTIONED plan the verdict is the OR of that traversal and the per-section annotation read, whose bulk ids[] hydrate the server can clamp — a clamped hydrate drops annotation rows, which would otherwise render a plan under review as one carrying fewer reviewer notes than it has",
+		carrierNA,
+		"renders markdown text",
+	},
+	"section.go:assembleSection": {
+		disclosureHandles,
+		"binds the verdict off render.FetchSectionAnnotations and returns through render.AppendTruncationNotice; that read ends in ONE unbounded bulk ids[] hydrate over the annotation set, which the server clamps on the id-set bound — and a clamped hydrate DROPS annotation rows outright, so a section would report fewer reviewer annotations than it carries with nothing else in the render saying so",
 		carrierNA,
 		"renders markdown text",
 	},
@@ -434,7 +456,7 @@ var truncationDisclosureSites = map[string]disclosureRow{
 	},
 	"json.go:assembleJSON": {
 		disclosureHandles,
-		"binds the traversal verdict off render.AssembleSubtree and returns through render.AppendTruncationNotice, alongside the envelope key below — the key is what a machine reads, the block is what a caller reads",
+		"binds the traversal verdict off render.AssembleSubtree, ORs in the linked-node hydrate's and the per-section annotation read's, and returns through render.AppendTruncationNotice alongside the envelope key below — the key is what a machine reads, the block is what a caller reads. The annotation term is the one this arm dropped: its verdict was discarded with a blank identifier, so a clamped annotation hydrate emitted `truncated: false`, which on an unconditional key is an affirmative statement that a plan under review carries no review state",
 		carrierYes,
 		"the recursive assemble tree is a row-bounded read's payload; the LIVE verdict rides the ENVELOPE ROOT, never a per-row key, because truncation is a property of the READ and not of a node",
 	},

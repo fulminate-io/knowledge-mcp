@@ -68,11 +68,16 @@ func parsePage(p *fetchedPage, cleaned *cleanedArticle) (*pageRecord, error) {
 
 	// Strip elements browsers would never render — `hidden` attribute,
 	// aria-hidden="true", inline display:none / visibility:hidden — before
-	// the section walker sees them. Without this, chrome like Microsoft
+	// the section walker sees them.
+	//
+	// THE HAZARD IS REAL AND ITS MECHANISM HAS CHANGED. Chrome like Microsoft
 	// Learn's `<div id="unsupported-browser" hidden>` "browser is no longer
-	// supported" boilerplate ends up in page.Description and then in the
-	// downstream practice-graph pattern nodes via recipe transformers.
-	pruneHiddenNodes(doc)
+	// supported" boilerplate no longer reaches a page body, because the page
+	// carries none — it would instead be emitted as its own CHUNK NODE, and a
+	// recipe composing a body from those chunks over CONTAINS would pull it
+	// into the downstream practice-graph pattern node exactly as before.
+	// Pruning here is what keeps it out of the chunk set in the first place.
+	hiddenPruned := pruneHiddenNodes(doc)
 
 	w := newWalker(base)
 	// The presentation-heuristic arm needs the WHOLE document before the walk
@@ -82,7 +87,7 @@ func parsePage(p *fetchedPage, cleaned *cleanedArticle) (*pageRecord, error) {
 	// pruneHiddenNodes above, or a hidden repeated marker series would be
 	// admitted into a group and inflate it.
 	w.heuristic = w.heuristicHeadingLevels(doc)
-	seedRawLinks(w, p.Body, base)
+	rawLinkFailed := seedRawLinks(w, p.Body, base)
 	w.walk(doc)
 	sections := w.finish()
 
@@ -102,6 +107,8 @@ func parsePage(p *fetchedPage, cleaned *cleanedArticle) (*pageRecord, error) {
 		InternalLinks: w.internalLinks,
 		ExternalCites: w.externalCites,
 		Attrs:         extractCommonAttrs(findBodyOrHTML(doc)),
+		HiddenPruned:  hiddenPruned,
+		RawLinkFailed: rawLinkFailed,
 	}, nil
 }
 
@@ -174,9 +181,10 @@ type walker struct {
 	sectionSeq int
 
 	// heuristic maps a presentation marker to the heading level the
-	// whole-document pre-pass assigned it. Populated once per page in
-	// parsePage; nil for a page with no marker series.
-	heuristic map[*html.Node]int
+	// whole-document pre-pass assigned it, TOGETHER WITH the measurements
+	// that produced that level. Populated once per page in parsePage; nil
+	// for a page with no marker series.
+	heuristic map[*html.Node]headingSignal
 
 	// blockLevel memoises isBlockLevelNode for the duration of ONE page
 	// walk. Scoped to the walker because parsePage runs concurrently across

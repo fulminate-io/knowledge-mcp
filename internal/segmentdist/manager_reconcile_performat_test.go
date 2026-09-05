@@ -81,6 +81,7 @@ func corruptArm(t *testing.T, cacheDir, name, format string) {
 // and the consumer — which pairs each arm's resident count against the embedded
 // denominator — would lose the good number along with the bad one.
 func TestResidentObservationsIsolatePerArmErrors(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 	ctx := context.Background()
 

@@ -74,7 +74,7 @@ func TestReclaimRestartTailNoFalsePrune(t *testing.T) {
 	dm2.engine.Delete(corpus[0].ID)
 	dm2.engine.Delete(corpus[1].ID)
 	waitForMerge(t, dm2.engine.MergeCount, "a merge must fire on the reloaded set")
-	waitMergeQuiesce(dm2.engine.MergeCount)
+	waitReclaimSettled(t, dm2.engine)
 	warmExported(dm2)
 
 	// The merge genuinely reclaimed the superseded constituents (not a vacuous

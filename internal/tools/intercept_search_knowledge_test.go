@@ -447,3 +447,40 @@ func TestInterceptSearchKnowledge_UnconstructibleIdentitySurfaces(t *testing.T) 
 		"the configured embedder must not stand in for an identity that failed to resolve")
 	assert.Equal(t, int64(0), mgr.calls.Load(), "and no search runs on an unresolved identity")
 }
+
+// TestRunKnowledgeOrServerSearch_MissingStatsSeamIsReturnedAsError pins the
+// SHAPE of the stats-seam failure, which is a routing property rather than a
+// message one.
+//
+// The non-knowledge tail of runKnowledgeOrServerSearch derives the Stats seam
+// before dispatching, and a caller serving no Stats RPC is a hard error there —
+// edge types cannot be resolved against the graph's vocabulary, and running the
+// dispatch anyway against whatever the caller spelled is the silently-lost
+// resolution failure statsFnOf exists to prevent.
+//
+// It used to be CONVERTED here into an IsError ToolResult with a nil error,
+// which is the one thing this function must not do: it also returns an error,
+// and the line immediately after propagates engine.Dispatch's error as an
+// error, so converting made the two adjacent failures of the same function
+// travel by different routes. interceptSearchArms renders a non-nil error from
+// here into an IsError result of its own, so the user still sees the seam named;
+// the leg below asserts the error is RETURNED rather than swallowed into the
+// result, since a nil error is what a caller would read as success.
+func TestRunKnowledgeOrServerSearch_MissingStatsSeamIsReturnedAsError(t *testing.T) {
+	gc := &statslessCaller{inner: &fakeGraphCaller{}}
+
+	// graph:"code" is a NON-knowledge graph, so this takes the dispatch tail
+	// rather than the client-engine knowledge arm; the arm never reaches
+	// PipelineReady/SegmentManager, which is why the bare deps suffice.
+	res, err := runKnowledgeOrServerSearch(context.Background(), interceptTestDeps{}, gc, "code",
+		json.RawMessage(`{"query":"anything"}`))
+
+	require.Error(t, err,
+		"a missing Stats seam is the function's OWN error, not a result it renders — "+
+			"a nil error here is what a caller reads as success")
+	assert.Contains(t, err.Error(), "serves no Stats RPC",
+		"and it names the seam that cannot resolve the edge type")
+	assert.False(t, res.IsError,
+		"the failure travels in the error, so the result is not ALSO an error payload — "+
+			"interceptSearchArms is the one place it becomes user-facing text")
+}

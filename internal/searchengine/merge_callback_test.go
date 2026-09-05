@@ -66,9 +66,7 @@ func TestOnMergeFiresOncePerMerge(t *testing.T) {
 	e.Delete("a")
 	e.Delete("b")
 
-	if got := waitForMerge(e); got < 1 {
-		t.Fatalf("background merge never fired: MergeCount=%d", got)
-	}
+	waitForMerge(t, e)
 	// Settle: the callback fires AFTER mergeCnt.Add, so a brief poll bounds the gap
 	// between MergeCount>=1 and the recorded result without a fixed sleep.
 	results := pollResults(recorder, 1)
@@ -121,9 +119,7 @@ func TestOnMergeCountTargetRemovesAllConstituents(t *testing.T) {
 		t.Fatalf("pre-merge has %d segments, want 5", len(preIDs))
 	}
 
-	if got := waitForMerge(e); got < 1 {
-		t.Fatalf("count-target merge never fired: MergeCount=%d", got)
-	}
+	waitForMerge(t, e)
 	results := pollResults(recorder, 1)
 	if len(results) < 1 {
 		t.Fatalf("OnMerge fired %d times, want >= 1", len(results))
@@ -185,9 +181,7 @@ func TestNilOnMergeRunsMergeWithoutPanic(t *testing.T) {
 	e.Delete("a")
 	e.Delete("b")
 
-	if got := waitForMerge(e); got < 1 {
-		t.Fatalf("merge with nil OnMerge never fired: MergeCount=%d", got)
-	}
+	waitForMerge(t, e)
 	// A nil callback must leave the corpus correct: only live docs survive.
 	got := searchIDs(e.Search(mockQuery{term: "x"}, 10))
 	if len(got) != 2 {

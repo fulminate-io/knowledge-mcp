@@ -62,9 +62,16 @@ func childrenConcat(
 // cycles in malformed source graphs from causing infinite walks.
 //
 // Use case: a recipe over a PDF wants to drop every section under
-// "Part I" or "Foreword" without enumerating each leaf section by
-// name. `filter not(has_ancestor("CONTAINS", "symbol_name",
-// "^(Foreword|Preface)$"))` is the natural expression.
+// "Part I" or "Foreword" without enumerating each leaf section by name. The
+// where-tree's ancestor leaf expresses that directly:
+//
+//	filter {"not": {"ancestor": {"edge": "CONTAINS",
+//	    "where": {"matches": {"of": "node.symbol_name",
+//	                          "regex": "^(Foreword|Preface)$"}}}}}
+//
+// The leaf and this builtin do the same walk; the leaf says it more directly
+// and composes with the rest of the tree, while this builtin remains available
+// inside expressions, where a where-tree cannot go.
 func hasAncestor(
 	row *Row,
 	edgeType, field, pattern string,

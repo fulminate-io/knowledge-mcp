@@ -33,7 +33,7 @@ func TestFetchCodeloadTarball_HappyPath(t *testing.T) {
 	fc := newFetchClient("", 0)
 	info := githubURLInfo{Owner: "owner", Repo: "repo", Ref: "main", Kind: kindTree}
 
-	rootDir, cleanup, w, err := fetchCodeloadTarball(context.Background(), fc, info, 50<<20)
+	rootDir, cleanup, w, err := fetchCodeloadTarball(context.Background(), fc, info, 50<<20, nil)
 	if err != nil {
 		t.Fatalf("fetchCodeloadTarball: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestFetchCodeloadTarball_IgnoresInfoPath(t *testing.T) {
 	// the whole tarball, not just the pkg/ subtree.
 	info := githubURLInfo{Owner: "owner", Repo: "repo", Ref: "main", Path: "pkg", Kind: kindTree}
 
-	rootDir, cleanup, w, err := fetchCodeloadTarball(context.Background(), fc, info, 50<<20)
+	rootDir, cleanup, w, err := fetchCodeloadTarball(context.Background(), fc, info, 50<<20, nil)
 	if err != nil {
 		t.Fatalf("fetchCodeloadTarball: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestFetchCodeloadTarball_PreReadSizeCap(t *testing.T) {
 	fc := newFetchClient("", 0)
 	info := githubURLInfo{Owner: "owner", Repo: "repo", Ref: "main", Kind: kindTree}
 
-	_, _, w, err := fetchCodeloadTarball(context.Background(), fc, info, 1<<20)
+	_, _, w, err := fetchCodeloadTarball(context.Background(), fc, info, 1<<20, nil)
 	if err != nil {
 		t.Fatalf("fetchCodeloadTarball: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestFetchCodeloadTarball_MidStreamSizeCap(t *testing.T) {
 	info := githubURLInfo{Owner: "owner", Repo: "repo", Ref: "main", Kind: kindTree}
 
 	// Cap at 1 MiB — well below the 200 MiB padding file.
-	_, _, w, err := fetchCodeloadTarball(context.Background(), fc, info, 1<<20)
+	_, _, w, err := fetchCodeloadTarball(context.Background(), fc, info, 1<<20, nil)
 	if err != nil {
 		t.Fatalf("fetchCodeloadTarball: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestUnpackTar_SkipsSymlinks(t *testing.T) {
 	tarball := buildTarballWithSymlink(t)
 
 	tmpDir := t.TempDir()
-	w := unpackTar(byteReader(tarball), tmpDir)
+	w := unpackTar(byteReader(tarball), tmpDir, nil)
 	if w != nil {
 		t.Fatalf("unexpected warning: %+v", w)
 	}

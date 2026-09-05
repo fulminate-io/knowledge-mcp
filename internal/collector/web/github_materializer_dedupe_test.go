@@ -5,6 +5,8 @@ package web
 import (
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestGithubMaterializerState_ClaimAndPublish covers the basic claim →
@@ -110,7 +112,8 @@ func TestEmitMaterializerWarning(t *testing.T) {
 		Cap:       50 << 20,
 	}
 
-	node, edges := emitMaterializerWarning("page-id-123", "https://github.com/owner/repo/tree/main", info, w)
+	node, edges, err := emitMaterializerWarning("page-id-123", "https://github.com/owner/repo/tree/main", info, w)
+	require.NoError(t, err, "a string-map marshal cannot fail in a correct build")
 
 	if node.Type != "document" {
 		t.Errorf("Type=%q want=document", node.Type)
@@ -146,7 +149,8 @@ func TestEmitMaterializerWarning_NoParent(t *testing.T) {
 		Reason: "size_cap_mid_stream",
 		URL:    "https://github.com/owner/repo",
 	}
-	node, edges := emitMaterializerWarning("", "https://github.com/owner/repo", info, w)
+	node, edges, err := emitMaterializerWarning("", "https://github.com/owner/repo", info, w)
+	require.NoError(t, err, "a string-map marshal cannot fail in a correct build")
 	if node.Id == "" {
 		t.Errorf("node ID empty")
 	}

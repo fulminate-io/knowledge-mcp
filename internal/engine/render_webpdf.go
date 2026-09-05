@@ -38,21 +38,29 @@ type RawGraphHit struct {
 // header, a context line locating it in the document, a bounded body snippet and
 // the node id.
 //
-// THE FOOTER IS AN UNCONDITIONAL DISCLOSURE, not a status line. Raw graphs carry
-// no vectors, so no vector arm ran and none could have; saying so on every
-// render is what stops a reader taking these rows for hybrid-search results that
-// happened to return text matches. The literal is spelled here rather than
-// called from the tools-side label helper because engine must not import tools —
-// these renderers were relocated into engine precisely to avoid that cycle. The
-// tools-side arms emit the same spelling for their JSON arm, which is where the
-// two are kept in agreement.
-func RenderRawGraphResults(graph, name, query string, hits []RawGraphHit) kgtools.ToolResult {
+// THE FOOTER IS AN UNCONDITIONAL DISCLOSURE, not a status line, and it now
+// discloses THE ARMS THAT ACTUALLY RAN rather than a fixed literal. It used to
+// read "BM25-only" on every render, which was true while raw graphs were never
+// embedded and became a falsehood the moment they were enrolled embed-only: a
+// hybrid result set would have announced itself as keyword-only, which is the same
+// class of dishonest footer the disclosure exists to prevent. The label is
+// COMPUTED by the caller (segmentSearchModeLabel, tools side) and passed in,
+// because engine must not import tools — these renderers were relocated into
+// engine precisely to avoid that cycle. Passing it also means the markdown arm and
+// the JSON arm disclose the same string from one derivation instead of two
+// spellings kept in agreement by hand.
+//
+// An EMPTY modeLabel writes no footer at all, rather than an empty one: a caller
+// that has nothing to disclose says nothing.
+func RenderRawGraphResults(graph, name, query string, hits []RawGraphHit, modeLabel string) kgtools.ToolResult {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "## %s/%s — %d results for \"%s\"\n\n", graph, name, len(hits), query)
 	for i, h := range hits {
 		writeRawGraphHit(&sb, i, graph, name, h)
 	}
-	sb.WriteString("\n_search mode: BM25-only_\n")
+	if modeLabel != "" {
+		fmt.Fprintf(&sb, "\n_search mode: %s_\n", modeLabel)
+	}
 	return kgtools.TextResult(sb.String())
 }
 
@@ -97,7 +105,9 @@ func writeRawGraphHit(sb *strings.Builder, idx int, graph, name string, h RawGra
 
 // rawGraphPageSpan renders a pdf chunk's page locality, or "" when the node
 // carries none — which is every web node, since only the pdf emitter writes
-// these keys.
+// these keys. page_first and page_last arrive
+// already one-indexed from the pdf emitter and are rendered verbatim; adding
+// a conversion here would double-convert.
 func rawGraphPageSpan(n *knowledgev1.Node) string {
 	first := kgtypes.Value(n, "page_first")
 	last := kgtypes.Value(n, "page_last")

@@ -14,9 +14,11 @@
 //
 // Once Block.Kind is known, adjacent code-blocks (or code-block triples
 // straddling a misclassified bold-keyword middle) are unambiguously
-// part of one logical program. mergeAdjacentCodeBlocks runs after
-// assignHeadingLevels and reclaims them. Same-page only — cross-page
-// stitching is the chunk continuity pass.
+// part of one logical program. mergeAdjacentCodeBlocks closes
+// ClassifyPage and reclaims them, BEFORE the document-wide heading
+// rank runs — a block it reclassifies out of BlockHeading must not
+// contribute a spurious distinct size to the ranking population.
+// Same-page only — cross-page stitching is the chunk continuity pass.
 
 package classify
 
@@ -103,6 +105,115 @@ func mergeAdjacentCodeBlocks(blocks []layout.Block) []layout.Block {
 	return out
 }
 
+// splitHeadingGapRatio bounds the vertical separation between two
+// halves of one torn heading, as a MULTIPLE OF THE HEADING'S OWN SIZE.
+// verticalGapBlocks measures leading plus box height, which scales with
+// the face: consecutive lines of one 18pt title measure about 2.2x the
+// size, while a genuinely separate heading further down the page
+// measures many multiples of it. An absolute point constant was tried
+// first and rejected — at 6.0pt it never fired on real geometry,
+// because the quantity being bounded is not a gap between boxes but a
+// gap between a box top and the previous box top.
+const splitHeadingGapRatio = 2.6
+
+// MergeSplitHeadings rejoins headings the layout grouper tore across
+// two adjacent blocks. The grouper splits on a vertical gap, and a
+// two-line title typeset with generous leading exceeds that gap, so
+// "Consistency and Concurrency in Event-Driven Systems" arrives as two
+// heading blocks and emits as two sections.
+//
+// Two consecutive blocks rejoin when ALL of these hold:
+//
+//   - both are BlockHeading;
+//   - same page;
+//   - identical blockMaxRunSize;
+//   - identical primary font name;
+//   - verticalGapBlocks(a, b) <= splitHeadingGapRatio * size.
+//
+// The NEGATIVE direction is what the bound exists for: a genuinely
+// separate heading of the same size and face sitting directly below,
+// with no body text between, must NOT be swallowed into its
+// predecessor. Same page only — a heading spanning a page break is the
+// continuity pass's problem, not this one.
+//
+// Mutates entries in place when merging; returns the merged slice.
+func MergeSplitHeadings(blocks []layout.Block) []layout.Block {
+	if len(blocks) < 2 {
+		return blocks
+	}
+	out := make([]layout.Block, 0, len(blocks))
+	for i := range blocks {
+		if len(out) > 0 && shouldMergeSplitHeading(out[len(out)-1], blocks[i]) {
+			mergeHeadingBlock(&out[len(out)-1], blocks[i])
+			continue
+		}
+		out = append(out, blocks[i])
+	}
+	return out
+}
+
+// shouldMergeSplitHeading reports whether b is the continuation of the
+// heading a rather than a heading of its own.
+func shouldMergeSplitHeading(a, b layout.Block) bool {
+	if a.Kind != layout.BlockHeading || b.Kind != layout.BlockHeading {
+		return false
+	}
+	if a.PageIndex != b.PageIndex {
+		return false
+	}
+	size := blockMaxRunSize(a)
+	if size == 0 || size != blockMaxRunSize(b) {
+		return false
+	}
+	if primaryFontName(a) != primaryFontName(b) {
+		return false
+	}
+	return verticalGapBlocks(a, b) <= splitHeadingGapRatio*size
+}
+
+// primaryFontName returns the FontName of the most glyph-weighted run
+// in b. Empty when b has no runs carrying a font name. Two halves of
+// one title are set in the same face; a subhead below it in a different
+// weight is a different name and is refused.
+func primaryFontName(b layout.Block) string {
+	weight := make(map[string]int, 2)
+	for _, line := range b.Lines {
+		for _, run := range line.Runs {
+			if run.FontName == "" {
+				continue
+			}
+			w := len(run.Glyphs)
+			if w == 0 {
+				w = 1
+			}
+			weight[run.FontName] += w
+		}
+	}
+	return pickModalFontName(weight)
+}
+
+// mergeHeadingBlock appends b's lines to a in place, re-runs the
+// end-of-line hyphen heuristic across the boundary it just created, and
+// expands a.BBox to enclose b. Mirrors mergeCodeBlock; kept separate
+// because the two merges answer different questions and their gates
+// share no logic.
+//
+// THE RE-RUN IS THE POINT. layout.Cluster dehyphenates per BLOCK, so
+// the boundary between a's last line and b's first line is one the
+// grouper never inspected — it did not exist yet. A title torn at a
+// hyphenated word ("Concur-" / "rency") would otherwise emerge as
+// "Concur-rency", which is the one thing the split-heading rejoin was
+// supposed to prevent. The heuristic's own rules still decide: a
+// lowercase Latin continuation joins, and a compound word's hyphen
+// ("Event-" / "Driven") is left alone.
+//
+// Code blocks deliberately do NOT get this treatment — a trailing
+// hyphen in code is an operator, not a word break.
+func mergeHeadingBlock(a *layout.Block, b layout.Block) {
+	a.Lines = layout.DehyphenateLines(append(a.Lines, b.Lines...))
+	a.BBox = unionRect(a.BBox, b.BBox)
+}
+
 // leadingCodeKeyword reports whether blocks[i] is a misclassified code
 // keyword sitting just above a code block (e.g. SQL's `SELECT`
 // preceding the column list). Reclassifying lets the anchor-merge
@@ -169,6 +280,15 @@ func codeAfterInterloper(blocks []layout.Block, j int, anchor layout.Block) (int
 // `;`, `}`, `)`, identifiers, etc.).
 func shouldMergeCode(a, b layout.Block) bool {
 	if a.PageIndex != b.PageIndex {
+		return false
+	}
+	// Retained page chrome stays its OWN block. A monospace running
+	// header sitting next to monospace body would otherwise be absorbed
+	// into a code block, and once its text is inside another block's
+	// Lines no downstream filter can remove it again — which is the
+	// whole point of retaining it as a filterable signal rather than
+	// deleting it.
+	if carriesChromeStamp(a) || carriesChromeStamp(b) {
 		return false
 	}
 	if !sameCodeFamily(a, b) || !sameCodeColumn(a, b) {

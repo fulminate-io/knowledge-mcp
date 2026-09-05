@@ -33,14 +33,19 @@ type parseShape struct {
 	// Copied verbatim into Config — no validation, no normalization; an id
 	// the gateway will reject is a state the client must be able to hold and
 	// report on. Empty = absent = no selection.
-	FulminateAccountID string              `toml:"fulminate_account_id"`
-	Default            parseSection        `toml:"default"`
-	Summarizer         *parseSection       `toml:"summarizer"`
-	Supervisor         *parseSection       `toml:"supervisor"`
-	Topics             *parseSection       `toml:"topics"`
-	Credentials        *parseCredentials   `toml:"credentials"`
-	Embedder           *parseEmbedSection  `toml:"embedder"`
-	Reranker           *parseRerankSection `toml:"reranker"`
+	FulminateAccountID string `toml:"fulminate_account_id"`
+	// AutoUpdate is the top-level auto_update key. A POINTER, not a bool,
+	// because absent must stay distinguishable from an explicit false: absent
+	// means automatic updates are ON, which is the default, and only an
+	// explicit `auto_update = false` turns them off.
+	AutoUpdate  *bool               `toml:"auto_update"`
+	Default     parseSection        `toml:"default"`
+	Summarizer  *parseSection       `toml:"summarizer"`
+	Supervisor  *parseSection       `toml:"supervisor"`
+	Topics      *parseSection       `toml:"topics"`
+	Credentials *parseCredentials   `toml:"credentials"`
+	Embedder    *parseEmbedSection  `toml:"embedder"`
+	Reranker    *parseRerankSection `toml:"reranker"`
 }
 
 // parseEmbedSection mirrors the [embedder] TOML table. dimension and dtype
@@ -193,6 +198,10 @@ func Parse(data []byte) (*Config, error) {
 	// to parsing — the client must be able to hold (and report on) a selection
 	// the gateway will reject.
 	cfg.FulminateAccountID = raw.FulminateAccountID
+
+	// auto_update: copied as a POINTER so nil (absent) stays distinct from an
+	// explicit false. nil means enabled; only `auto_update = false` disables.
+	cfg.AutoUpdate = raw.AutoUpdate
 
 	// health_probe_interval: a Go duration string. Empty leaves the field zero
 	// (the prober defaults it downstream); a malformed value is a hard Parse

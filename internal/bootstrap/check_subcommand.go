@@ -19,9 +19,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -94,20 +96,51 @@ type checkRunFlags struct {
 	pathPrefix string
 	port       int
 	ids        []string
+	// includeTests is nil when the flag was not supplied. THE THREE STATES ARE
+	// NOT TWO: an omitted flag is legal for every language, while an explicit
+	// true OR false is refused for a language ast carries no test-file
+	// convention for — there the control would decide nothing, and a caller who
+	// wrote it would believe otherwise. A plain bool cannot tell "not supplied"
+	// from "supplied as false", which is why this is a pointer and why it is set
+	// from fs.Visit rather than from comparing the value against its default.
+	includeTests *bool
+}
+
+// newCheckRunFlagSet registers every flag `knowledge check run` accepts against
+// f, returning the set and the pointer that records an explicitly-supplied
+// include-tests.
+//
+// IT IS SEPARATE FROM THE PARSE so the registered set is READABLE without
+// running a command. The parameter-accounting test walks it to classify every
+// CLI input against the tool schema; a flag added here with no classification
+// there fails that test, which is the half a schema-only table cannot see.
+func newCheckRunFlagSet(f *checkRunFlags) (*flag.FlagSet, *bool) {
+	fs := flag.NewFlagSet("check run", flag.ContinueOnError)
+	fs.StringVar(&f.repo, "repo", "", "code-graph name or absolute checkout path (required)")
+	fs.StringVar(&f.language, "language", "", "tree-sitter language slug selecting the checks corpus (required)")
+	fs.StringVar(&f.pathPrefix, "path-prefix", "", "repo-relative subtree to narrow the walk to")
+	fs.IntVar(&f.port, "port", graphclient.DefaultPort, "port the knowledge-server is listening on")
+	includeTests := fs.Bool("include-tests", false,
+		"walk this language's TEST files too (omitted walks non-test files only; an explicit value is refused for a language with no test-file convention)")
+	return fs, includeTests
 }
 
 // parseCheckRunFlags parses the flag set, taking any positional arguments as
 // check ids.
 func parseCheckRunFlags(args []string) (checkRunFlags, error) {
 	var f checkRunFlags
-	fs := flag.NewFlagSet("check run", flag.ContinueOnError)
-	fs.StringVar(&f.repo, "repo", "", "code-graph name or absolute checkout path (required)")
-	fs.StringVar(&f.language, "language", "", "tree-sitter language slug selecting the checks corpus (required)")
-	fs.StringVar(&f.pathPrefix, "path-prefix", "", "repo-relative subtree to narrow the walk to")
-	fs.IntVar(&f.port, "port", graphclient.DefaultPort, "port the knowledge-server is listening on")
+	fs, includeTests := newCheckRunFlagSet(&f)
 	if err := fs.Parse(args); err != nil {
 		return checkRunFlags{}, err
 	}
+	// fs.Visit reports only the flags the caller ACTUALLY SUPPLIED, which is the
+	// one way to recover the omitted state: a value-compare against false would
+	// read an explicit --include-tests=false as an omission.
+	fs.Visit(func(fl *flag.Flag) {
+		if fl.Name == "include-tests" {
+			f.includeTests = includeTests
+		}
+	})
 	f.ids = fs.Args()
 	if strings.TrimSpace(f.repo) == "" {
 		return checkRunFlags{}, errors.New("check run: --repo is required — it names both the code graph and the tree the checks walk")
@@ -157,11 +190,7 @@ func runCheckRun(args []string) error {
 		PathPrefix: f.pathPrefix,
 		Language:   f.language,
 	}
-	// An ABSENT key means "every check"; a present-but-empty one is refused by
-	// the analyzer, so the key is set only when ids were actually named.
-	if len(f.ids) > 0 {
-		req.Extra = map[string]string{corpusscan.ExtraKeyChecks: strings.Join(f.ids, ",")}
-	}
+	req.Extra = checkRunExtra(f)
 
 	findings, err := analyzer.Run(context.Background(), req)
 	if err != nil {
@@ -170,19 +199,54 @@ func runCheckRun(args []string) error {
 	return reportCheckRun(findings)
 }
 
-// reportCheckRun prints the findings and returns the sentinel for the verdict.
+// checkRunExtra renders the parsed flags as the analyzer's per-run Extra map,
+// nil when the caller narrowed nothing.
+//
+// AN ABSENT KEY IS THE POINT IN BOTH CASES. An absent check subset means "every
+// check"; an absent test-file knob means the caller never asked, which the
+// analyzer treats differently from an explicit false. Setting either key to a
+// value the caller did not write would hand them a control they never chose.
+func checkRunExtra(f checkRunFlags) map[string]string {
+	extra := map[string]string{}
+	if len(f.ids) > 0 {
+		extra[corpusscan.ExtraKeyChecks] = strings.Join(f.ids, ",")
+	}
+	if f.includeTests != nil {
+		extra[corpusscan.ExtraKeyIncludeTests] = strconv.FormatBool(*f.includeTests)
+	}
+	if len(extra) == 0 {
+		return nil
+	}
+	return extra
+}
+
+// reportCheckRun prints the findings to stdout and returns the sentinel for the
+// verdict.
+func reportCheckRun(findings []foundation.Finding) error {
+	return reportCheckRunTo(os.Stdout, findings)
+}
+
+// reportCheckRunTo writes the verdict line and the rendered findings to w, and
+// returns the sentinel for the verdict.
+//
+// THE WRITER IS A PARAMETER SO THE LINE IS TESTABLE. A face that prints straight
+// to a package-level stdout can be asserted on only through its exit code, which
+// is exactly the half that was already covered — the LINE, and specifically
+// whether it reports the same numbers the other face does, needs the writer.
 //
 // THE CLASSIFICATION IS NOT MADE HERE. corpusscan.ClassifyRun and the verdict's
-// own methods decide; this maps their answer onto an exit status.
-func reportCheckRun(findings []foundation.Finding) error {
+// own methods decide; this maps their answer onto an exit status and renders the
+// counters it is given.
+func reportCheckRunTo(w io.Writer, findings []foundation.Finding) error {
 	body, rerr := foundation.RenderFindings(findings)
 	if rerr != nil {
 		return fmt.Errorf("check run: render findings: %w", rerr)
 	}
 	v := corpusscan.ClassifyRun(findings)
-	fmt.Fprintf(os.Stdout,
-		"%s: checks_flagged=%d sites_flagged=%d checks_refused=%d llm_only_not_executed=%d truncated=%t\n%s\n",
-		corpusscan.AnalyzerName, v.ChecksExecuted, v.SitesFlagged, v.ChecksRefused, v.LLMOnlyNotExecuted, v.Truncated, body)
+	fmt.Fprintf(w,
+		"%s: checks_flagged=%d sites_flagged=%d checks_refused=%d llm_only_not_executed=%d test_files_scanned=%d truncated=%t\n%s\n",
+		corpusscan.AnalyzerName, v.ChecksExecuted, v.SitesFlagged, v.ChecksRefused, v.LLMOnlyNotExecuted,
+		v.TestFilesScanned, v.Truncated, body)
 	switch {
 	case v.Inconclusive():
 		return errCheckInconclusive

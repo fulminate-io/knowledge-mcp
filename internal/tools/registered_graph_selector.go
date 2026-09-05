@@ -37,6 +37,13 @@ import (
 // It runs BEFORE the query embedding in composeRegisteredGraphSearch: an invalid
 // selector must not bill an embed on a metered embedder.
 func validateRegisteredGraphSelector(ctx context.Context, deps ClientDeps, gt kgtypes.GraphType, name string) error {
+	// A RETIRED BUILTIN IS REFUSED BEFORE THE REGISTRY IS READ. Once a family is
+	// removed, IsBuiltinGraphType stops claiming its name and it arrives here as
+	// a would-be custom type; answering "unsupported graph type" would report a
+	// name that was valid one release ago as one that never existed.
+	if reason, retired := kgtypes.RetiredGraphTypeReason(string(gt)); retired {
+		return fmt.Errorf("graph type %q is retired: %s", string(gt), reason)
+	}
 	registered, err := registeredGraphTypeNames(ctx, deps)
 	if err != nil {
 		return fmt.Errorf("graph %q: the graph-type registry could not be read, so the selector cannot be "+

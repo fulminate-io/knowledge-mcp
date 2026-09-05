@@ -25,10 +25,11 @@ type logE2EDeps struct {
 	gc GraphCaller
 }
 
-func (d *logE2EDeps) LocalLiveness() LocalLiveness    { return nil }
-func (d *logE2EDeps) Sink() collector.Sink            { return nil }
-func (d *logE2EDeps) RootDir() string                 { return "" }
-func (d *logE2EDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+func (d *logE2EDeps) LocalLiveness() LocalLiveness          { return nil }
+func (d *logE2EDeps) Sink() collector.Sink                  { return nil }
+func (d *logE2EDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
+func (d *logE2EDeps) RootDir() string                       { return "" }
+func (d *logE2EDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
 
 func (d *logE2EDeps) PropReady() bool     { return true }
 func (d *logE2EDeps) PipelineReady() bool { return true }

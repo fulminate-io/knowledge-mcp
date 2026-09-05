@@ -81,7 +81,13 @@ func (Format) Name() string { return formatName }
 // its correct width and was then ranked by Hamming distance over IEEE bit
 // patterns — a segment that is byte-correct, length-correct and ordered wrong,
 // with nothing anywhere reporting a problem.
-func (Format) Build(docs []searchengine.Document) (searchengine.Segment[[]byte, struct{}], error) {
+// THE ZERO BuildReport IS AN ANSWER, NOT A PLACEHOLDER. This build drops
+// nothing it was asked to index: a document with no vector is not
+// vector-indexable INPUT, and the loop below skips it before any indexing
+// decision is taken, so there is no contained loss for a census to name. A
+// future HNSW degrade class populates the field; until one exists, reporting an
+// empty census is the truthful answer rather than a stub.
+func (Format) Build(docs []searchengine.Document) (searchengine.Segment[[]byte, struct{}], searchengine.BuildReport, error) {
 	items := make([]binaryBuildItem, 0, len(docs))
 	for _, d := range docs {
 		if len(d.Vector) == 0 {
@@ -91,14 +97,15 @@ func (Format) Build(docs []searchengine.Document) (searchengine.Segment[[]byte, 
 	}
 	vecBytes, err := batchVecBytes(items)
 	if err != nil {
-		return nil, err
+		return nil, searchengine.BuildReport{}, err
 	}
 	dtype, err := batchBuildDtype(items)
 	if err != nil {
-		return nil, fmt.Errorf("hnsw build: %w", err)
+		return nil, searchengine.BuildReport{}, fmt.Errorf("hnsw build: %w", err)
 	}
 	graph := buildBinaryHNSWSerialDeterministic(items, vecBytes, dtype, defaultM, defaultEfConstruction)
-	return publishGraph(graph)
+	seg, err := publishGraph(graph)
+	return seg, searchengine.BuildReport{}, err
 }
 
 // publishGraph is the ONE seal-and-open path: it encodes a freshly built graph

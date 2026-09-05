@@ -74,8 +74,12 @@ const (
 	// interprocedural model, no taint configuration.
 	//
 	// THREE TYPES, NOT FOUR. The unresolved-callee fact is a FLOWS_TO_ARG edge in
-	// self-edge SHAPE, not a fourth type. Uppercase is forced by
-	// canonicalEdgeCasing (engine/compile.go:96-121).
+	// self-edge SHAPE, not a fourth type. The uppercase spelling is what the
+	// COLLECTOR WRITES and is therefore what the graph stores; nothing forces it
+	// at the client any more. A caller naming a lowercase spelling still reaches
+	// these edges, because the client resolves an edge-type spelling against the
+	// graph's own stored vocabulary and a unique case-insensitive match adopts
+	// the stored one.
 	//
 	// ENDPOINTS. FLOWS_TO_RETURN is a SELF-EDGE on the declaration. FLOWS_TO_ARG
 	// targets the callee's declaration — the same target the sibling CALLS edge

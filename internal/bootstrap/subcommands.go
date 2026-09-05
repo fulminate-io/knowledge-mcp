@@ -16,7 +16,8 @@ import (
 // RunSubcommand inspects os.Args[1] and, when it matches one of the
 // recognized CLI subcommands (login/logout/auth-status/accounts/account/
 // start/stop/status/serve/
-// install/setup/install-claude-assets/install-codex-assets/transcript-upload/tunnel/doctor/version),
+// install/setup/install-claude-assets/install-codex-assets/transcript-upload/tunnel/doctor/version/
+// restart-daemon),
 // dispatches to the appropriate handler.
 // Returns (handled=true, exitCode) when it handled the invocation so
 // the caller exits immediately. Returns (false, 0) when the first arg
@@ -38,7 +39,25 @@ func RunSubcommand() (handled bool, exitCode int) {
 	}
 	sub := os.Args[1]
 	rest := os.Args[2:]
-	var err error
+	err, recognized := dispatchSubcommand(sub, rest)
+	if !recognized {
+		return false, 0
+	}
+	if err != nil {
+		code, printMessage := subcommandExit(err)
+		if printMessage {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", sub, err)
+		}
+		return true, code
+	}
+	return true, 0
+}
+
+// dispatchSubcommand routes one recognized subcommand to its handler and
+// reports whether it recognized it at all. Split out of RunSubcommand so the
+// dispatch table can grow without the entry point outgrowing the function-length
+// gate; RunSubcommand keeps the argv read and the exit-code translation.
+func dispatchSubcommand(sub string, rest []string) (err error, recognized bool) {
 	switch sub {
 	case "login":
 		err = withSelectionRestart(func() error { return cli.LoginCmd(rest) })
@@ -76,17 +95,25 @@ func RunSubcommand() (handled bool, exitCode int) {
 		err = runDoctor(rest)
 	case "version":
 		err = runVersion(rest)
-	default:
-		return false, 0
-	}
-	if err != nil {
-		code, printMessage := subcommandExit(err)
-		if printMessage {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", sub, err)
+	case restartDaemonVerb:
+		// The child half of the background updater's restart handoff. Narrow by
+		// design — it installs the units and restarts to the target version,
+		// and does none of setup's config or asset work.
+		//
+		// THE GRAPH STORAGE DIRECTORY IS RESOLVED HERE, at the process boundary,
+		// and handed down. The verb installs process-global logging keyed off a
+		// path under it, so resolving it inside the verb lets ANY direct call to
+		// that function reach the operator's real store by omission — which is
+		// exactly what made the test suite write the operator's live daemon log.
+		if storage, serr := serviceGraphStorage(); serr != nil {
+			err = fmt.Errorf("knowledge %s: resolve the graph storage directory: %w", restartDaemonVerb, serr)
+		} else {
+			err = runRestartDaemon(rest, storage)
 		}
-		return true, code
+	default:
+		return nil, false
 	}
-	return true, 0
+	return err, true
 }
 
 // withSelectionRestart runs a command that can MOVE the stored account

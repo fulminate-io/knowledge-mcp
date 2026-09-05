@@ -28,15 +28,15 @@ import (
 // and aria_level_wins_over_the_heuristic.
 func (w *walker) handleStructural(n *html.Node) bool {
 	if isNativeHeading(n.DataAtom) {
-		w.handleHeading(n, headingDepth(n.DataAtom))
+		w.handleHeading(n, headingDepth(n.DataAtom), headingSourceNative, nil)
 		return true
 	}
 	if depth, ok := ariaHeadingLevel(n); ok {
-		w.handleHeading(n, depth)
+		w.handleHeading(n, depth, headingSourceAria, nil)
 		return true
 	}
-	if depth, ok := w.heuristic[n]; ok {
-		w.handleHeading(n, depth)
+	if sig, ok := w.heuristic[n]; ok {
+		w.handleHeading(n, sig.level, headingSourceHeuristic, &sig)
 		return true
 	}
 	switch n.DataAtom {
@@ -53,14 +53,16 @@ func (w *walker) handleStructural(n *html.Node) bool {
 		w.handleDL(n)
 		return true
 	case atom.Table:
-		// A LAYOUT table is page furniture: recurse into its subtree so the
-		// content it wraps is walked rather than swallowed. A DATA table
-		// keeps producing exactly the record it produced before.
-		if isLayoutTable(n) {
+		// EVERY table produces a table record carrying its verdict and the
+		// measurements behind it — the verdict is a SIGNAL, not a deletion.
+		// A LAYOUT table additionally has its subtree walked, so the content
+		// it wraps is emitted as its own records rather than swallowed; a
+		// DATA table is terminal, as it always was.
+		sig := classifyTable(n)
+		w.handleTable(n, sig)
+		if sig.Layout {
 			w.walkChildren(n)
-			return true
 		}
-		w.handleTable(n)
 		return true
 	case atom.Img:
 		w.handleImage(n, "")
@@ -90,6 +92,16 @@ func (w *walker) handleStructural(n *html.Node) bool {
 	return false
 }
 
+// The three values HeadingSource can take, one per dispatch arm. They are
+// constants rather than literals at the call sites because they are stamped
+// verbatim into the emitted node's `heading_source` metadata, where a consumer
+// matches on the exact string.
+const (
+	headingSourceNative    = "native"
+	headingSourceAria      = "aria"
+	headingSourceHeuristic = "heuristic"
+)
+
 // handleHeading converts a heading element into a new sectionRecord and
 // pushes it onto the stack. The section's heading text is the concatenated
 // inline text; anchor id comes from the element's id attribute.
@@ -99,7 +111,15 @@ func (w *walker) handleStructural(n *html.Node) bool {
 // carrying role="heading" with an explicit aria-level, or a presentation
 // marker the heuristic pre-pass promoted. All three arms therefore inherit
 // Anchor, Attrs and the firstH1 title fallback uniformly.
-func (w *walker) handleHeading(n *html.Node, depth int) {
+//
+// source NAMES THE ARM THAT DECIDED, and sig carries the heuristic arm's
+// measurements. sig is nil for the two authoritative arms and that nil is
+// meaningful rather than incidental: a native or aria section has no
+// calibration behind it, so it must carry no calibration keys. An
+// implementation that stamped the heuristic inputs on every section would
+// change nothing observable on the promoted ones, which is why the emitter's
+// negative direction is gated as explicitly as its positive one.
+func (w *walker) handleHeading(n *html.Node, depth int, source string, sig *headingSignal) {
 	text := collectProseText(n)
 	anchor := getAttr(n, "id")
 
@@ -108,10 +128,12 @@ func (w *walker) handleHeading(n *html.Node, depth int) {
 	}
 
 	sec := &sectionRecord{
-		Heading: text,
-		Depth:   depth,
-		Anchor:  anchor,
-		Attrs:   extractCommonAttrs(n),
+		Heading:         text,
+		Depth:           depth,
+		Anchor:          anchor,
+		Attrs:           extractCommonAttrs(n),
+		HeadingSource:   source,
+		HeuristicInputs: sig,
 	}
 	w.pushSection(sec)
 }
@@ -139,6 +161,23 @@ func headingDepth(a atom.Atom) int {
 // in addition to being preserved as text. InlineEmphasis is populated
 // alongside Text via a parallel walk that tracks offsets in the
 // collapsed text (see emitProseTextWithEmphasis).
+//
+// AN IMAGE INSIDE A TERMINAL HANDLER IS DROPPED ENTIRELY, AND THAT IS AN
+// EXPRESSLY APPROVED DECISION rather than an oversight. handleStructural
+// returns true for atom.P — and likewise for the list, cell and blockquote
+// handlers — so the walker never recurses into this element's children, and an
+// <img> whose only ancestor is a paragraph produces NO image node at all.
+// Measured: zero image nodes across a 27-page crawl of a site whose pages carry
+// images, against a 47-image control on a site that places them outside
+// terminal handlers.
+//
+// THE APPROVAL, in the user's terms: images are out of scope for this project,
+// so the loss is accepted rather than repaired. WHAT IS LOST is the image node
+// and its alt text for images nested inside prose containers; the page's full
+// response bytes are retained regardless, so nothing is unrecoverable from the
+// raw graph. Do not "fix" this by recursing from the terminal handlers without
+// the same explicit approval — that changes what every prose record contains,
+// not just whether images appear.
 func (w *walker) handleParagraph(n *html.Node) {
 	text := collectProseText(n)
 	if strings.TrimSpace(text) != "" {
@@ -191,10 +230,13 @@ func langFromClass(class string) string {
 // so each file stays under the 300 LOC recommended cap. They are
 // dispatched from handleStructural above.
 
-// handleTable emits a tableRecord.
-func (w *walker) handleTable(n *html.Node) {
+// handleTable emits a tableRecord carrying the classifier's signals. sig is
+// passed in rather than recomputed because the dispatch arm above already
+// needs the verdict to decide whether to walk the subtree, and classifying
+// twice would read the same table's whole scope twice per table.
+func (w *walker) handleTable(n *html.Node, sig tableSignals) {
 	headers, rows := extractTable(n)
-	w.append(tableRecord{Headers: headers, Rows: rows, Attrs: extractCommonAttrs(n)})
+	w.append(tableRecord{Headers: headers, Rows: rows, Signals: sig, Attrs: extractCommonAttrs(n)})
 	w.recordLinks(n)
 }
 

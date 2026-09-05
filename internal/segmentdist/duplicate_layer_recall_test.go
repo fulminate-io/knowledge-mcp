@@ -79,6 +79,7 @@ func sampledStoredVectorRecall(
 // investigation's own scratch runs measured 0.417 with the stored vector and
 // 0.254/0.183 with a hard-coded layer vector — same defect, same order.
 func TestRecallSurvivesDuplicateIdMerge(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()
@@ -122,6 +123,7 @@ func TestRecallSurvivesDuplicateIdMerge(t *testing.T) {
 // MERGE that consumes a window still holding both copies — which is why the drain
 // below is what the measurement is taken after, never before.
 func TestRecallSurvivesWindowScaleDuplicateMerge(t *testing.T) {
+	requireMeasurementRun(t)
 	t.Parallel()
 
 	ctx := context.Background()

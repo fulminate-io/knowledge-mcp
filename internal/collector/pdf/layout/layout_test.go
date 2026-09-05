@@ -35,11 +35,11 @@ func TestBlockLineLayout_ZeroValue(t *testing.T) {
 	if b.Kind != BlockUnknown {
 		t.Errorf("zero-value Kind = %q, want BlockUnknown (\"\")", b.Kind)
 	}
-	if b.PageIndex != 0 || b.HeadingLevel != 0 || b.Column != 0 {
-		t.Errorf("zero-value Block index/heading/column non-zero: %+v", b)
+	if b.PageIndex != 0 || b.HeadingLevel != 0 {
+		t.Errorf("zero-value Block index/heading non-zero: %+v", b)
 	}
-	if b.IsHeader || b.IsFooter || b.IsFootnote {
-		t.Errorf("zero-value Block flags should be false: %+v", b)
+	if b.Metadata != nil {
+		t.Errorf("zero-value Block.Metadata should be nil, got %v", b.Metadata)
 	}
 
 	var l Line

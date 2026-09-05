@@ -27,10 +27,11 @@ type fakeAssembleDeps struct {
 	gc GraphCaller
 }
 
-func (d *fakeAssembleDeps) LocalLiveness() LocalLiveness    { return nil }
-func (d *fakeAssembleDeps) Sink() collector.Sink            { return nil }
-func (d *fakeAssembleDeps) RootDir() string                 { return "" }
-func (d *fakeAssembleDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
+func (d *fakeAssembleDeps) LocalLiveness() LocalLiveness          { return nil }
+func (d *fakeAssembleDeps) Sink() collector.Sink                  { return nil }
+func (d *fakeAssembleDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
+func (d *fakeAssembleDeps) RootDir() string                       { return "" }
+func (d *fakeAssembleDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
 
 func (d *fakeAssembleDeps) PropReady() bool     { return true }
 func (d *fakeAssembleDeps) PipelineReady() bool { return true }

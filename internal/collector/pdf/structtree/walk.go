@@ -96,7 +96,7 @@ func initWalk(ctx *internalpdf.Context) (*internalpdf.StructTreeRootRef, runFor,
 	if root == nil {
 		return nil, nil, ErrNotTagged
 	}
-	rf := newRunFor(func(pageIndex int) ([]text.TextRun, error) {
+	rf := newRunFor(func(pageIndex int) ([]text.TextRun, layout.PageInfo, error) {
 		return extractRunsForPage(ctx, pageIndex)
 	})
 	return root, rf, nil

@@ -4,8 +4,6 @@ package treesitter
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,7 +11,13 @@ import (
 )
 
 // chunker_go_generic_call_test.go covers the generic-call arm of the Go Calls
-// query. That query matched call_expression only, but the grammar parses an
+// query, on a parse-only fixture. THE REAL-CORPUS KNOWN-POSITIVE THAT PAIRS
+// WITH IT reads the server module's store package as its entire corpus and
+// therefore lives in chunker_go_generic_call_server_test.go, which the sync
+// script removes from the published tree; this file ships and runs in both
+// layouts, because a fixture chunked in memory needs no tree at all.
+//
+// That query matched call_expression only, but the grammar parses an
 // explicitly instantiated generic call — `newPresizedMap[string, int](100)` —
 // as a type_conversion_expression wrapping a generic_type, so the site emitted
 // no CALLS edge at all.
@@ -104,57 +108,4 @@ func TestGoGenericCallCallees(t *testing.T) {
 	}
 
 	require.ElementsMatch(t, []string{"Conv", "Pair", "errs.AsType", "newPresizedMap"}, got)
-}
-
-// TestGoGenericCallEdgesInStorePackage is the real-corpus known-positive:
-// newPresizedMap is called through explicit instantiation across the store
-// package, and before the generic-call arm every one of those sites emitted
-// nothing.
-//
-// Containment, not equality, and nothing asserted about weights: the caller
-// count and the per-caller call-site counts are tree-derived and must not be
-// pinned.
-func TestGoGenericCallEdgesInStorePackage(t *testing.T) {
-	root := repoRootForCensus(t)
-	storeDir := filepath.Join(root, "cmd", "knowledge-server", "internal", "store")
-
-	entries, err := os.ReadDir(storeDir)
-	require.NoError(t, err)
-
-	chunker := NewChunker()
-	defer chunker.Close()
-
-	callers := make(map[string]bool)
-	files := 0
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
-			continue
-		}
-		path := filepath.Join(storeDir, entry.Name())
-		src, err := os.ReadFile(path)
-		require.NoError(t, err)
-
-		result, err := chunker.ChunkFile(context.Background(), path, src)
-		require.NoError(t, err)
-
-		files++
-		for _, e := range filterEdges(result.Edges, EdgeCalls) {
-			if e.ToID == "newPresizedMap" {
-				callers[e.FromID] = true
-			}
-		}
-	}
-
-	// KNOWN-POSITIVE CONTROL. Without it a walk that read nothing would satisfy
-	// every set assertion below vacuously.
-	require.Positive(t, files, "read no Go files under %s", storeDir)
-
-	for _, want := range []string{
-		"store.Graph.deserialize",
-		"store.Graph.readEdgeMetaSection",
-		"store.Graph.deserializeBinVectors",
-		"store.TestNewPresizedMap",
-	} {
-		require.Contains(t, callers, want)
-	}
 }

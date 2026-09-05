@@ -132,7 +132,6 @@ func TestInstanceField_EveryBuiltinFamilyPinned(t *testing.T) {
 		{kgtypes.GraphLogs, FieldName, name},
 		{kgtypes.GraphWebRaw, FieldName, name},
 		{kgtypes.GraphPDFRaw, FieldName, name},
-		{kgtypes.GraphTransformers, FieldName, name},
 
 		// A registered custom type is name-addressed by the default arm.
 		{kgtypes.GraphType("my-registered-type"), FieldName, name},

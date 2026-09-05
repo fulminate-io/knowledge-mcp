@@ -146,64 +146,18 @@ func TestCompileMutate_NamelessShapesNeverCarriedASelector(t *testing.T) {
 // one singleton graph, so the compiled Target must carry no instance field at all
 // (buildTarget collapses the all-empty case to a nil selector). Repo/Account/
 // Language/Branch are the same silent-discard class the per-family reject closed.
+//
+// ITS KNOWN-POSITIVE IS TestCompileMutate_NameAddressedFamiliesStillRoute below,
+// which asserts Target.Name == "the-instance" for logs / web / pdf / a registered
+// custom type. Without one, a compiler that could no longer put ANYTHING in
+// Target.Name would satisfy the emptiness here vacuously. (It used to be a
+// transformers bucket-pin test; that family was removed, and the name-addressed
+// control covers the same property.)
 func TestCompileMutate_KnowledgeFamilyTargetCarriesNoInstanceFields(t *testing.T) {
 	req := compileMutateForTest(t,
 		`{"operation":"update","id":"n1","name":"a node name","description":"d"}`)
 	assert.Nil(t, req.GetTarget(),
 		"a bare knowledge write names no graph instance, so it should emit no selector at all")
-}
-
-// TestCompileMutate_TransformersBucketPinSurvives is the KNOWN-POSITIVE control
-// for the assertions above: the emptiness they check is a real discrimination, not
-// a compiler that can no longer put anything in Target.Name. The transformers
-// family IS addressed by name, and every mutate arm pins it to the canonical
-// "recipes" bucket — the recipe's own name rides the node body, never the
-// selector. If a change ever made Target.Name unconditionally empty, this test
-// goes red while the emptiness assertions stay vacuously green.
-func TestCompileMutate_TransformersBucketPinSurvives(t *testing.T) {
-	cases := []struct {
-		name string
-		args string
-	}{
-		{
-			name: "create pins the bucket, not the recipe name",
-			args: `{"operation":"create","graph":"transformers","type":"recipe",` +
-				`"name":"my-source-to-target","content":"<DSL>"}`,
-		},
-		{
-			name: "upsert pins the bucket",
-			args: `{"operation":"upsert","graph":"transformers","type":"recipe","id":"r1",` +
-				`"name":"my-source-to-target","content":"<DSL>"}`,
-		},
-		{
-			name: "by-id update pins the bucket",
-			args: `{"operation":"update","graph":"transformers","id":"r1","name":"my-source-to-target"}`,
-		},
-		{
-			name: "update_batch pins the bucket",
-			args: `{"operation":"update_batch","graph":"transformers","name":"my-source-to-target",` +
-				`"items":[{"id":"r1","summary":"s"}]}`,
-		},
-		{
-			name: "bulk_update_metadata pins the bucket",
-			args: `{"operation":"bulk_update_metadata","graph":"transformers","name":"my-source-to-target",` +
-				`"updates":[{"id":"r1","metadata":{"k":"v"}}]}`,
-		},
-		{
-			name: "link pins the bucket",
-			args: `{"operation":"link","graph":"transformers","from":"r1","to":"r2",` +
-				`"relationship":"relates-to","name":"my-source-to-target"}`,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			req := compileMutateForTest(t, tc.args)
-			require.NotNil(t, req.GetTarget())
-			assert.Equal(t, "transformers", req.GetTarget().GetGraph())
-			assert.Equal(t, transformersBucketName, targetNameOf(req),
-				"every transformers mutation arm routes to the one canonical bucket")
-		})
-	}
 }
 
 // TestCompileMutate_NameAddressedFamiliesStillRoute is the control that keeps the

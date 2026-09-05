@@ -34,7 +34,7 @@ func GraphTypeToolDef() kgtools.MCPTool {
 			"register requires name + collector.binary_path (absolute) + collector.param_transport (\"stdin\" or \"flag:<name>\"); " +
 			"update requires name; delete requires name; list requires nothing further. " +
 			"The registered name must NOT collide with a built-in graph type " +
-			"(knowledge/code/cloud/cicd/practice/linkage/transformers/logs/web/pdf).",
+			"(knowledge/code/cloud/cicd/practice/linkage/checks/logs/web/pdf).",
 		InputSchema: kgtools.InputSchema{
 			Type: "object",
 			Properties: map[string]kgtools.Property{
