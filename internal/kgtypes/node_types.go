@@ -52,6 +52,12 @@ const (
 	NodeUseCase    NodeType = "use_case"    // granular pattern applies-when / avoid-when condition (pattern → use_case via applies-when / avoid-when edge)
 	NodeExample    NodeType = "example"     // pattern exemplar — code snippet or reference with language/attribution metadata
 
+	// NodeIdiom is the practice node a language-idiom landing writes: one
+	// convention of a language with an author-supplied summary. The wire string
+	// mirrors the server vocabulary (cmd/knowledge-server/internal/store/
+	// node_types_vocab.go NodeIdiom) verbatim, a deliberate per-module duplicate.
+	NodeIdiom NodeType = "idiom" // one language convention, from a language-idiom landing
+
 	// NodeSource is the HUB a practice node is grouped under in the combined
 	// practice graph. One hub per origin — a language, a catalog, or a collected
 	// run — and each practice node names exactly one of them, by a `source_hub`
@@ -129,7 +135,7 @@ var knowledgeTypes = map[NodeType]bool{
 	NodeTestPlan: true, NodeTestStep: true, NodeTestRun: true,
 	NodeAgent: true, NodeSkill: true, nodeToolGuide: true,
 	NodePattern: true, NodeReuseCheck: true,
-	NodeUseCase: true, NodeExample: true, NodeSource: true,
+	NodeUseCase: true, NodeExample: true, NodeSource: true, NodeIdiom: true,
 	NodeMetaValue:   true,
 	NodePlanSection: true, NodePlanAnnotation: true,
 }
