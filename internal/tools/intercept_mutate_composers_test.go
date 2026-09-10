@@ -11,6 +11,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/workingset"
 )
 
 // practiceNodeResult seeds a single practice-graph node body keyed by id for the
@@ -28,35 +29,42 @@ func practiceNodeResult(t *testing.T, id, typ string) kgtools.ToolResult {
 // ---------------------------------------------------------------------------
 
 // TestMutateComposers_CrossGraphLink_IntraPractice asserts that a
-// mutate(link, graph:practice) where BOTH endpoints resolve in the same
-// practice/<language> graph is claimed client-side and lowered to a LINK
-// MutationPlan targeting that practice graph (the engine routes cross-graph),
-// carrying the relationship the declaration path resolved against that graph's
-// own edge vocabulary rather than a lowercase fold.
+// mutate(link, graph:practice) where BOTH endpoints resolve in the practice
+// graph is claimed client-side and lowered to a LINK MutationPlan targeting it
+// (the engine routes cross-graph), carrying the relationship the declaration
+// path resolved against that graph's own edge vocabulary rather than a
+// lowercase fold.
+//
+// THE ARM NO LONGER REQUIRES A LANGUAGE, which is the inversion the combined
+// graph produced: it used to need one to know WHICH practice graph held both
+// endpoints, and there is one.
 func TestMutateComposers_CrossGraphLink_IntraPractice(t *testing.T) {
 	fc := &fakeGraphCaller{
-		// Both endpoints live in practice/design-patterns, NEITHER in knowledge —
-		// so the FROM-first probe confirms cross-graph (foreign FROM) and the
-		// intra-practice fast path then resolves both in practice/<language>.
+		// Both endpoints live in the combined practice graph, NEITHER in knowledge
+		// — so the FROM-first probe confirms cross-graph (foreign FROM) and the
+		// intra-practice fast path then resolves both in the one practice graph.
+		// KEYED UNDER "default", which is the graph the collector actually seals
+		// and what targetGraphKey now returns for a practice selector carrying no
+		// language. The empty-name key this used to carry named no graph at all.
 		queryResponsesByGraph: map[string]map[string]kgtools.ToolResult{
 			"knowledge": {},
 		},
 		queryResponsesByGraphName: map[graphKey]map[string]kgtools.ToolResult{
-			{Type: "practice", Name: "design-patterns"}: {
+			{Type: "practice", Name: workingset.DefaultInstanceName}: {
 				"pat-1": practiceNodeResult(t, "pat-1", "pattern"),
 				"uc-1":  practiceNodeResult(t, "uc-1", "use_case"),
 			},
 		},
-		listGraphsResult: listGraphsResultFor(t, [2]string{"practice", "design-patterns"}),
+		listGraphsResult: listGraphsResultFor(t, [2]string{"practice", "default"}),
 	}
 	deps := interceptTestDeps{gc: fc}
 	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
-		Arguments: json.RawMessage(`{"operation":"link","graph":"practice","language":"design-patterns","from":"pat-1","to":"uc-1","relationship":"Contains"}`),
+		Arguments: json.RawMessage(`{"operation":"link","graph":"practice","from":"pat-1","to":"uc-1","relationship":"Contains"}`),
 	})
 	require.True(t, handled, "intra-practice link must be claimed client-side")
 	require.False(t, res.IsError, "intra-practice link: %s", toolResultText(res))
-	assert.Contains(t, toolResultText(res), "Linked in practice/design-patterns: pat-1 -[Contains]-> uc-1")
+	assert.Contains(t, toolResultText(res), "Linked in practice: pat-1 -[Contains]-> uc-1")
 
 	// Exactly ONE LINK MutationPlan, targeting the practice graph, carrying the
 	// relationship the DECLARATION path resolved.
@@ -71,18 +79,20 @@ func TestMutateComposers_CrossGraphLink_IntraPractice(t *testing.T) {
 	require.NotNil(t, plan.GetSelection())
 	assert.Equal(t, []string{"pat-1"}, plan.GetSelection().GetIds())
 
-	// The Execute request envelope targets practice/<language>.
+	// The Execute request envelope targets the ONE practice graph, carrying no
+	// instance field — the assertion that used to name a language.
 	require.NotEmpty(t, fc.execRequests)
 	last := fc.execRequests[len(fc.execRequests)-1]
 	require.NotNil(t, last.GetTarget())
 	assert.Equal(t, "practice", last.GetTarget().GetGraph())
-	assert.Equal(t, "design-patterns", last.GetTarget().GetLanguage())
+	assert.Empty(t, last.GetTarget().GetLanguage(), "a practice write carries no instance field")
+	assert.Empty(t, last.GetTarget().GetName())
 }
 
 // TestMutateComposers_CrossGraphLink_ProxyFallsThrough asserts that when an
 // endpoint is NOT in the practice graph (the cross-graph proxy case), the
-// composer returns (false, _) so the call falls through to the live legacy
-// server handleCrossGraphLink. No client LINK MutationPlan is issued.
+// composer returns (false, _) so the call falls through to the legacy link
+// path rather than being composed here. No client LINK MutationPlan is issued.
 func TestMutateComposers_CrossGraphLink_ProxyFallsThrough(t *testing.T) {
 	fc := &fakeGraphCaller{
 		queryResponses: map[string]kgtools.ToolResult{
@@ -93,7 +103,7 @@ func TestMutateComposers_CrossGraphLink_ProxyFallsThrough(t *testing.T) {
 	deps := interceptTestDeps{gc: fc}
 	handled, _ := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
-		Arguments: json.RawMessage(`{"operation":"link","graph":"practice","language":"design-patterns","from":"pat-1","to":"missing-node","relationship":"relates-to"}`),
+		Arguments: json.RawMessage(`{"operation":"link","graph":"practice","from":"pat-1","to":"missing-node","relationship":"relates-to"}`),
 	})
 	assert.False(t, handled, "proxy case must fall through to the legacy server handler")
 	assert.Empty(t, fc.execMutations, "no client LINK MutationPlan issued on the proxy fall-through")
@@ -214,13 +224,13 @@ func TestMutateComposers_CreateStampsLLMClaudeSource(t *testing.T) {
 
 // TestMutateComposers_PracticeCreate_TargetRouted asserts a practice create
 // (no link_graph) is claimed client-side and lowered to a CREATE MutationPlan
-// whose Execute envelope targets practice/<language>.
+// whose Execute envelope targets the ONE practice graph.
 func TestMutateComposers_PracticeCreate_TargetRouted(t *testing.T) {
 	fc := &fakeGraphCaller{mutateIDs: []string{"new-pat"}}
 	deps := interceptTestDeps{gc: fc}
 	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
-		Arguments: json.RawMessage(`{"operation":"create","graph":"practice","language":"go","type":"finding","name":"P","summary":"s"}`),
+		Arguments: json.RawMessage(`{"operation":"create","graph":"practice","type":"finding","name":"P","summary":"s"}`),
 	})
 	require.True(t, handled, "practice create (no link_graph) must be claimed client-side")
 	require.False(t, res.IsError, "practice create: %s", toolResultText(res))
@@ -231,7 +241,13 @@ func TestMutateComposers_PracticeCreate_TargetRouted(t *testing.T) {
 	target := fc.execRequests[len(fc.execRequests)-1].GetTarget()
 	require.NotNil(t, target)
 	assert.Equal(t, "practice", target.GetGraph())
-	assert.Equal(t, "go", target.GetLanguage())
+	// INVERTED WITH THE COMBINED GRAPH. The target used to carry the caller's
+	// language; practice is a singleton now, so the selector carries no instance
+	// field at all and the server's practice policy row refuses one. Asserting the
+	// EMPTY value rather than deleting the assertion is what catches a builder
+	// that starts sending a name again.
+	assert.Empty(t, target.GetLanguage(), "a practice write carries no instance field")
+	assert.Empty(t, target.GetName(), "and does not fall through to a name either")
 }
 
 // TestMutateComposers_PracticeUpdate_TargetRouted asserts a practice by-id
@@ -241,7 +257,7 @@ func TestMutateComposers_PracticeUpdate_TargetRouted(t *testing.T) {
 	deps := interceptTestDeps{gc: fc}
 	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
-		Arguments: json.RawMessage(`{"operation":"update","graph":"practice","language":"go","id":"pat-1","status":"active"}`),
+		Arguments: json.RawMessage(`{"operation":"update","graph":"practice","id":"pat-1","status":"active"}`),
 	})
 	require.True(t, handled)
 	require.False(t, res.IsError, "practice update: %s", toolResultText(res))
@@ -257,7 +273,7 @@ func TestMutateComposers_PracticeDelete_TargetRouted(t *testing.T) {
 	deps := interceptTestDeps{gc: fc}
 	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
-		Arguments: json.RawMessage(`{"operation":"delete","graph":"practice","language":"go","ids":["a","b"]}`),
+		Arguments: json.RawMessage(`{"operation":"delete","graph":"practice","ids":["a","b"]}`),
 	})
 	require.True(t, handled)
 	require.False(t, res.IsError, "practice delete: %s", toolResultText(res))

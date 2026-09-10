@@ -108,23 +108,19 @@ func TestRunRecipe_MultiRuleCompose_ReturnsExpectedRows(t *testing.T) {
 	assert.Equal(t, StableID(TargetKey(target), slug, "pattern", "alpha-detail"),
 		res.Nodes[0].GetId(), "the identity the lookup resolved is the emit's StableID")
 
-	// Exactly one cross-emit link landed, and exactly one lineage edge for the
-	// single emit.
-	var linkEdges, lineageEdges int
+	// Exactly one cross-emit link landed, and it is the ONLY edge the run
+	// produced: the translated-from edge back into the raw graph is retired, so a
+	// composed run's edge list is its link rules and nothing else.
+	var linkEdges int
 	for _, e := range res.Edges {
 		if e.Type == kgtypes.EdgeType("relates-to") {
 			linkEdges++
 		}
-	}
-	for _, e := range res.Lineage {
-		if e.Type == kgtypes.EdgeTranslatedFrom {
-			lineageEdges++
-			assert.Equal(t, slug, SourceFromEvidence(e.Evidence))
-			assert.Equal(t, "p_a", e.ToID, "lineage anchors at the representative source row")
-		}
+		assert.NotEqual(t, kgtypes.EdgeTranslatedFrom, e.Type,
+			"no run builds a provenance edge into the raw source graph")
 	}
 	assert.Equal(t, 1, linkEdges, "exactly one cross-emit link landed")
-	assert.Equal(t, 1, lineageEdges, "exactly one lineage edge for the single emit")
+	assert.Len(t, res.Edges, 1, "and it is the whole edge list")
 
 	// Hand-computed Stats.
 	assert.Equal(t, 1, res.Stats.LookupsResolved)

@@ -111,7 +111,7 @@ func TestHandleCloudStatus_CollectRuns(t *testing.T) {
 
 	var got map[string]any
 	require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(opCtx(), deps, "json"))), &got))
-	assert.Equal(t, "cloud", got["backend"])
+	assert.Equal(t, "cloud", got["backend"], "the JSON backend key names FULMINATE CLOUD, the paid backend, not a graph family")
 	assert.Contains(t, got, "collect_runs")
 }
 

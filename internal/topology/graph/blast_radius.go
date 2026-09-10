@@ -182,37 +182,21 @@ func parseEdgeTypeOverride(req foundation.Request) []kgtypes.EdgeType {
 // reverseEdgeTypesFor returns the default reverse-BFS edge type list for
 // each graph type. Decisions baked in here:
 //
-//   - Cloud: every collector edge type that represents a real dependency.
-//     Listed explicitly (rather than "all edges") to keep the BFS away
-//     from cosmetic relationships like OWNED_BY-only k8s linkage that
-//     produces noisy reachability.
 //   - Code: CALLS only — the canonical "X depends on Y" edge.
 //   - Knowledge: relates-to + contains + informed-by + produced.
 //   - Linkage / Practice: knowledge fallback list (these graphs are
 //     small enough that the same set is fine).
+//
+// THERE WAS A CLOUD ARM AND IT IS GONE RATHER THAN RE-POINTED. It listed
+// eighteen built-in cloud dependency edge types explicitly, and every one of
+// them was a constant the built-in cloud collectors emitted; with those
+// collectors deleted the vocabulary has no producer to enumerate. A contrib
+// collector's graph reaches the default arm, which is the honest answer for a
+// family whose edge vocabulary this binary does not know: rebuilding a
+// per-family reverse set against the registered types is a separate piece of
+// work with its own evidence, not a rename of this list.
 func reverseEdgeTypesFor(g kgtypes.GraphType) []kgtypes.EdgeType {
 	switch g {
-	case kgtypes.GraphCloud:
-		return []kgtypes.EdgeType{
-			kgtypes.EdgeUsesNetwork,
-			kgtypes.EdgeUsesSubnet,
-			kgtypes.EdgeUsesSA,
-			kgtypes.EdgeUsesPVC,
-			kgtypes.EdgeUsesSecurityGroup,
-			kgtypes.EdgeTargets,
-			kgtypes.EdgeRoutesTo,
-			kgtypes.EdgeAssumesRole,
-			kgtypes.EdgeMountsSecret,
-			kgtypes.EdgeMountsConfigMap,
-			kgtypes.EdgeBoundTo,
-			kgtypes.EdgeOwnedBy,
-			kgtypes.EdgeSelects,
-			kgtypes.EdgeContains,
-			kgtypes.EdgeMonitors,
-			kgtypes.EdgeUsesImage,
-			kgtypes.EdgeTrusts,
-			kgtypes.EdgeSharedWith,
-		}
 	case kgtypes.GraphCode:
 		return []kgtypes.EdgeType{kgtypes.EdgeCalls}
 	default:

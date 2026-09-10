@@ -31,9 +31,30 @@ func TestRenderAndWriteConfig_PreservesSelection(t *testing.T) {
 		t.Fatalf("seed selection: %v", err)
 	}
 
+	// A hard link shares the ORIGINAL inode. The rewrite must publish a new
+	// file by rename: the daemon reads this path on a TTL, and a rewrite that
+	// truncates in place, or that writes the starter first and patches the
+	// selection in afterwards, leaves a selection-free config readable in
+	// between. The link still holding the seeded bytes afterwards proves the
+	// original inode was never touched.
+	seeded, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read seeded config: %v", err)
+	}
+	shadow := filepath.Join(dir, "shadow")
+	if err := os.Link(cfgPath, shadow); err != nil {
+		t.Skipf("hard links unsupported here: %v", err)
+	}
+
 	detected := config.DetectedProvider{Provider: config.ProviderAnthropic, Model: "claude-haiku-5"}
 	if err := renderAndWriteConfig(cfgPath, detected, config.Credentials{}); err != nil {
 		t.Fatalf("renderAndWriteConfig: %v", err)
+	}
+
+	if after, rerr := os.ReadFile(shadow); rerr != nil {
+		t.Fatalf("read shadow: %v", rerr)
+	} else if string(after) != string(seeded) {
+		t.Errorf("setup rewrote the config inode in place — a concurrent reader could observe a selection-free file.\n shadow now: %q\n seeded:     %q", after, seeded)
 	}
 
 	got, err := config.ReadSelectedAccountID(cfgPath)

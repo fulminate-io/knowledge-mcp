@@ -66,23 +66,41 @@ func asExecutor(gc GraphCaller) (Executor, error) {
 }
 
 // graphTarget builds the GraphSelector for a cross-graph fetch. The MCP wire
-// keys each graph family by its typed selector field: `language` for practice,
-// `repo` for code, `account` for cloud and cicd, and `name` for the rest (logs,
-// checks, …). Routing an instance name through the wrong field is not a
-// soft failure — the server's resolver rejects the selector before any graph
-// lookup (the code resolver REQUIRES sel.Repo, the cloud/cicd resolver REQUIRES
-// sel.Account), so a wrongly-keyed selector fails every cross-graph fetch for
-// that family. That per-family mapping is owned by graphsel.InstanceField, the
+// keys each graph family by its typed selector field: `repo` for code, `name`
+// for the rest (web, pdf, a registered custom type, …), and NOTHING for a
+// singleton family — practice is one of those now, and `language` survives on it
+// only as the legacy read spelling this helper deliberately re-adds below (checks
+// has no such spelling at all). Routing an instance name through the wrong field
+// is not a soft failure — the server's resolver rejects the selector before any
+// graph lookup (the code resolver REQUIRES sel.Repo, and a name-keyed family
+// REQUIRES sel.Name), so a wrongly-keyed selector fails every cross-graph fetch
+// for that family. That per-family mapping is owned by graphsel.InstanceField, the
 // single switch in the client; this helper delegates to it rather than carrying
 // a second hand-maintained copy that can drift a family at a time.
 // omitDefaultName is false here: a caller supplying an explicit graph name means
 // it, including the literal "default". Empty graphType → nil (the
 // knowledge/default graph).
+//
+// PRACTICE IS THE ONE FAMILY THIS HELPER ADDS A FIELD TO AFTER THE DERIVATION,
+// and the exception is narrow enough to write down. The practice family became a
+// singleton, so graphsel puts NO instance field on its selector — which is right
+// for every write and for an unselected read, and wrong for the one thing this
+// helper does: it addresses a NAMED graph, and the callers that hand it a
+// practice name are cross-graph probes walking the PRE-SINGLETON graphs. Left
+// derived, every one of those probes would ask the combined graph about an id
+// that lives in a legacy one and answer a confident not-found.
+//
+// It is a READ-ONLY spelling. `language` is refused on every practice write arm
+// and again by the server's resolver, so this cannot route a write anywhere.
 func graphTarget(graphType, graphName string) *knowledgev1.GraphSelector {
 	if graphType == "" {
 		return nil
 	}
-	return graphsel.GraphSelectorFor(kgtypes.GraphType(graphType), graphName, false)
+	sel := graphsel.GraphSelectorFor(kgtypes.GraphType(graphType), graphName, false)
+	if kgtypes.GraphType(graphType) == kgtypes.GraphPractice && graphName != "" {
+		sel.Language = graphName
+	}
+	return sel
 }
 
 // decodeCarrierNodes reads the typed Nodes carrier (the same carrier the engine

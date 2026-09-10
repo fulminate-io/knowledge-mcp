@@ -38,11 +38,9 @@ import (
 // on, gives it arms in queryArmRegistry.
 var queryClaimEntryPoints = []string{
 	"InterceptFileSymbols",
-	"InterceptLogsQuery",
 	"InterceptQuery",
 	"InterceptQueryAnalyzeNode",
 	"InterceptQueryBuiltinStats",
-	"InterceptQueryCloudCICD",
 	"InterceptQueryCodeSearch",
 	"InterceptQueryCorrelationsPivot",
 	"InterceptQueryEvidence",
@@ -132,13 +130,16 @@ var queryPayloadNamedStructs = []string{
 const queryPayloadAnonStructCount = 2
 
 // queryDeclaredParamCount is the number of params QueryToolDef() declares: the
-// 52 it carried before this plan plus the nine the census found consumed but
-// undeclared.
+// 52 it carried before that plan, plus the nine the census found consumed but
+// undeclared, plus `source`.
 //
-// A PLAN-MANDATED count, not a tree-derived one, so it stays LOCKED. A tenth
-// addition must arrive with a plan revision rather than a quiet bump of this
-// constant.
-const queryDeclaredParamCount = 61
+// A PLAN-MANDATED count, not a tree-derived one, so it stays LOCKED. An addition
+// must arrive with a plan revision rather than a quiet bump of this constant.
+//
+// 61 → 62 for `source`, the practice SOURCE HUB selector, added when the eight
+// per-language practice graphs became one combined graph and the per-graph
+// addressing they provided had to be replaced by a per-node one.
+const queryDeclaredParamCount = 62
 
 // queryDeclaredWithoutCarrier justifies each declared query param that no
 // query-payload arg struct carries. Such a param is advertised to callers and

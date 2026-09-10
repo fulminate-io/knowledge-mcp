@@ -102,10 +102,6 @@ var fulminateCallPathManifest = []censusRow{
 
 	// Third-party APIs the collectors and providers talk to.
 	{File: "internal/backends/linear/client.go", Symbol: "http.NewRequestWithContext#1", Disposition: dispExcluded},
-	{File: "internal/collector/cicd/bitbucket/client.go", Symbol: "http.NewRequestWithContext#1", Disposition: dispExcluded},
-	{File: "internal/collector/cicd/bitbucket/client.go", Symbol: "http.NewRequestWithContext#2", Disposition: dispExcluded},
-	{File: "internal/collector/cloud/azure/aad_groups_http.go", Symbol: "http.NewRequestWithContext#1", Disposition: dispExcluded},
-	{File: "internal/collector/logs/loki/loki.go", Symbol: "http.NewRequestWithContext#1", Disposition: dispExcluded},
 	{File: "internal/collector/web/fetch.go", Symbol: "http.NewRequestWithContext#1", Disposition: dispExcluded},
 	{File: "internal/collector/web/github_materializer_fetch.go", Symbol: "http.NewRequestWithContext#1", Disposition: dispExcluded},
 	{File: "internal/embed/cohere.go", Symbol: "http.NewRequestWithContext#1", Disposition: dispExcluded},
@@ -116,6 +112,13 @@ var fulminateCallPathManifest = []censusRow{
 	{File: "internal/llm/gemini/gemini.go", Symbol: "http.NewRequestWithContext#1", Disposition: dispExcluded},
 	{File: "internal/llm/openai/service.go", Symbol: "http.NewRequestWithContext#1", Disposition: dispExcluded},
 	{File: "internal/rerank/voyage.go", Symbol: "http.NewRequestWithContext#1", Disposition: dispExcluded},
+	// The custom-collector http provider. It is a THIRD PARTY BY DEFINITION —
+	// somebody else's MCP server, named by an operator's own config entry — so
+	// a client-version header would tell an unrelated host something about our
+	// users for no benefit. The clone is where the operator's OWN headers are
+	// set, and the daemon composes none of its own there: two corpus checks
+	// watch that a header value never comes out of the daemon's environment.
+	{File: "internal/externalcollector/mcphost.go", Symbol: "req.Clone#1", Disposition: dispExcluded},
 
 	// Loopback requests to this machine's own daemon, and the TCP dialers
 	// beneath the transports above. No Fulminate host, and for the dialers no
@@ -123,6 +126,13 @@ var fulminateCallPathManifest = []censusRow{
 	{File: "internal/bootstrap/lifecycle_subcommand.go", Symbol: "http.NewRequestWithContext#1", Disposition: dispExcluded},
 	{File: "internal/bootstrap/version_subcommand.go", Symbol: "http.NewRequestWithContext#1", Disposition: dispExcluded},
 	{File: "internal/bootstrap/version_subcommand.go", Symbol: "d.DialContext#1", Disposition: dispExcluded},
+	// `knowledge check run` asks the daemon on this machine to perform the
+	// corpus scan, over the same loopback MCP endpoint the version probe above
+	// uses and with the same h2c transport shape. The request never leaves the
+	// host: the endpoint is built from a literal 127.0.0.1 and a port flag, and
+	// whatever the daemon does NEXT is stamped where the daemon does it.
+	{File: "internal/bootstrap/check_daemon_route.go", Symbol: "http.NewRequestWithContext#1", Disposition: dispExcluded},
+	{File: "internal/bootstrap/check_daemon_route.go", Symbol: "d.DialContext#1", Disposition: dispExcluded},
 	{File: "internal/bootstrap/lifecycle.go", Symbol: "net.DialTimeout#1", Disposition: dispExcluded},
 	{File: "internal/graphclient/client.go", Symbol: "d.DialContext#1", Disposition: dispExcluded},
 	{File: "internal/graphclient/upload_meter.go", Symbol: "<recv>.DialContext#1", Disposition: dispExcluded},

@@ -38,6 +38,34 @@ func TestAnalyzeUsageSchema_DeclaresScopeSelector(t *testing.T) {
 		}
 	})
 
+	t.Run("the agent property documents the name form and how it resolves", func(t *testing.T) {
+		agent := props["agent"].Description
+		assert.Contains(t, agent, "name", "an operator holds the spawn name, so the schema must say a name is accepted")
+		assert.Contains(t, agent, "id", "and that the cache lane id still is")
+		assert.Contains(t, agent, "resolved against the cache within session when one is given",
+			"the schema must state HOW a name resolves, not merely mention session — a one-line "+
+				"description carrying the four words and no rule would otherwise keep this green")
+		assert.Contains(t, agent, "ambiguous", "and what happens when a name matches more than one lane")
+		assert.Contains(t, props["session"].Description, "Session id", "session keeps its own meaning")
+	})
+
+	t.Run("the scope property no longer refuses a session beside an agent", func(t *testing.T) {
+		scope := props["scope"].Description
+		assert.NotContains(t, scope, "requires exactly one of session or agent",
+			"single now admits the pair for a lane name; the stale clause tells every LLM caller the opposite")
+		assert.Contains(t, scope, "name",
+			"and the replacement says what single accepts instead of leaving the rule unstated")
+	})
+
+	t.Run("the tool description narrows the cold-cache note and keeps the corpus paragraph", func(t *testing.T) {
+		d := AnalyzeUsageToolDef().Description
+		assert.Contains(t, d, "--seed", "the hint's own advice stays discoverable from the tool doc")
+		assert.Contains(t, d, "holds no lanes",
+			"the hint now means an empty cache specifically, and the doc must say so or it understates the behaviour")
+		assert.Contains(t, d, "RETAINS",
+			"the corpus-retention explanation is load-bearing and no test elsewhere covers it")
+	})
+
 	t.Run("the operation enum is unchanged", func(t *testing.T) {
 		op, ok := props["operation"]
 		require.True(t, ok)

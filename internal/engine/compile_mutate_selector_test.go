@@ -68,10 +68,12 @@ func TestCompileMutate_NodeNameNeverRidesTheGraphSelector(t *testing.T) {
 			args: `{"operation":"create_batch","name":"a node name","nodes":[{"type":"finding","name":"n","summary":"s"}]}`,
 		},
 		{
-			// upsertLogBackend (tools_logs_manage_backend.go) sends the backend's
-			// display name here on every configure_log_backend call.
+			// The surviving live producer of this shape: graphtypecrud/client.go
+			// sends the family's display name on every graph_type_def upsert
+			// (client.go:145). The header's log-backend row is the historical
+			// repro; this is the one a caller can still reach.
 			name: "upsert carries the node name",
-			args: `{"operation":"upsert","type":"log-backend","id":"lb1","name":"prod-loki","description":"d"}`,
+			args: `{"operation":"upsert","type":"graph_type_def","id":"jira","name":"jira","description":"d"}`,
 		},
 		{
 			// The live repro row: a criterion description update derives name=description
@@ -184,7 +186,10 @@ func TestCompileMutate_NameAddressedFamiliesStillRoute(t *testing.T) {
 // TestCompileMutate_TypedInstanceFieldsStillRide is the second known-positive
 // control: dropping the node name from the selector must not disturb the
 // per-family instance discriminants the batch write-back paths depend on
-// (code by repo@branch, cloud/cicd by account, practice by language).
+// (code by repo@branch). Practice is NOT among them any more — it is a singleton
+// and carries no instance field, which the subtest below asserts rather than
+// assumes, and no family is account-keyed at all since the account-keyed
+// inventory families retired with their built-in collectors.
 func TestCompileMutate_TypedInstanceFieldsStillRide(t *testing.T) {
 	t.Run("code routes by repo and branch", func(t *testing.T) {
 		req := compileMutateForTest(t,
@@ -195,21 +200,35 @@ func TestCompileMutate_TypedInstanceFieldsStillRide(t *testing.T) {
 		assert.Equal(t, "feat", req.GetTarget().GetBranch())
 		assert.Empty(t, targetNameOf(req))
 	})
-	t.Run("cloud routes by account", func(t *testing.T) {
+	t.Run("an account carries onto no family's target", func(t *testing.T) {
+		// NO FAMILY IS ACCOUNT-KEYED. The account-keyed inventory families are
+		// retired, so graphsel projects no account onto a mutate Target — this row
+		// asserts the absence rather than dropping the account column from the
+		// table, because the wire field and the tool parameter both survive and a
+		// caller can still send one.
 		req := compileMutateForTest(t,
-			`{"operation":"create","graph":"cloud","account":"aws-123","type":"resource",`+
-				`"name":"a node name","summary":"s"}`)
+			`{"operation":"update_batch","graph":"code","repo":"myrepo","account":"acme",`+
+				`"name":"a node name","items":[{"id":"a","summary":"s"}]}`)
 		require.NotNil(t, req.GetTarget())
-		assert.Equal(t, "aws-123", req.GetTarget().GetAccount())
-		assert.Empty(t, targetNameOf(req))
+		assert.Empty(t, req.GetTarget().GetAccount(),
+			"a caller-supplied account must reach no Target: no family consumes it")
+		assert.Equal(t, "myrepo", req.GetTarget().GetRepo(),
+			"and the family's own key still rides")
 	})
-	t.Run("practice routes by language", func(t *testing.T) {
+	t.Run("practice carries no instance field", func(t *testing.T) {
+		// INVERTED WITH THE COMBINED GRAPH. Practice used to route its instance by
+		// language; the family holds ONE graph now, so the compiled Target carries
+		// no instance field at all — the same shape checks has, asserted by the
+		// sibling test below. The payload names no language because a practice
+		// WRITE refuses one.
 		req := compileMutateForTest(t,
-			`{"operation":"create","graph":"practice","language":"go","type":"pattern",`+
+			`{"operation":"create","graph":"practice","type":"pattern",`+
 				`"name":"a node name","summary":"s"}`)
 		require.NotNil(t, req.GetTarget())
-		assert.Equal(t, "go", req.GetTarget().GetLanguage())
-		assert.Empty(t, targetNameOf(req))
+		assert.Empty(t, req.GetTarget().GetLanguage(),
+			"a practice write consumes no instance field")
+		assert.Empty(t, targetNameOf(req),
+			"and the node name must not fall through onto the selector")
 	})
 }
 
@@ -220,17 +239,23 @@ func TestCompileMutate_TypedInstanceFieldsStillRide(t *testing.T) {
 //
 // WHY READS WORKED AND WRITES DID NOT. The read paths build their selector with
 // an explicitly empty instance name, so they were correct by construction and
-// the scanner's own tests passed. Writes go through mutateTargetName, and checks
-// was missing from nameBlindGraphFamilies — so the mutate tool's `name` param,
+// the scanner's own tests passed. Writes go through mutateTarget, and checks was
+// missing from the hand-maintained map of name-blind families it consulted at the
+// time — so the mutate tool's `name` param,
 // which is the NODE name ("Node name or title"), rode into GraphSelector.Name.
 // The server then refused the write: "graph=checks holds ONE graph: it does not
 // accept name=".
 //
 // This is the same defect the sibling test above pins for the knowledge family.
-// It recurred because checks is a THIRD copy of one partition — the server's
-// selectorFieldPolicies, this file's nameBlindGraphFamilies, and
-// graphsel.InstanceField all encode "which field addresses an instance of this
-// family", and adding a family to one does not add it to the others.
+// It recurred because the partition was written down THREE times — the server's
+// selectorFieldPolicies, a hand-maintained name-blind-family map in the compiler,
+// and graphsel.InstanceField all encoded "which field addresses an instance of
+// this family", and adding a family to one did not add it to the others.
+//
+// THAT THIRD COPY IS GONE. mutateTarget derives from graphsel.InstanceField and
+// holds no family switch, which is why the practice family became a singleton
+// with zero edits in this package. Two copies remain, on either side of the wire,
+// and they are held together by tests rather than by an import.
 //
 // THE SERVER HALF is TestValidateGraphSelector_ChecksWriteShapeAccepted, which
 // feeds this exact shape to validateGraphSelector. The two cannot be one test:

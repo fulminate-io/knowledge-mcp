@@ -33,6 +33,16 @@ type manageChecksArgs struct {
 	// every language while an explicit one is refused for a language with no
 	// test-file convention, and a plain bool cannot tell those apart.
 	IncludeTests *bool `json:"include_tests,omitempty"`
+	// Files carries NO omitempty, deliberately. An absent key decodes to a NIL
+	// slice and a supplied empty array to a non-nil empty one, and that is the
+	// only way this arm can tell "no file list" from "a file list the caller got
+	// wrong" — the second is refused, never widened back to the whole tree.
+	Files []string `json:"files"`
+	// Compact is a POINTER for the same three-state reason IncludeTests is: an
+	// omitted flag means "the default for this scope", which is compact for a
+	// file list and full for every other, and a plain bool cannot tell that from
+	// an explicit false.
+	Compact *bool `json:"compact,omitempty"`
 
 	Name        string `json:"name,omitempty"`
 	Summary     string `json:"summary,omitempty"`

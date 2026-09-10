@@ -62,6 +62,13 @@ func handleAstReplace(ctx context.Context, deps ClientDeps, a astArgs) kgtools.T
 		return errorResult(ferr.Error())
 	}
 
+	// And one leaf over again, for the same reason on the same path: a capture
+	// reference nothing declares would make a replace report zero rewrites with
+	// no error, which reads as a migration that had nothing left to do.
+	if cerr := ast.ValidateWhereCaptureRefs(where, parsedPatterns(patterns)...); cerr != nil {
+		return errorResult(cerr.Error())
+	}
+
 	if perr := validateContextPin(a.Context, lang); perr != nil {
 		return errorResult(perr.Error())
 	}

@@ -171,8 +171,8 @@ func (r *Router) Local() *GraphClient {
 // IngestClient is the per-call-routed IngestService picker. It resolves the
 // backend *GraphClient via pick(ctx) — cloud when logged-in, local
 // otherwise — and returns that backend's IngestServiceClient (client.go:88).
-// The collect UploadSink invokes this per CollectChunk/Finalize/FetchCloudSubgraph
-// so a mid-session login flip re-routes the next chunk without a restart.
+// The collect UploadSink invokes this per CollectChunk/Finalize so a
+// mid-session login flip re-routes the next chunk without a restart.
 // Mirrors the Execute/Stats forwarder shape, but returns the IngestService
 // client rather than driving an RPC (the sink owns the CollectChunk flow).
 func (r *Router) IngestClient(ctx context.Context) (knowledgev1connect.IngestServiceClient, error) {
@@ -351,7 +351,7 @@ func (r *Router) FreshnessGen(ctx context.Context) uint64 {
 
 // Stats is the per-call-routed EngineService.Stats forwarder. Mirrors
 // (*GraphClient).Stats (client.go:111) so the statsRPC type assertion
-// (intercept_query_cloud_cicd.go:236, intercept_query_stats.go:53, etc.)
+// (stats_seam.go, intercept_query_stats.go:53, etc.)
 // succeeds when GraphCaller() returns a *Router.
 func (r *Router) Stats(
 	ctx context.Context,

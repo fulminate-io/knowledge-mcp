@@ -41,6 +41,14 @@ const (
 	classifyNoExecutor  = "no executor for this check type"
 	classifyEnvironment = "the fixture could not be placed on disk"
 	classifyFixtureBind = "a fixture binding does not resolve in this corpus"
+	// classifyScope is the fifth state, and it belongs beside the four above
+	// rather than in its own vocabulary: a check whose DECLARED SCOPE cannot be
+	// read is a check that may not execute, told to the reader in the same words
+	// and counted by the same fold. It is not one of the contract's sentinels
+	// because the scope keys are not the contract's — they are the style-rule
+	// vocabulary, shared with the practice side — so it is classified here by
+	// construction rather than by errors.Is.
+	classifyScope = "the check's declared scope is malformed"
 )
 
 // probeTempDir asks ONCE per run whether this host can place a fixture on disk.
@@ -223,9 +231,20 @@ func plural(n int, one, many string) string {
 	return many
 }
 
-// checkPathPrefixes renders req.PathPrefix as the one-element slice ast.Scope
-// takes, or nil when no narrowing was asked for.
-func checkPathPrefixes(prefix string) []string {
+// checkPathPrefixes renders the run's scope as the slice ast.Scope takes, or nil
+// when no narrowing was asked for. The two channels are mutually exclusive, so
+// at most one of them is ever in force here.
+//
+// A FILE LIST IS HANDED OVER WHOLE, INCLUDING THE PATHS OF OTHER LANGUAGES that
+// the disclosure separately names. Passing only the corpus-language paths would
+// hand ast.Scope an EMPTY slice for an all-other-language list, and an empty
+// PackagePrefixes means NO RESTRICTION — the whole repository, walked under a
+// scope the caller wrote to narrow it. The walk's own language filter drops
+// those paths anyway, so keeping them costs nothing and closes that widening.
+func checkPathPrefixes(prefix string, files *fileScope) []string {
+	if files != nil {
+		return files.named
+	}
 	if strings.TrimSpace(prefix) == "" {
 		return nil
 	}

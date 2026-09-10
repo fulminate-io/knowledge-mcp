@@ -292,8 +292,8 @@ func (s *Set) signal(ref Ref) {
 //     send. Both are listed in singleInstanceGraphs below.
 //
 // AN EMPTY NAME MEANS TWO OPPOSITE THINGS AND THE LIST IS WHAT TELLS THEM APART.
-// For code / cloud / practice it means the caller named no repo, account or
-// language — a catalog enumeration, which must admit nothing, and that refusal is
+// For code it means the caller named no repo — a
+// catalog enumeration, which must admit nothing, and that refusal is
 // the structural half of the admission gate. For a family with no instance field
 // to leave empty, it is not an absent selector at all: it IS the one instance.
 // Conflating the two is what left the checks graph permanently outside the
@@ -331,6 +331,14 @@ func Normalize(gt kgtypes.GraphType, name string) (Ref, bool) {
 var singleInstanceGraphs = map[kgtypes.GraphType]bool{
 	kgtypes.GraphKnowledge: true,
 	kgtypes.GraphChecks:    true,
+	// PRACTICE JOINED WHEN THE EIGHT PER-LANGUAGE GRAPHS BECAME ONE. It is the
+	// checks case exactly: the server's practice policy row now carries no
+	// instance field and REJECTS a set name, so every wire read of it sends ""
+	// while the collector seals its segments under "default". This entry and
+	// graphsel's FieldNone arm must land in the SAME commit — the drift guard in
+	// graphsel/singleton_normalize_drift_test.go fails the build otherwise, which
+	// is exactly why the fact is allowed to be written twice.
+	kgtypes.GraphPractice: true,
 }
 
 // DefaultInstanceName is the canonical instance a single-instance family is keyed

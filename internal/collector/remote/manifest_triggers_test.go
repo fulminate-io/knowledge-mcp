@@ -144,7 +144,7 @@ func resolveModeFor(
 	lvMode, lever, lvErr := collectDiffMode()
 	require.NoError(t, lvErr)
 	var outcome collectDiffOutcome
-	mode, _, dErr := NewUploadSink(client).applyCollectDiff(result, lvMode, lever, present, resp, &outcome)
+	mode, _, dErr := NewUploadSink(client).applyCollectDiff(result, lvMode, lever, present, resp, diffKeyFile, &outcome)
 	require.NoError(t, dErr, "the discovery store must be healthy for a trigger row to be attributable")
 	return mode
 }
@@ -359,10 +359,11 @@ func TestKillSwitch_DegradesToShadowAndLogsDivergence(t *testing.T) {
 	lvMode, lever, lvErr := collectDiffMode()
 	require.NoError(t, lvErr, "off is a VALID lever value")
 	var outcome collectDiffOutcome
-	mode, decision, dErr := NewUploadSink(client).applyCollectDiff(result, lvMode, lever, present, resp, &outcome)
+	mode, decision, dErr := NewUploadSink(client).applyCollectDiff(result, lvMode, lever, present, resp, diffKeyFile, &outcome)
 	require.NoError(t, dErr)
-	require.False(t, outcome.suppressManifestEcho,
-		"the kill switch must NOT suppress the decline — only the collector-version trigger does")
+	require.True(t, outcome.suppressManifestEcho,
+		"the kill switch uploads in full and names no deletions, so it must suppress the decline: an "+
+			"echoed identity would have the server decline every matching key and then derive it as uncarried")
 
 	require.Equal(t, diffModeShadow, mode,
 		"the kill switch degrades to SHADOW, not off — off would upload the same bytes and say nothing")

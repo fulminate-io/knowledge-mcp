@@ -5,6 +5,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -115,8 +116,15 @@ func TestCollectRecipe_ReplayAcceptsAbsolutePathAndSlug(t *testing.T) {
 	require.True(t, handled)
 	require.False(t, bySlug.IsError, "the slug replay must not error: %s", resultText(bySlug))
 
-	assert.Equal(t, resultText(bySlug), resultText(byPath),
-		"the two id forms must render byte-identically, header included")
+	// THE HEADER CARRIES A WALL-CLOCK FIELD. elapsed_ms is the run's own
+	// duration (help_content_recipes.go documents it as wall-clock time), so two
+	// runs of the same fixture can legitimately differ there — measured: 8 vs 0
+	// under the pre-push suite's load, on a tree where nothing else differed.
+	// The claim this test makes is about the ID FORMS, not the clock, so the
+	// comparison masks that one field and keeps a control that both headers
+	// actually carried it.
+	assert.Equal(t, maskElapsed(t, resultText(bySlug)), maskElapsed(t, resultText(byPath)),
+		"the two id forms must render byte-identically, header included, apart from the run's own elapsed_ms")
 	assert.Contains(t, resultText(byPath), "source=pdf/"+slug,
 		"the path run's header must name the resolved slug so the caller can copy it")
 
@@ -147,4 +155,34 @@ func TestCollectRecipe_ReplayByPath_MissNamesBothFormsAndModules(t *testing.T) {
 	assert.Contains(t, msg, `mode:"modules"`, "the message must name the surface that lists collected graphs")
 	assert.Contains(t, msg, "both forms are accepted",
 		"the message must say both id forms are accepted, got: %s", msg)
+}
+
+// elapsedField matches the extract header's wall-clock field and nothing else:
+// the token is anchored on its key so a row value that happens to carry the
+// text cannot be masked by accident.
+var elapsedField = regexp.MustCompile(`elapsed_ms=\d+`)
+
+// maskElapsed replaces the header's elapsed_ms value with a fixed token, and
+// FAILS the test when the field is absent: a render that stopped disclosing
+// the run's duration would otherwise pass this comparison without anyone
+// noticing that the disclosure was gone.
+func maskElapsed(t *testing.T, rendered string) string {
+	t.Helper()
+	require.Regexp(t, elapsedField, rendered,
+		"control: the extract header must still disclose elapsed_ms before it can be masked")
+	return elapsedField.ReplaceAllString(rendered, "elapsed_ms=<masked>")
+}
+
+// TestMaskElapsed_HidesOnlyTheClock is the red for the mask: two headers that
+// differ ONLY in elapsed_ms compare unequal raw and equal masked, and a header
+// that differs anywhere else stays unequal after masking, so the mask cannot
+// hide a real divergence.
+func TestMaskElapsed_HidesOnlyTheClock(t *testing.T) {
+	const a = "extract: recipe=inline source=pdf/x rows=1/1 bytes=58 skipped=0 lookups_resolved=0 lookup_misses=0 link_misses=0 elapsed_ms=8\n--- row 0 type=heading src=s1\n"
+	const b = "extract: recipe=inline source=pdf/x rows=1/1 bytes=58 skipped=0 lookups_resolved=0 lookup_misses=0 link_misses=0 elapsed_ms=0\n--- row 0 type=heading src=s1\n"
+	const c = "extract: recipe=inline source=pdf/y rows=1/1 bytes=58 skipped=0 lookups_resolved=0 lookup_misses=0 link_misses=0 elapsed_ms=0\n--- row 0 type=heading src=s1\n"
+
+	assert.NotEqual(t, a, b, "control: the raw headers really do differ in the clock field")
+	assert.Equal(t, maskElapsed(t, a), maskElapsed(t, b), "the clock is the only difference, so masked they are equal")
+	assert.NotEqual(t, maskElapsed(t, a), maskElapsed(t, c), "a difference outside the clock survives the mask")
 }

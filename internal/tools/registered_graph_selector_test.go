@@ -72,7 +72,7 @@ func TestRegisteredGraphSelector_UnknownTypeIsLoud(t *testing.T) {
 			body := engine.FirstTextContent(out)
 			assert.Contains(t, body, `unsupported graph type "`+graph+`"`,
 				"the refusal must name the offending value, mirroring the server's ErrGraphSelectorInvalid shape")
-			for _, vocab := range []string{"knowledge", "code", "practice", "logs"} {
+			for _, vocab := range []string{"knowledge", "code", "practice", "checks"} {
 				assert.Contains(t, body, vocab, "the refusal must list the accepted vocabulary")
 			}
 			assert.Equal(t, int64(0), mgr.calls.Load(),
@@ -206,39 +206,44 @@ func TestRegisteredGraphSelector_RegisteredAndCollectedStillSearches(t *testing.
 }
 
 // TestRegisteredGraphSelector_InstanceFanOutsAreUntouched is the control for the
-// blast radius of the gate. The ruling validates the GRAPH TYPE selector; the two
-// decided INSTANCE fan-outs — language:"all" across practice graphs and
-// repo:"all" across code repos — are builtin-graph selectors that never reach the
-// custom-graph arm and must keep working unchanged.
+// blast radius of the gate. The ruling validates the GRAPH TYPE selector; the
+// builtin-graph INSTANCE selectors never reach the custom-graph arm and must keep
+// working unchanged.
+//
+// THE PRACTICE HALF CHANGED SUBJECT WITH THE COMBINED GRAPH. It used to drive
+// language:"all" across the practice graphs; that sentinel is retired, so the
+// practice control is now the LEGACY language read — still a builtin instance
+// selector, still nothing to do with the custom-graph gate. repo:"all" across
+// code repos is unchanged.
 //
 // Both fixtures deliberately leave the graph-type registry UNWIRED, which is the
 // state that refuses every custom graph outright
-// (TestRegisteredGraphSelector_RegistryUnreadableIsLoud). A fan-out that still
-// returns both instances' hits under that condition is proof the gate does not
-// sit on these paths, rather than proof it happened to pass.
+// (TestRegisteredGraphSelector_RegistryUnreadableIsLoud). A builtin selector that
+// still returns its hits under that condition is proof the gate does not sit on
+// these paths, rather than proof it happened to pass.
 func TestRegisteredGraphSelector_InstanceFanOutsAreUntouched(t *testing.T) {
-	t.Run(`practice language:"all" still fans out`, func(t *testing.T) {
-		gc := newFanOutHarness(t, []string{"go", "python"},
+	t.Run(`practice legacy language still reads its graph`, func(t *testing.T) {
+		gc := newFanOutHarness(t, []string{"default", "go"},
 			&knowledgev1.Node{Id: "n-go", Type: "pattern", SymbolName: "GoPattern"},
-			&knowledgev1.Node{Id: "n-py", Type: "pattern", SymbolName: "PyPattern"},
+			&knowledgev1.Node{Id: "n-cb", Type: "pattern", SymbolName: "CombinedPattern"},
 		)
 		mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
-			"go":     {{ID: "n-go", Score: 0.90}},
-			"python": {{ID: "n-py", Score: 0.70}},
+			"default": {{ID: "n-cb", Score: 0.90}},
+			"go":      {{ID: "n-go", Score: 0.70}},
 		})
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
 
-		// language:"all" is a QUERY-tool selector: the search tool has no language
-		// param and always fans out across every practice graph, so the query arm
-		// is where the "all" instance selector is actually read.
+		// The legacy language is a QUERY-tool selector read on the practice arm,
+		// which is where a builtin instance selector is actually consumed.
 		handled, out := InterceptQueryPracticeLinkage(opCtx(), deps, queryParams(t, map[string]any{
-			"graph": "practice", "language": "all", "text": "x",
+			"graph": "practice", "language": "go", "text": "x",
 		}))
 		require.True(t, handled)
 		require.False(t, out.IsError, textBodyTools(out))
 		body := textBodyTools(out)
-		assert.Contains(t, body, "GoPattern", "the go practice graph's hit survived the fan-out")
-		assert.Contains(t, body, "PyPattern", "the python practice graph's hit survived the fan-out")
+		assert.Contains(t, body, "GoPattern", "the pre-singleton graph's hit is served")
+		assert.NotContains(t, body, "CombinedPattern",
+			"and the legacy read reads THAT graph rather than the combined one")
 	})
 
 	t.Run(`code repo:"all" still fans out`, func(t *testing.T) {

@@ -118,16 +118,109 @@ question completely and merely printed less of the answer. The admitted cap rang
 is 0 for no cap or a positive count — a NEGATIVE value is refused naming it,
 rather than read as a second spelling of no cap.
 
-A path_prefix THAT REACHED NO FILE OF THE CORPUS LANGUAGE IS REFUSED, naming the
-prefix, rather than reported as a clean corpus. Prefixes match whole path
-SEGMENTS, so a mistyped or over-specific one resolves to nothing — and a scan
-that opened no file is not a clean scan. The refusal names the actual cause: a
-discovery rule declined the files, this walk's own test-file filter took them,
-or the prefix matched none. The wrong-root case belongs to an unprefixed scan,
-which this refusal never sees. It is a
+A SCOPE THAT REACHED NO FILE OF THE CORPUS LANGUAGE IS REFUSED, naming it, rather
+than reported as a clean corpus — a path_prefix and a file list alike. Prefixes
+match whole path SEGMENTS, so a mistyped or over-specific one resolves to nothing
+— and a scan that opened no file is not a clean scan. The refusal names the
+actual cause: a discovery rule declined the files, this walk's own test-file
+filter took them, or the prefix matched none. The wrong-root case belongs to an
+unscoped scan, which this refusal never sees. It is a
 PER-CHECK fact: because a check can declare that its class lives in tests and
 walk wider than its neighbors, a run is refused when ANY executed check opened
 no file, and the refusal names that check.
+
+### run — scanning one diff instead of the tree
+
+    manage_checks({ "operation": "run", "repo": "knowledge", "language": "go",
+                    "files": ["cmd/knowledge/internal/tools/manage_checks_run.go",
+                              "cmd/knowledge/internal/topology/corpusscan/run.go"] })
+
+files names the exact repo-relative paths to scan — the file list of a diff, so a
+caller can scan its own change rather than the whole tree. It is MUTUALLY
+EXCLUSIVE with path_prefix, since both narrow the same walk, and supplying both
+is refused naming both. Present-but-empty is refused rather than read as "every
+file".
+
+NO NAMED PATH IS EVER SILENTLY ABSENT FROM THE REPORT. Every path you name is
+scanned, disclosed by name, or refused by name:
+
+  - The list OVERRIDES the walk's own decline rules FOR THE PATHS IT NAMES: a
+    named test file or generated file IS opened, because you named it and
+    discovery's guess about it does not get to win. Nothing else is widened.
+  - A path that is absolute, escapes the repo with a ".." segment, is not the
+    walk's own spelling (a leading "./", a trailing slash, a doubled separator),
+    is absent from the tree, or exists and cannot be opened, is REFUSED naming
+    it. The spelling is never rewritten for you: the walk matches at whole path
+    SEGMENTS, so "./x" does not match "x", and quietly fixing it would report a
+    clean verdict over a file that was never scanned.
+  - A named path of another language is DROPPED with a disclosure naming it — a
+    diff carries markdown and configuration, and a checks corpus is one language.
+  - A named directory is scanned as the prefix it is; a path listed twice is
+    scanned once.
+  - AFTER the walk, the number of named files of the corpus language is compared
+    against what the walk opened, and a shortfall is refused with the by-cause
+    counters rather than reported as clean. That comparison is a FLOOR rather
+    than an equality when a directory is named, since a directory contributes an
+    unknown number of files.
+  - An explicit include_tests=false beside a named test file is a contradiction
+    and is refused naming the file.
+  - A graph_assertion or topology_threshold check has its candidate nodes
+    narrowed to the named files too. One whose candidates all fall outside them
+    did NOT run and is recorded as such, never folded into a clean verdict; a
+    graph that was never collected still errors.
+
+compact RENDERS ONE LINE PER FLAGGED SITE instead of the full finding body, and
+it is the DEFAULT when files is set, off otherwise. Four tab-separated columns,
+the same four in the same order for both kinds of site:
+
+    <severity>  <file>:<line>  <check id>  <check display name, capped at 60>
+    <severity>  <file>         <check id>  <code-graph node id, never truncated>
+
+The first is an ast_pattern site; the second is a graph site, which is
+FILE-GRANULAR — a code-graph node id yields a file and never a line, so no line
+and no ":0" is printed for one. Tell them apart by the second column: a colon and
+a decimal line, or a bare path. An ast row is bounded at 256 bytes BY
+CONSTRUCTION, since the display-name cap is what closes it; a graph row is
+bounded at 400 bytes as a MEASURED property of this tree, since the node id is
+never truncated and a truncated id does not resolve.
+
+LEAD FINDINGS ARE NEVER COMPACTED. The refusals, the disclosures and the
+truncation notices render in full above the lines, because they are what makes a
+bounded result honest — a one-line form of "this run could not execute four
+checks" is not a summary of it. So a compact body is the lead block plus one
+bounded line per site, and never the line width times the finding count.
+
+compact is orthogonal to format: one selects how much detail, the other a
+serialization.
+
+### run — a check that governs one repo or one subtree
+
+A check node may carry a SCOPE of its own, in the same two metadata keys a style
+rule carries: style_scope_repo, one repository by name, and
+style_scope_paths, a JSON array of repo-relative path prefixes. A check
+carrying neither runs everywhere, which is the default and the majority.
+
+  - The repo scope is compared against the repo the run is scanning. A check
+    naming another repository does NOT run, and is reported as OUT OF SCOPE by
+    name rather than folded into a clean verdict — "this check did not look
+    here" and "this check looked and found nothing" are different answers.
+  - The path scope narrows the check to files under those prefixes, matched at
+    whole path SEGMENTS exactly as path_prefix and files are, so a check scoped
+    to "pkg" never sees the sibling "pkgextra".
+  - The two COMPOSE with the run's own scope rather than replacing it: a check
+    scoped to "lib" run over a file list intersects to the named files under lib.
+    A check whose scope and the run's have nothing in common does not run, and
+    says so.
+  - A check that RAN under its own narrowing states the scope it applied, so a
+    clean result over a caller's ten files never silently means three of them.
+  - A MALFORMED SCOPE REFUSES THE CHECK BY NAME and never widens it: paths that
+    are not a JSON array, an empty array, an empty, absolute, escaping or
+    non-canonical path, or a repo scope carrying a path separator. It counts in
+    checks_refused, so the run reads INCONCLUSIVE and never CLEAN — the widest
+    reading of a value the corpus got wrong is the one that runs a subtree's rule
+    over a whole tree.
+  - A run in which NOT ONE check was in scope is refused rather than reported
+    clean, for the same reason a scope that reached no file is.
 
 ### run — reaching test files
 
@@ -165,6 +258,13 @@ measures the wrong tree the moment implementation happens in a worktree:
 
     cd "$(git rev-parse --show-toplevel)" || exit 1
     knowledge check run --repo "$(basename "$PWD")" --language go <check node id>
+
+THE SHELL FACE ASKS THE RUNNING DAEMON to perform the run, over the same routed
+view of the checks corpus an MCP caller gets, so a criterion measures the corpus
+the checks were actually authored into. It therefore NEEDS the daemon: with none
+listening the command refuses, naming the endpoint it tried, and never reports a
+clean corpus it could not read. --http-port names that endpoint's loopback port
+when it is not the default.
 
 Add --include-tests to widen the walk to test files for the whole run; a check
 carrying applies_to_tests needs no flag. The flag is tri-state at this face too:
@@ -213,10 +313,14 @@ for when you hit it.
    'as' binding inside the same leaf fails to resolve the capture, and the leaf
    evaluates as though the constraint were absent.
 
-3. SUB-PATTERN CAPTURES NEVER ESCAPE TO SIBLING LEAVES — only the 'as' name does.
-   Symptom: a capture bound inside a contains_pattern is unresolvable from a later
-   sibling leaf, so a same_text or flows_to referencing it never fires and the
-   filter reads as a silent pass.
+3. SUB-PATTERN CAPTURES REACH A SIBLING LEAF ONLY THROUGH THE 'as' NAMESPACE, and
+   a leaf with no 'as' exports nothing at all. A leaf declaring as:"T" over a
+   pattern binding $C exports "T.C"; write the bare "C" and it is unresolvable,
+   as is any reference under a namespace no leaf declared. Symptom: a same_text
+   or flows_to naming the bare capture is refused before the walk, naming the
+   reference and listing the vocabulary it would have accepted — and on a check
+   authored before the namespace existed, the same reference read as a silent
+   pass over any corpus the pattern happened to miss.
 
 4. flows_to REFUSES A SEQUENCE CAPTURE AS ITS 'from'. Symptom: a $$$X sequence
    capture used as the flow source is rejected rather than walked; use a single
@@ -233,7 +337,10 @@ for when you hit it.
    goes silent because the binding locked onto the first one. Existential
    quantification over parameters therefore requires putting the flows_to INSIDE
    the contains_pattern's own where, using $outer refs to reach the outer capture
-   — hoisting it to a sibling leaf binds only the first candidate.
+   — hoisting it to a sibling leaf binds only the first candidate. THE NAMESPACED
+   CAPTURE EXPORT IN TRAP 3 DOES NOT LIFT THIS: the exported captures are the
+   FIRST candidate's, the same one the 'as' handle binds, so writing the sibling
+   form with "T.C" reintroduces exactly the failure above in a new spelling.
 
 7. THE FLOW ENGINE PROPAGATES CONSERVATIVELY THROUGH CALL RESULTS. A local
    assigned from a call that took a parameter-derived argument is treated as

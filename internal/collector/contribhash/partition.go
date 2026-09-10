@@ -86,3 +86,59 @@ func PartitionByOwningFile(
 	}
 	return byFile, fileless
 }
+
+// PartitionByOwningNode splits a collect result by the NODE that owns each row —
+// the partition a NODE-KEYED diff hashes, for a graph family whose collector
+// emits records rather than files.
+//
+// IT IS THE SAME OWNERSHIP RULE AS PartitionByOwningFile, READ ONE LEVEL IN.
+// Section E says an edge is owned by its FROM node; the file partition then
+// takes that node's FILE as the key, and this one takes the NODE ITSELF. So the
+// two are the same rule with and without the final projection, which is what
+// makes an edge ride with its source under either key.
+//
+// EVERY NODE IS A KEY, INCLUDING A FILELESS ONE, and that is the whole reason
+// this partition exists. A registered collector's node carries an optional file
+// path and usually none, so the file partition puts its entire graph in the
+// fileless remainder — a group that is outside the manifest by construction and
+// therefore re-uploads on every collect forever.
+//
+// AN EDGE WHOSE FromID NAMES NO NODE IN THE SLICE IS UNOWNED and is returned
+// separately rather than being folded into some node's group. It belongs to no
+// key, so no manifest entry can describe it and no diff can ever mark it
+// changed; the upload filter carries it on every collect for exactly that
+// reason. Folding it into an arbitrary group instead would make that group's
+// hash depend on a row the server's own aggregate cannot attribute to it, and
+// the group would read CHANGED forever.
+//
+// PERF SHAPE: one O(nodes) pass building the id set and the singleton groups,
+// then one O(edges) pass assigning owners. No per-edge search.
+func PartitionByOwningNode(
+	nodes []*knowledgev1.Node, edges []kgwire.BatchEdge,
+) (byNode map[string]FileGroup, unowned FileGroup) {
+	byNode = make(map[string]FileGroup, len(nodes))
+	for _, n := range nodes {
+		id := n.GetId()
+		if id == "" {
+			// A NODE WITH NO ID HAS NO KEY. It cannot be diffed, declined or named as
+			// a deletion, so it joins the unowned remainder and uploads every time.
+			// The server assigns ids to id-less rows, so this is not an error here;
+			// it is a row whose identity does not exist until after it lands.
+			unowned.Nodes = append(unowned.Nodes, n)
+			continue
+		}
+		g := byNode[id]
+		g.Nodes = append(g.Nodes, n)
+		byNode[id] = g
+	}
+	for _, e := range edges {
+		g, ok := byNode[e.FromID]
+		if !ok {
+			unowned.Edges = append(unowned.Edges, e)
+			continue
+		}
+		g.Edges = append(g.Edges, e)
+		byNode[e.FromID] = g
+	}
+	return byNode, unowned
+}

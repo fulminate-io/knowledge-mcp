@@ -101,8 +101,9 @@ type EqualsLeaf struct {
 }
 
 // SameNodeLeaf checks two-or-more captures bind to the same AST node. Per
-// Q11, entries can be `$outer.X` (one parent level), `$outer.outer.X`
-// (two), etc.
+// Q11, entries can be `$outer.X` (one parent level), `$outer.$outer.X`
+// (two), etc. — one whole `$outer.` token per level, which is what
+// resolveCapture strips.
 type SameNodeLeaf struct {
 	Captures []string `json:"captures"`
 }
@@ -133,6 +134,13 @@ type SameTextLeaf struct {
 // the outer verdict flips, so referencing the `as` capture from a
 // sibling-of-`not` leaf is a usage smell (the binding may not be set if
 // the inner failed and `not` returned true).
+//
+// As IS ALSO THE NAMESPACE the sub-pattern's OWN captures are exported under:
+// a leaf `as:"T"` over a pattern binding `$C` writes "T.C" into the calling
+// scope, so a sibling leaf can name the sub-pattern's capture directly
+// (`flows_to: {to: "T.C"}`). A leaf with no As exports nothing and its captures
+// are unreachable by any spelling. bindAs in where_subpattern.go owns the
+// mechanism and its limits.
 type SubPatternLeaf struct {
 	Of       string     `json:"of"`
 	Pattern  string     `json:"pattern"`
@@ -282,7 +290,10 @@ func evalWhere(ctx context.Context, where *WhereNode, scope *evalScope) (bool, e
 
 // resolveCapture walks the scope chain per the ref's `$outer.` prefix
 // count. ref="X" looks up in scope.captures; ref="$outer.X" walks one
-// parent level; ref="$outer.outer.X" walks two; etc. Returns
+// parent level; ref="$outer.$outer.X" walks two; etc. — the prefix is
+// stripped one WHOLE `$outer.` token at a time, so "$outer.outer.X" is one
+// level followed by a lookup of a capture literally named "outer.X" and is
+// NOT a two-level walk. Returns
 // errCaptureUnresolved when the ref can't be resolved — either the
 // chain is too short or the named capture doesn't exist at the resolved
 // scope.

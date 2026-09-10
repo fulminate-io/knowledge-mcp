@@ -10,7 +10,9 @@
 // `$X` to `__META_AST_X__0` (where the trailing index disambiguates
 // repeated occurrences — see engine.go::substitutePlaceholders).
 //
-// The three registered wrappers, one per parse context Go can express:
+// The four registered wrappers. Three are one per parse context Go can
+// express; the fourth is a second HOST for the declaration context, because a
+// context is a place in the grammar and Go has two that hold declarations:
 //
 //   1. Declaration wrapper (`package p\n`) — for top-level forms like
 //      `func Foo() {}` or `type X struct {}`.
@@ -18,6 +20,31 @@
 //      function statements like `defer x.Close()`, `for x := range y {}`.
 //   3. Expression wrapper (`package p\nvar _ = ` …) — for bare expressions
 //      like `make([]int, 0)` or `f(x).y`.
+//   4. Import-spec wrapper (`package p\nimport (\n` … `\n)`) — for a single
+//      import SPEC, so `$$$P "os/exec"` binds an import wherever it is
+//      written. It carries contextDecl, the context already registered by
+//      wrapper 1, so RegisteredContexts is unchanged and no new `context` pin
+//      value appears.
+//
+// WHY A FOURTH WRAPPER AND NOT A CHANGE TO THE DESCENT RULE, stated because
+// the alternative is the one a reader reaches for first. An import_spec that
+// carries only a path shares its byte span with that path literal, so
+// effectiveTargetNode (walker.go) descends through it and a bare `$X` binds the
+// literal rather than the spec — which is why `kind:import_spec` on a bare
+// capture finds NAMED specs only. Relaxing that descent would change what `$X`
+// binds in EVERY registered language to fix one node kind in one, and it would
+// still yield a kind filter plus a text regex rather than a structural capture
+// of path and local name. The wrapper never meets the descent instead: the
+// fragment `__META_AST_P__0 "os/exec"` spans a node with two named children, so
+// hostsPattern roots the pattern at a real import_spec, patternRootKind reports
+// rootDescended FALSE, and collectViaQuery leaves the candidate as the raw
+// import_spec that both declaration shapes contain.
+//
+// THE COST, stated rather than hidden: this does not fix the descent, so after
+// it `kind:import_spec` on a bare capture still binds named specs only and
+// still misses unnamed ones with no error. That is a partial answer the
+// import form above makes unnecessary rather than a wrong one, and a test pins
+// the current behavior so a later descent change turns it red deliberately.
 //
 // ORDER IS NOT PREFERENCE. Every wrapper that parses without ERROR nodes and
 // HOSTS the fragment contributes a candidate, and the walk matches the union
@@ -28,6 +55,11 @@
 // rather than with whichever entry happens to be registered first. The order
 // survives only as candidate order, which decides which equivalent stamp a
 // dedupe keeps; callers who need one reading narrow with the `context` pin.
+// The import-spec wrapper appends rather than inserts for the same reason it
+// changes nothing else: a bare `"os/exec"` fragment parses under stmt, expr AND
+// this wrapper to the same string-literal tree, so the dedupe merges them and
+// the match simply gains a decl stamp — which is true, since a string literal
+// in a spec position IS a valid import spec.
 
 package ast
 
@@ -45,6 +77,7 @@ var goLangConfig = LangConfig{
 		{Name: "decl", Context: contextDecl, Prefix: "package _\n", Suffix: ""},
 		{Name: "stmt", Context: contextStmt, Prefix: "package _\nfunc _() {\n", Suffix: "\n}"},
 		{Name: "expr", Context: contextExpr, Prefix: "package _\nvar _ = ", Suffix: ""},
+		{Name: "importspec", Context: contextDecl, Prefix: "package _\nimport (\n", Suffix: "\n)"},
 	},
 	CommentKinds: []string{"comment"},
 	// Go's interpreted string parses to exactly its two quote tokens plus any

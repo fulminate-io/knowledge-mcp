@@ -137,11 +137,18 @@ func TestCorpusCheckGate_DoesNotGatePracticeWrites(t *testing.T) {
 
 	// THE ACTUAL ASSERTION: the same payload aimed at the OLD location is not
 	// this gate's business and reaches the write path.
+	//
+	// IT CARRIES NO `language`, because a practice WRITE refuses one — practice is
+	// one combined graph now, so a write has no per-language graph to land in.
+	// That refusal is a DIFFERENT gate from this one, and leaving the param on
+	// would make this test green for the wrong reason: the payload would be
+	// refused before the check gate was ever consulted, which is not evidence that
+	// the check gate declined it.
 	fc := fixturedCaller(t, nil)
 	_, res := InterceptMutate(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
 		Name: "mutate",
 		Arguments: mutateJSON(t, map[string]any{
-			"operation": "create", "graph": "practice", "language": "go", "type": "finding",
+			"operation": "create", "graph": "practice", "type": "finding",
 			"name": "P", "summary": "s", "metadata": md,
 		}),
 	})

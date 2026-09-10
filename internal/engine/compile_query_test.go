@@ -198,7 +198,7 @@ func TestCompileQuery_GenericCrossGraph(t *testing.T) {
 
 // TestCompileQuery_CustomGraph pins by-id query selector threading for a
 // registered custom graph type: graph + name reach the server-side resolver
-// (dispatch_byid gates only on isCodeGraph + graph=="logs"; a custom type
+// (dispatch_byid gates only on isCodeGraph; a custom type
 // passes both). Guards a future closed-allowlist regression.
 func TestCompileQuery_CustomGraph(t *testing.T) {
 	req, ok := compileQuery(json.RawMessage(`{"id":"n1","graph":"hellograph","name":"demo"}`))
@@ -224,7 +224,6 @@ func TestCompileQuery_DenyCases(t *testing.T) {
 		{"mode tensions", `{"mode":"tensions"}`},
 		{"mode clusters", `{"mode":"clusters"}`},
 		{"graph code id", `{"id":"x","graph":"code"}`},
-		{"graph logs", `{"graph":"logs","name":"q1"}`},
 		{"thought filter valence", `{"valence_min":0.5}`},
 		{"thought filter session", `{"session":"design"}`},
 		{"thought filter connected_to", `{"connected_to":"node-x"}`},

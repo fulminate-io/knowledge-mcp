@@ -170,7 +170,7 @@ func TestCompileVariants_UnionAndHosting(t *testing.T) {
 		moduleRoot := filepath.Join("..", "..")
 		raws, stats, err := Match(context.Background(), moduleRoot, treesitter.LangGo, cp, nil, Scope{
 			PackagePrefixes: []string{
-				"internal/collector/cloud/gcp/",
+				"internal/collector/treesitter/",
 				"internal/pipeline/",
 			},
 		})
@@ -183,8 +183,14 @@ func TestCompileVariants_UnionAndHosting(t *testing.T) {
 		}
 		// A FLOOR, not an equality: an unrelated new adjacent-call pair
 		// elsewhere under these prefixes must not false-fail the gate.
-		require.GreaterOrEqual(t, files["internal/collector/cloud/gcp/collector_clients.go"], 1,
-			"the known real site in collector_clients.go stopped matching; rule 3 destroyed a working capability")
+		// THE SITE MOVED PACKAGES, not shape. The pinned known-positive used to be
+		// in the built-in gcp collector, which was deleted with the rest of the
+		// built-in cloud collectors; the tree-sitter chunkers carry the same
+		// adjacent-bare-call pair and are as permanent as any client package. The
+		// SITE is the pin, not the filename, which is the same rule the pipeline
+		// row below already states for its own move.
+		require.GreaterOrEqual(t, files["internal/collector/treesitter/chunker_rust_qualtypes.go"], 1,
+			"the known real site in chunker_rust_qualtypes.go stopped matching; rule 3 destroyed a working capability")
 		// The pinned pair (PausePipeline/ResumePipeline's two adjacent circuit
 		// calls) moved to pipeline_control.go when the operator-control surface
 		// split out of pipeline.go for the 500-line ceiling; the SITE is the pin,

@@ -95,7 +95,7 @@ func TestPostPopulateBreadth_ScopedFiresOnce(t *testing.T) {
 
 	deps, routed := seededBreadthDeps("code", "repo-a", "repo-b", "repo-c")
 
-	err := runPostCollectPostPopulate(context.Background(), deps, stubType, "repo-collected")
+	err := runPostCollectPostPopulate(context.Background(), deps, stubType, "repo-collected", false)
 
 	mu.Lock()
 	fired := append([]string(nil), got...)
@@ -114,7 +114,7 @@ func TestPostPopulateBreadth_ScopedFiresOnce(t *testing.T) {
 // be ignored.
 func TestPostPopulateBreadth_BroadEnumerates(t *testing.T) {
 	const stubType = "breadth-broad-stub"
-	mapGraphTypeForTest(t, stubType, kgtypes.GraphCloud)
+	mapGraphTypeForTest(t, stubType, kgtypes.GraphPractice)
 
 	var mu sync.Mutex
 	var got []string
@@ -125,9 +125,9 @@ func TestPostPopulateBreadth_BroadEnumerates(t *testing.T) {
 		return nil
 	})
 
-	deps, routed := seededBreadthDeps("cloud", "acct-a", "acct-b", "acct-c")
+	deps, routed := seededBreadthDeps("practice", "acct-a", "acct-b", "acct-c")
 
-	err := runPostCollectPostPopulate(context.Background(), deps, stubType, "repo-collected")
+	err := runPostCollectPostPopulate(context.Background(), deps, stubType, "repo-collected", false)
 
 	mu.Lock()
 	fired := append([]string(nil), got...)
@@ -167,7 +167,7 @@ func TestPostPopulateBreadth_ScopedEmptyNameRefuses(t *testing.T) {
 
 	deps, routed := seededBreadthDeps("code", "repo-a", "repo-b", "repo-c")
 
-	err := runPostCollectPostPopulate(context.Background(), deps, stubType, "")
+	err := runPostCollectPostPopulate(context.Background(), deps, stubType, "", false)
 
 	mu.Lock()
 	fired := append([]string(nil), got...)
@@ -198,7 +198,7 @@ func TestPostPopulateBreadth_ScopedEmptyNameFailsCollectResult(t *testing.T) {
 	// Map the stub collector type into the postpopulate gate so the tail fires;
 	// restore afterwards.
 	prevPP, hadPP := postPopulateGraphType[detachFullPathType]
-	postPopulateGraphType[detachFullPathType] = kgtypes.GraphCloud
+	postPopulateGraphType[detachFullPathType] = kgtypes.GraphPractice
 	t.Cleanup(func() {
 		if hadPP {
 			postPopulateGraphType[detachFullPathType] = prevPP
@@ -228,7 +228,7 @@ func TestPostPopulateBreadth_ScopedEmptyNameFailsCollectResult(t *testing.T) {
 	rt := NewCollectRuntime()
 	fc := &fakeGraphCaller{
 		listGraphsResult: &kgtools.ToolResult{
-			Content: []kgtools.ContentBlock{{Type: "text", Text: `{"graphs":[{"graph_type":"cloud","graph_name":"aws-acct-1"}]}`}},
+			Content: []kgtools.ContentBlock{{Type: "text", Text: `{"graphs":[{"graph_type":"practice","graph_name":"aws-acct-1"}]}`}},
 		},
 	}
 	deps := &detachFullDeps{rt: rt, gc: fc}

@@ -67,10 +67,11 @@ func ReadSelectedAccountID(path string) (string, error) {
 //
 // Two client functions rewrite an EXISTING ~/.knowledge/config and both must
 // preserve the entry: this one (which only ever sets a non-empty value) and
-// bootstrap.renderAndWriteConfig (which rewrites the whole file and re-applies
-// the prior selection afterwards). config.ensureFileExists also writes the
-// file, but only when it is absent, so it cannot clear a selection. Any future
-// writer that can rewrite an existing config must join that list.
+// bootstrap.renderAndWriteConfig (which rewrites the whole file with the prior
+// selection spliced in via UpsertSelectedAccountID). config.ensureFileExists
+// also writes the file, but only when it is absent, so it cannot clear a
+// selection. Any future writer that can rewrite an existing config must join
+// that list.
 //
 // A whole-file TOML marshal round-trip is deliberately not used: go-toml has
 // no comment-preserving round-trip, and this file is a heavily-commented
@@ -78,12 +79,17 @@ func ReadSelectedAccountID(path string) (string, error) {
 //
 // Placement matters: TOML binds a bare key to whatever table header precedes
 // it, so the assignment is always written BEFORE the first table header.
+//
+// The write is atomic (WriteFileAtomic): the file is shared state read by the
+// daemon on a TTL (auth.AccountSelection), and an in-place truncate-then-write
+// exposes an empty or comment-only prefix that parses cleanly with NO key. The
+// reader holds its last-known value only on a parse error, so that prefix
+// would be read as "no selection" and route one TTL of cloud calls to the
+// caller's primary account. A rename publishes either the old bytes or the new.
 func WriteSelectedAccountID(path, id string) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("config.WriteSelectedAccountID: refusing to write an empty account id — the selection can be changed but not cleared")
 	}
-
-	assignment := fmt.Sprintf("%s = %q", accountKey, id)
 
 	mode := os.FileMode(0o600)
 	data, err := os.ReadFile(path) //nolint:gosec // caller-supplied config path is the point
@@ -101,13 +107,65 @@ func WriteSelectedAccountID(path, id string) error {
 		return fmt.Errorf("config.WriteSelectedAccountID: read %s: %w", path, err)
 	}
 
-	out := spliceAccountID(string(data), assignment)
+	out := UpsertSelectedAccountID(string(data), id)
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("config.WriteSelectedAccountID: mkdir %s: %w", filepath.Dir(path), err)
 	}
-	if err := os.WriteFile(path, []byte(out), mode); err != nil { //nolint:gosec // path is the caller's own config file location, not request-derived input
+	if err := WriteFileAtomic(path, []byte(out), mode); err != nil {
 		return fmt.Errorf("config.WriteSelectedAccountID: write %s: %w", path, err)
+	}
+	return nil
+}
+
+// UpsertSelectedAccountID returns body with fulminate_account_id = id upserted
+// at top level, every other byte preserved. It is the in-memory half of
+// WriteSelectedAccountID, exported so a writer that produces a whole new config
+// body (bootstrap.renderAndWriteConfig) can carry the selection INTO its single
+// write instead of writing a selection-free file and patching it afterwards —
+// a two-write sequence during which a concurrent reader sees no selection.
+//
+// The empty-id refusal lives in WriteSelectedAccountID; callers of this
+// function are expected to pass a selection they already hold.
+func UpsertSelectedAccountID(body, id string) string {
+	return spliceAccountID(body, fmt.Sprintf("%s = %q", accountKey, id))
+}
+
+// WriteFileAtomic writes data to path with the given mode through a temp file
+// in the same directory, fsync, then rename. A concurrent reader observes
+// either the previous file or the complete new one, never a truncated prefix.
+// The directory must already exist. On any failure before the rename the temp
+// file is removed and the target is left untouched.
+func WriteFileAtomic(path string, data []byte, mode os.FileMode) (err error) {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp file in %s: %w", dir, err)
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		if err != nil {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, werr := tmp.Write(data); werr != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp file: %w", werr)
+	}
+	if serr := tmp.Sync(); serr != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("fsync temp file: %w", serr)
+	}
+	if cerr := tmp.Close(); cerr != nil {
+		return fmt.Errorf("close temp file: %w", cerr)
+	}
+	// CreateTemp opens at 0600; apply the caller's mode explicitly so a
+	// preserved 0640 (or any other) survives the swap.
+	if cerr := os.Chmod(tmpName, mode); cerr != nil {
+		return fmt.Errorf("chmod temp file: %w", cerr)
+	}
+	if rerr := os.Rename(tmpName, path); rerr != nil {
+		return fmt.Errorf("rename temp file into place: %w", rerr)
 	}
 	return nil
 }

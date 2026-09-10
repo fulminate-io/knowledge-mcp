@@ -42,12 +42,21 @@ type searchReducibleArgs struct {
 	// silently zeroed.
 	Limit  flexInt  `json:"limit"`
 	Fields []string `json:"fields,omitempty"`
-	// Language names ONE practice graph to search. Empty or "all" keeps the
-	// scatter-gather default. The engine's own searchArgs has carried this field
-	// all along (compile_search.go) — what was missing was the schema declaration
-	// and the single-graph branch, which is why the param was refused as unknown
-	// rather than dropped.
+	// Language names ONE PRE-SINGLETON practice graph to search — the LEGACY
+	// read-only selector. Empty searches the combined graph, which is the default
+	// now; the literal "all" is retired and refused.
 	Language string `json:"language"`
+	// SourceHub names a practice SOURCE HUB and narrows the ranked search to the
+	// nodes grouped under it, applied inside top-k so a small hub returns its full
+	// top-N.
+	//
+	// IT IS SPELLED source_hub ON THIS TOOL and `source` on the query, traverse
+	// and delete arms, because this tool already declares a `source` param for the
+	// LOGS provider selector. One param meaning two things depending on which
+	// graph is named is the silent coercion this repo refuses, so the taken name
+	// keeps its meaning and the hub takes the spelling of the metadata key it
+	// lands in.
+	SourceHub string `json:"source_hub"`
 }
 
 // searchReducibleQueryText picks the search text from the query/queries fields.
@@ -62,7 +71,7 @@ func searchReducibleQueryText(a searchReducibleArgs) string {
 }
 
 // interceptSearchReducibleGraph claims the SEARCH-tool arms for the reducible
-// graphs OTHER than knowledge/code/logs. practice/cloud/cicd are served by the
+// graphs OTHER than knowledge and code. practice is served by the
 // CLIENT segment engine; web/pdf are served by the client-computed BM25 read
 // over the drained raw graph; linkage carries no ranked index and is REFUSED by
 // name. Returns (false,_) for any other graph
@@ -92,7 +101,7 @@ func interceptSearchReducibleGraph(ctx context.Context, deps ClientDeps, graph s
 	}
 
 	switch graph {
-	case "practice", "cloud", "cicd", "linkage", "web", "pdf", "checks":
+	case "practice", "linkage", "web", "pdf", "checks":
 	default:
 		// A CUSTOM graph (non-empty, non-builtin) is claimed here and served by the
 		// CLIENT segment engine — its shipped segments ARE the index (the server
@@ -151,27 +160,25 @@ func interceptSearchReducibleGraph(ctx context.Context, deps ClientDeps, graph s
 
 	switch graph {
 	case "practice":
-		// A NAMED language searches THAT graph; anything else fans out.
+		// NO SELECTOR IS THE COMBINED GRAPH, which is the reroute requirement 6
+		// asks for and the half a sentinel retirement alone would have missed:
+		// BOTH the empty language and the literal "all" used to fall through to the
+		// scatter-gather, so retiring only the sentinel would have left the DEFAULT
+		// call still fanning out across the pre-singleton graphs.
 		//
-		// The fan-out is the DEFAULT and stays the default: a scatter-gather over
-		// every loaded practice graph, which is what kills the silent-0 that
-		// mgr.Search(GraphPractice,"all",…) would otherwise return. "all" is the
-		// explicit spelling of that same default, matching the query tool's
-		// vocabulary so the two tools cannot disagree about what the word means.
-		//
-		// The single-graph branch DELEGATES to composePracticeSearchClient — the
-		// composer the QUERY tool's practice-search arm already uses. A second
-		// per-language practice search would drift from it on ranking and on limit
-		// semantics, which is the cross-tool inconsistency this branch removes.
-		if a.Language != "" && a.Language != "all" {
-			return true, composePracticeSearchClient(ctx, deps, deps.SegmentManager(),
-				a.Language, query, a.Format, int(a.Limit), a.Fields)
+		// "all" is REFUSED rather than treated as the empty selector. It asked for
+		// a fan-out that no longer exists, and answering a different question
+		// silently is the coercion this repo does not do.
+		if a.Language == "all" {
+			return true, errorResult(practiceFanOutRetired)
 		}
-		return true, composePracticeSearchFanOut(ctx, deps, deps.SegmentManager(), query, a.Format, int(a.Limit), a.Fields)
-	case "cloud":
-		return true, composeResourceSearchClient(ctx, deps, deps.SegmentManager(), cloudGraphKind, a.Account, query, a.Format)
-	case "cicd":
-		return true, composeResourceSearchClient(ctx, deps, deps.SegmentManager(), cicdGraphKind, a.Account, query, a.Format)
+		// One composer for every practice shape — the one the QUERY tool's
+		// practice-search arm uses. A second practice search would drift from it on
+		// ranking and on limit semantics, which is the cross-tool inconsistency
+		// this delegation removes. A named language is the legacy read; `source`
+		// narrows to one hub inside the combined graph.
+		return true, composePracticeSearchClient(ctx, deps, deps.SegmentManager(),
+			a.Language, a.SourceHub, query, a.Format, int(a.Limit), a.Fields)
 	default: // web, pdf — client-computed BM25 over the drained raw graph.
 		return true, searchRawGraphArm(ctx, deps, graph, raw, query, a)
 	}

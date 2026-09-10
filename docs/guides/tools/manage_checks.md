@@ -52,9 +52,17 @@ manage_checks({ "operation": "run", "repo": "knowledge", "language": "go",
 
 The same classification is available from the shell, which is what lets a check
 back a plan criterion — `knowledge check run --repo <name> --language go
-<check-id>`, exiting 0 for clean, 3 for flagged and 4 for inconclusive. The exit
-status and the verdict line are computed by one fold over one findings slice, so
-the two faces cannot disagree.
+<check-id>`, exiting 0 for clean, 3 for flagged and 4 for inconclusive. The shell
+face performs the run by asking the running daemon for it, over the same view of
+the checks corpus a tool call gets, so the two faces read one corpus and cannot
+disagree about it. The exit status is the run's own machine-readable verdict
+token mapped onto a status, so the line and the status are one answer rather than
+two.
+
+That makes the daemon a requirement of the shell face: with none listening the
+command refuses, naming the endpoint it tried and how to start one, and it never
+reports a clean corpus it was unable to read. `--http-port` names that endpoint's
+loopback port when it is not the default.
 
 ## Parameters
 
@@ -64,9 +72,12 @@ the two faces cannot disagree.
 | `applies_to_tests` | boolean |  |  | create only: declare that this check's defect class lives in TEST files, so a run widens the walk for this check alone with no run-wide include_tests. Omitted or false writes no declaration; true is refused for a language ast carries no test-file convention for, where it would widen nothing. |
 | `check_type` | string |  |  | create only: the check's execution kind (ast_pattern \| graph_assertion \| topology_threshold \| flow_model). |
 | `check_where` | string |  |  | create only: an optional ast where-tree as JSON text. |
+| `compact` | boolean |  |  | run only: render ONE LINE PER FLAGGED SITE instead of the full finding body — severity, then file:line for an ast site or the file for a graph site, then the check id, then the check's display name for an ast site or the whole node id for a graph site, tab-separated. Lead findings (refusals, disclosures, truncation notices) are NEVER compacted and render in full above the lines, because they are what makes a bounded result honest. Defaults to TRUE when files is set and FALSE otherwise. It is orthogonal to format, which selects a serialization rather than a level of detail. |
 | `content` | string |  |  | create only: the check node's full content body. |
 | `description` | string |  |  | create only: the check's prose guidance — what the rule is and why. |
 | `dsl_pattern` | string |  |  | create only: the check body — for ast_pattern, an ast DSL pattern. |
+| `files` | array of string |  |  | run only: the exact repo-relative paths to scan — a diff's file list, so a caller can scan its own change rather than the tree. MUTUALLY EXCLUSIVE with path_prefix, since both narrow the same walk; present-but-empty is REFUSED rather than read as 'every file'. NO NAMED PATH IS EVER SILENTLY ABSENT FROM THE REPORT: each one is scanned, disclosed by name, or refused by name. The list OVERRIDES the walk's own decline rules for the paths it names, so a named test file or generated file IS opened. A path that is absolute, escapes the repo with a '..' segment, is not the walk's own spelling (a leading './', a trailing slash, a doubled separator), is absent from the tree, or exists and cannot be opened, is REFUSED naming it; a named path of another language is dropped with a disclosure naming it. An explicit include_tests=false beside a named test file is a contradiction and is refused. compact is the default render for this scope. |
+| `files[]` | string |  |  |  |
 | `fixture_bad` | object |  |  | The bad fixture example node to author alongside the check. Its content is the snippet the admission gate runs the check against. |
 | `fixture_bad.content` | string |  |  | The fixture source text the check is run over. |
 | `fixture_bad.description` | string |  |  | Why this snippet is the bad example. |
@@ -84,7 +95,7 @@ the two faces cannot disagree.
 | `language` | string |  |  | Tree-sitter language slug (e.g. 'go', 'python'). REQUIRED for run — it selects the checks corpus. Optional narrowing for list; omit it to list every language. |
 | `name` | string |  |  | create only: the check node's name. |
 | `operation` | string | yes | create, list, run | What to do: create \| list \| run |
-| `path_prefix` | string |  |  | run only: repo-relative subtree the walk is narrowed to. Prefixes match whole path SEGMENTS, so 'pkg' is the pkg directory and never pkgextra. A prefix that reached NO FILE of the corpus language is REFUSED naming the prefix — a mistyped or over-specific scope is never reported as a clean corpus, because a scan that opened no file is not a clean scan. |
+| `path_prefix` | string |  |  | run only: repo-relative subtree the walk is narrowed to. Prefixes match whole path SEGMENTS, so 'pkg' is the pkg directory and never pkgextra. A prefix that reached NO FILE of the corpus language is REFUSED naming the prefix — a mistyped or over-specific scope is never reported as a clean corpus, because a scan that opened no file is not a clean scan. Mutually exclusive with files. |
 | `repo` | string |  |  | Code-graph name, or an absolute checkout path. REQUIRED for run — it names both the graph and the tree the checks walk. |
 | `severity` | string |  |  | create only: the severity its findings are emitted at (info \| notice \| warning \| critical). |
 | `summary` | string |  |  | create only: required search-optimized one-line summary of the check, max 500 chars. (max length: 500) |

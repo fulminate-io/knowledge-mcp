@@ -67,6 +67,10 @@ var (
 	health15022 = func() bool {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		// routing: local by design — liveness. The whole question is whether
+		// anything is listening on the local graph-server port before a restart
+		// touches it; the declaration sits inside the literal because a comment
+		// above the var would bind the var, not this body.
 		return graphclient.NewGraphClient(graphclient.DefaultPort).HealthyCtx(ctx)
 	}
 

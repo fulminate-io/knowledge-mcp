@@ -212,22 +212,41 @@ func composeEmbedItems(ctx context.Context, p *Pipeline, be WireClient, key grap
 // embedFail metric behavior is unchanged. Issued as ONE mutate(update_batch)
 // RPC scoped to (graphType, graphName).
 //
-// THE REASON LITERAL NAMES HYDRATION, AND THE CHANGE OF WORDING IS LOAD-BEARING
-// RATHER THAN COSMETIC. A superseded build composed embed text from a node's raw
-// proto fields, so a node whose text had merely been EVICTED to the cold blob
-// arrived here empty and was stamped terminally though it had text all along.
-// The server now hydrates before composing, which makes whitespace-only text
-// mean the node genuinely has none — a different claim, so it gets a different
-// string. The server-side repair that retires the superseded markers matches the
-// OLD literal exactly (store.coldStarvedEmbedReason), and it is this rename that
-// makes the population it drains finite: nothing can write the old string again.
-// Restoring the previous wording would make that repair re-clear
+// THE REASON LITERAL NAMES WHAT THE CLAIM IS NOW, AND EACH CHANGE OF WORDING IS
+// LOAD-BEARING RATHER THAN COSMETIC. Twice now the server has narrowed what
+// "empty embed text" can mean, and each narrowing made the previous marker's
+// claim false for a population of already-stamped nodes:
+//
+//  1. A build composing from a node's raw proto fields stamped nodes whose text
+//     had merely been EVICTED to the cold blob. The server then hydrated before
+//     composing, and the literal was renamed to name hydration.
+//  2. A build composing a REGISTERED graph type's text from a field list nobody
+//     declared stamped every node of such a family with the hydration wording,
+//     though the node's text was fine and the DEF was what was empty. The server
+//     now falls back to a default field shape for an opted-in axis, and the
+//     literal is renamed again to name that.
+//
+// EACH RENAME IS WHAT CLOSES THE PREVIOUS POPULATION. A server-side retirement
+// matches each superseded literal EXACTLY (store.coldStarvedEmbedReason and
+// store.retiredUndeclaredFieldsEmbedReason), so nothing may write either string
+// again — restoring an earlier wording would make that retirement re-clear
 // genuinely-failed nodes on every process start.
+//
+// THE DISCIPLINE FOR THE NEXT NARROWING IS THEREFORE FIXED: rename this literal,
+// and add a retirement on the server keyed to the string it replaced, with the
+// conjunct that says which nodes the narrowing made wrong. Never re-point an
+// existing retirement.
 func markStuckEmbedItems(ctx context.Context, p *Pipeline, be WireClient, key graphKey, ids []string) {
-	const reason = "embed-text-empty: ShouldEmbed=true but the server-composed embed text was " +
-		"whitespace-only after cold-text hydration"
-	markEmbedItemsWithReason(ctx, p, be, key, ids, reason)
+	markEmbedItemsWithReason(ctx, p, be, key, ids, embedTextEmptyReason)
 }
+
+// embedTextEmptyReason is the CURRENT terminal reason for a node whose
+// server-composed embed text was whitespace-only. It is a named constant rather
+// than a function-local literal so its bytes can be pinned by a test: renaming it
+// is a deliberate act that owes a server-side retirement for the string it
+// replaced, and a test that reds on the rename is what makes the owing visible.
+const embedTextEmptyReason = "embed-text-empty: the server composed no embed text for this node from its " +
+	"declared or default field set, after cold-text hydration"
 
 // markEmbedItemsWithReason is the shared durable terminal-marker write: it
 // stamps MetaKeyEmbedFailureReason=reason on every id via ONE

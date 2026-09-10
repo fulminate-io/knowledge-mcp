@@ -20,28 +20,26 @@ import (
 //  0. mode:"similar" claim. A knowledge/default search carrying mode=similar +
 //     node_id resolves that node's STORED vector from the client-local HNSW
 //     segments and returns its nearest neighbors (composeSimilarNodeSearch),
-//     self-excluded. Claimed after the logs/code short-circuits, before the
-//     reducible-graph arms; loud-errors rather than falling through.
-//  1. graph=logs short-circuit. Log graph search runs entirely
-//     client-side: searchLogs (tools_logs_search.go) issues
-//     gc.Call("query", graph:"logs", text:..., name:..., format:"json")
-//     and renders templates locally. The server-side search.go dispatch
-//     returns errLogsHandledClientSide for graph=logs; the rerank +
-//     embed branches below do not apply since log graphs carry no
-//     vector index.
-//  2. Client-side query embedding (Phase 4.5). When deps.Embedder() is
+//     self-excluded. Claimed after the code short-circuit, before the
+//     reducible-graph arms; loud-errors rather than falling through. A
+//     short-circuit for the built-in log graphs used to sit ahead of this one;
+//     see interceptSearchArms for what took its place.
+//
+//  1. Client-side query embedding (Phase 4.5). When deps.Embedder() is
 //     non-nil, the caller did not already supply query_vector, AND the
 //     resolved mode is not BM25-only, the query text is embedded locally and
 //     the bytes are forwarded via the query_vector wire field. The server's
 //     compositor short-circuits its own embed call, so servers without a
 //     Voyage key still return vector-quality results.
-//  3. Client-side rerank. When the resolved [reranker] axis has a
+//
+//  2. Client-side rerank. When the resolved [reranker] axis has a
 //     credential (or a keyless base_url) AND the resolved mode is not
 //     BM25-only, this interceptor widens limit + coerces format=json on the
 //     wire, calls the server, hydrates the JSON response, invokes the
 //     configured reranker locally through the rerank registry, and
 //     re-renders for the caller.
-//  4. Mode honoring. The declared `mode` selects which retrieval arms run.
+//
+//  3. Mode honoring. The declared `mode` selects which retrieval arms run.
 //     mode:text suppresses BOTH pre-steps above and refuses a payload that
 //     also asks for a vector operation; search_mode_contract.go holds the
 //     vocabulary and the reasoning.
@@ -53,7 +51,7 @@ import (
 // the CALLER-BOUNDARY limit clamp and its disclosure. Placing it here rather
 // than in the arms is what makes the declared maximum bind on EVERY serving
 // path — rerank success, all four rerank degrade branches, keyless installs,
-// the custom-graph arm, logs, code and similar — without enumerating them.
+// the custom-graph arm, code and similar — without enumerating them.
 // It also keeps the clamp strictly BEFORE the rerank rewrite widens the same
 // wire key to the candidate-pool size; see clampSearchCallerLimit for why those
 // two writes must not be collapsed.
@@ -76,14 +74,16 @@ func InterceptSearch(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 // mode resolution, and the embed/rerank pipeline. Split out so the clamp and
 // its disclosure in the outer apply uniformly to whatever this returns.
 func interceptSearchArms(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
-	// graph=logs short-circuit. Decoded here so the rewrite/
-	// embed/rerank pipeline below never sees a log-graph payload it
-	// wasn't designed for.
+	// The payload is sniffed once here and read by every arm below.
+	//
+	// THERE WAS A graph=logs SHORT-CIRCUIT AHEAD OF THIS and it is gone with the
+	// built-in log collectors. `logs` is a RETIRED graph type now, so the name
+	// falls through to interceptSearchReducibleGraph, whose retired-builtin gate
+	// claims it and answers with the removal reason — which is the honest answer
+	// for a name that was valid one release ago, and the reason the retirement is
+	// recorded rather than the constant simply deleted.
 	var sniff searchArgs
-	if err := json.Unmarshal(params.Arguments, &sniff); err == nil && sniff.Graph == "logs" {
-		h := &Handler{Deps: deps}
-		return true, h.searchLogs(ctx, sniff)
-	}
+	_ = json.Unmarshal(params.Arguments, &sniff)
 	// graph=code claim. Code search runs entirely client-side
 	// via the SAME composeCodeSearch composer InterceptQueryCodeSearch uses; the
 	// engine search-code path is denied (compileSearch isCodeGraph), so this is
@@ -107,20 +107,20 @@ func interceptSearchArms(ctx context.Context, deps ClientDeps, params kgtools.Ca
 	// node_id resolves that node's STORED vector from the client-local HNSW
 	// segments and returns its nearest neighbors (interceptSearchSimilar →
 	// composeSimilarNodeSearch) — NO server search, NO fresh query-text embed.
-	// Placed AFTER the logs/code short-circuits and BEFORE
+	// Placed AFTER the code short-circuit and BEFORE
 	// interceptSearchReducibleGraph so a normal (empty-mode) search flows past it.
 	if handled, res := interceptSearchSimilar(ctx, deps, sniff); handled {
 		return true, res
 	}
 	// For completeness: the SEARCH tool is a SEPARATE client
 	// compile path from the query tool. engine.compileSearch is reducible for
-	// practice/cloud/cicd/linkage/web/pdf/checks and would dispatch
+	// practice/linkage/web/pdf/checks and would dispatch
 	// RETURN_MODE_SEARCH to the server. Claim each of those reducible graphs there
-	// (intercept_search_reducible_graph.go) — practice/cloud/cicd served by the
+	// (intercept_search_reducible_graph.go) — practice served by the
 	// client segment engine, web/pdf by the client-computed BM25 read over the
 	// drained raw graph, checks by its own served arm, and linkage refused by name
 	// because it carries no ranked index — so the SEARCH tool emits no RETURN_MODE_SEARCH
-	// for ANY reducible graph. Only the knowledge/default arm (and graph=logs/code
+	// for ANY reducible graph. Only the knowledge/default arm (and graph=code
 	// above) flows past this point.
 	if handled, res := interceptSearchReducibleGraph(ctx, deps, sniff.Graph, params.Arguments); handled {
 		return true, res
@@ -184,7 +184,7 @@ func interceptSearchArms(ctx context.Context, deps ClientDeps, params kgtools.Ca
 	// gate below rejects with a not-ready error before any deref. Only fall through
 	// to the bare server search when this is NOT the knowledge/default arm. Other
 	// graphs keep the pre-existing fall-through contract (the SEARCH-tool
-	// practice/cloud/cicd claims are added separately).
+	// practice claims are added separately).
 	claimKnowledge := isKnowledgeDefaultGraph(sniff.Graph)
 	if !hasRewrite && !didEmbed && !claimKnowledge {
 		slog.Debug("rerank-trace: fall-through to bare search (no rewrite, no embed)")
@@ -207,7 +207,7 @@ func interceptSearchArms(ctx context.Context, deps ClientDeps, params kgtools.Ca
 	// so the pre-flight Healthy() probe (always-local in the prior design) is unnecessary.
 	// compiles to Engine.Execute; an unrecognized shape is denied legibly (there is
 	// no wire fallback). The per-graph search intercepts (code /
-	// cloud / cicd / practice) claim the specialized shapes upstream, so only the
+	// practice) claim the specialized shapes upstream, so only the
 	// reducible knowledge/default search reaches here. The embed / rerank pre-steps
 	// above are preserved verbatim; applyClientRerank below still hydrates the json
 	// envelope (the engine search render in json mode emits the same

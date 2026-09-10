@@ -99,7 +99,7 @@ func (s *crawlState) fetchAndParse(
 			// outer loop observes it separately.
 			return nil, false
 		}
-		slog.Warn("web.crawl: fetch failed, page dropped", "url", raw, "err", err)
+		slog.Warn("web.crawl: fetch failed, page dropped", "url", logSafe(raw), "err", logSafeErr(err))
 		s.bumpDegrade(degradeFetchFailed, 1)
 		return nil, false
 	}
@@ -112,20 +112,20 @@ func (s *crawlState) fetchAndParse(
 	// from a lying origin.
 	if v := classifyPage(page); !v.isPage {
 		slog.Warn("web.crawl: not a page, resource skipped",
-			"url", raw, "reason", v.reason,
-			"declared_content_type", v.declared, "sniffed_content_type", v.sniffed)
+			"url", logSafe(raw), "reason", v.reason,
+			"declared_content_type", logSafe(v.declared), "sniffed_content_type", logSafe(v.sniffed))
 		s.bumpDegrade(degradeNotAPage, 1)
 		return nil, false
 	}
 	cleaned, err := cleanArticle(page.Body, page.FinalURL)
 	if err != nil {
-		slog.Warn("web.crawl: clean failed, page dropped", "url", raw, "err", err)
+		slog.Warn("web.crawl: clean failed, page dropped", "url", logSafe(raw), "err", logSafeErr(err))
 		s.bumpDegrade(degradeCleanFailed, 1)
 		return nil, false
 	}
 	record, err := parsePage(page, cleaned)
 	if err != nil {
-		slog.Warn("web.crawl: parse failed, page dropped", "url", raw, "err", err)
+		slog.Warn("web.crawl: parse failed, page dropped", "url", logSafe(raw), "err", logSafeErr(err))
 		s.bumpDegrade(degradeParseFailed, 1)
 		return nil, false
 	}
@@ -152,7 +152,7 @@ func (s *crawlState) isContentAlias(record *pageRecord) bool {
 	}
 	if existing, ok := s.hashToURL[record.ContentHash]; ok && existing != record.URL {
 		slog.Warn("web.crawl: content-hash alias, page dropped",
-			"url", record.URL, "alias_of", existing, "hash", record.ContentHash)
+			"url", logSafe(record.URL), "alias_of", logSafe(existing), "hash", record.ContentHash)
 		s.bumpDegradeLocked(degradeContentAlias, 1)
 		return true
 	}
@@ -176,7 +176,7 @@ func (s *crawlState) hostCapReached(record *pageRecord) bool {
 	}
 	if s.hostPageCount[host] >= s.maxPagesPerHost {
 		slog.Warn("web.crawl: per-host cap reached, page dropped",
-			"host", host, "cap", s.maxPagesPerHost, "url", record.URL)
+			"host", logSafe(host), "cap", s.maxPagesPerHost, "url", logSafe(record.URL))
 		s.bumpDegradeLocked(degradeHostCap, 1)
 		return true
 	}

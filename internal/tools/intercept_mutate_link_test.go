@@ -49,7 +49,7 @@ func TestCrossGraphLink_KnowledgeFromPracticeTo_MaterializesProxy(t *testing.T) 
 
 	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
-		Arguments: json.RawMessage(`{"operation":"link","graph":"practice","language":"go","from":"dec-1","to":"pat-1","relationship":"Uses"}`),
+		Arguments: json.RawMessage(`{"operation":"link","graph":"practice","from":"dec-1","to":"pat-1","relationship":"Uses"}`),
 	})
 	require.True(t, handled, "knowledge-FROM/practice-TO proxy link must be claimed client-side")
 	require.False(t, res.IsError, "proxy link: %s", toolResultText(res))
@@ -79,7 +79,7 @@ func TestCrossGraphLink_KnowledgeFromPracticeTo_MaterializesProxy(t *testing.T) 
 	// Idempotent: a second identical call reuses the same deterministic proxy id.
 	handled2, res2 := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
-		Arguments: json.RawMessage(`{"operation":"link","graph":"practice","language":"go","from":"dec-1","to":"pat-1","relationship":"Uses"}`),
+		Arguments: json.RawMessage(`{"operation":"link","graph":"practice","from":"dec-1","to":"pat-1","relationship":"Uses"}`),
 	})
 	require.True(t, handled2)
 	require.False(t, res2.IsError)
@@ -87,51 +87,10 @@ func TestCrossGraphLink_KnowledgeFromPracticeTo_MaterializesProxy(t *testing.T) 
 	assert.Equal(t, "proxy:practice:go:pat-1", fc.execMutations[2].GetNodeBodies()[0].GetId())
 }
 
-// TestCrossGraphLink_ProxySlugParity covers the proxy-id clause: a practice
-// graph whose name is non-trivial ("cplusplus") produces the byte-identical
-// proxy id the server addresses it by.
-//
-// THERE IS NO LONGER A SECOND SIDE TO THIS PARITY, and the comment used to name
-// one. It said the id matched "what the server's slugifyLanguage would" produce;
-// that wrapper is gone, and no resolution path transforms a graph name any more.
-// What actually makes this test pass, unchanged, is that the client proxy path
-// uses the graph NAME the catalog reports — which is already canonical, because
-// every create channel REFUSES a name that is not.
-func TestCrossGraphLink_ProxySlugParity(t *testing.T) {
-	// The practice graph for "C++" is named by its slug ("cplusplus") — that is
-	// what listForeignGraphs reports and what locateForeignNode probes. The slug
-	// is the deterministic SlugifyLanguage("C++") output, inlined here: the client
-	// proxy path uses the graph NAME the fake reports (already a slug), so this
-	// test seeds + asserts that slug literally.
-	const slug = "cplusplus"
-	fc := &fakeGraphCaller{
-		queryResponsesByGraph: map[string]map[string]kgtools.ToolResult{
-			"knowledge": {"dec-1": graphNodeResult(t, "dec-1", "decision", "Dec", "d")},
-		},
-		queryResponsesByGraphName: map[graphKey]map[string]kgtools.ToolResult{
-			{Type: "practice", Name: slug}: {"pat-1": graphNodeResult(t, "pat-1", "pattern", "Pat", "p")},
-		},
-		listGraphsResult: listGraphsResultFor(t, [2]string{"practice", slug}),
-	}
-	deps := interceptTestDeps{gc: fc}
-
-	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
-		Name:      "mutate",
-		Arguments: json.RawMessage(`{"operation":"link","graph":"practice","language":"C++","from":"dec-1","to":"pat-1","relationship":"uses"}`),
-	})
-	require.True(t, handled)
-	require.False(t, res.IsError, "proxy link: %s", toolResultText(res))
-
-	require.Len(t, fc.execMutations, 2)
-	wantID := "proxy:practice:" + slug + ":pat-1"
-	assert.Equal(t, "proxy:practice:cplusplus:pat-1", wantID, "slug parity: C++ → cplusplus")
-	assert.Equal(t, wantID, fc.execMutations[0].GetNodeBodies()[0].GetId())
-}
-
 // TestCrossGraphLink_ProxyEquivalence covers the equivalence: the client proxy
 // branch produces the SAME proxy node (id, source, foreign_graph/foreign_id/
-// language metadata) as the server's resolvePracticeToProxy. Both paths build the
-// proxy via the SHARED crossgraph.BuildCrossGraphProxy with a ProxyTarget whose
+// language metadata) as the retired server-side practice-proxy resolver did.
+// Both paths build the proxy via the SHARED crossgraph.BuildCrossGraphProxy with a ProxyTarget whose
 // Name is the language slug, so equivalence is structural — this asserts the exact
 // field shape both paths emit, for a slug-transforming language input (so the
 // byte-identical-id parity is exercised, not just "go"). The slug
@@ -147,8 +106,8 @@ func TestCrossGraphLink_ProxyEquivalence(t *testing.T) {
 		SymbolName: "Pat",
 		Summary:    "a pattern",
 	}
-	// The exact ProxyTarget both the server (resolvePracticeToProxy) and the
-	// client (materializePracticeProxy) construct.
+	// The exact ProxyTarget the client builds, and the retired server-side
+	// resolver built before it.
 	target := &knowledgev1.ProxyTarget{
 		GraphType: string(kgtypes.GraphPractice),
 		Name:      langSlug,
@@ -168,7 +127,7 @@ func TestCrossGraphLink_ProxyEquivalence(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Generalized FROM/TO matrix. Each case asserts the proxy id byte-matches
 // store.BuildCrossGraphProxy for the located (type,name) — the server-parity
-// invariant for code/cloud/cicd, and the slug-ful decided-correct convention for
+// invariant for code, and the slug-ful decided-correct convention for
 // practice. (TestCrossGraphLink_CodeFromFallsThrough was DELETED: a code-FROM is
 // now CLAIMED — case 1 below is its positive replacement.)
 // ---------------------------------------------------------------------------
@@ -210,88 +169,67 @@ func TestCrossGraphLink_CodeFromKnowledgeTo(t *testing.T) {
 	assert.Equal(t, "dec-1", link.GetEdgeSpec().GetToId(), "knowledge TO used directly (no proxy)")
 }
 
-// TestCrossGraphLink_CloudFromKnowledgeTo covers case (2): a cloud-FROM →
-// knowledge-TO link materializes proxy:cloud:<account>:<from>.
-func TestCrossGraphLink_CloudFromKnowledgeTo(t *testing.T) {
+// TestCrossGraphLink_ForeignFromKnowledgeTo covers case (2): a foreign-FROM →
+// knowledge-TO link materializes the foreign family's deterministic proxy.
+//
+// THE FAMILY WAS cloud, THEN cicd, AND IS NOW practice — a fixture move each
+// time rather than a coverage loss. The subject is the FROM-side proxy
+// materialization for a family that is not code, and practice is the only such
+// family with a deterministic arm left: crossgraph.foreignScanGraphTypes
+// enumerates code and practice and nothing else, so a fixture in any other
+// family would be locating an endpoint nothing scans for.
+func TestCrossGraphLink_ForeignFromKnowledgeTo(t *testing.T) {
 	fc := &fakeGraphCaller{
 		queryResponsesByGraph: map[string]map[string]kgtools.ToolResult{
 			"knowledge": {"dec-1": graphNodeResult(t, "dec-1", "decision", "Dec", "d")},
 		},
 		queryResponsesByGraphName: map[graphKey]map[string]kgtools.ToolResult{
-			{Type: "cloud", Name: "acct-1"}: {"ec2:i-abc": graphNodeResult(t, "ec2:i-abc", "resource", "i-abc", "an instance")},
+			{Type: "practice", Name: "go"}: {"pat:worker-pool": graphNodeResult(t, "pat:worker-pool", "pattern", "worker-pool", "a pattern")},
 		},
-		listGraphsResult: listGraphsResultFor(t, [2]string{"cloud", "acct-1"}),
+		listGraphsResult: listGraphsResultFor(t, [2]string{"practice", "go"}),
 	}
 	deps := interceptTestDeps{gc: fc}
 
 	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
-		Arguments: json.RawMessage(`{"operation":"link","from":"ec2:i-abc","to":"dec-1","relationship":"relates-to"}`),
+		Arguments: json.RawMessage(`{"operation":"link","from":"pat:worker-pool","to":"dec-1","relationship":"relates-to"}`),
 	})
 	require.True(t, handled)
-	require.False(t, res.IsError, "cloud-from link: %s", toolResultText(res))
+	require.False(t, res.IsError, "foreign-from link: %s", toolResultText(res))
 
 	require.Len(t, fc.execMutations, 2)
-	wantProxy := mustProxyID(t, kgtypes.GraphCloud, "acct-1", "ec2:i-abc")
-	assert.Equal(t, "proxy:cloud:acct-1:ec2:i-abc", wantProxy)
+	wantProxy := mustProxyID(t, kgtypes.GraphPractice, "go", "pat:worker-pool")
+	assert.Equal(t, "proxy:practice:go:pat:worker-pool", wantProxy)
 	assert.Equal(t, wantProxy, fc.execMutations[0].GetNodeBodies()[0].GetId())
 	assert.Equal(t, []string{wantProxy}, fc.execMutations[1].GetSelection().GetIds())
 	assert.Equal(t, "dec-1", fc.execMutations[1].GetEdgeSpec().GetToId())
 }
 
-// TestCrossGraphLink_KnowledgeFromCloudTo covers case (3): a knowledge-FROM →
-// cloud-TO link materializes proxy:cloud:<account>:<to> + from→proxy LINK.
-func TestCrossGraphLink_KnowledgeFromCloudTo(t *testing.T) {
+// TestCrossGraphLink_KnowledgeFromForeignTo covers case (4): a knowledge-FROM →
+// foreign-TO link materializes the foreign family's deterministic proxy on the
+// TO side. It is the mirror of the case above and moved for the same reason.
+func TestCrossGraphLink_KnowledgeFromForeignTo(t *testing.T) {
 	fc := &fakeGraphCaller{
 		queryResponsesByGraph: map[string]map[string]kgtools.ToolResult{
 			"knowledge": {"dec-1": graphNodeResult(t, "dec-1", "decision", "Dec", "d")},
 		},
 		queryResponsesByGraphName: map[graphKey]map[string]kgtools.ToolResult{
-			{Type: "cloud", Name: "acct-1"}: {"ec2:i-xyz": graphNodeResult(t, "ec2:i-xyz", "resource", "i-xyz", "an instance")},
+			{Type: "practice", Name: "python"}: {"pat:build": graphNodeResult(t, "pat:build", "pattern", "build", "a pattern")},
 		},
-		listGraphsResult: listGraphsResultFor(t, [2]string{"cloud", "acct-1"}),
+		listGraphsResult: listGraphsResultFor(t, [2]string{"practice", "python"}),
 	}
 	deps := interceptTestDeps{gc: fc}
 
 	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
-		Arguments: json.RawMessage(`{"operation":"link","from":"dec-1","to":"ec2:i-xyz","relationship":"relates-to"}`),
+		Arguments: json.RawMessage(`{"operation":"link","from":"dec-1","to":"pat:build","relationship":"relates-to"}`),
 	})
 	require.True(t, handled)
-	require.False(t, res.IsError, "knowledge-from cloud-to link: %s", toolResultText(res))
+	require.False(t, res.IsError, "knowledge-from foreign-to link: %s", toolResultText(res))
 
 	require.Len(t, fc.execMutations, 2)
-	wantProxy := mustProxyID(t, kgtypes.GraphCloud, "acct-1", "ec2:i-xyz")
-	assert.Equal(t, "proxy:cloud:acct-1:ec2:i-xyz", wantProxy)
-	assert.Equal(t, wantProxy, fc.execMutations[0].GetNodeBodies()[0].GetId())
-	assert.Equal(t, []string{"dec-1"}, fc.execMutations[1].GetSelection().GetIds(), "knowledge FROM is the edge source")
-	assert.Equal(t, wantProxy, fc.execMutations[1].GetEdgeSpec().GetToId())
-}
-
-// TestCrossGraphLink_KnowledgeFromCICDTo covers case (4): a knowledge-FROM →
-// cicd-TO link materializes proxy:cicd:<account>:<to>.
-func TestCrossGraphLink_KnowledgeFromCICDTo(t *testing.T) {
-	fc := &fakeGraphCaller{
-		queryResponsesByGraph: map[string]map[string]kgtools.ToolResult{
-			"knowledge": {"dec-1": graphNodeResult(t, "dec-1", "decision", "Dec", "d")},
-		},
-		queryResponsesByGraphName: map[graphKey]map[string]kgtools.ToolResult{
-			{Type: "cicd", Name: "org-1"}: {"workflow:build": graphNodeResult(t, "workflow:build", "workflow", "build", "a workflow")},
-		},
-		listGraphsResult: listGraphsResultFor(t, [2]string{"cicd", "org-1"}),
-	}
-	deps := interceptTestDeps{gc: fc}
-
-	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
-		Name:      "mutate",
-		Arguments: json.RawMessage(`{"operation":"link","from":"dec-1","to":"workflow:build","relationship":"relates-to"}`),
-	})
-	require.True(t, handled)
-	require.False(t, res.IsError, "knowledge-from cicd-to link: %s", toolResultText(res))
-
-	require.Len(t, fc.execMutations, 2)
-	wantProxy := mustProxyID(t, kgtypes.GraphCICD, "org-1", "workflow:build")
-	assert.Equal(t, "proxy:cicd:org-1:workflow:build", wantProxy)
+	wantProxy := mustProxyID(t, kgtypes.GraphPractice, "python", "pat:build")
+	assert.Equal(t, "proxy:practice:python:pat:build", wantProxy)
 	assert.Equal(t, wantProxy, fc.execMutations[0].GetNodeBodies()[0].GetId())
 	assert.Equal(t, wantProxy, fc.execMutations[1].GetEdgeSpec().GetToId())
 }
@@ -318,7 +256,8 @@ func TestCrossGraphLink_KnowledgeToKnowledge_Skips(t *testing.T) {
 	})
 	assert.False(t, handled, "both-in-knowledge bare link falls through to server bare-link")
 	assert.Empty(t, fc.execMutations, "zero client Execute mutations")
-	// Zero pipeline_list_graphs Call — the FROM-first skip runs before listForeignGraphs.
+	// Zero pipeline_list_graphs Call — the FROM-first skip runs before any
+	// foreign-graph enumeration.
 	for _, c := range fc.calls {
 		assert.NotEqual(t, "pipeline_list_graphs", c.tool, "no graph enumeration on the knowledge↔knowledge hot path")
 	}
@@ -465,7 +404,7 @@ func TestCrossGraphLink_StatslessCaller_DeclinesRatherThanClaims(t *testing.T) {
 
 		handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 			Name:      "mutate",
-			Arguments: json.RawMessage(`{"operation":"link","from":"dec-1","to":"pat-1","relationship":"uses","graph":"practice","language":"go"}`),
+			Arguments: json.RawMessage(`{"operation":"link","from":"dec-1","to":"pat-1","relationship":"uses","graph":"practice"}`),
 		})
 		require.True(t, handled, "a genuine cross-graph link IS claimed by this arm")
 		require.NotEmpty(t, res.Content)

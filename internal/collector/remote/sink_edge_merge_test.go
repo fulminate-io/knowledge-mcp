@@ -106,9 +106,7 @@ func manifestAtStoredRowSet(
 		HashSchemeVersion: contribhash.ContributionHashSchemeVersion,
 	}
 	for path, h := range hashes {
-		resp.Entries = append(resp.Entries, &knowledgev1.ManifestEntry{
-			FilePath: path, ContributionHash: append([]byte(nil), h[:]...),
-		})
+		resp.Entries = append(resp.Entries, newManifestEntry(diffKeyFile, path, append([]byte(nil), h[:]...)))
 	}
 	return resp
 }

@@ -361,7 +361,7 @@ func (c *collector) maybeBM25Flush(ctx context.Context, merged int, pending bool
 
 // bm25ArmEnabledFor is the arm's GRAPH GATE, and it is an EXISTING predicate rather
 // than a new one: kgtypes.HasRebuildableSegments resolves to exactly {knowledge,
-// code, cloud, cicd, practice, checks, web, pdf} and is already the gate
+// code, practice, checks, web, pdf} and is already the gate
 // manage(status)'s coverage probe and the heal factory use.
 //
 // THE TWO RAW GRAPHS ARE IN THAT SET DELIBERATELY, and this arm is why: server-side

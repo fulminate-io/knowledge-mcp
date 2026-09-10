@@ -443,7 +443,7 @@ func resolveInternalLinks(edges []kgwire.BatchEdge, urlToID map[string]string) (
 			continue
 		}
 		slog.Warn("web.crawl: internal link downgraded to external, never visited",
-			"url", rawURL)
+			"url", logSafe(rawURL))
 		md["rel"] = "external"
 		evidence, err := jsonMeta(md)
 		if err != nil {

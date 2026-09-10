@@ -28,26 +28,8 @@ import (
 	"fmt"
 	"os"
 
-	// Register cloud collectors via blank imports (each has an init()
-	// calling collector.Register + postpopulate.Register).
-	_ "github.com/fulminate-io/knowledge-mcp/internal/collector/cloud/aws"
-	_ "github.com/fulminate-io/knowledge-mcp/internal/collector/cloud/azure"
-	_ "github.com/fulminate-io/knowledge-mcp/internal/collector/cloud/gcp"
-	_ "github.com/fulminate-io/knowledge-mcp/internal/collector/cloud/k8s"
-
-	// Register CI/CD collectors via blank imports.
-	_ "github.com/fulminate-io/knowledge-mcp/internal/collector/cicd/bitbucket"
-	_ "github.com/fulminate-io/knowledge-mcp/internal/collector/cicd/github"
-	_ "github.com/fulminate-io/knowledge-mcp/internal/collector/cicd/gitlab"
-
 	// Register web collector via blank import.
 	_ "github.com/fulminate-io/knowledge-mcp/internal/collector/web"
-
-	// Register log providers via blank imports.
-	_ "github.com/fulminate-io/knowledge-mcp/internal/collector/logs/cloudwatch"
-	_ "github.com/fulminate-io/knowledge-mcp/internal/collector/logs/k8s"
-	_ "github.com/fulminate-io/knowledge-mcp/internal/collector/logs/loki"
-	_ "github.com/fulminate-io/knowledge-mcp/internal/collector/logs/stackdriver"
 
 	// Register code graph collector (codesync.init registers "code" via
 	// collector.Register + the postpopulate registry). codesync pulls

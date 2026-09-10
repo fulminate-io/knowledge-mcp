@@ -34,8 +34,10 @@ Reach for web collection when you want a reference site — API docs, a pattern
 catalog, a book published as a website, an architecture-guidance corpus — inside
 the graph so you can search it, traverse its link structure, and feed it to a
 recipe. If the content lives in a single PDF instead, use
-[PDF collection](pdf-collection.md). If you already have a collector binary for a
-bespoke source, register it as a [custom collector](tools/custom_collector.md).
+[PDF collection](pdf-collection.md). If the source is bespoke, put it behind an
+MCP provider — a stdio child or an http endpoint — exposing one tool whose input
+and output schemas satisfy the collector contract, and register that provider as
+a [custom collector](tools/custom_collector.md).
 
 ### The id is the graph slug
 

@@ -49,10 +49,10 @@ func TestEmit_PageIsItsChunksNotItsBody(t *testing.T) {
 	// three phases, and the constant's own doc requires a bump in the same
 	// change. It is gated here rather than left to
 	// TestEmitFromPage_StampsCollectorSchemaVersion, which compares the stamp
-	// to strconv.Itoa(collectorSchemaVersion) and is therefore structurally
+	// to strconv.Itoa(CollectorSchemaVersion) and is therefore structurally
 	// unable to see the value at all.
 	assert.Equal(t, "3", page.Metadata["collector_schema_version"],
-		"the web collectorSchemaVersion must be bumped to 3 in this change; a graph carrying 2 claims the "+
+		"the web CollectorSchemaVersion must be bumped to 3 in this change; a graph carrying 2 claims the "+
 			"pre-change shape, in which a page root recorded no source_name and no seed_host")
 
 	// THE REACHABILITY CENSUS — one node's Content each, no more and no less.

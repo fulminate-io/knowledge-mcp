@@ -22,9 +22,13 @@ import (
 // the instance name in the field that graph family's server-side resolver
 // actually keys on. It mirrors ResolveGraphDB's per-family requirements
 // (cmd/knowledge-server/internal/tools/tools_graph_routing.go): code requires
-// Repo, cloud/cicd require Account, practice requires Language. A selector that
-// carries the name in the wrong field is rejected before any lookup — exactly as
-// the server rejects it — so a client that builds the wrong shape cannot fetch.
+// Repo, and a SINGLETON family requires no instance
+// key at all — practice moved onto that arm when its eight per-language graphs
+// became one combined graph, so requireInstanceKey below no longer demands a
+// Language for it and TestRequireInstanceKey_AgreesWithTheServerOnPractice pins
+// that. A selector that carries the name in the wrong field is rejected before
+// any lookup — exactly as the server rejects it — so a client that builds the
+// wrong shape cannot fetch.
 type resolverFake struct {
 	nodesByGraph map[string]map[string]*knowledgev1.Node // graphType → id → node
 }
@@ -43,22 +47,45 @@ func (f *resolverFake) Execute(_ context.Context, req *knowledgev1.ExecuteReques
 
 // requireInstanceKey rejects a selector whose instance name landed in a field
 // the family's resolver does not read.
+//
+// PRACTICE IS DELIBERATELY ABSENT and used to be here. It required a language,
+// which was true while the family held eight per-language graphs; it holds one
+// now, an unselected practice selector is the NORMAL shape, and the real server
+// resolves it to the combined graph. A double that kept the old requirement
+// refused a selector its subject serves — which is the same defect as serving
+// one its subject refuses, in the direction that is harder to notice because
+// nothing drives it.
 func requireInstanceKey(sel *knowledgev1.GraphSelector) error {
 	switch sel.GetGraph() {
 	case "code":
 		if sel.GetRepo() == "" {
 			return fmt.Errorf("graph=code requires repo")
 		}
-	case "cloud", "cicd":
-		if sel.GetAccount() == "" {
-			return fmt.Errorf("graph=%s requires account", sel.GetGraph())
-		}
-	case "practice":
-		if sel.GetLanguage() == "" {
-			return fmt.Errorf("graph=practice requires language")
-		}
 	}
 	return nil
+}
+
+// TestRequireInstanceKey_AgreesWithTheServerOnPractice is what makes the double
+// above load-bearing rather than merely present.
+//
+// NOTHING DROVE IT BEFORE, which is why it kept a rule the server had dropped
+// and the suite stayed green through the whole change. The rows below are the
+// disagreement, stated: an unselected practice selector must PASS, and the one
+// family that genuinely requires an instance field must still fail.
+func TestRequireInstanceKey_AgreesWithTheServerOnPractice(t *testing.T) {
+	require.NoError(t, requireInstanceKey(&knowledgev1.GraphSelector{Graph: "practice"}),
+		"practice holds ONE graph: an unselected selector is the normal shape, and the server resolves it")
+	require.NoError(t, requireInstanceKey(&knowledgev1.GraphSelector{Graph: "practice", Language: "go"}),
+		"and a legacy read still names one of the pre-singleton graphs")
+
+	// THE CONTROL: the one family that DOES require an instance key must still be
+	// refused, or the rows above are satisfied by a guard that stopped guarding.
+	// It is a single control because code is the only instance-addressed family
+	// left — the account-keyed inventory families retired with their built-in
+	// collectors, and a retired name is refused by the real resolver ahead of any
+	// field policy, which is a different rule from this one.
+	require.Error(t, requireInstanceKey(&knowledgev1.GraphSelector{Graph: "code"}),
+		"a code selector with no repo names no graph")
 }
 
 // errorFake fails every Execute — used to drive the probe-failure arm.
@@ -69,21 +96,22 @@ func (f *errorFake) Execute(_ context.Context, _ *knowledgev1.ExecuteRequest) (*
 }
 
 // TestLocateForeignNode_PerFamilyInstanceKeyReachesTheGraph proves the located
-// selector addresses each family by the field its resolver keys on. The cloud
-// and cicd arms are the subject: their instance names must ride Account, not
-// Name — a Name-keyed cloud selector is rejected server-side and the location
-// silently returns "not found". The code and practice arms are the known-
-// positive controls: they resolved before this fix, so a cloud/cicd failure here
-// is a real per-family gap rather than a broken fake.
+// selector addresses each family by the field its resolver keys on. Both
+// surviving foreign families are here: a selector carrying the instance name in
+// the wrong field is rejected server-side and the location silently returns
+// "not found", so each row proves its own family reaches the graph.
+//
+// THE ACCOUNT-KEYED ROWS THIS TEST WAS WRITTEN FOR ARE GONE with their families.
+// foreignScanGraphTypes enumerates code and practice alone, so such a row would
+// be asserting that a family nothing scans can be located — an input that cannot
+// occur.
 func TestLocateForeignNode_PerFamilyInstanceKeyReachesTheGraph(t *testing.T) {
 	node := func(id string) *knowledgev1.Node {
-		return &knowledgev1.Node{Id: id, Type: string(kgtypes.NodeCloudResource), SymbolName: id}
+		return &knowledgev1.Node{Id: id, Type: string(kgtypes.NodePattern), SymbolName: id}
 	}
 	f := &resolverFake{nodesByGraph: map[string]map[string]*knowledgev1.Node{
 		"code":     {"repo-node": node("repo-node")},
 		"practice": {"prac-node": node("prac-node")},
-		"cloud":    {"cloud-node": node("cloud-node")},
-		"cicd":     {"cicd-node": node("cicd-node")},
 	}}
 
 	for _, tc := range []struct {
@@ -91,10 +119,8 @@ func TestLocateForeignNode_PerFamilyInstanceKeyReachesTheGraph(t *testing.T) {
 		graphName string
 		id        string
 	}{
-		{"code", "knowledge", "repo-node"}, // control — Repo-keyed, worked before
-		{"practice", "go", "prac-node"},    // control — Language-keyed, worked before
-		{"cloud", "prod", "cloud-node"},    // subject — Account-keyed
-		{"cicd", "github", "cicd-node"},    // subject — Account-keyed
+		{"code", "knowledge", "repo-node"}, // Repo-keyed
+		{"practice", "go", "prac-node"},    // singleton — no instance key
 	} {
 		t.Run(tc.graphType, func(t *testing.T) {
 			gt, name, n, found := LocateForeignNode(

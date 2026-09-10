@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "knowledge custom-collector tool output (v1)",
+  "description": "The MINIMUM output schema a custom collector's MCP tool must advertise, and the schema its structuredContent result is validated against. A tool that advertises no output schema, or one that does not declare at least this, is REFUSED at registration and at collect. walk_complete is the COMPLETENESS ASSERTION: the provider asserts its walk enumerated the whole source. It is required, so a provider cannot omit it and silently disable the deletion phase.",
+  "type": "object",
+  "required": ["nodes", "edges", "walk_complete"],
+  "properties": {
+    "nodes": {
+      "type": "array",
+      "description": "The nodes this collect produced. id and type are required on every node; the remaining fields of the node vocabulary are optional and documented in docs/guides/tools/custom_collector.md.",
+      "items": {
+        "type": "object",
+        "required": ["id", "type"],
+        "properties": {
+          "id": { "type": "string" },
+          "type": { "type": "string" }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "description": "The edges this collect produced. Endpoints are referenced by node id. An edge naming NEITHER source_graph nor target_graph is an edge of this collect's own graph. An edge naming ONE of them has that endpoint in another graph and is resolved into the linkage graph instead; it is never written into this collect's own graph. An edge naming BOTH fails the collect: one resolution reaches one foreign family, so an edge with a foreign node at each end names a relationship this contract cannot resolve.",
+      "items": {
+        "type": "object",
+        "required": ["from_id", "to_id", "type"],
+        "properties": {
+          "from_id": { "type": "string" },
+          "to_id": { "type": "string" },
+          "type": { "type": "string" },
+          "source_graph": {
+            "type": "string",
+            "description": "OPTIONAL. The graph FAMILY (a graph type, not a graph instance) that from_id lives in — the mirror of target_graph, for an edge whose FOREIGN endpoint is the source rather than the destination. The client enumerates that family's loaded graphs, locates from_id among them, and links the edge into the linkage graph through a proxy. A named family with no loaded graph, an endpoint found in none of them, and a failed enumeration each fail the collect, as does naming source_graph and target_graph on one edge. Omit it for an ordinary edge of this collect's own graph."
+          },
+          "target_graph": {
+            "type": "string",
+            "description": "OPTIONAL. The graph FAMILY (a graph type, not a graph instance) that to_id lives in. The client enumerates that family's loaded graphs, locates to_id among them, and links the edge into the linkage graph through a proxy. A named family with no loaded graph, an endpoint found in none of them, and a failed enumeration each fail the collect, as does naming source_graph and target_graph on one edge. Omit it for an ordinary edge of this collect's own graph."
+          }
+        }
+      }
+    },
+    "walk_complete": {
+      "type": "boolean",
+      "description": "The completeness assertion: true when this walk enumerated the whole source. A result asserting false disables the deletion phase for this collect, exactly as an incomplete code walk does."
+    }
+  }
+}

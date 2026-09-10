@@ -62,7 +62,7 @@ func TestRenderNodeResponse_NotFound(t *testing.T) {
 }
 
 // TestRenderNodeResponse_GraphLabel exercises a non-knowledge label (the
-// dispatcher passes the target graph label — cloud/practice/cicd/etc).
+// dispatcher passes the target graph label — code/practice/etc).
 func TestRenderNodeResponse_GraphLabel(t *testing.T) {
 	n := &knowledgev1.Node{Id: "ec2-1", SymbolName: "i-abc", Type: "ec2:instance"}
 	out, err := renderNodeResponse(nodeResp(t, n), "cloud:prod", "ec2-1", false, "", nil, false)

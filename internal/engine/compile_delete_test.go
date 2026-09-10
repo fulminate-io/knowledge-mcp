@@ -19,27 +19,31 @@ import (
 // legacy. This is the positive complement to the deny cases moved out
 // of TestCompileMutate_DenyCases / TestDefaultDeny_SpecializedShapes.
 func TestCompileMutate_PracticeTransformers(t *testing.T) {
-	t.Run("practice create → CREATE, Target practice+language", func(t *testing.T) {
+	// EVERY PAYLOAD BELOW NAMES NO LANGUAGE, and the Target assertions inverted
+	// with it: practice is ONE combined graph, so a write targets it with no
+	// instance field and the client arms refuse a language before the compiler is
+	// reached at all.
+	t.Run("practice create → CREATE, Target practice with no instance", func(t *testing.T) {
 		req, ok := compileMutate(json.RawMessage(
-			`{"operation":"create","graph":"practice","language":"go","type":"finding","name":"P","summary":"s"}`))
+			`{"operation":"create","graph":"practice","type":"finding","name":"P","summary":"s"}`))
 		require.True(t, ok, "practice create (no link_graph) must compile")
 		assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_CREATE, req.GetMutation().GetKind())
 		assert.Equal(t, "practice", req.GetTarget().GetGraph())
-		assert.Equal(t, "go", req.GetTarget().GetLanguage())
+		assert.Empty(t, req.GetTarget().GetLanguage())
 	})
 
 	t.Run("practice update → UPDATE, Target practice", func(t *testing.T) {
 		req, ok := compileMutate(json.RawMessage(
-			`{"operation":"update","graph":"practice","language":"go","id":"x","status":"y"}`))
+			`{"operation":"update","graph":"practice","id":"x","status":"y"}`))
 		require.True(t, ok, "practice by-id update must compile")
 		assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_UPDATE, req.GetMutation().GetKind())
 		assert.Equal(t, "practice", req.GetTarget().GetGraph())
-		assert.Equal(t, "go", req.GetTarget().GetLanguage())
+		assert.Empty(t, req.GetTarget().GetLanguage())
 	})
 
 	t.Run("practice delete-by-ids → DELETE, Target practice", func(t *testing.T) {
 		req, ok := compileMutate(json.RawMessage(
-			`{"operation":"delete","graph":"practice","language":"go","ids":["a","b"]}`))
+			`{"operation":"delete","graph":"practice","ids":["a","b"]}`))
 		require.True(t, ok, "practice delete-by-ids must compile")
 		m := req.GetMutation()
 		assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_DELETE, m.GetKind())

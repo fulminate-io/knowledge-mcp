@@ -105,7 +105,7 @@ func acceptedGraphVocabulary(registered []string) string {
 	b.WriteString(builtinGraphVocabularyClause())
 	if len(registered) == 0 {
 		b.WriteString("; no custom graph types are registered on this server — " +
-			`custom_collector(operation:"register") adds one`)
+			"`knowledge collector add` installs one into collectors.json")
 		return b.String()
 	}
 	b.WriteString(" plus the registered custom types (")

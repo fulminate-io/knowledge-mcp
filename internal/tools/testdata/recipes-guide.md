@@ -66,16 +66,28 @@ collect({
   "transformer": "recipe",
   "extract": true,
   "max_rows": 50,
-  "recipe_body": "select page\nemit passage {\n    name := page.name\n    body := page.description\n}"
+  "recipe_body": "select page\nemit passage {\n    identity := page.id\n    name := page.name\n    uri := page.uri\n}"
 })
 ```
 
-Three things matter here. `extract` is required with `recipe_body` — the pair is
-what makes the run a read. Because you pass `transformer: "recipe"` with no
-`seed_urls`, the crawl is **skipped**: the body runs against the already-cached
-raw graph, so iterating costs nothing beyond the transform itself. And `force`
-is refused on a recipe run — there is nothing for it to bypass, since the run
-writes nothing.
+Three things matter here. `extract` or `land` is required with `recipe_body` — a
+run that asks for neither is refused, because it would emit into a buffer nobody
+reads. Because you pass `transformer: "recipe"` with no `seed_urls`, the crawl is
+**skipped**: the body runs against the already-cached raw graph, so iterating
+costs nothing beyond the transform itself. And `force` is refused on a recipe
+run — force meant overwriting a colliding row, and a landing never overwrites: a
+resident id lands a versioned twin beside it and both are kept.
+
+A page node carries no body of its own. Each paragraph, code block, list and
+table is its own node holding its own text, so a page's prose is composed from
+its children over `CONTAINS` rather than read off the page — which is why the
+example above emits the page's address, and why the outline examples further
+down walk the children.
+
+Every example here sets `identity` to the row's own `id`: an emit's identity is
+what the emitted node's stable id is hashed on, it has to be unique per row, and
+it defaults to `name` — a heading on most documents, so a document that repeats a
+heading refuses the whole run at the first collision.
 
 The rows come back in the response. Read them, adjust the body, run it again.
 
@@ -87,7 +99,7 @@ escaped JSON string in whatever scratch file you like while you work on it:
 ```jsonc
 {
   "name": "sections-outline",
-  "content": "select section\nemit outline {\n    name := section.symbol_name\n    path := heading_path(\"CONTAINS\", \"symbol_name\", \" > \")\n}"
+  "content": "select section\nemit outline {\n    identity := section.id\n    name := section.symbol_name\n    path := heading_path(\"CONTAINS\", \"symbol_name\", \" > \")\n}"
 }
 ```
 
@@ -151,11 +163,18 @@ collect({
   "id": "<source-slug>",
   "transformer": "recipe",
   "extract": true,
-  "recipe_body": "select document\nwalk CONTAINS\nemit outline {\n    name := node.symbol_name\n    level := walk.depth\n    page := node.page_first\n}",
+  "recipe_body": "select document\nwalk CONTAINS\nfilter {\"kind\": {\"of\": \"node\", \"is\": \"section\"}}\nemit outline {\n    identity := node.id\n    name := node.symbol_name\n    level := walk.depth\n    page := node.page_first\n}",
   "offset": 100,
   "max_rows": 50
 })
 ```
+
+The kind filter is what makes that rowset an outline. A walk returns the
+paragraphs, code blocks and tables under a heading as well as the headings
+themselves, and none of those carries a name; because the emit sets an identity
+they come back NAMELESS rather than being skipped, since a row is dropped only
+when its name and its identity are both empty. Drop the filter to read every
+level, which is what a walk is for.
 
 ### The iteration loop
 

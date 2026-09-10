@@ -9,19 +9,21 @@ import "github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 // composes these defs into tools/list. The bodies are pure kgtools.MCPTool
 // literals.
 //
-// repoProp and thoughtsToolDescription are co-relocated package-level
-// values the server-side schema producers (searchTools/codeTools/
-// thoughtsTools) referenced; they are pure literals carried over so the
-// client copies compile standalone.
+// repoProp and thoughtsToolDescription are co-relocated package-level values
+// the server-side schema producers referenced before the binary split; they are
+// pure literals carried over so the client copies compile standalone. Those
+// producers are gone — this file is the schemas' only home.
 
-// repoProp is the shared repo parameter added to the code tools. Moved
-// verbatim from the server-side cmd/knowledge-server/tools/tools_code.go.
+// repoProp is the shared repo parameter added to the code tools. Moved verbatim
+// from the server's own code-tool schemas at the binary split; nothing on the
+// server declares it now.
 var repoProp = kgtools.Property{Type: "string", Description: "Repository (code graph) name — REQUIRED for graph=code; it is never inferred from cwd. search accepts 'all' to span every code repo. Not used by the knowledge graph."}
 
 // ThoughtsToolDef returns the unified MCP tool definition for the thought
 // graph. Five operations cover the full reasoning-cycle surface (think /
 // charge / recall / trace / propagate) plus the bulk adjacency /
-// charges_for reads. Moved verbatim from the server-side thoughtsTools().
+// charges_for reads. Moved verbatim from the server's own thought-tool schema
+// at the binary split.
 func ThoughtsToolDef() kgtools.MCPTool {
 	return kgtools.MCPTool{
 		Name:        "thoughts",
@@ -94,8 +96,9 @@ func ThoughtsToolDef() kgtools.MCPTool {
 	}
 }
 
-// thoughtsToolDescription is split out so the tool def stays scannable.
-// Moved verbatim from the server-side tools_thought.go.
+// thoughtsToolDescription is split out so the tool def stays scannable. Moved
+// verbatim from the server's own thought-tool schema at the binary split;
+// nothing on the server declares it now.
 const thoughtsToolDescription = `Persistent reasoning graph: hypothesize, charge with evidence, recall, trace chains, propagate. Eight operations:
 
   - think       : Record a thought (hypothesis / observation / plan). Required: content, summary (search-optimized one-line, max 500 chars). Optional: session, ticket_id, branches_from, links, status, origin (developer-origin role: planner|implementer|reviewer|researcher|tester|orchestrator|main; absent => main).
@@ -110,7 +113,7 @@ const thoughtsToolDescription = `Persistent reasoning graph: hypothesize, charge
 Common cycle: recall → think → (work) → charge → recall (again) to confirm the hypothesis landed. Examine a single thought via query(mode: "examine", id: thought_id). Link a thought to another node via mutate(operation: "link", from: thought_id, to: node_id, relationship: "informed-by"|"supports"|"contradicts"|"relates-to"|"produced").`
 
 // SearchToolDef returns the unified search tool schema definition. Moved
-// verbatim from the server-side searchTools().
+// verbatim from the server's own search-tool schema at the binary split.
 func SearchToolDef() kgtools.MCPTool {
 	return kgtools.MCPTool{
 		Name: "search",
@@ -118,16 +121,16 @@ func SearchToolDef() kgtools.MCPTool {
 			"Returns matching results ranked by relevance. Modes: 'hybrid' (default, BM25 and vector fused), " +
 			"'text' (BM25 only — the query is not embedded and no rerank runs), " +
 			"'vector' (vector only — requires a configured embedder). " +
-			"Supports BATCH queries via 'queries' array. Set 'graph' to route: code (default), knowledge, practice, cloud, cicd, linkage, or logs.",
+			"Supports BATCH queries via 'queries' array. Set 'graph' to route: code (default), knowledge, practice, linkage, or a registered custom graph type.",
 		InputSchema: kgtools.InputSchema{
 			Type: "object",
 			Properties: map[string]kgtools.Property{
 				"query":             {Type: "string", Description: "Single search query (keywords, function names, concepts)."},
 				"queries":           {Type: "array", Description: "Batch search: array of query strings. Results deduplicated and merged.", Items: &kgtools.Property{Type: "string"}},
-				"graph":             {Type: "string", Description: "Which graph to search: code (default), knowledge, practice, cloud, cicd, linkage, or logs."},
-				"name":              {Type: "string", Description: "Graph identifier. Required when graph=logs (the per-query log graph queryID). Ignored for other graph types."},
-				"account":           {Type: "string", Description: "Selects which inventoried external-provider account/org's resources to search within your own graph — an AWS/GCP account for graph=cloud, or a CI provider org (e.g. GitHub/GitLab) for graph=cicd. Required for graph=cloud/cicd; omit to list your available graphs."},
-				"resource_type":     {Type: "string", Description: "Cloud resource type filter prefix (e.g. 'ec2', 'ec2:instance'). Cloud graph only."},
+				"graph":             {Type: "string", Description: "Which graph to search: code (default), knowledge, practice, linkage, or a registered custom graph type (the name of a `collectors.json` entry). Cloud inventory, CI/CD inventory and log graphs are registered custom types now, searched by the name their collector registered."},
+				"name":              {Type: "string", Description: "Graph identifier, for the families keyed by name."},
+				"account":           {Type: "string", Description: "NO BUILT-IN FAMILY IS KEYED BY ACCOUNT. It was the instance key of the retired cloud and cicd families; a collected inventory graph is a registered custom type now, addressed by name. Consumed by nothing today."},
+				"resource_type":     {Type: "string", Description: "Resource type filter prefix (e.g. 'ec2', 'ec2:instance'), for a graph whose nodes carry a `resource_type`."},
 				"limit":             {Type: "number", Description: "Max results per query (default: 10, max: 50)."},
 				"include_source":    {Type: "boolean", Description: "Include full source code (default: true). Code graph only."},
 				"include_comments":  {Type: "boolean", Description: "Include comment nodes in code search results (default: false). Comments are excluded by default to reduce noise."},
@@ -137,7 +140,8 @@ func SearchToolDef() kgtools.MCPTool {
 				"path_prefix":       {Type: "string", Description: "Filter to files under this path. Code graph only."},
 				"repo":              repoProp,
 				"repos":             {Type: "array", Description: "Search specific repos (e.g. [\"agent\",\"knowledge\"]). Alternative to repo='all'. Code graph only.", Items: &kgtools.Property{Type: "string"}},
-				"language":          {Type: "string", Description: "Practice graph selector: names ONE practice graph to search (e.g. 'go', 'go-idioms'). Omit it, or pass 'all', to fan out across every loaded practice graph — that fan-out is the default and stays the default. Practice graph only; the same spelling query uses."},
+				"language":          {Type: "string", Description: "LEGACY read-only practice selector naming ONE pre-singleton practice graph (e.g. 'go', 'go-idioms'). Practice is ONE combined graph now, so OMIT this to search the whole practice corpus. The 'all' fan-out sentinel is retired and is refused. Practice graph only; the same spelling query uses."},
+				"source_hub":        {Type: "string", Description: "Practice SOURCE HUB id — narrows the ranked practice search to the nodes grouped under that hub, applied during ranking so a small hub returns its full top-N. Read arms spell it `source`; this tool spells it `source_hub`."},
 				"branch":            {Type: "string", Description: "Branch name for overlay search. Code graph only."},
 				"staleness":         {Type: "boolean", Description: "Include index staleness info (default: false). Code graph only."},
 				"current_head":      {Type: "string", Description: "Current git HEAD SHA (auto-populated by client intercept when staleness:true). Code graph only."},
@@ -166,7 +170,7 @@ func SearchToolDef() kgtools.MCPTool {
 }
 
 // FileSymbolsToolDef returns the file_symbols tool schema definition. Moved
-// verbatim from the server-side codeTools().
+// verbatim from the server's own code-tool schemas at the binary split.
 func FileSymbolsToolDef() kgtools.MCPTool {
 	return kgtools.MCPTool{
 		Name:        "file_symbols",
@@ -189,16 +193,15 @@ func FileSymbolsToolDef() kgtools.MCPTool {
 }
 
 // CollectToolDef returns the collect tool schema definition. Moved verbatim
-// from the server-side collectTools(). Collection runs client-side after the
-// binary split; the schema lives client-side now too.
+// from the server's own collect-tool schema at the binary split. Collection runs
+// client-side now; the schema lives client-side too.
 func CollectToolDef() kgtools.MCPTool {
 	return kgtools.MCPTool{
 		Name: "collect",
 		Description: "Collect data from an external source into a graph. " +
 			"Each collector type handles a specific source (e.g., code repositories, cloud accounts). " +
 			"The collector discovers, chunks, and writes nodes/edges to the appropriate graph. " +
-			"When type=\"logs\", queries a configured log backend (see manage configure_log_backend) " +
-			"via the logs Pipeline. When type=\"web\", fetches the seed URL(s) and walks the WHOLE " +
+			"When type=\"web\", fetches the seed URL(s) and walks the WHOLE " +
 			"document — nav, header, footer and aside included, there is no chrome skip list — " +
 			"emitting typed page/section/paragraph/code_block/list/list_item/table/link/image/" +
 			"blockquote/raw_html nodes into a per-source graph under GraphWebRaw keyed by id. " +
@@ -209,31 +212,17 @@ func CollectToolDef() kgtools.MCPTool {
 			"Collection runs client-side after the binary split — invoking this tool against the " +
 			"graph server returns an error; the knowledge MCP client intercepts and runs the collector " +
 			"locally with a RemoteUploadSink. " +
-			"Required params: type is always required; id is required for every type except type=\"logs\" " +
-			"and type=\"web\" when seed_urls is supplied — an omitted web id names the graph after the " +
+			"Required params: type is always required; id is required for every type except " +
+			"type=\"web\" when seed_urls is supplied — an omitted web id names the graph after the " +
 			"first seed URL's host.",
 		InputSchema: kgtools.InputSchema{
 			Type: "object",
 			Properties: map[string]kgtools.Property{
-				"type":               {Type: "string", Description: "Collector name (e.g., \"code\", \"aws\", \"gcp\", \"logs\", \"web\", \"pdf\")."},
-				"id":                 {Type: "string", Description: "Opaque identifier parsed by the collector (path, account:region, web source slug, absolute path to a .pdf, etc.). A pdf graph is NAMED AFTER THE FILE — the sanitized basename with no suffix — so for type=\"pdf\" the id is the absolute path to the document, not the graph name. Optional for type=\"logs\", and optional for type=\"web\" when seed_urls is supplied: the graph is then named after the first seed URL's host, with a leading www. stripped and dots mapped to hyphens (www.Go101.org becomes go101-org). A collect into an existing raw graph that was collected from a DIFFERENT source is refused, naming both sources, rather than merged into it."},
-				"force":              {Type: "boolean", Description: "Skip the safety check for existing indexed graphs — the code collector's bypass, and shared by every collect type EXCEPT one. REFUSED with transformer=\"recipe\": a recipe run returns rows and writes nothing, so there is nothing for force to bypass."},
+				"type":               {Type: "string", Description: "Collector name (e.g., \"code\", \"web\", \"pdf\", \"github\"), or a registered custom_collector family name. PRECEDENCE: a registered custom_collector family wins over a built-in collector of the same name. The built-in collector serves the names no config entry claims. Built-in GRAPH TYPE names (knowledge, code, practice, linkage, checks, web, pdf) cannot be registered at all, so they are never shadowed, and the RETIRED names (cloud, logs, cicd) cannot be registered either — the refusal names the removal. aws, gcp, azure, k8s, cloudwatch, loki, stackdriver, github, gitlab and bitbucket were built in until this release and are contrib collectors now."},
+				"id":                 {Type: "string", Description: "Opaque identifier parsed by the collector (path, account:region, web source slug, absolute path to a .pdf, etc.). A pdf graph is NAMED AFTER THE FILE — the sanitized basename with no suffix — so for type=\"pdf\" the id is the absolute path to the document, not the graph name. Optional for type=\"web\" when seed_urls is supplied: the graph is then named after the first seed URL's host, with a leading www. stripped and dots mapped to hyphens (www.Go101.org becomes go101-org). A collect into an existing raw graph that was collected from a DIFFERENT source is refused, naming both sources, rather than merged into it."},
+				"force":              {Type: "boolean", Description: "Skip the safety check for existing indexed graphs — the code collector's bypass, and shared by every collect type EXCEPT one. REFUSED with transformer=\"recipe\": force meant overwriting a colliding row, and a landing never overwrites — a resident id lands a versioned twin beside it and both are kept — so there is nothing for force to bypass."},
 				"promote":            {Type: "boolean", Description: "Code only: promote this branch to the base graph — land in base regardless of the recorded default branch, overwrite the recorded default branch to the collected branch, and delete the now-redundant same-name overlay. No effect for non-code collectors."},
-				"params":             {Type: "object", Description: "Registered custom_collector types only: opaque param object forwarded to the external collector binary, validated against its param_schema before exec. Built-in types ignore it."},
-				"backend":            {Type: "string", Description: "Logs only: name of a configured log_backend node."},
-				"provider":           {Type: "string", Description: "Logs only: provider identifier (e.g., cloudwatch, loki, stackdriver, k8s)."},
-				"url":                {Type: "string", Description: "Logs only: backend base URL."},
-				"credential":         {Type: "string", Description: "Logs only: credential value when passing provider inline."},
-				"auth_type":          {Type: "string", Description: "Logs only: auth mechanism (bearer, basic, aws_profile, api_key, service_account, kubeconfig)."},
-				"kube_context":       {Type: "string", Description: "Logs only: kubeconfig context name."},
-				"source":             {Type: "string", Description: "Logs only: provider-specific log source selector."},
-				"start":              {Type: "string", Description: "Logs only: RFC3339 start timestamp."},
-				"end":                {Type: "string", Description: "Logs only: RFC3339 end timestamp."},
-				"text_filter":        {Type: "string", Description: "Logs only: free-text substring or pattern applied to log messages."},
-				"severity_min":       {Type: "string", Description: "Logs only: minimum severity to include (DEBUG|INFO|WARN|ERROR)."},
-				"max_entries":        {Type: "integer", Description: "Logs only: cap on entries pulled from the provider."},
-				"filters":            {Type: "object", Description: "Logs only: exact-match label filters applied to log entries."},
-				"raw_query":          {Type: "string", Description: "Logs only: provider-native query overriding structured fields."},
+				"params":             {Type: "object", Description: "Custom collector families only (a `collectors.json` entry): the param object passed to the provider's tool. It rides the MCP tool call as the `params` argument beside the collect id, and is validated against the schema the PROVIDER advertised for that tool before the call — so a provider needing a param you did not supply refuses with a named mismatch rather than failing inside its own handler. What each provider accepts inside is its tool's own inputSchema. IT IS READ WHENEVER THE COLLECT DISPATCHES TO A CONFIG ENTRY, which is not the same as \"whenever the type is not a built-in name\": a registered custom_collector family wins over a built-in collector of the same name, so a collect(type:\"gcp\") whose family has a config entry reaches the provider and reads params. A collect that dispatches to a built-in collector ignores it."},
 				"seed_urls":          {Type: "array", Description: "Web only: starting URL(s) for the crawl.", Items: &kgtools.Property{Type: "string"}},
 				"follow_patterns":    {Type: "array", Description: "Web only: regex allowlist for internal links.", Items: &kgtools.Property{Type: "string"}},
 				"max_depth":          {Type: "integer", Description: "Web only: BFS depth bound from a seed URL."},
@@ -244,13 +233,14 @@ func CollectToolDef() kgtools.MCPTool {
 				"max_concurrency":    {Type: "integer", Description: "Web only: number of crawl workers. 0 selects the default (8) and a value above 32 is REFUSED, naming the value and the cap, rather than clamped. Per-host politeness does NOT serialize same-host fetches — it enforces a minimum spacing between request STARTS to one host, so same-host parallelism is bounded by roughly ceil(request_latency / politeness_ms) and capped by max_concurrency, while cross-host parallelism is bounded by max_concurrency alone."},
 				"user_agent":         {Type: "string", Description: "Web only: override for the HTTP User-Agent header."},
 				"transformer":        {Type: "string", Description: "Web/PDF only: optional transformer name."},
-				"recipe":             {Type: "string", Description: "REFUSED. It named a SAVED recipe node, which is removed along with the transformers graph family — recipes are ephemeral inline bodies now. Pass the body as `recipe_body` with extract=true instead. The param is still declared so the refusal can name what you sent."},
-				"dry_run":            {Type: "boolean", Description: "REFUSED with transformer=\"recipe\". It meant \"compute the projection but skip the write\"; a recipe run writes nothing, so there is no write to skip. Pass extract=true to read the rows back."},
-				"extract":            {Type: "boolean", Description: "Web/PDF only, transformer=\"recipe\" only, and REQUIRED there: return the emitted rows for inspection. It is the only mode a recipe run has — every run writes nothing. Bounded by max_rows and max_bytes, with any truncation disclosed in the response."},
-				"recipe_body":        {Type: "string", Description: "Web/PDF only, transformer=\"recipe\" only, and REQUIRED there: the inline recipe body to run. Requires extract=true — a recipe run returns rows and writes nothing, so there is no other mode. See help(\"recipes\") for worked bodies to copy."},
-				"max_rows":           {Type: "integer", Description: "Web/PDF only, transformer=\"recipe\" only, extract mode: cap on rows returned. 0 selects the default (200); the response reports rows matched alongside rows returned, so a truncated extract is never mistaken for a short one."},
+				"recipe":             {Type: "string", Description: "REFUSED. It named a SAVED recipe node, which is removed along with the transformers graph family — recipes are ephemeral inline bodies now. Pass the body as `recipe_body` with extract=true or land=true instead. The param is still declared so the refusal can name what you sent."},
+				"dry_run":            {Type: "boolean", Description: "REFUSED with transformer=\"recipe\". It meant \"compute the projection but skip the write\", which is what an extract run already is: pass extract=true (without land) to see exactly the rows a landing would write, then land=true to write them."},
+				"extract":            {Type: "boolean", Description: "Web/PDF only, transformer=\"recipe\" only: return the emitted rows for inspection and write nothing. One of the two recipe modes — a run must pass extract, land, or both. Bounded by max_rows and max_bytes, with any truncation disclosed in the response. An extract run is also the PREVIEW of what a landing would write."},
+				"recipe_body":        {Type: "string", Description: "Web/PDF only, transformer=\"recipe\" only, and REQUIRED there: the inline recipe body to run. Needs extract=true or land=true — a run that asks for neither is refused, because it would emit into a buffer nobody reads. See help(\"recipes\") for worked bodies to copy."},
+				"max_rows":           {Type: "integer", Description: "Web/PDF only, transformer=\"recipe\" only, EXTRACT mode: cap on rows returned. 0 selects the default (200); the response reports rows matched alongside rows returned, so a truncated extract is never mistaken for a short one. REFUSED on a landing run: it is a render parameter, and a landing writes the whole emitted set, so a row window would bound what you see and not what is written."},
 				"max_bytes":          {Type: "integer", Description: "Web/PDF only, transformer=\"recipe\" only, extract mode: cap on the rendered response size in bytes. 0 selects the default (65536). Truncation is stated in the response rather than applied silently."},
-				"offset":             {Type: "integer", Description: "Web/PDF only, transformer=\"recipe\" only, extract mode: zero-based index of the first MATCHED row to return, for paging a document larger than one response. Every matched row is still counted, so the header's matched total names the whole population behind the page; the truncation line names the next offset to resume from, and a page starting past the end says so rather than looking like an empty match. Negative values are refused."},
+				"offset":             {Type: "integer", Description: "Web/PDF only, transformer=\"recipe\" only, EXTRACT mode: zero-based index of the first MATCHED row to return, for paging a document larger than one response. Every matched row is still counted, so the header's matched total names the whole population behind the page; the truncation line names the next offset to resume from, and a page starting past the end says so rather than looking like an empty match. Negative values are refused, and so is any value on a landing run — see max_rows."},
+				"land":               {Type: "boolean", Description: "Web/PDF only, transformer=\"recipe\" only: WRITE the emitted nodes into the combined practice graph, grouped under a `source` hub named from the raw graph's slug. Each landed node carries the hub id in its `source_hub` metadata and one `sourced-from` edge to the hub; its own `source` field keeps the emitter's `recipe:<slug>` stamp. An emitted id that already exists lands a VERSIONED TWIN under a new id with a `next-version` edge from the old row to it, and the existing row is never modified. Refused when the combined practice graph does not exist yet, or when the raw graph records no source on its root. max_rows and offset are refused alongside it. Combine with extract=true to get the rows back as well."},
 				"max_download_bytes": {Type: "integer", Description: "Web only: per-(owner,repo,ref) cap on github materialization downloads. 0=default (50 MiB), -1=unlimited, >0=explicit cap (uncompressed bytes)."},
 				"materialize_github": {Type: "boolean", Description: "Web only: OPT IN to materializing github repository seeds into the graph. Off by default — without it a github URL is fetched not at all and is reported in the collect response as a follow-up candidate for you to decide about. Refused when set with no github repository URL among the seeds."},
 			},

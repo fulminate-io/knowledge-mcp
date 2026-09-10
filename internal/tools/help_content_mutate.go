@@ -133,11 +133,11 @@ const helpMutate = `# mutate — Create, update, and link knowledge nodes
   writes both carriers for you.
 
 ## operation: upsert
-  mutate({ "operation": "upsert", "id": "caller-supplied-id", "type": "worker", ... })
+  mutate({ "operation": "upsert", "id": "caller-supplied-id", "type": "graph_type_def", ... })
 
-  Create-or-update by a caller-supplied id. FIVE types bypass create-time
-  validation — proxy, worker, graph_type_def, log-backend, criterion — because
-  they are tool-owned config records whose producers already validated them.
+  Create-or-update by a caller-supplied id. THREE types bypass create-time
+  validation — proxy, graph_type_def, criterion — because they are tool-owned
+  config records whose producers already validated them.
   Every OTHER type runs the full create-time validation (summary/name plus the
   system-managed-type guard), so upsert is NOT a general escape hatch around
   create.
@@ -178,13 +178,124 @@ const helpMutate = `# mutate — Create, update, and link knowledge nodes
            "conclusion": "Finding: X", "findings": "fid1,fid2" })
 
 ## Practice graph operations
-  mutate({ "operation": "create", "type": "finding", "name": "...", "graph": "practice", "language": "go" })
-  mutate({ "operation": "update", "id": "node_id", "description": "...", "graph": "practice", "language": "go" })
-  mutate({ "operation": "link", "from": "a", "to": "b", "relationship": "relates-to", "graph": "practice", "language": "go" })
+  mutate({ "operation": "create", "type": "pattern", "name": "...", "summary": "...",
+           "graph": "practice", "source_hub": "<hub id>" })
+  mutate({ "operation": "update", "id": "node_id", "description": "...", "graph": "practice" })
+  mutate({ "operation": "link", "from": "a", "to": "b", "relationship": "relates-to",
+           "graph": "practice" })
+
+  Practice is ONE combined graph. language is REFUSED on every practice WRITE
+  arm — it named a per-language graph that no longer exists — and stays accepted
+  on READ arms as the legacy selector for the pre-singleton graphs. A CREATE
+  groups its node under an origin with source_hub instead.
+
+  link and unlink take source_hub too, and it means something different there.
+  An edge belongs to no hub, so the param does not GROUP the edge: it SCOPES the
+  ENDPOINTS. Both from and to must already be grouped under the named hub, and
+  an endpoint under another hub, under none, or absent from the graph is refused
+  naming the hub, the endpoint and its actual hub or absence — nothing is
+  written. Omitted, the call addresses the whole practice graph, exactly as it
+  always has.
+  mutate({ "operation": "link", "from": "a", "to": "b", "relationship": "relates-to",
+           "graph": "practice", "source_hub": "<hub id>" })
+  mutate({ "operation": "unlink", "from": "a", "to": "b", "relationship": "relates-to",
+           "graph": "practice", "source_hub": "<hub id>" })
+  Nothing hub-related crosses the wire: the hub scopes a client-side resolve and
+  the compiled plan is byte-identical to the one the same call without it emits.
+  source_hub IS A PRACTICE-FAMILY PARAMETER ON EVERY ARM. Every operation
+  carrying it — create, create_batch, update, update_batch,
+  bulk_update_metadata, upsert, link, unlink, answer, delete — is REFUSED naming
+  the family on every family but practice: "knowledge", "code",
+  "linkage", "checks", "web", "pdf", and any registered custom family. An
+  omitted graph is the knowledge family and is refused with it. It is never
+  consumed and dropped: no family but practice has source hubs, so the param can
+  only reach nothing there. A checks CREATE used to be the exception that proved
+  it — the shared create lowering is family-blind and stamped a practice hub key
+  and a sourced-from edge onto a checks node — and that is gone.
+
+  update, update_batch, bulk_update_metadata and upsert take source_hub as a
+  SCOPE OVER THE TARGETS: every id the call names — id, each of ids, each
+  items[].id, each updates[].id — must already be grouped under that hub, and one
+  that sits under another hub, under none, or nowhere refuses the whole call with
+  nothing written. A MEMBER IS NEVER MOVED BETWEEN HUBS on this surface: no arm
+  rewrites the source_hub metadata key and the sourced-from edge together, so
+  there is no write that moves a node rather than splitting it. A body naming a
+  hub the node is not already under is refused for that reason.
+  mutate({ "operation": "update", "id": "node_id", "description": "...",
+           "graph": "practice", "source_hub": "<hub id>" })
+  mutate({ "operation": "update_batch", "graph": "practice", "source_hub": "<hub id>",
+           "items": [{ "id": "node_id", "summary": "..." }] })
+
+  A source_hub MUST NAME A HUB. The id is resolved before any arm acts on it: it
+  has to be a live node of type source in the combined practice graph, and an id
+  that resolves to nothing, names a deleted node, or names a node of another type
+  — a member id used as a hub, say — is REFUSED naming the hub and the arm, with
+  nothing written. Without that check the write landed a sourced-from edge to a
+  node that is not there, so a hub-scoped browse counted the node as a member
+  while a traverse from it reached no hub. The resolution is one read, folded into
+  the read the hub-scoped arms already pay.
+
+  AND A BODY ALONE NEVER GROUPS. On a create or create_batch that names NO
+  source_hub parameter, a source_hub metadata key inside a body is REFUSED naming
+  the parameter: the body key writes the metadata without the sourced-from edge,
+  and only the parameter emits both.
+
+  A BODY MAY NOT NAME A DIFFERENT HUB. source_hub and a source_hub metadata key
+  inside a body are two spellings of one fact. On create, create_batch, upsert,
+  update, update_batch and bulk_update_metadata, a body whose key
+  names a DIFFERENT hub than the call is REFUSED naming the body's path —
+  metadata, a nodes[] body, an items[] or updates[] entry — its hub and the
+  call's, with nothing written. A body naming the SAME hub lands byte-identically to one
+  naming none, and a body naming none is stamped with the call's hub as always.
+
+  upsert is scoped the same way when its key RESOLVES, and an upsert NEVER groups:
+  a hub-carrying upsert whose id resolves to no practice node is REFUSED naming
+  mutate(create) as the arm that groups. Grouping writes the source_hub metadata
+  key AND the sourced-from edge together, and only a create plan carries both — an
+  upsert plan is node-only and cannot emit the edge at all.
+  mutate({ "operation": "upsert", "id": "existing_id", "type": "pattern", "name": "...",
+           "summary": "...", "graph": "practice", "source_hub": "<hub id>" })
+  mutate({ "operation": "create", "id": "new_id", "type": "pattern", "name": "...",
+           "summary": "...", "graph": "practice", "source_hub": "<hub id>" })
+
+  AND AN UPSERT NEVER UN-GROUPS. It REPLACES the body's metadata rather than
+  merging into it, so an existing member's stored source_hub is carried onto the
+  body whether or not the call names one: an ordinary hub-less field edit keeps
+  the membership instead of dropping the key and leaving the sourced-from edge
+  behind. That costs the call one read. A body that names the hub the node is
+  ALREADY under is a second spelling and is left exactly as written; a body naming
+  any OTHER hub is refused naming both, because a body key rides no sourced-from
+  edge. An upsert of a new id, or of a node grouped under no hub, is unchanged.
+  mutate({ "operation": "upsert", "id": "existing_id", "type": "pattern",
+           "name": "edited", "summary": "...", "graph": "practice" })
+
+  A whole collection is removed by its hub — every node grouped under it AND the
+  hub itself, in ONE write. A hub carries its OWN id under the source_hub key, so
+  the single metadata predicate that selects the members selects the hub too. The
+  standalone delete tool spells the same axis "source" and runs the same
+  resolution.
+  mutate({ "operation": "delete", "graph": "practice", "source_hub": "<hub id>" })
+
+  THE MEMBERSHIP EDGE IS NEVER WRITTEN BY HAND. A practice link or unlink naming
+  relationship "sourced-from" is REFUSED whether or not it carries a hub:
+  membership is the source_hub metadata key AND that edge together, and an edge
+  arm carries only one of them, so the write would leave the two disagreeing. Any
+  other relationship between two practice nodes is untouched.
+
+  A HUB IS GROUPED UNDER NOTHING BUT ITSELF. It carries its OWN id under the
+  source_hub key — that is the contract every producer writes, and it is what
+  makes the by-hub delete one predicate. A source node keyed to some OTHER node is
+  refused, because that would make the hub a node belongs to a chain rather than a
+  value.
+
+  THESE RULES RUN BENEATH EVERY CALLER. The hub resolution, the off-family
+  refusal, the body rules and the membership-edge refusal execute in the engine,
+  so the mutate tool, the standalone delete tool and the collectors that compile
+  and execute directly all pass them.
 
   Cross-graph linking (knowledge node → practice node, creates proxy):
   mutate({ "operation": "link", "from": "agent_id", "to": "practice_node_id",
-           "relationship": "uses", "graph": "practice", "language": "go" })
+           "relationship": "uses", "graph": "practice" })
 
 ## Gotchas
   - "ids" (plural) for batch update; "id" (singular) for single update
@@ -201,7 +312,10 @@ const helpMutate = `# mutate — Create, update, and link knowledge nodes
     "link endpoint(s) ... not found"; it is never silently created.
   - associating a step with its source paths needs no link at all: create_plan
     persists a step's paths as file_paths metadata.
-  - graph:"practice" requires language param for all operations
+  - graph:"practice" takes NO language on a write: practice is one combined
+    graph, and a write groups its node with source_hub instead — or, on a link
+    or an unlink, scopes its endpoints with it, or, on an update, a batch update
+    or an upsert of an existing node, scopes its targets with it.
 `
 
 const helpDelete = `# delete — Remove nodes or prune history
@@ -221,7 +335,25 @@ irrecoverable removal (reserve for deliberate cleanup).
   ids[] or a valid older_than + a retention-eligible type". Delete by ids.
 
 ## Practice graph deletion
-  delete({ "ids": ["node_id"], "graph": "practice", "language": "go" })
+  delete({ "ids": ["node_id"], "graph": "practice" })
+
+  Practice is ONE combined graph, so a delete carries no language: that
+  selector is read-only and is REFUSED on a delete rather than ignored.
+
+## Practice: delete a whole collection by its source hub
+  delete({ "graph": "practice", "source": "<hub id>", "dry_run": true })
+  delete({ "graph": "practice", "source": "<hub id>" })              — soft
+  delete({ "graph": "practice", "source": "<hub id>", "hard": true }) — permanent
+
+  Removes every practice node grouped under that hub AND the hub itself, which
+  is how an abandoned or failed collection is cleaned up as a unit. Nodes under
+  any other hub are untouched. On mutate(delete) the same axis is spelled
+  source_hub, because source there is the node's own provenance field; both
+  spellings reach one compiler, and two DIFFERENT hub values on one call are
+  denied rather than resolved.
+
+  It is the ONE scoped destructive operation on a practice graph. Run it with
+  dry_run first: the preview resolves the identical node set the delete would.
 
 ## Gotchas
   - a SOFT delete does NOT remove the node's edges — only the node itself is
@@ -230,5 +362,6 @@ irrecoverable removal (reserve for deliberate cleanup).
   - dry_run previews an ids delete: it reports what WOULD be removed and
     removes nothing
   - A malformed hard value DENIES the delete (it never guesses on a destructive op)
-  - graph:"practice" requires language param
+  - ids and source are two SELECTION AXES and a call carrying both is denied,
+    never resolved: guessing which one to destroy by is not a safe reading.
 `

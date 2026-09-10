@@ -55,7 +55,7 @@ func dispatchDeletePreview(ctx context.Context, exec ExecuteFn, args json.RawMes
 	// family does not consume rather than ignoring it.
 	resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Query{Query: plan},
-		Target: mutateTarget(a.Graph, a.Repo, a.Account, "", a.Language, ""),
+		Target: mutateTarget(a.Graph, a.Repo, "", a.Language, ""),
 	})
 	if err != nil {
 		return renderEngineError(err), true
@@ -82,6 +82,33 @@ func dispatchDeletePreview(ctx context.Context, exec ExecuteFn, args json.RawMes
 // the real delete would remove: the by-ids bulk read for {ids:[...]}, else the
 // prune-by-age Selection read. Returns ok=false for an unrecognized shape.
 func deletePreviewPlan(a deleteArgs) (*knowledgev1.QueryPlan, bool) {
+	// BY-HUB IS READ FIRST, mirroring compileDelete's own branch order so the
+	// preview and the real delete resolve the identical node set — through the
+	// SAME deleteHub fold and the SAME hubSelection builder, so neither the
+	// two-spelling union nor the predicate itself can drift between them. Without
+	// this arm a dry-run carrying `source` fell through to the prune-by-age shape,
+	// failed to build a selection and answered that a dry-run needs ids or an
+	// older_than — leaving a destructive op whose ONLY preview was unreachable.
+	// The two-axis refusal is the compiler's; a preview that showed one axis'
+	// members for a call the real delete would deny is worse than an error.
+	hub, hubOK := deleteHub(a)
+	if !hubOK {
+		return nil, false // the two hub spellings disagree — the compiler denies, so the preview must too.
+	}
+	if hub != "" {
+		if len(a.IDs) > 0 || a.ID != "" {
+			return nil, false
+		}
+		// THE PREVIEW AND THE DELETE RESOLVE THE SAME SET THROUGH ONE FUNCTION,
+		// and it carries NO Ids beside the predicate: `ids` short-circuits the
+		// predicate arms on the read path exactly as it does on the write path, so
+		// a plan carrying both resolves the ids alone. A preview that named the hub
+		// by id therefore listed the hub and none of its members — strictly worse
+		// than the omission it was meant to fix, on the one arm of a destructive
+		// operation a caller is told to trust. The hub is swept by the predicate
+		// itself: a hub carries its OWN id under the hub key.
+		return &knowledgev1.QueryPlan{Selection: hubSelection(hub)}, true
+	}
 	if len(a.IDs) > 0 {
 		// QueryPlan.Ids lowers to store.ByIDs (RETURN_MODE_NODES) — the same bulk
 		// read query(ids:[...]) uses. Reads the nodes; deletes nothing.

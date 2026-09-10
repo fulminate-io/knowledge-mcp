@@ -29,7 +29,7 @@ var queryReflectArmSpecs = map[armID]armSpec{
 		operation: "query",
 		handler:   "interceptQueryReflect handleReflectPersonality",
 		consumed:  qparams(qkeys("graph", "mode", "cluster", "granularity", "format")),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgIdentity, qgPaging, qgCode, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys(
 				"name", "repo", "account", "language", "branch",
@@ -47,7 +47,7 @@ var queryReflectArmSpecs = map[armID]armSpec{
 		operation: "query",
 		handler:   "interceptQueryReflect handleReflectInfluence",
 		consumed:  qparams(qkeys("graph", "mode", "limit", "sort", "format")),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgIdentity, qgCode, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys(
 				"name", "repo", "account", "language", "branch",
@@ -70,7 +70,7 @@ var queryReflectArmSpecs = map[armID]armSpec{
 		operation: "query",
 		handler:   "interceptQueryReflect handleReflectTensions",
 		consumed:  qparams(qkeys("graph", "mode", "format", "limit")),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgIdentity, qgCode, qgThought, qgSimulate,
 			qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys("name", "repo", "account", "language", "branch", "text", "queries", "query_vector", "offset"),
@@ -83,7 +83,7 @@ var queryReflectArmSpecs = map[armID]armSpec{
 		operation: "query",
 		handler:   "interceptQueryReflect handleReflectBlindSpots",
 		consumed:  qparams(qkeys("graph", "mode", "format")),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgIdentity, qgPaging, qgCode, qgThought, qgSimulate,
 			qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys("name", "repo", "account", "language", "branch", "text", "queries", "query_vector"),
@@ -97,7 +97,7 @@ var queryReflectArmSpecs = map[armID]armSpec{
 		operation: "query",
 		handler:   "interceptQueryReflect handleReflectSummary",
 		consumed:  qparams(qkeys("graph", "mode", "granularity", "format")),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgIdentity, qgPaging, qgCode, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys(
 				"name", "repo", "account", "language", "branch",
@@ -115,7 +115,7 @@ var queryReflectArmSpecs = map[armID]armSpec{
 		operation: "query",
 		handler:   "interceptQueryReflect handleReflectEvolution",
 		consumed:  qparams(qkeys("graph", "mode", "cluster_a", "cluster_b", "format")),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgIdentity, qgPaging, qgCode, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys(
 				"name", "repo", "account", "language", "branch",
@@ -132,7 +132,7 @@ var queryReflectArmSpecs = map[armID]armSpec{
 		operation: "query",
 		handler:   "interceptQueryReflect handleReflectClusters",
 		consumed:  qparams(qkeys("graph", "mode", "format")),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgIdentity, qgPaging, qgCode, qgThought, qgSimulate,
 			qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys("name", "repo", "account", "language", "branch", "text", "queries", "query_vector"),
@@ -147,7 +147,7 @@ var queryReflectArmSpecs = map[armID]armSpec{
 		operation: "query",
 		handler:   "interceptQueryReflect handleExamineClient",
 		consumed:  qparams(qkeys("graph", "mode", "id", "format")),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgPaging, qgCode, qgThought, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys(
 				"name", "repo", "account", "language", "branch",
@@ -165,7 +165,7 @@ var queryReflectArmSpecs = map[armID]armSpec{
 		operation: "query",
 		handler:   "interceptQueryReflect handleSimulateClient",
 		consumed:  qparams(qgSimulate, qkeys("graph", "mode", "format")),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgIdentity, qgPaging, qgCode, qgThought,
 			qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys("name", "repo", "account", "language", "branch", "text", "queries", "query_vector"),
@@ -187,7 +187,7 @@ var queryReflectArmSpecs = map[armID]armSpec{
 			"session", "connected_to",
 			"valence_min", "valence_max", "magnitude_min", "consistency_max",
 		)),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgCode, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys(
 				"name", "repo", "account", "language", "branch",

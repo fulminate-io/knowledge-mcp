@@ -50,7 +50,7 @@ package tools
 //	Layer 1 — VOCABULARY. Is this key part of the query tool's declared param set
 //	at all? A key the schema does not declare is a typo or a param belonging to
 //	another tool, and it is unknown for EVERY arm, so the check keys on the
-//	SCHEMA and lives in ONE place rather than as a cell on each of the 51 arms.
+//	SCHEMA and lives in ONE place rather than as a cell on each of the 45 arms.
 //	Its helper has the shape func(supplied map[string]bool, schema map[string]T)
 //	[]string — named by signature rather than by symbol because it is shared with
 //	the mutate surface and either side may move it.
@@ -127,9 +127,11 @@ package tools
 // the field the client sets. Read off ResolveGraphDB
 // (cmd/knowledge-server/internal/tools/tools_graph_routing.go): the knowledge
 // arm returns store.StoreForContext and states outright that sel.Name is not
-// consulted; linkage passes a hardcoded "default"; code keys on Repo; cloud and
-// cicd key on Account; practice keys on Language. Only logs, web, pdf,
-// web, pdf and registered-custom genuinely read sel.Name. So `name` is
+// consulted; linkage passes a hardcoded "default"; code keys on Repo; practice
+// keys on NOTHING by default — it is one combined graph, and resolvePractice
+// reads Language only as the LEGACY read selector for a pre-singleton graph,
+// refusing it outright on a write. Only web, pdf and registered-custom genuinely
+// read sel.Name. So `name` is
 // CONSUMED only on the arms that can target those families, and REJECTED
 // elsewhere. `branch` is read by exactly one resolver (resolveCode, at the
 // repo@branch overlay Scope), so it is REJECTED on every arm that does not
@@ -139,13 +141,24 @@ package tools
 // dropped by the CLIENT before the resolver is even reached.
 //
 // THE DELIBERATELY-IGNORED CLASS IS A CLOSED ALLOWLIST: its members are exactly
-// `format` and `fields`. Both are render params, so an arm that renders its own
-// result and never reads them ignores them WITH a justification rather than
-// rejecting a schema-advertised render shape. Nothing else may be parked there —
-// without that closure, "this entry point serves multiple shapes" becomes a
-// non-empty justification for every routing param an arm drops, which is the
-// exact route by which a fully green registry still silently drops
-// arm-inapplicable params.
+// `format`, `fields` and `account`. The first two are render params, so an arm
+// that renders its own result and never reads them ignores them WITH a
+// justification rather than rejecting a schema-advertised render shape. Nothing
+// else may be parked there — without that closure, "this entry point serves
+// multiple shapes" becomes a non-empty justification for every routing param an
+// arm drops, which is the exact route by which a fully green registry still
+// silently drops arm-inapplicable params.
+//
+// `account` IS THE THIRD MEMBER AND THE ONLY NON-RENDER ONE, admitted by an
+// owner ruling rather than by the reasoning above: no surviving family is keyed
+// by it, so unlike a dropped `repo` there is no other graph the dropped value
+// could have named, and the schema's own pinned wording tells the caller it does
+// nothing before they send it. Its membership is applied ONCE over the assembled
+// registry rather than as a cell on each arm — see
+// param_accounting_account_ruled_ignored.go, which carries the ruling verbatim
+// and the reason a per-cell edit would be the wrong shape for it. That file is
+// shared with the MUTATE registry, which runs the same applier for the same
+// ruling, so one parameter cannot get two answers from two surfaces.
 //
 // NO RUNTIME COMPLEMENT. Every arm names every schema key explicitly across its
 // three sets, via the thirteen frozen param GROUPS below plus loose keys. The
@@ -169,22 +182,30 @@ package tools
 // the parity fixture lists both as opaque for that reason rather than claiming an
 // observability the arm cannot have.
 //
-// ARM COUNT: 51, against the plan's seven locked per-entry-point FLOORS. Two
-// entry points EXCEED their floor, which the floors permit (they are minima):
-// InterceptQueryCloudCICD takes 5 against a floor of 4 (the ranked-text search
-// via composeResourceSearchClient is a distinct read set from the browse), and
-// InterceptQueryPracticeLinkage takes 10 against a floor of 8 (the practice
-// language:"all" scatter-gather is a distinct read set the floor folded into
-// "practice search", and the text-less practice BROWSE is a third — one
-// Selection + one Execute, sharing nothing with either ranked arm).
+// ARM COUNT: 45, against the plan's six locked per-entry-point FLOORS. One
+// entry point EXCEEDS its floor, which the floors permit (they are minima):
+// InterceptQueryPracticeLinkage takes 12 against a floor of 8 (the text-less
+// practice BROWSE is a distinct read set — one Selection + one Execute, sharing
+// nothing with the ranked arm. The language:"all" scatter-gather that used to be
+// a second retired with the sentinel; the three web/pdf arms and the style index
+// landed after that floor was locked).
+//
+// EVERY NUMBER IN THE PARAGRAPH ABOVE IS CENSUSED RATHER THAN MAINTAINED BY
+// HAND. TestQueryArmCount_ProseClaimsMatchTheDeclarations parses this file's
+// comments and holds each "ARM COUNT: N", each "The N query dispatch arms" and
+// each "X takes N against a floor of F" to queryArmCount and to the const
+// block's own group comments. It exists because BOTH numbers here were wrong at
+// once: the total stayed at 50 after the constant moved to 51, and the
+// per-entry-point sentence read 9 against a block of 12. A prose count with no
+// instrument is how that happens, and the constant's own gate could not see it.
 
 import (
 	"maps"
 	"sort"
 )
 
-// The thirteen frozen param groups. Together they name each of the 61 params
-// QueryToolDef declares EXACTLY ONCE — 6+10+4+2+2+12+11+4+3+4+1+1+1 = 61 — which
+// The fourteen frozen param groups. Together they name each of the 62 params
+// QueryToolDef declares EXACTLY ONCE — 6+10+4+2+2+12+11+4+3+4+1+1+1+1 = 62 — which
 // is what lets an arm compose its three sets from group names plus loose keys
 // without any set ever being a complement. TestQueryParamGroups_PartitionSchema
 // asserts the partition, so a schema addition that lands in no group is caught
@@ -224,10 +245,16 @@ var (
 	qgPivot = []string{"rows", "cols", "edge_type", "time_field"}
 	// qgStats — the stats sample enrichment opt-in.
 	qgStats = []string{"samples"}
-	// qgCloud — the cloud/cicd resource-type browse prefix.
+	// qgCloud — the resource-type browse prefix.
 	qgCloud = []string{"resource_type"}
 	// qgRules — the rule-browse scope substring filter.
 	qgRules = []string{"scope"}
+	// qgPracticeHub — the practice source-hub narrowing selector. It is its own
+	// group rather than a member of qgSelector because it is not a graph
+	// selector: it names a node INSIDE the one practice graph and opens nothing.
+	// A one-key group is the cheapest way for every arm to classify it
+	// explicitly, which is what the partition assertion requires.
+	qgPracticeHub = []string{"source"}
 )
 
 // justifyRulesKnowledgeOnly is the rejection explanation for `graph` on the rule
@@ -321,24 +348,17 @@ func queryFieldsIgnored() map[string]string {
 	return map[string]string{"fields": justifyQueryNoProjection}
 }
 
-// The 51 query dispatch arms. Each armID names one claim point in the intercept
+// The 45 query dispatch arms. Each armID names one claim point in the intercept
 // chain; together they cover every path a host-originated `query` call can take
 // through the client intercept layer. Phase 4 wires exactly one gate call per
 // armID, and the bijection test holds the two sets equal.
 const (
-	// InterceptQueryCloudCICD — 5 arms (locked floor 4).
-	armCloudCICDListGraphs armID = "armCloudCICDListGraphs"
-	armCloudCICDGetNode    armID = "armCloudCICDGetNode"
-	armCloudCICDStats      armID = "armCloudCICDStats"
-	armCloudCICDSearch     armID = "armCloudCICDSearch"
-	armCloudCICDBrowse     armID = "armCloudCICDBrowse"
-
 	// InterceptQueryPracticeLinkage — 12 arms (locked floor 8).
 	armPracticeListGraphs   armID = "armPracticeListGraphs"
 	armPracticeStats        armID = "armPracticeStats"
 	armPracticeBrowse       armID = "armPracticeBrowse"
-	armPracticeSearchFanOut armID = "armPracticeSearchFanOut"
 	armPracticeSearch       armID = "armPracticeSearch"
+	armPracticeStyleIndex   armID = "armPracticeStyleIndex"
 	armLinkageListGraphs    armID = "armLinkageListGraphs"
 	armLinkageStats         armID = "armLinkageStats"
 	armLinkageGetNode       armID = "armLinkageGetNode"
@@ -354,7 +374,6 @@ const (
 	// Single-arm per-graph entry points.
 	armKnowledgeStats        armID = "armKnowledgeStats"
 	armRegisteredGraphSearch armID = "armRegisteredGraphSearch"
-	armLogsQuery             armID = "armLogsQuery"
 	armRules                 armID = "armRules"
 	// armBuiltinGraphStats is the checks stats arm. An armID names a CLAIM POINT
 	// in the chain rather than a graph, so a single gate gets a single armID: two
@@ -401,7 +420,26 @@ const (
 // queryArmCount is the plan-locked number of arms. A literal, not a len() of the
 // registry, so a table edit that silently drops or duplicates an arm fails
 // instead of moving the target with it.
-const queryArmCount = 51
+//
+// 51 -> 50 BY THE BUILT-IN LOG COLLECTORS' REMOVAL. armLogsQuery was the logs
+// graph's single query claim; the arm and its gate call site went with the
+// intercept that served them, so the number moves by exactly one and the moved
+// number names the arm that left.
+// 50 -> 49 when the practice language:"all" scatter-gather arm retired with the
+// sentinel that reached it: practice is ONE graph, so an unselected search
+// already reads the whole corpus and there is no second read set to fan out.
+// 49 -> 50 with armPracticeStyleIndex, the compact style-rule index: it is a
+// distinct read set from the browse (the browse arm REJECTS `repo`, and the
+// index's paging is a drain rather than a caller-supplied window), so it is an
+// added arm rather than a widened one.
+//
+// 50 -> 45 BY THE RETIREMENT OF THE ACCOUNT-KEYED CI INVENTORY FAMILY. The five
+// armCloudCICD* arms were the per-account resource reader's whole surface —
+// list-graphs, get-node, stats, ranked search and browse — and they left with the
+// graph family they served, taking the entry point and its chain membership with
+// them. The number moves by exactly five, which is the arm count that entry point
+// declared.
+const queryArmCount = 45
 
 // queryArmRegistry is the complete per-arm param classification for the query
 // surface, assembled from the four sibling table files. The split is a
@@ -421,6 +459,13 @@ func init() {
 	maps.Copy(queryArmRegistry, queryReflectArmSpecs)
 	maps.Copy(queryArmRegistry, queryStatsArmSpecs)
 	for arm, spec := range queryArmRegistry {
+		// The owner's accept-and-ignore ruling for `account`, applied to every
+		// arm BEFORE the sorted rejected order is precomputed below — the order
+		// is derived from the rejected set, so applying the ruling afterwards
+		// would leave a stale key in the deterministic first-hit list and the
+		// gate would still refuse the param it no longer rejects.
+		spec = applyAccountRuledIgnored(spec)
+
 		sorted := make([]string, 0, len(spec.rejected))
 		for key := range spec.rejected {
 			sorted = append(sorted, key)

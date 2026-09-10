@@ -26,13 +26,13 @@ for verification.
 | `/brainstorm` | Interactive exploration and requirements discovery before planning; records discoveries as research, findings, and decisions. | a topic or question to explore |
 | `/plan` | Create a structured, phased implementation plan with success criteria. | a description of what to plan |
 | `/implement` | Execute a plan step by step — updates status, verifies criteria, records and charges thoughts. | a plan id or name |
-| `/infra-review` | Review an infrastructure changeset before any infra command runs — grounds each claim in provider docs, current source, the live cloud graph, and runtime log graphs. | the changeset: paths, a diff range, or a description |
+| `/infra-review` | Review an infrastructure changeset before any infra command runs — grounds each claim in provider docs, current source, the live inventory graph a cloud collector populates, and the runtime evidence a log collector populates. | the changeset: paths, a diff range, or a description |
 | `/record-decision` | Record an architectural decision with full rationale for future developers. | a brief description of the decision |
 | `/reflect` | Introspect on the thought graph — personality, influence, tensions, blind spots, reasoning patterns. | an optional focus area |
 | `/test-plan` | Design a test plan collaboratively — scope, steps, and pass/fail criteria. | a description of what to test |
 | `/test` | Execute a test plan — runs each step and reviews pass/fail/skip results. | a test plan id or name |
 | `/retro` | Capture the session feedback loop after work is verified — reproduction guide, real-world evidence, findings, ticket close. | an optional focus on what was delivered |
-| `/ingest-patterns` | Ingest practices from an authoritative source into a language's practice graph, each with a sister structural check where the practice has a shape — collect the source, search it, read the passages inline, polish, land, drop the raw graph. | a source slug, PDF path, or ticket id |
+| `/ingest-patterns` | Ingest practices from an authoritative source into the combined practice graph under a source hub, each with a sister structural check where the practice has a shape — collect the source, search it, read the passages inline, polish, land, drop the raw graph. | a source slug, PDF path, or ticket id |
 | `/orchestrate` | Orchestration discipline — the team hierarchy, signal routing, and drift detection that govern running work end to end. | (loads at the brainstorm-to-execute boundary) |
 
 The skills are designed to be run in order — `/retro` only makes sense after the

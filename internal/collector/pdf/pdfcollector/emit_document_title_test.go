@@ -161,9 +161,9 @@ func TestEmit_DocumentTitleDerivationAndProvenance(t *testing.T) {
 		t.Parallel()
 		chunks := []pdf.Chunk{{Kind: pdf.BlockHeading, Text: "Real Heading", HeadingLevel: 1, PageRange: [2]int{0, 0}}}
 		title, src := deriveDocumentTitle(pdf.Metadata{Title: "   "}, "/docs/Quarterly Report 2026.pdf", chunks)
-		if title != "Real Heading" || src != titleSourceFirstHeading {
+		if title != "Real Heading" || src != TitleSourceFirstHeading {
 			t.Errorf("whitespace-only Info Title -> (%q, %q), want (%q, %q) - it must fall through, not render as blank",
-				title, src, "Real Heading", titleSourceFirstHeading)
+				title, src, "Real Heading", TitleSourceFirstHeading)
 		}
 	})
 
@@ -189,9 +189,9 @@ func TestEmit_DocumentTitleDerivationAndProvenance(t *testing.T) {
 			t.Fatalf("the wrapper chunk classified as %q; this leg needs a NON-section top level or it proves nothing", got)
 		}
 		title, src := deriveDocumentTitle(pdf.Metadata{}, "/docs/Quarterly Report 2026.pdf", chunks)
-		if title != "Quarterly Report 2026" || src != titleSourceFilename {
+		if title != "Quarterly Report 2026" || src != TitleSourceFilename {
 			t.Errorf("heading nested under a non-section top-level chunk -> (%q, %q), want (%q, %q) - only a DIRECT child of the document root is a top-level heading",
-				title, src, "Quarterly Report 2026", titleSourceFilename)
+				title, src, "Quarterly Report 2026", TitleSourceFilename)
 		}
 	})
 

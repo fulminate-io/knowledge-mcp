@@ -1,12 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package linker is the client-side cross-graph linker. It walks the
-// indexed graphs via gc.Call (read), discovers Tier-1 cross-graph
-// relationships (container images → code repos, Helm charts → cloud
-// workloads, Dockerfile COPY → source files, workload identity →
-// service-account IAM), and emits derived edges into the linkage graph
-// through emitLink, whose crossgraph.ResolveAndLink materializes the
-// proxies client-side and writes the linkage-graph edge with metadata.
+// indexed graphs via gc.Call (read), discovers the Dockerfile COPY → source
+// file relationship, and emits derived edges into the linkage graph through
+// emitLink, whose crossgraph.ResolveAndLink materializes the proxies
+// client-side and writes the linkage-graph edge with metadata.
+//
+// IT USED TO CARRY FOUR PASSES AND NOW CARRIES ONE. The image, Helm-chart and
+// workload-identity passes each read a CLOUD graph on one side of the
+// relationship they discovered — container image → cloud workload, chart →
+// cloud workload, k8s service account → cloud IAM identity — and the built-in
+// cloud collectors that produced those graphs are gone. A pass whose one side
+// has no producer discovers nothing, so they were deleted rather than left
+// registered and answering empty. The Dockerfile pass reads code graphs on both
+// sides and is untouched.
 //
 // Relocated from pkg/linker/ during the client/server separation. The package operates
 // only through GraphCaller — it holds no in-process store engine —
@@ -40,49 +47,33 @@ type LinkOptions struct {
 	DryRun bool
 }
 
-// LinkResult aggregates counts from all sub-linkers.
+// LinkResult aggregates counts from the sub-linkers.
+//
+// THE THREE RETIRED COUNTERS ARE NOT KEPT AT ZERO. A field that is always zero
+// reads to a caller as "the pass ran and found nothing", which is a different
+// statement from "there is no such pass", and manage(link) renders these counts
+// to an operator.
 type LinkResult struct {
-	ImageLinks            int
-	HelmLinks             int
-	DockerfileLinks       int
-	WorkloadIdentityLinks int
-	Errors                []error
+	DockerfileLinks int
+	Errors          []error
 }
 
 // RunAll executes every sub-linker in sequence and returns aggregated
 // counts. Best-effort: per-sub-linker failures collect into Errors but
-// do not abort the remaining sub-linkers. Mirrors pkg/linker.RunAll's
-// surface so the manage(link) intercept can swap in this implementation
-// without churning callers.
+// do not abort the remaining sub-linkers. The loop shape is kept for the one
+// remaining pass because the aggregation contract — a failing pass records an
+// error and does not abort the others — is what the caller relies on.
 func RunAll(ctx context.Context, gc GraphCaller, opts LinkOptions) (*LinkResult, error) {
 	if gc == nil {
 		return nil, errors.New("linker.RunAll: GraphCaller is required")
 	}
 	result := &LinkResult{}
 
-	imageLinks, err := LinkImageTargets(ctx, gc, opts)
-	if err != nil {
-		result.Errors = append(result.Errors, fmt.Errorf("image linker: %w", err))
-	}
-	result.ImageLinks = imageLinks
-
-	helmLinks, err := LinkHelmCharts(ctx, gc, opts)
-	if err != nil {
-		result.Errors = append(result.Errors, fmt.Errorf("helm linker: %w", err))
-	}
-	result.HelmLinks = helmLinks
-
 	dockerfileLinks, err := LinkDockerfiles(ctx, gc, opts)
 	if err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("dockerfile linker: %w", err))
 	}
 	result.DockerfileLinks = dockerfileLinks
-
-	wiLinks, err := LinkWorkloadIdentity(ctx, gc, opts)
-	if err != nil {
-		result.Errors = append(result.Errors, fmt.Errorf("workload identity linker: %w", err))
-	}
-	result.WorkloadIdentityLinks = wiLinks
 
 	return result, nil
 }

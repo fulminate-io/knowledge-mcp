@@ -12,7 +12,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
-// TestTypeOfSelector_SurvivingFamilyNumbersHoldAndNineIsUnknown drives
+// TestTypeOfSelector_SurvivingFamilyNumbersHoldAndReservedAreUnknown drives
 // typeOfSelector BY RAW FAMILY NUMBER, which is what an older peer actually puts
 // on the wire.
 //
@@ -24,19 +24,25 @@ import (
 // numbers out by hand is the only way this test can disagree with the generated
 // code, and disagreeing with it is the entire job.
 //
-// WHY 9 IS THE INTERESTING ONE. Family 9 was GRAPH_FAMILY_TRANSFORMERS until the
-// family was removed; the proto now carries `reserved 9` so the number can never
-// be handed to a new family. An older peer still addressing transformers puts 9
-// on the wire, and this binary must report it UNKNOWN rather than resolve it —
-// and specifically must not fall back to the legacy `graph` string, which is the
-// silent-wrong-family degrade the enum exists to prevent. The selector below
-// carries `graph: "transformers"` precisely so a string fallback would be
-// visible: it would return the transformers graph type instead of ok=false.
+// WHY THE RESERVED NUMBERS ARE THE INTERESTING ONES. Three numbers name families
+// that were removed: 3 was GRAPH_FAMILY_CLOUD, 6 was GRAPH_FAMILY_LOGS and 9 was
+// GRAPH_FAMILY_TRANSFORMERS. The proto carries `reserved` for each, by number AND
+// by name, so none can ever be handed to a new family. An older peer still
+// addressing one of them puts its number on the wire, and this binary must report
+// it UNKNOWN rather than resolve it — and specifically must not fall back to the
+// legacy `graph` string, which is the silent-wrong-family degrade the enum exists
+// to prevent. Each selector below carries the retired family's own name in the
+// legacy string precisely so a string fallback would be visible: it would return
+// that graph type instead of ok=false.
 //
-// The ten-number table is an ENUMERATION, so it fails if the population changes
+// THE RESERVED SET IS ASSERTED AS A SET, not one number. A reservation that
+// stopped at the number while the name stayed declarable, or a later author
+// re-using 3 for a new family, both read the same way from a single-number test.
+//
+// The seven-number table is an ENUMERATION, so it fails if the population changes
 // size in either direction — a family added without a row here, or a family
 // removed while its row stays.
-func TestTypeOfSelector_SurvivingFamilyNumbersHoldAndNineIsUnknown(t *testing.T) {
+func TestTypeOfSelector_SurvivingFamilyNumbersHoldAndReservedAreUnknown(t *testing.T) {
 	// Every surviving family, spelled as the NUMBER a peer transmits.
 	surviving := []struct {
 		number int32
@@ -44,16 +50,13 @@ func TestTypeOfSelector_SurvivingFamilyNumbersHoldAndNineIsUnknown(t *testing.T)
 	}{
 		{1, kgtypes.GraphKnowledge},
 		{2, kgtypes.GraphCode},
-		{3, kgtypes.GraphCloud},
-		{4, kgtypes.GraphCICD},
 		{5, kgtypes.GraphPractice},
-		{6, kgtypes.GraphLogs},
 		{7, kgtypes.GraphWebRaw},
 		{8, kgtypes.GraphPDFRaw},
 		{10, kgtypes.GraphLinkage},
 		{11, kgtypes.GraphChecks},
 	}
-	require.Len(t, surviving, 10, "the surviving family population is ten; a change here is a wire change")
+	require.Len(t, surviving, 7, "the surviving family population is seven; a change here is a wire change")
 
 	seen := make(map[kgtypes.GraphType]int32, len(surviving))
 	for _, tc := range surviving {
@@ -72,16 +75,37 @@ func TestTypeOfSelector_SurvivingFamilyNumbersHoldAndNineIsUnknown(t *testing.T)
 		assert.Falsef(t, dup, "graph type %q is claimed by two family numbers, %d and %d", gt, prev, tc.number)
 		seen[gt] = tc.number
 	}
-	assert.Len(t, seen, 10, "ten distinct graph types; two numbers collapsing onto one is a renumbering defect")
+	assert.Len(t, seen, 7, "seven distinct graph types; two numbers collapsing onto one is a renumbering defect")
 
-	// The reserved number resolves to NOTHING, and does not read the string.
-	retired := &knowledgev1.GraphSelector{
-		Graph:  "transformers",
-		Family: knowledgev1.GraphFamily(9),
+	// EVERY reserved number resolves to NOTHING, and none reads the string.
+	var gt kgtypes.GraphType
+	var ok bool
+	for _, tc := range []struct {
+		number int32
+		legacy string
+	}{
+		{3, "cloud"},
+		{4, "cicd"},
+		{6, "logs"},
+		{9, "transformers"},
+	} {
+		retired := &knowledgev1.GraphSelector{
+			Graph:  tc.legacy,
+			Family: knowledgev1.GraphFamily(tc.number),
+		}
+		gt, ok = typeOfSelector(retired)
+		assert.Falsef(t, ok, "family %d is reserved and must not resolve", tc.number)
+		assert.Emptyf(t, gt, "family %d must not fall back to the legacy graph string", tc.number)
 	}
-	gt, ok := typeOfSelector(retired)
-	assert.False(t, ok, "family 9 is reserved and must not resolve")
-	assert.Empty(t, gt, "family 9 must not fall back to the legacy graph string")
+
+	// THE RESERVED NUMBERS ARE NOT SIMPLY ABSENT FROM THE SURVIVING TABLE. A
+	// number that is merely unassigned would satisfy the loop above too, so this
+	// asserts the numbers are not claimed by any surviving family — the property
+	// `reserved 3`, `reserved 4`, `reserved 6` and `reserved 9` in the proto exist to hold.
+	for _, tc := range surviving {
+		assert.NotContainsf(t, []int32{3, 4, 6, 9}, tc.number,
+			"family number %d is reserved in the proto and must not be claimed by %q", tc.number, tc.want)
+	}
 
 	// KNOWN-POSITIVE FOR THE STRING PATH. The two assertions above are an
 	// absence; without this leg an implementation that never reads the string at

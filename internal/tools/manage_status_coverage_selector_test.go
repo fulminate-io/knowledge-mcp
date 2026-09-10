@@ -76,10 +76,15 @@ func TestCoverageSelectors_AcceptedByServerPolicy(t *testing.T) {
 	for _, gt := range types {
 		policy, ok := policies[string(gt)]
 		if !ok {
-			// Absent from the table means registered-custom, which consumes a
-			// name by design. Not a violation, but worth surfacing: a builtin
-			// family missing its row is how a selector reaches the default arm.
-			t.Logf("note: %q has no row in the server policy table (treated as registered-custom)", gt)
+			// Absent from THE SERVER'S SELECTOR-POLICY TABLE — the artifact
+			// parsed above, not the manage(status) coverage table — means
+			// registered-custom, which consumes a name by design. Naming the
+			// table matters now that a registered custom family IS a coverage
+			// row: "absent from the table" no longer distinguishes a registered
+			// family on either surface, and the two tables answer different
+			// questions. Not a violation, but worth surfacing: a builtin family
+			// missing its policy row is how a selector reaches the default arm.
+			t.Logf("note: %q has no row in the server's selector-policy table (treated as registered-custom)", gt)
 			continue
 		}
 		for _, name := range reachableNames(policy) {

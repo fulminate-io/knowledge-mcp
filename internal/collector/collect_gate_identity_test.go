@@ -75,7 +75,7 @@ func TestCollectGate_RecordedIdentityMatchesRegisteredCollectorName(t *testing.T
 	require.NotEmpty(t, collectorGraphName, "the collector must name the graph it produced")
 
 	// SIDE 2 — the identity a collect records, via the production derivation.
-	recordedName, err := tools.CollectGateGraphName("code", repoDir, nil)
+	recordedName, err := tools.CollectGateGraphName("code", repoDir, nil, false)
 	require.NoError(t, err, "the code derivation must not refuse a real repo directory")
 	rt := tools.NewCollectRuntime()
 	block := make(chan struct{})
@@ -137,7 +137,7 @@ func TestCollectGateGraphName_MatchesTheRawCollectorsOwnNames(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, sink.results, 1, "the collect must reach the sink exactly once")
 
-		predicted, err := tools.CollectGateGraphName("pdf", abs, nil)
+		predicted, err := tools.CollectGateGraphName("pdf", abs, nil, false)
 		require.NoError(t, err)
 		require.Equal(t, sink.results[0].GraphName, predicted,
 			"the predicted pdf graph name does not match the name the real collector emits, "+
@@ -146,7 +146,7 @@ func TestCollectGateGraphName_MatchesTheRawCollectorsOwnNames(t *testing.T) {
 		// Known-negative: a relative id must REFUSE rather than name a graph. The
 		// pdf collector rejects a relative path too, so a name derived from one
 		// would name a graph that can never exist.
-		_, relErr := tools.CollectGateGraphName("pdf", "testdata/t4_paragraph_simple.pdf", nil)
+		_, relErr := tools.CollectGateGraphName("pdf", "testdata/t4_paragraph_simple.pdf", nil, false)
 		require.Error(t, relErr, "a relative pdf id must be refused, not named")
 	})
 
@@ -160,7 +160,7 @@ func TestCollectGateGraphName_MatchesTheRawCollectorsOwnNames(t *testing.T) {
 
 		// PRODUCTION ORDER: the dispatch names the graph FIRST, from a request
 		// carrying no id, and the crawl then runs under that name.
-		predicted, err := tools.CollectGateGraphName("web", "", []string{srv.URL})
+		predicted, err := tools.CollectGateGraphName("web", "", []string{srv.URL}, false)
 		require.NoError(t, err)
 		require.NotEmpty(t, predicted)
 
@@ -178,7 +178,7 @@ func TestCollectGateGraphName_MatchesTheRawCollectorsOwnNames(t *testing.T) {
 
 		// Known-negative: neither an id nor a seed URL must REFUSE rather than
 		// invent a name nobody asked for.
-		_, noneErr := tools.CollectGateGraphName("web", "", nil)
+		_, noneErr := tools.CollectGateGraphName("web", "", nil, false)
 		require.Error(t, noneErr, "a web collect with no id and no seed must be refused, not named")
 	})
 
@@ -198,7 +198,7 @@ func TestCollectGateGraphName_MatchesTheRawCollectorsOwnNames(t *testing.T) {
 	// derivable from the request could be right. logs STAYS because it produces no
 	// collector graph at all.
 	for _, ct := range []string{"aws", "logs"} {
-		name, err := tools.CollectGateGraphName(ct, "some-id", []string{"https://example.com/"})
+		name, err := tools.CollectGateGraphName(ct, "some-id", []string{"https://example.com/"}, false)
 		require.NoError(t, err, "%s must not error", ct)
 		require.Empty(t, name, "%s must derive no graph name", ct)
 	}

@@ -225,11 +225,19 @@ func TestInterceptMutate_CurrentlyWorkingShapes_NotRejected(t *testing.T) {
 		assert.False(t, res.IsError, "a one-element ids[] update must not be rejected: %s", toolResultText(res))
 	})
 
+	// THE LANGUAGE CAME OUT OF BOTH PAYLOADS BELOW, and its absence is the point
+	// rather than a tidy-up. These two rows are about the fallthrough being
+	// OPERATION-POLYMORPHIC — that an upsert and an unlink both decline cleanly —
+	// and they used to carry a practice `language`, which now meets the
+	// requirement-4 refusal on its way through. Leaving it in would have made
+	// them assert that a practice write may carry a legacy selector, which is the
+	// opposite of what this change decided; the refusal has its own coverage in
+	// TestPracticeWriteArms_EveryArmRefusesLanguage, where it belongs.
 	t.Run("upsert on a practice graph falls past the passthrough guard", func(t *testing.T) {
 		fc := &fakeGraphCaller{}
 		handled, res := InterceptMutate(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
 			Name: "mutate",
-			Arguments: json.RawMessage(`{"operation":"upsert","graph":"practice","language":"go",` +
+			Arguments: json.RawMessage(`{"operation":"upsert","graph":"practice",` +
 				`"id":"pat-1","type":"pattern"}`),
 		})
 		assert.False(t, handled, "the client declines a non-knowledge upsert")
@@ -245,7 +253,7 @@ func TestInterceptMutate_CurrentlyWorkingShapes_NotRejected(t *testing.T) {
 		fc := &fakeGraphCaller{}
 		handled, res := InterceptMutate(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
 			Name: "mutate",
-			Arguments: json.RawMessage(`{"operation":"unlink","graph":"practice","language":"go",` +
+			Arguments: json.RawMessage(`{"operation":"unlink","graph":"practice",` +
 				`"from":"a","to":"b","relationship":"uses"}`),
 		})
 		assert.False(t, handled, "the client declines a non-knowledge unlink")
@@ -314,7 +322,7 @@ func TestInterceptMutate_Upsert_RejectsUnroutableParams(t *testing.T) {
 // so only the fallthrough arm's surface may gate it.
 //
 // The probe rides the KNOWLEDGE graph deliberately: knowledge is name-blind, so
-// the engine drops the name rather than routing it (mutateTargetName), and the
+// the engine drops the name rather than routing it (mutateTarget), and the
 // call must still SUCCEED. Rejection here would mean the wrong arm's gate ran.
 func TestInterceptMutate_BareLinkWithName_RoutesNotRejected(t *testing.T) {
 	fc := &fakeGraphCaller{queryResponses: map[string]kgtools.ToolResult{

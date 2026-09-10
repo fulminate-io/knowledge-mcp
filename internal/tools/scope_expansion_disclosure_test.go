@@ -16,7 +16,7 @@ import (
 // scope_expansion_disclosure_test.go holds the behavioral gates for the arms
 // wired to the shared disclosure helper beyond the two the plan proved by hand:
 // the analyze call-graph walks and the explain endpoint hydrate, plus the two
-// resourceBrowse return arms the browse test does not reach.
+// browse return arms the browse test does not reach.
 //
 // WHY THEY EXIST, stated plainly because their absence was MEASURED rather than
 // suspected. A review mutated each of these sites — pinning a threaded verdict to
@@ -188,47 +188,4 @@ func TestRenderExplainWithNames_TruncationNotice(t *testing.T) {
 			"genuinely have no symbol name")
 	assert.NotContains(t, explain(false), serverRowCeilingSentence,
 		"a whole hydrate must not claim to be partial")
-}
-
-// TestResourceBrowse_TruncationNoticePerArm covers the two resourceBrowse return
-// arms TestResourceBrowse_TruncationNotice does not reach: the format:"json"
-// branch and the empty-account branch. Both were wired deliberately so the
-// disclosure is unconditional on the arm's EXITS rather than conditional on which
-// branch ran — and a wrapper removed from either one left every package green,
-// because its siblings still called the helper and the census works at function
-// granularity.
-func TestResourceBrowse_TruncationNoticePerArm(t *testing.T) {
-	t.Run("json arm", func(t *testing.T) {
-		browse := func(truncated bool) string {
-			rec := &recordingStatsRPC{
-				nodes:     []*knowledgev1.Node{{Id: "r1", SymbolName: "res"}},
-				total:     7,
-				truncated: truncated,
-			}
-			res := resourceBrowse(context.Background(), rec.Execute, cloudGraphKind,
-				queryArgs{Graph: "cloud", Account: "acme", Format: "json"})
-			require.False(t, res.IsError, textBodyTools(res))
-			return textBodyTools(res)
-		}
-		assert.Contains(t, browse(true), serverRowCeilingSentence,
-			"the json arm returns before the markdown ones, so it needs its own wrapper")
-		assert.NotContains(t, browse(false), serverRowCeilingSentence)
-	})
-
-	t.Run("empty-account arm", func(t *testing.T) {
-		browse := func(truncated bool) string {
-			rec := &recordingStatsRPC{nodes: nil, total: 0, truncated: truncated}
-			res := resourceBrowse(context.Background(), rec.Execute, cicdGraphKind,
-				queryArgs{Graph: "cicd", Account: "acme"})
-			require.False(t, res.IsError, textBodyTools(res))
-			return textBodyTools(res)
-		}
-		// A no-op on today's server — ceilingEngaged needs rowCount >= effective and
-		// zero rows never reach it — but the wrap is what keeps the disclosure
-		// unconditional on the arm's exits, so it gets a gate that fails when it is
-		// removed rather than resting on the claim that it cannot matter.
-		assert.Contains(t, browse(true), serverRowCeilingSentence,
-			"the empty-case early return is an EXIT of this arm and must disclose like the others")
-		assert.NotContains(t, browse(false), serverRowCeilingSentence)
-	})
 }

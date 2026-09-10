@@ -75,8 +75,15 @@ const (
 // The honesty of the residue, converged, below-floor and ratio arms is exactly the
 // honesty of LiveResident, which is the DISTINCT live-searchable count rather than
 // the summed residency figure.
+//   - The not-collected arm must precede EVERY other arm, the no-segments one
+//     included. That row has no graph, so every band below it — including the
+//     bare dash, which asserts a graph with no pool — would describe a graph that
+//     does not exist. Its own segment cell still reads HasSegments, which on that
+//     row is the registration's declaration rather than a probe.
 func segCoverageDisposition(r CoverageRow) string {
 	switch {
+	case r.NoInstance:
+		return DispositionNotCollected
 	case !r.HasSegments:
 		return DispositionNoSegments
 	case !r.InWorkingSet:

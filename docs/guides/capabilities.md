@@ -38,7 +38,7 @@ in the [Reasoning guide](reasoning.md).
 ## 2. Search across everything you have
 
 Knowledge runs hybrid BM25 + vector search across every graph it knows
-about: code, decisions, findings, cloud resources, log streams, and
+about: code, decisions, findings, a collector's own resources, and
 docs. One query surface, every source — the LLM doesn't pick a
 backend, it asks for what it wants.
 
@@ -58,7 +58,7 @@ ast({ "language": "go", "pattern": "defer $X.Close()" })
 
 Results from any graph link to nodes you can traverse. Walk from a
 search hit to its callers, to the decision that introduced it, to the
-cloud resource that consumes it, to the log stream that tracks it. The
+resource that consumes it, to the log stream that tracks it. The
 graphs are connected; the search is, too.
 
 ## 3. Real workflow integration
@@ -107,16 +107,12 @@ search and walked as a static call graph. Branch overlays index
 non-default branches as thin diffs over main; only changed nodes
 re-summarize and re-embed.
 
-**Cloud.** AWS, GCP, Azure, and Kubernetes resources land as nodes
-with their topology preserved. The Helm chart that deploys a service,
-the IAM role that grants its access, the secret it mounts — all
-queryable, all linkable to the code that defines them.
-
-**Logs.** Ephemeral per-query graphs from CloudWatch, Loki,
-Elasticsearch, Stackdriver, and Kubernetes Events. Templates cluster
-by message shape; streams correlate to cloud resources automatically.
-Pull logs for an incident, walk to the resource that emitted them,
-walk to the code that runs on that resource — one query.
+**Contrib collectors.** Cloud inventory and log collection ship as
+separate collector binaries, each registering its own graph family:
+AWS, GCP, Azure and Kubernetes resources with their topology
+preserved, and per-query log graphs from CloudWatch, Loki, Stackdriver
+and Kubernetes Events. Install the ones you need and collect them like
+any built-in type; see the custom collector guide.
 
 **Web.** URLs ingest into a structured graph: titles, sections, links,
 extracted entities. The LLM reads documentation as a graph it can
@@ -126,7 +122,8 @@ traverse, not as a string it has to summarize.
 fingerprints, and bounding boxes. Specs and papers come in as nodes
 the LLM can search and cite, not as raw text.
 
-Cross-graph traversal auto-resolves proxies. Walk from a failing log
-line back to the code that emitted it, the cloud resource it ran on,
-and the decision behind that code — in one call. The graph is the
+Cross-graph traversal auto-resolves proxies. With the log and cloud
+contrib collectors installed, walk from a failing log line back to the
+code that emitted it, the resource it ran on, and the decision behind
+that code — in one call. The graph is the
 context layer; the LLM trusts it because it's traceable end-to-end.

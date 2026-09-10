@@ -49,7 +49,7 @@ import (
 //
 // Single-RPC, all-or-nothing: the server runs validation across every
 // item, then opens ONE store.Txn that commits exactly once. Mirrors the
-// historical projects.CreatePlan + projects.CreateTicket bundle parity.
+// historical create-plan / create-ticket bundle parity.
 func PersistBatch(ctx context.Context, gc GraphCaller, nodes []*knowledgev1.Node, edges []kgwire.BatchEdge, bundleID string) ([]string, error) {
 	if gc == nil {
 		return nil, fmt.Errorf("PersistBatch: graph caller unavailable")
@@ -117,6 +117,15 @@ func executeMutate(ctx context.Context, gc GraphCaller, args json.RawMessage) (*
 	ex, err := persistExecutor(gc)
 	if err != nil {
 		return nil, err
+	}
+	// THE PRACTICE HUB RULES RUN HERE TOO, and this is the reason the funnel
+	// exists to hang them on: sixteen call sites reach the engine through this
+	// function; eleven of them never pass InterceptMutate, the recipe landing, the
+	// style-rule import and the checks writer among them, so a rule stated only in
+	// the intercept is a rule those callers do not have.
+	// The engine owns the rule; this is one of its three positions.
+	if herr := engine.GuardPracticeWrite(ctx, ex.Execute, args); herr != nil {
+		return nil, herr
 	}
 	req, ok := engine.Compile("mutate", args)
 	if !ok {

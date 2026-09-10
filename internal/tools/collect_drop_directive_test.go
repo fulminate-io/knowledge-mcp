@@ -36,12 +36,9 @@ func TestRawCollectDropDirective_FamiliesAndTarget(t *testing.T) {
 	wantsDirective := map[kgtypes.GraphType]bool{
 		kgtypes.GraphKnowledge: false,
 		kgtypes.GraphCode:      false,
-		kgtypes.GraphCloud:     false,
-		kgtypes.GraphCICD:      false,
 		kgtypes.GraphPractice:  false,
 		kgtypes.GraphLinkage:   false,
 		kgtypes.GraphChecks:    false,
-		kgtypes.GraphLogs:      false,
 		kgtypes.GraphWebRaw:    true,
 		kgtypes.GraphPDFRaw:    true,
 	}
@@ -117,9 +114,9 @@ func TestRawCollectDropDirective_FamiliesAndTarget(t *testing.T) {
 		compositionStubOnce.Do(func() { collector.Register(compositionStubCollector{}) })
 		deps := &detachFullDeps{rt: NewCollectRuntime(), gc: &fakeGraphCaller{}}
 
-		_, produced, err := builtinCollectWork(context.Background(), deps,
+		_, produced, err := collectWork(context.Background(), deps,
 			collectArgs{Type: compositionStubType, ID: "composition-id"},
-			collector.CollectOptions{Sink: noopSink{}}, "")
+			collector.CollectOptions{Sink: noopSink{}}, "", false, builtinCollectRunner())
 
 		require.NoError(t, err)
 		assert.Equal(t, "composition-smoke", produced,

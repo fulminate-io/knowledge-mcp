@@ -23,17 +23,47 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// GraphTypeDef is the combined registration record for one user-defined graph
-// type. Name is the graph-type identifier (must not collide with a built-in
-// GraphType). collector defines how to populate the graph; behavior defines the
-// graph-level summary/embed/sync defaults; node_types carries per-node-type
-// overrides that the T2 cascade coalesces over the graph defaults.
+// GraphTypeDef is the record for one user-defined graph type. Name is the
+// graph-type identifier (must not collide with a built-in GraphType); behavior
+// defines the graph-level summary/embed/sync defaults; node_types carries
+// per-node-type overrides that the T2 cascade coalesces over the graph defaults.
+//
+// A RECORD WRITTEN BY THE CURRENT CONTRACT CARRIES NO COLLECTOR. Registration
+// moved to a client-side `collectors.json` config file, so the connection half
+// (which provider to dial, which tool to call, the child's environment, the
+// request headers) never crosses the wire: no server file reads it, and the env
+// block now carries VALUES, which must never be stored in a graph-resident node
+// that syncs. The client builds a CollectorSpec in memory from a file entry for
+// one collect and discards it.
+//
+// THE COLLECTOR FIELDS STAY, unwritten but still read. The persisted format owes
+// one-version-back load and convert, and an operator upgrading holds records
+// written by the retired registration tool that carry the connection half;
+// removing the fields would make those records lose data on their first
+// re-write. Nothing resolves from such a record — the config file is the
+// registration record — but the client reads it to tell the operator what entry
+// it would need.
 type GraphTypeDef struct {
-	state         protoimpl.MessageState       `protogen:"open.v1"`
-	Name          string                       `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Collector     *CollectorSpec               `protobuf:"bytes,2,opt,name=collector,proto3" json:"collector,omitempty"`
-	Behavior      *BehaviorDefaults            `protobuf:"bytes,3,opt,name=behavior,proto3" json:"behavior,omitempty"`
-	NodeTypes     map[string]*NodeTypeOverride `protobuf:"bytes,4,rep,name=node_types,json=nodeTypes,proto3" json:"node_types,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	state     protoimpl.MessageState       `protogen:"open.v1"`
+	Name      string                       `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Collector *CollectorSpec               `protobuf:"bytes,2,opt,name=collector,proto3" json:"collector,omitempty"`
+	Behavior  *BehaviorDefaults            `protobuf:"bytes,3,opt,name=behavior,proto3" json:"behavior,omitempty"`
+	NodeTypes map[string]*NodeTypeOverride `protobuf:"bytes,4,rep,name=node_types,json=nodeTypes,proto3" json:"node_types,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// The CLOSED type vocabulary this collector declared through its describe
+	// tool. A collect carrying a node or edge type outside it is REFUSED at the
+	// ingest handler, by name, before anything is written.
+	//
+	// IT IS A MESSAGE RATHER THAN TWO REPEATED FIELDS, AND THE PRESENCE IS THE
+	// WHOLE REASON. proto3 gives a repeated field no presence: an absent list and
+	// a declared-empty one decode to the same empty slice. Those are opposite
+	// instructions here — an ABSENT vocabulary is a family registered before the
+	// describe tool existed, which keeps accept-all (the persisted format owes
+	// one-version-back load, and the client says so once per collect), while a
+	// PRESENT vocabulary declaring empty lists says this collector emits nothing
+	// and refuses every type it then sends. A message field carries presence, so
+	// the two stay distinguishable; `optional` is not available on a repeated
+	// field, which is the idiom BehaviorDefaults uses for its three scalars.
+	Vocabulary    *TypeVocabulary `protobuf:"bytes,5,opt,name=vocabulary,proto3" json:"vocabulary,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -96,21 +126,99 @@ func (x *GraphTypeDef) GetNodeTypes() map[string]*NodeTypeOverride {
 	return nil
 }
 
-// CollectorSpec describes the external binary that collects the graph and how
-// parameters are passed to it. binary_path is absolute; param_transport is
-// either "stdin" or "flag:<name>".
+func (x *GraphTypeDef) GetVocabulary() *TypeVocabulary {
+	if x != nil {
+		return x.Vocabulary
+	}
+	return nil
+}
+
+// TypeVocabulary is one registered graph type's closed node and edge type
+// vocabulary, as its collector's describe tool declared it.
+//
+// BOTH HALVES TRAVEL ON ONE MESSAGE because the describe contract requires a
+// collector to declare both: a collector emitting no edges declares an empty
+// edge list, which is a statement the refusal acts on, while a missing one would
+// be a silence it could not.
+type TypeVocabulary struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NodeTypes     []string               `protobuf:"bytes,1,rep,name=node_types,json=nodeTypes,proto3" json:"node_types,omitempty"`
+	EdgeTypes     []string               `protobuf:"bytes,2,rep,name=edge_types,json=edgeTypes,proto3" json:"edge_types,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TypeVocabulary) Reset() {
+	*x = TypeVocabulary{}
+	mi := &file_knowledge_v1_graphtypedef_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TypeVocabulary) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TypeVocabulary) ProtoMessage() {}
+
+func (x *TypeVocabulary) ProtoReflect() protoreflect.Message {
+	mi := &file_knowledge_v1_graphtypedef_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TypeVocabulary.ProtoReflect.Descriptor instead.
+func (*TypeVocabulary) Descriptor() ([]byte, []int) {
+	return file_knowledge_v1_graphtypedef_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *TypeVocabulary) GetNodeTypes() []string {
+	if x != nil {
+		return x.NodeTypes
+	}
+	return nil
+}
+
+func (x *TypeVocabulary) GetEdgeTypes() []string {
+	if x != nil {
+		return x.EdgeTypes
+	}
+	return nil
+}
+
+// CollectorSpec describes the MCP provider that collects the graph and the tool
+// to call on it. The client dials the provider over the named transport,
+// completes the MCP handshake, verifies the named tool advertises both an input
+// and an output schema satisfying the collector contract, and calls it with the
+// collect params.
+//
+// IT IS BUILT IN MEMORY FROM A CONFIG-FILE ENTRY and is not persisted by the
+// current contract; see GraphTypeDef for why the fields remain. tool is the tool
+// name on the provider; exactly one provider transport is set. The daemon
+// composes no credential of its own on either transport: a stdio provider gets
+// exactly the entry's env block and an http provider gets exactly the entry's
+// headers, which ride beside this message rather than on it.
 type CollectorSpec struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	BinaryPath     string                 `protobuf:"bytes,1,opt,name=binary_path,json=binaryPath,proto3" json:"binary_path,omitempty"`
-	ParamTransport string                 `protobuf:"bytes,2,opt,name=param_transport,json=paramTransport,proto3" json:"param_transport,omitempty"`
-	ParamSchema    map[string]*ParamSpec  `protobuf:"bytes,3,rep,name=param_schema,json=paramSchema,proto3" json:"param_schema,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Tool  string                 `protobuf:"bytes,4,opt,name=tool,proto3" json:"tool,omitempty"`
+	// Types that are valid to be assigned to Provider:
+	//
+	//	*CollectorSpec_Stdio
+	//	*CollectorSpec_Http
+	Provider      isCollectorSpec_Provider `protobuf_oneof:"provider"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CollectorSpec) Reset() {
 	*x = CollectorSpec{}
-	mi := &file_knowledge_v1_graphtypedef_proto_msgTypes[1]
+	mi := &file_knowledge_v1_graphtypedef_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -122,7 +230,7 @@ func (x *CollectorSpec) String() string {
 func (*CollectorSpec) ProtoMessage() {}
 
 func (x *CollectorSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_graphtypedef_proto_msgTypes[1]
+	mi := &file_knowledge_v1_graphtypedef_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -135,54 +243,89 @@ func (x *CollectorSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CollectorSpec.ProtoReflect.Descriptor instead.
 func (*CollectorSpec) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_graphtypedef_proto_rawDescGZIP(), []int{1}
+	return file_knowledge_v1_graphtypedef_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *CollectorSpec) GetBinaryPath() string {
+func (x *CollectorSpec) GetTool() string {
 	if x != nil {
-		return x.BinaryPath
+		return x.Tool
 	}
 	return ""
 }
 
-func (x *CollectorSpec) GetParamTransport() string {
+func (x *CollectorSpec) GetProvider() isCollectorSpec_Provider {
 	if x != nil {
-		return x.ParamTransport
-	}
-	return ""
-}
-
-func (x *CollectorSpec) GetParamSchema() map[string]*ParamSpec {
-	if x != nil {
-		return x.ParamSchema
+		return x.Provider
 	}
 	return nil
 }
 
-// ParamSpec is one collector parameter's declared type + whether it is required.
-type ParamSpec struct {
+func (x *CollectorSpec) GetStdio() *StdioProvider {
+	if x != nil {
+		if x, ok := x.Provider.(*CollectorSpec_Stdio); ok {
+			return x.Stdio
+		}
+	}
+	return nil
+}
+
+func (x *CollectorSpec) GetHttp() *HttpProvider {
+	if x != nil {
+		if x, ok := x.Provider.(*CollectorSpec_Http); ok {
+			return x.Http
+		}
+	}
+	return nil
+}
+
+type isCollectorSpec_Provider interface {
+	isCollectorSpec_Provider()
+}
+
+type CollectorSpec_Stdio struct {
+	Stdio *StdioProvider `protobuf:"bytes,5,opt,name=stdio,proto3,oneof"`
+}
+
+type CollectorSpec_Http struct {
+	Http *HttpProvider `protobuf:"bytes,6,opt,name=http,proto3,oneof"`
+}
+
+func (*CollectorSpec_Stdio) isCollectorSpec_Provider() {}
+
+func (*CollectorSpec_Http) isCollectorSpec_Provider() {}
+
+// StdioProvider is an MCP provider spawned as a child process and spoken to over
+// stdin/stdout. env carries NAME=value pairs and is the child's COMPLETE
+// environment: a variable it does not carry is absent from the child, whatever
+// the daemon's own environment holds, and a variable it does carry arrives with
+// THIS value rather than the daemon's. It is rendered from the config entry's
+// env block in sorted key order and is never persisted — a record written before
+// this contract carries variable NAMES instead, which is why the two shapes are
+// distinguishable by the presence of an "=".
+type StdioProvider struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
-	Required      bool                   `protobuf:"varint,2,opt,name=required,proto3" json:"required,omitempty"`
+	Command       string                 `protobuf:"bytes,1,opt,name=command,proto3" json:"command,omitempty"`
+	Args          []string               `protobuf:"bytes,2,rep,name=args,proto3" json:"args,omitempty"`
+	Env           []string               `protobuf:"bytes,3,rep,name=env,proto3" json:"env,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ParamSpec) Reset() {
-	*x = ParamSpec{}
-	mi := &file_knowledge_v1_graphtypedef_proto_msgTypes[2]
+func (x *StdioProvider) Reset() {
+	*x = StdioProvider{}
+	mi := &file_knowledge_v1_graphtypedef_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ParamSpec) String() string {
+func (x *StdioProvider) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ParamSpec) ProtoMessage() {}
+func (*StdioProvider) ProtoMessage() {}
 
-func (x *ParamSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_graphtypedef_proto_msgTypes[2]
+func (x *StdioProvider) ProtoReflect() protoreflect.Message {
+	mi := &file_knowledge_v1_graphtypedef_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -193,23 +336,79 @@ func (x *ParamSpec) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ParamSpec.ProtoReflect.Descriptor instead.
-func (*ParamSpec) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_graphtypedef_proto_rawDescGZIP(), []int{2}
+// Deprecated: Use StdioProvider.ProtoReflect.Descriptor instead.
+func (*StdioProvider) Descriptor() ([]byte, []int) {
+	return file_knowledge_v1_graphtypedef_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *ParamSpec) GetType() string {
+func (x *StdioProvider) GetCommand() string {
 	if x != nil {
-		return x.Type
+		return x.Command
 	}
 	return ""
 }
 
-func (x *ParamSpec) GetRequired() bool {
+func (x *StdioProvider) GetArgs() []string {
 	if x != nil {
-		return x.Required
+		return x.Args
 	}
-	return false
+	return nil
+}
+
+func (x *StdioProvider) GetEnv() []string {
+	if x != nil {
+		return x.Env
+	}
+	return nil
+}
+
+// HttpProvider is an MCP provider reached over streamable HTTP at url. It
+// carries the url and nothing else: the operator's request headers ride beside
+// the record rather than on it, so no header value enters the record the
+// collector-identity digest reads. The daemon composes no header of its own and
+// runs no OAuth flow.
+type HttpProvider struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Url           string                 `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HttpProvider) Reset() {
+	*x = HttpProvider{}
+	mi := &file_knowledge_v1_graphtypedef_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HttpProvider) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HttpProvider) ProtoMessage() {}
+
+func (x *HttpProvider) ProtoReflect() protoreflect.Message {
+	mi := &file_knowledge_v1_graphtypedef_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HttpProvider.ProtoReflect.Descriptor instead.
+func (*HttpProvider) Descriptor() ([]byte, []int) {
+	return file_knowledge_v1_graphtypedef_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *HttpProvider) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
 }
 
 // BehaviorDefaults carries the graph-level behavior settings (the cascade
@@ -234,7 +433,7 @@ type BehaviorDefaults struct {
 
 func (x *BehaviorDefaults) Reset() {
 	*x = BehaviorDefaults{}
-	mi := &file_knowledge_v1_graphtypedef_proto_msgTypes[3]
+	mi := &file_knowledge_v1_graphtypedef_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -246,7 +445,7 @@ func (x *BehaviorDefaults) String() string {
 func (*BehaviorDefaults) ProtoMessage() {}
 
 func (x *BehaviorDefaults) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_graphtypedef_proto_msgTypes[3]
+	mi := &file_knowledge_v1_graphtypedef_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -259,7 +458,7 @@ func (x *BehaviorDefaults) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BehaviorDefaults.ProtoReflect.Descriptor instead.
 func (*BehaviorDefaults) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_graphtypedef_proto_rawDescGZIP(), []int{3}
+	return file_knowledge_v1_graphtypedef_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *BehaviorDefaults) GetSyncable() bool {
@@ -328,7 +527,7 @@ type NodeTypeOverride struct {
 
 func (x *NodeTypeOverride) Reset() {
 	*x = NodeTypeOverride{}
-	mi := &file_knowledge_v1_graphtypedef_proto_msgTypes[4]
+	mi := &file_knowledge_v1_graphtypedef_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -340,7 +539,7 @@ func (x *NodeTypeOverride) String() string {
 func (*NodeTypeOverride) ProtoMessage() {}
 
 func (x *NodeTypeOverride) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_graphtypedef_proto_msgTypes[4]
+	mi := &file_knowledge_v1_graphtypedef_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -353,7 +552,7 @@ func (x *NodeTypeOverride) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeTypeOverride.ProtoReflect.Descriptor instead.
 func (*NodeTypeOverride) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_graphtypedef_proto_rawDescGZIP(), []int{4}
+	return file_knowledge_v1_graphtypedef_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *NodeTypeOverride) GetSummarizable() bool {
@@ -395,27 +594,36 @@ var File_knowledge_v1_graphtypedef_proto protoreflect.FileDescriptor
 
 const file_knowledge_v1_graphtypedef_proto_rawDesc = "" +
 	"\n" +
-	"\x1fknowledge/v1/graphtypedef.proto\x12\fknowledge.v1\"\xc1\x02\n" +
+	"\x1fknowledge/v1/graphtypedef.proto\x12\fknowledge.v1\"\xff\x02\n" +
 	"\fGraphTypeDef\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x129\n" +
 	"\tcollector\x18\x02 \x01(\v2\x1b.knowledge.v1.CollectorSpecR\tcollector\x12:\n" +
 	"\bbehavior\x18\x03 \x01(\v2\x1e.knowledge.v1.BehaviorDefaultsR\bbehavior\x12H\n" +
 	"\n" +
-	"node_types\x18\x04 \x03(\v2).knowledge.v1.GraphTypeDef.NodeTypesEntryR\tnodeTypes\x1a\\\n" +
+	"node_types\x18\x04 \x03(\v2).knowledge.v1.GraphTypeDef.NodeTypesEntryR\tnodeTypes\x12<\n" +
+	"\n" +
+	"vocabulary\x18\x05 \x01(\v2\x1c.knowledge.v1.TypeVocabularyR\n" +
+	"vocabulary\x1a\\\n" +
 	"\x0eNodeTypesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x124\n" +
-	"\x05value\x18\x02 \x01(\v2\x1e.knowledge.v1.NodeTypeOverrideR\x05value:\x028\x01\"\x83\x02\n" +
-	"\rCollectorSpec\x12\x1f\n" +
-	"\vbinary_path\x18\x01 \x01(\tR\n" +
-	"binaryPath\x12'\n" +
-	"\x0fparam_transport\x18\x02 \x01(\tR\x0eparamTransport\x12O\n" +
-	"\fparam_schema\x18\x03 \x03(\v2,.knowledge.v1.CollectorSpec.ParamSchemaEntryR\vparamSchema\x1aW\n" +
-	"\x10ParamSchemaEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12-\n" +
-	"\x05value\x18\x02 \x01(\v2\x17.knowledge.v1.ParamSpecR\x05value:\x028\x01\";\n" +
-	"\tParamSpec\x12\x12\n" +
-	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1a\n" +
-	"\brequired\x18\x02 \x01(\bR\brequired\"\x98\x03\n" +
+	"\x05value\x18\x02 \x01(\v2\x1e.knowledge.v1.NodeTypeOverrideR\x05value:\x028\x01\"N\n" +
+	"\x0eTypeVocabulary\x12\x1d\n" +
+	"\n" +
+	"node_types\x18\x01 \x03(\tR\tnodeTypes\x12\x1d\n" +
+	"\n" +
+	"edge_types\x18\x02 \x03(\tR\tedgeTypes\"\xd4\x01\n" +
+	"\rCollectorSpec\x12\x12\n" +
+	"\x04tool\x18\x04 \x01(\tR\x04tool\x123\n" +
+	"\x05stdio\x18\x05 \x01(\v2\x1b.knowledge.v1.StdioProviderH\x00R\x05stdio\x120\n" +
+	"\x04http\x18\x06 \x01(\v2\x1a.knowledge.v1.HttpProviderH\x00R\x04httpB\n" +
+	"\n" +
+	"\bproviderJ\x04\b\x01\x10\x02J\x04\b\x02\x10\x03J\x04\b\x03\x10\x04R\vbinary_pathR\x0fparam_transportR\fparam_schema\"O\n" +
+	"\rStdioProvider\x12\x18\n" +
+	"\acommand\x18\x01 \x01(\tR\acommand\x12\x12\n" +
+	"\x04args\x18\x02 \x03(\tR\x04args\x12\x10\n" +
+	"\x03env\x18\x03 \x03(\tR\x03env\" \n" +
+	"\fHttpProvider\x12\x10\n" +
+	"\x03url\x18\x01 \x01(\tR\x03url\"\x98\x03\n" +
 	"\x10BehaviorDefaults\x12\x1f\n" +
 	"\bsyncable\x18\x01 \x01(\bH\x00R\bsyncable\x88\x01\x01\x12'\n" +
 	"\fsummarizable\x18\x02 \x01(\bH\x01R\fsummarizable\x88\x01\x01\x12#\n" +
@@ -458,30 +666,32 @@ func file_knowledge_v1_graphtypedef_proto_rawDescGZIP() []byte {
 	return file_knowledge_v1_graphtypedef_proto_rawDescData
 }
 
-var file_knowledge_v1_graphtypedef_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_knowledge_v1_graphtypedef_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_knowledge_v1_graphtypedef_proto_goTypes = []any{
 	(*GraphTypeDef)(nil),     // 0: knowledge.v1.GraphTypeDef
-	(*CollectorSpec)(nil),    // 1: knowledge.v1.CollectorSpec
-	(*ParamSpec)(nil),        // 2: knowledge.v1.ParamSpec
-	(*BehaviorDefaults)(nil), // 3: knowledge.v1.BehaviorDefaults
-	(*NodeTypeOverride)(nil), // 4: knowledge.v1.NodeTypeOverride
-	nil,                      // 5: knowledge.v1.GraphTypeDef.NodeTypesEntry
-	nil,                      // 6: knowledge.v1.CollectorSpec.ParamSchemaEntry
-	nil,                      // 7: knowledge.v1.BehaviorDefaults.ExtraEntry
+	(*TypeVocabulary)(nil),   // 1: knowledge.v1.TypeVocabulary
+	(*CollectorSpec)(nil),    // 2: knowledge.v1.CollectorSpec
+	(*StdioProvider)(nil),    // 3: knowledge.v1.StdioProvider
+	(*HttpProvider)(nil),     // 4: knowledge.v1.HttpProvider
+	(*BehaviorDefaults)(nil), // 5: knowledge.v1.BehaviorDefaults
+	(*NodeTypeOverride)(nil), // 6: knowledge.v1.NodeTypeOverride
+	nil,                      // 7: knowledge.v1.GraphTypeDef.NodeTypesEntry
+	nil,                      // 8: knowledge.v1.BehaviorDefaults.ExtraEntry
 }
 var file_knowledge_v1_graphtypedef_proto_depIdxs = []int32{
-	1, // 0: knowledge.v1.GraphTypeDef.collector:type_name -> knowledge.v1.CollectorSpec
-	3, // 1: knowledge.v1.GraphTypeDef.behavior:type_name -> knowledge.v1.BehaviorDefaults
-	5, // 2: knowledge.v1.GraphTypeDef.node_types:type_name -> knowledge.v1.GraphTypeDef.NodeTypesEntry
-	6, // 3: knowledge.v1.CollectorSpec.param_schema:type_name -> knowledge.v1.CollectorSpec.ParamSchemaEntry
-	7, // 4: knowledge.v1.BehaviorDefaults.extra:type_name -> knowledge.v1.BehaviorDefaults.ExtraEntry
-	4, // 5: knowledge.v1.GraphTypeDef.NodeTypesEntry.value:type_name -> knowledge.v1.NodeTypeOverride
-	2, // 6: knowledge.v1.CollectorSpec.ParamSchemaEntry.value:type_name -> knowledge.v1.ParamSpec
-	7, // [7:7] is the sub-list for method output_type
-	7, // [7:7] is the sub-list for method input_type
-	7, // [7:7] is the sub-list for extension type_name
-	7, // [7:7] is the sub-list for extension extendee
-	0, // [0:7] is the sub-list for field type_name
+	2, // 0: knowledge.v1.GraphTypeDef.collector:type_name -> knowledge.v1.CollectorSpec
+	5, // 1: knowledge.v1.GraphTypeDef.behavior:type_name -> knowledge.v1.BehaviorDefaults
+	7, // 2: knowledge.v1.GraphTypeDef.node_types:type_name -> knowledge.v1.GraphTypeDef.NodeTypesEntry
+	1, // 3: knowledge.v1.GraphTypeDef.vocabulary:type_name -> knowledge.v1.TypeVocabulary
+	3, // 4: knowledge.v1.CollectorSpec.stdio:type_name -> knowledge.v1.StdioProvider
+	4, // 5: knowledge.v1.CollectorSpec.http:type_name -> knowledge.v1.HttpProvider
+	8, // 6: knowledge.v1.BehaviorDefaults.extra:type_name -> knowledge.v1.BehaviorDefaults.ExtraEntry
+	6, // 7: knowledge.v1.GraphTypeDef.NodeTypesEntry.value:type_name -> knowledge.v1.NodeTypeOverride
+	8, // [8:8] is the sub-list for method output_type
+	8, // [8:8] is the sub-list for method input_type
+	8, // [8:8] is the sub-list for extension type_name
+	8, // [8:8] is the sub-list for extension extendee
+	0, // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_knowledge_v1_graphtypedef_proto_init() }
@@ -489,15 +699,19 @@ func file_knowledge_v1_graphtypedef_proto_init() {
 	if File_knowledge_v1_graphtypedef_proto != nil {
 		return
 	}
-	file_knowledge_v1_graphtypedef_proto_msgTypes[3].OneofWrappers = []any{}
-	file_knowledge_v1_graphtypedef_proto_msgTypes[4].OneofWrappers = []any{}
+	file_knowledge_v1_graphtypedef_proto_msgTypes[2].OneofWrappers = []any{
+		(*CollectorSpec_Stdio)(nil),
+		(*CollectorSpec_Http)(nil),
+	}
+	file_knowledge_v1_graphtypedef_proto_msgTypes[5].OneofWrappers = []any{}
+	file_knowledge_v1_graphtypedef_proto_msgTypes[6].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_knowledge_v1_graphtypedef_proto_rawDesc), len(file_knowledge_v1_graphtypedef_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   8,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -51,10 +51,10 @@ func (m *Manager) SearchOverlay(
 		wg                       sync.WaitGroup
 	)
 	wg.Go(func() {
-		baseHNSW, baseBM25, baseErr = m.searchPoolArms(ctx, gt, base, queryText, queryVec, k)
+		baseHNSW, baseBM25, baseErr = m.searchPoolArms(ctx, gt, base, queryText, queryVec, k, nil)
 	})
 	wg.Go(func() {
-		overlayHNSW, overlayBM25, overlayErr = m.searchPoolArms(ctx, gt, overlay, queryText, queryVec, k)
+		overlayHNSW, overlayBM25, overlayErr = m.searchPoolArms(ctx, gt, overlay, queryText, queryVec, k, nil)
 	})
 	wg.Wait()
 

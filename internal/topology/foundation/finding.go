@@ -46,7 +46,7 @@ const (
 // multiple analyzers surface the same underlying issue.
 type Finding struct {
 	// Algorithm names the analyzer that produced this finding (e.g.
-	// "pagerank", "scc", "orphan"). Used for grouping and provenance.
+	// "pagerank", "scc", "blast_radius"). Used for grouping and provenance.
 	Algorithm string
 	// Severity classifies how urgently the finding should be acted on.
 	Severity Severity

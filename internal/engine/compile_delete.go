@@ -38,10 +38,35 @@ type deleteArgs struct {
 	DryRun    bool   `json:"dry_run"`
 	Graph     string `json:"graph"`
 	Language  string `json:"language"`
-	// Repo and Account are the graph-INSTANCE selectors for the collected
-	// families, carried on exactly the terms Language already is: repo names a
-	// code graph, account names a cloud/cicd one. mutateTarget projects whichever
-	// one the target family consumes onto the Target and drops the rest.
+	// Source names a practice SOURCE HUB and selects every node grouped under
+	// it — the by-hub delete a failed or abandoned collection is removed with.
+	// It is a SELECTION axis, not a graph selector: it lowers to a metadata
+	// predicate the server already resolves on both flavors.
+	Source string `json:"source"`
+	// SourceHub is the SAME AXIS under the spelling the MUTATE arms publish, and
+	// it is a second field rather than a second tag because one compiler serves
+	// two tools whose schemas legitimately differ.
+	//
+	// WHY THE TWO SPELLINGS EXIST. The standalone `delete` tool declares no
+	// provenance param, so `source` is free there and is what it publishes. Every
+	// mutate arm already declares `source` as the NODE'S OWN provenance field, so
+	// the hub selector is published as `source_hub` there — and both tools route
+	// here, because compileMutate's delete case hands this compiler the raw args.
+	// A caller sending the only spelling its own schema declares must be served,
+	// or a documented destructive op is unreachable from half its surface.
+	//
+	// They are UNIONED below, not treated as two axes: the same value under both
+	// spellings is a caller repeating itself, and DIFFERENT values ask two
+	// questions at once about what to destroy and are denied.
+	SourceHub string `json:"source_hub"`
+	// Repo is the graph-INSTANCE selector for the collected families, carried on
+	// exactly the terms Language already is: repo names a code graph.
+	// mutateTarget projects whichever one the target family consumes onto the
+	// Target and drops the rest.
+	//
+	// ACCOUNT IS DECLARED AND NOT PROJECTED. The wire field and the tool param
+	// both survive their families, but no built-in family is keyed by account any
+	// more, so there is nothing for the projection to select.
 	Repo    string `json:"repo"`
 	Account string `json:"account"`
 	// Hard opts into PERMANENT removal. Deletes are SOFT (tombstone, hidden
@@ -80,11 +105,12 @@ func parseHardFlag(raw json.RawMessage) (hard, ok bool) {
 //
 //   - by-ids ({ids:[...]}) → Selection.Ids (the literal write target set).
 //   - prune-by-age ({older_than, type, session_id} with NO ids) →
-//     Selection{NodeType: pruneTypeAlias(type), FieldPredicates:[{created_at,
-//     OP_LT, Now-older_than RFC3339}]} (+ a session_id MetadataPredicate when
-//     set). The MUTATION_KIND_DELETE + created_at OP_LT write path is proven +
-//     tested server-side (decodeDelete → selectionToQ → applyFieldPredicates;
-//     created_at in fieldPredicateAllowlist).
+//     Selection{NodeType: type resolved through the pruneTypeAliases map,
+//     FieldPredicates:[{created_at, OP_LT, Now-older_than RFC3339}]}
+//     (+ a session_id MetadataPredicate when set). The MUTATION_KIND_DELETE +
+//     created_at OP_LT write path is proven + tested server-side (decodeDelete →
+//     selectionToQ → applyFieldPredicates; created_at in
+//     fieldPredicateAllowlist).
 //
 // Deletes are SOFT by default: the server tombstones the selected nodes
 // (hidden from normal reads, recoverable). hard:true sets the plan's
@@ -122,6 +148,27 @@ func compileDelete(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 	if a.ID != "" {
 		ids = append(append([]string(nil), ids...), a.ID)
 	}
+
+	// BY-HUB IS ITS OWN SELECTION SHAPE, checked BEFORE the by-ids branch so a
+	// call carrying both is refused rather than silently deleting the ids and
+	// ignoring the hub. Two selection axes on a destructive op is a shape whose
+	// wrong reading destroys data, which is why it denies rather than picks.
+	hub, hubOK := deleteHub(a)
+	if !hubOK {
+		return nil, false // the two hub spellings disagree — deny rather than pick one.
+	}
+	if hub != "" {
+		if len(ids) > 0 {
+			return nil, false // ids AND a hub both select — deny rather than guess on a destructive op.
+		}
+		plan := &knowledgev1.MutationPlan{
+			Kind:       knowledgev1.MutationPlan_MUTATION_KIND_DELETE,
+			Selection:  hubSelection(hub),
+			HardDelete: hard,
+		}
+		return deleteRequest(plan, a.Graph, a.Repo, a.Language), true
+	}
+
 	if len(ids) > 0 {
 		// By-ids: the literal write target set, reached from compileMutate's
 		// `case "delete"` as well as from the standalone tool.
@@ -130,7 +177,7 @@ func compileDelete(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 			Selection:  &knowledgev1.Selection{Ids: ids},
 			HardDelete: hard,
 		}
-		return deleteRequest(plan, a.Graph, a.Repo, a.Account, a.Language), true
+		return deleteRequest(plan, a.Graph, a.Repo, a.Language), true
 	}
 
 	sel, selOK := pruneSelection(a)
@@ -142,7 +189,39 @@ func compileDelete(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 		Selection:  sel,
 		HardDelete: hard,
 	}
-	return deleteRequest(plan, a.Graph, a.Repo, a.Account, a.Language), true
+	return deleteRequest(plan, a.Graph, a.Repo, a.Language), true
+}
+
+// deleteHub folds the delete tool's `source` and the mutate arms' `source_hub`
+// into the one hub the call selects, reporting ok=false when the two disagree.
+//
+// AGREEMENT IS ADMITTED AND DISAGREEMENT IS DENIED. One value under both
+// spellings is a caller repeating itself and costs nothing to accept; two
+// different values name two collections and there is no reading of "delete both
+// of these, or one of them" that is safe to guess at on a destructive op.
+func deleteHub(a deleteArgs) (string, bool) {
+	switch {
+	case a.Source == "":
+		return a.SourceHub, true
+	case a.SourceHub == "", a.SourceHub == a.Source:
+		return a.Source, true
+	default:
+		return "", false
+	}
+}
+
+// hubSelection builds the by-hub Selection.
+//
+// ONE FUNCTION SHARED BY THE REAL DELETE AND THE DRY-RUN PREVIEW, for the same
+// reason pruneSelection is shared: the preview's whole value is that it resolves
+// the IDENTICAL node set the delete would, and two copies of a predicate are two
+// things that can drift.
+func hubSelection(hub string) *knowledgev1.Selection {
+	return &knowledgev1.Selection{
+		MetadataPredicates: []*knowledgev1.MetadataPredicate{
+			{Key: kgtypes.MetaKeySourceHub, Op: knowledgev1.MetadataPredicate_OP_EQ, Value: hub},
+		},
+	}
 }
 
 // pruneSelection builds the prune-by-age Selection (NodeType=alias + a created_at
@@ -181,20 +260,28 @@ func pruneSelection(a deleteArgs) (*knowledgev1.Selection, bool) {
 // graph selector (the delete tool, like prune, targets the knowledge graph by
 // default — an empty graph is the engine's knowledge default).
 //
-// repo and account ride on exactly the terms language always has: mutateTarget
-// PROJECTS all three through graphsel.InstanceValueOf, so the Target carries only
-// the one instance field the target family consumes — repo for code, account for
-// cloud/cicd, language for practice. The server REFUSES a selector field the
-// family does not consume rather than ignoring it, which is why the projection
-// rather than a verbatim copy is what routes here.
+// repo rides on exactly the terms language always has: mutateTarget PROJECTS
+// both through graphsel.InstanceValueOf, so the Target carries only the one
+// instance field the target family consumes — repo for code, and NOTHING AT ALL
+// for a singleton family. Practice is one of those now (graphsel.InstanceField
+// returns FieldNone for it), so a language reaching here is projected away rather
+// than carried. The server REFUSES a selector field the family does not consume
+// rather than ignoring it, which is why the projection rather than a verbatim
+// copy is what routes here.
+//
+// ACCOUNT IS NOT AMONG THEM AND IS NOT PASSED. The delete tool still declares the
+// param, because the wire field survives its families, but no family is keyed by
+// account since the account-keyed collectors were retired — so there is nothing
+// for the projection to select and a parameter carrying it would be one no arm
+// can read.
 //
 // The `name` argument stays empty: the delete surface declares no name param, so
 // every family gets an empty Target name. No family pins a literal name here —
 // the one that did addressed a graph family that no longer exists.
-func deleteRequest(plan *knowledgev1.MutationPlan, graph, repo, account, language string) *knowledgev1.ExecuteRequest {
+func deleteRequest(plan *knowledgev1.MutationPlan, graph, repo, language string) *knowledgev1.ExecuteRequest {
 	return &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-		Target: mutateTarget(graph, repo, account, "", language, ""),
+		Target: mutateTarget(graph, repo, "", language, ""),
 	}
 }
 

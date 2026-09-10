@@ -132,9 +132,19 @@ func RenderMetadataStatsTable(label string, rows []MetadataStatsRow) string {
 }
 
 // MetadataStatsJSONPayload ports the server metadataStatsJSONPayload — the
-// {graph, stats[, name, language, account]} format=json shape. A nil rows slice
-// is normalized to an empty array so the JSON shape is stable.
-func MetadataStatsJSONPayload(label, name, language, account string, rows []MetadataStatsRow) map[string]any {
+// {graph, stats[, name, language]} format=json shape. A nil rows slice is
+// normalized to an empty array so the JSON shape is stable.
+//
+// IT TOOK AN `account` AND EMITTED IT AS A PAYLOAD KEY. That key described the
+// instance of an account-keyed family, and there is no such family: they are
+// retired, and a collected inventory graph is a registered custom type addressed
+// by `name`. The parameter stayed after the families left, so a caller passing
+// the (accepted and ignored) `account` tool param got a DIFFERENT json body than
+// the same call without it — which is the one thing the owner's 2026-09-09
+// ruling says must not happen. The parameter is removed rather than passed as
+// "": a value the payload must never carry is not a value this function should
+// be able to receive.
+func MetadataStatsJSONPayload(label, name, language string, rows []MetadataStatsRow) map[string]any {
 	if rows == nil {
 		rows = []MetadataStatsRow{}
 	}
@@ -144,9 +154,6 @@ func MetadataStatsJSONPayload(label, name, language, account string, rows []Meta
 	}
 	if language != "" {
 		payload["language"] = language
-	}
-	if account != "" {
-		payload["account"] = account
 	}
 	return payload
 }

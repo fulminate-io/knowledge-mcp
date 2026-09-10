@@ -118,8 +118,6 @@ func TestBM25Arm_GraphGateIsHasRebuildableSegments(t *testing.T) {
 	admitted := map[kgtypes.GraphType]bool{
 		kgtypes.GraphKnowledge: true,
 		kgtypes.GraphCode:      true,
-		kgtypes.GraphCloud:     true,
-		kgtypes.GraphCICD:      true,
 		kgtypes.GraphPractice:  true,
 		kgtypes.GraphChecks:    true,
 		// The raw graphs are admitted since their embed-only enrollment: server-side
@@ -128,11 +126,11 @@ func TestBM25Arm_GraphGateIsHasRebuildableSegments(t *testing.T) {
 		kgtypes.GraphPDFRaw: true,
 	}
 	all := []kgtypes.GraphType{
-		kgtypes.GraphKnowledge, kgtypes.GraphCode, kgtypes.GraphCloud, kgtypes.GraphCICD,
+		kgtypes.GraphKnowledge, kgtypes.GraphCode,
 		kgtypes.GraphPractice, kgtypes.GraphLinkage,
-		kgtypes.GraphChecks, kgtypes.GraphLogs, kgtypes.GraphWebRaw, kgtypes.GraphPDFRaw,
+		kgtypes.GraphChecks, kgtypes.GraphWebRaw, kgtypes.GraphPDFRaw,
 	}
-	require.Len(t, all, 10, "the enumeration must cover every builtin graph type")
+	require.Len(t, all, 7, "the enumeration must cover every builtin graph type")
 
 	var admittedCount int
 	for _, gt := range all {
@@ -147,7 +145,7 @@ func TestBM25Arm_GraphGateIsHasRebuildableSegments(t *testing.T) {
 			assert.False(t, bm25ArmEnabledFor(gt, false), "graph type %q with no manager", gt)
 		})
 	}
-	assert.Equal(t, 8, admittedCount, "exactly the eight HasRebuildableSegments types are admitted")
+	assert.Equal(t, 6, admittedCount, "exactly the six HasRebuildableSegments types are admitted")
 }
 
 // TestBM25Arm_RequestsEveryNodeType guards the invariant cursorHighWater's doc calls

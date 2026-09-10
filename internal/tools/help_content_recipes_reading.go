@@ -60,6 +60,7 @@ const helpRecipesReading = "## The reading loop\n" +
 	"        {\"compare\": {\"of\": \"node.page_first\", \"op\": \"gte\", \"value\": \"10\"}}\n" +
 	"    ]}\n" +
 	"    emit outline {\n" +
+	"        identity := node.id\n" +
 	"        name := node.symbol_name\n" +
 	"        level := walk.depth\n" +
 	"        pos := walk.position\n" +
@@ -88,6 +89,7 @@ const helpRecipesReading = "## The reading loop\n" +
 	"        {\"compare\": {\"of\": \"walk.depth\", \"op\": \"lte\", \"value\": \"2\"}}\n" +
 	"    ]}\n" +
 	"    emit outline {\n" +
+	"        identity := node.id\n" +
 	"        name := node.symbol_name\n" +
 	"        level := walk.depth\n" +
 	"        pos := walk.position\n" +
@@ -105,6 +107,7 @@ const helpRecipesReading = "## The reading loop\n" +
 	"    select section where {\"matches\": {\"of\": \"section.symbol_name\",\n" +
 	"                                      \"regex\": \"^Event\"}}\n" +
 	"    emit section_body {\n" +
+	"        identity := section.id\n" +
 	"        name := section.symbol_name\n" +
 	"        path := heading_path(\"CONTAINS\", \"symbol_name\", \" > \")\n" +
 	"        page_first := section.page_first\n" +
@@ -141,6 +144,7 @@ const helpRecipesReading = "## The reading loop\n" +
 	"        {\"compare\": {\"of\": \"node.page_repeat_count\", \"op\": \"gte\", \"value\": \"2\"}}\n" +
 	"    ]}}\n" +
 	"    emit outline {\n" +
+	"        identity := node.id\n" +
 	"        name := node.symbol_name\n" +
 	"        page := node.page_first\n" +
 	"    }\n" +
@@ -169,6 +173,7 @@ const helpRecipesReading = "## The reading loop\n" +
 	"        {\"not\": {\"equals\": {\"of\": \"node.links_only\", \"value\": \"true\"}}}\n" +
 	"    ]}\n" +
 	"    emit content {\n" +
+	"        identity := node.id\n" +
 	"        name := node.body\n" +
 	"        kind := node.type\n" +
 	"        tag := node.tag\n" +
@@ -180,9 +185,10 @@ const helpRecipesReading = "## The reading loop\n" +
 	"by the paragraph emitter alone, on paragraph records, when the run is\n" +
 	"links-only; no section emitter writes it. A section-only form therefore\n" +
 	"negates a key sections never carry, so the clause excludes nothing.\n" +
-	"`name := node.body` for the same reason: an emit whose name expression\n" +
-	"is empty SKIPS the row, and a paragraph has no SymbolName, so naming\n" +
-	"`node.symbol_name` here would silently drop every paragraph. `body`\n" +
+	"`name := node.body` for the same reason: a paragraph has no SymbolName,\n" +
+	"so naming `node.symbol_name` here would land every paragraph NAMELESS —\n" +
+	"a row is skipped only when its name AND its identity are both empty,\n" +
+	"and this body sets an identity. `body`\n" +
 	"resolves `content` then `description`, which is the heading on a\n" +
 	"section and the text on a paragraph. `links_only` is stamped only on a\n" +
 	"links-only run, so a document containing none does not carry the key\n" +

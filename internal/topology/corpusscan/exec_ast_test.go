@@ -37,6 +37,12 @@ func fixtureNodes() []*knowledgev1.Node {
 	}
 }
 
+// unscopedDecision is the scope decision a check carrying NO scope metadata
+// resolves to: it runs, it narrows nothing, and the run's own channel is the
+// only narrowing in force. Unit-level callers of an executor pass it so the
+// executor's other behavior is driven without a scope in the way.
+func unscopedDecision() checkScopeDecision { return checkScopeDecision{applies: true} }
+
 // astCorpus seeds a practice graph holding the given check nodes plus the shared
 // fixtures.
 func astCorpus(checks ...*knowledgev1.Node) *fakeCaller {
@@ -345,11 +351,11 @@ func TestCorpusScan_UnexecutableCheckTypeRefusedLoudly(t *testing.T) {
 func TestCorpusScan_AstDeniedLanguageRefusesTheRun(t *testing.T) {
 	// CONTROL: go is not denied, so the guard discriminates.
 	if _, _, err := executeAstCheck(context.Background(), scanRequest(newFakeCaller(), "repo", t.TempDir()),
-		corpusEntry{Check: corpus.Check{ID: "chk-go", Severity: foundation.SeverityWarning, Language: "go", Pattern: "defer $X.Close()"}, Node: &knowledgev1.Node{}}, scanOptions{}); err != nil {
+		corpusEntry{Check: corpus.Check{ID: "chk-go", Severity: foundation.SeverityWarning, Language: "go", Pattern: "defer $X.Close()"}, Node: &knowledgev1.Node{}}, scanOptions{}, unscopedDecision()); err != nil {
 		t.Fatalf("control: a non-denied language must execute, got %v", err)
 	}
 	_, _, err := executeAstCheck(context.Background(), scanRequest(newFakeCaller(), "repo", t.TempDir()),
-		corpusEntry{Check: corpus.Check{ID: "chk-json", Severity: foundation.SeverityWarning, Language: "json", Pattern: "$X"}, Node: &knowledgev1.Node{}}, scanOptions{})
+		corpusEntry{Check: corpus.Check{ID: "chk-json", Severity: foundation.SeverityWarning, Language: "json", Pattern: "$X"}, Node: &knowledgev1.Node{}}, scanOptions{}, unscopedDecision())
 	if err == nil {
 		t.Fatal("a denied grammar must refuse the check rather than report clean")
 	}

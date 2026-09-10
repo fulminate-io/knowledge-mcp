@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 
@@ -187,43 +186,28 @@ func practiceNode(id, name, content string) *knowledgev1.Node {
 	}
 }
 
-// TestPracticeFanOut_MergesAttributedAcrossGraphs is the PRIMARY acceptance
-// criterion: BOTH entry points — the SEARCH tool and the QUERY tool
-// (Language:"all") — search every enumerated practice graph, and the rendered
-// output interleaves hits from >=2 graphs, each annotated with its source graph
-// and sorted by score.
+// TestPracticeSearch_NoSelectorSearchesTheSingleton is requirement 6's first
+// cell and the one a sentinel-only retirement fails.
 //
-// The SEARCH arm passes NO language. The search tool has no per-language scope
-// and now REFUSES the param rather than accepting and ignoring it; fanning
-// across every graph is its only behavior, so omitting it is the honest way to
-// exercise the fan-out here. TestPracticeFanOut_SearchRefusesLanguage owns the
-// refusal itself.
-func TestPracticeFanOut_MergesAttributedAcrossGraphs(t *testing.T) {
+// BOTH the empty language and the literal "all" used to fall through to the
+// scatter-gather, so a change that retired only the sentinel would leave the
+// DEFAULT call still fanning out across the pre-singleton graphs — green on the
+// refusal test and wrong on every real call. This asserts on WHICH POOL WAS
+// SEARCHED rather than on the rendered rows, because a fan-out that happened to
+// include the combined graph would satisfy a result-only assertion.
+func TestPracticeSearch_NoSelectorSearchesTheSingleton(t *testing.T) {
 	seed := func() (*graphclient.GraphClient, *fanOutSegmentSearcher) {
-		gc := newFanOutHarness(t, []string{"go", "python"},
-			practiceNode("p:go", "GoWorkerPool", "bounded goroutines"),
-			practiceNode("p:py", "PyThreadPool", "thread pool executor"),
+		// The legacy graphs are enumerable and MUST NOT be searched: they are the
+		// discriminating half of this fixture.
+		gc := newFanOutHarness(t, []string{"default", "go", "python"},
+			practiceNode("p:combined", "CombinedPattern", "lives in the one graph"),
 		)
 		mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
-			"go":     {{ID: "p:go", Score: 0.90}},
-			"python": {{ID: "p:py", Score: 0.70}},
+			"default": {{ID: "p:combined", Score: 0.90}},
+			"go":      {{ID: "p:go", Score: 0.99}},
+			"python":  {{ID: "p:py", Score: 0.98}},
 		})
 		return gc, mgr
-	}
-
-	assertMerged := func(t *testing.T, body string, mgr *fanOutSegmentSearcher) {
-		t.Helper()
-		// Every enumerated graph was searched exactly once.
-		assert.Equal(t, []string{"go", "python"}, mgr.searchedNames())
-		assert.Equal(t, 1, mgr.callCount("go"))
-		assert.Equal(t, 1, mgr.callCount("python"))
-		// Header names both graphs.
-		assert.Contains(t, body, "Searched 2 practice graphs (go, python)")
-		// Both hits rendered, each tagged with its source graph.
-		assert.Contains(t, body, "### 1. GoWorkerPool [high] (concurrency) — go")
-		assert.Contains(t, body, "### 2. PyThreadPool [high] (concurrency) — python")
-		// Score-desc order: the 0.90 go hit precedes the 0.70 python hit.
-		assert.Less(t, strings.Index(body, "GoWorkerPool"), strings.Index(body, "PyThreadPool"))
 	}
 
 	t.Run("SEARCH tool", func(t *testing.T) {
@@ -232,268 +216,109 @@ func TestPracticeFanOut_MergesAttributedAcrossGraphs(t *testing.T) {
 		handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"graph": "practice", "query": "pool"}))
 		require.True(t, handled)
 		require.False(t, out.IsError, "result is not an error: %s", textBodyTools(out))
-		assertMerged(t, textBodyTools(out), mgr)
+		assert.Equal(t, []string{"default"}, mgr.searchedNames(),
+			"an unselected practice search reads the ONE combined graph and no other")
+		assert.Contains(t, textBodyTools(out), "CombinedPattern")
 	})
 
-	t.Run("QUERY tool Language:all", func(t *testing.T) {
+	t.Run("QUERY tool", func(t *testing.T) {
+		gc, mgr := seed()
+		deps := &interceptDeps{gc: gc, segMgr: mgr}
+		res := gatedRoutePractice(opCtx(), deps, gc, queryArgs{Graph: "practice", Text: "pool"})
+		require.False(t, res.IsError, "%s", textBodyTools(res))
+		assert.Equal(t, []string{"default"}, mgr.searchedNames(),
+			"the two tools must agree about what an unselected practice search reads")
+	})
+}
+
+// TestPracticeSearch_AllSentinelRefused pins requirement 6's second cell on BOTH
+// tools.
+//
+// IT ASSERTS ON THE MESSAGE, not merely on IsError. The sentinel asked for a
+// scatter-gather that no longer exists, and the useful answer names the call
+// that does — a bare refusal leaves the caller guessing whether practice search
+// broke.
+func TestPracticeSearch_AllSentinelRefused(t *testing.T) {
+	seed := func() (*graphclient.GraphClient, *fanOutSegmentSearcher) {
+		gc := newFanOutHarness(t, []string{"default", "go"})
+		return gc, newFanOutSegmentSearcher(nil)
+	}
+
+	t.Run("SEARCH tool", func(t *testing.T) {
+		gc, mgr := seed()
+		deps := &interceptDeps{gc: gc, segMgr: mgr}
+		handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
+			"graph": "practice", "language": "all", "query": "pool",
+		}))
+		require.True(t, handled)
+		require.True(t, out.IsError, "the retired sentinel must be refused, not served")
+		body := textBodyTools(out)
+		assert.Contains(t, body, "retired")
+		assert.Contains(t, body, "Omit the selector", "the refusal names the call that works")
+		assert.Empty(t, mgr.searchedNames(), "the refusal costs no read")
+	})
+
+	t.Run("QUERY tool", func(t *testing.T) {
 		gc, mgr := seed()
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
 		res := gatedRoutePractice(opCtx(), deps, gc, queryArgs{Graph: "practice", Language: "all", Text: "pool"})
-		assertMerged(t, textBodyTools(res), mgr)
+		require.True(t, res.IsError)
+		assert.Contains(t, textBodyTools(res), "retired")
+		assert.Empty(t, mgr.searchedNames(), "the refusal costs no read")
 	})
 }
 
-// TestPracticeSearch_JSONAndText covers the JSON contract for BOTH practice composers:
-// composePracticeSearchClient (specific language, QUERY tool) and
-// composePracticeSearchFanOut (language:"all"). format:"json" parses to the
-// SearchJSONResponse envelope; the no-format run stays on the markdown path.
-func TestPracticeSearch_JSONAndText(t *testing.T) {
-	t.Run("single-language client json + text", func(t *testing.T) {
-		seed := func() (*graphclient.GraphClient, *fanOutSegmentSearcher) {
-			gc := newFanOutHarness(t, []string{"go"},
-				practiceNode("p:go", "GoWorkerPool", "bounded goroutines"),
-			)
-			mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
-				"go": {{ID: "p:go", Score: 0.90}},
-			})
-			return gc, mgr
-		}
-
-		gc, mgr := seed()
-		deps := &interceptDeps{gc: gc, segMgr: mgr}
-		jsonRes := gatedRoutePractice(opCtx(), deps, gc, queryArgs{Graph: "practice", Language: "go", Text: "pool", Format: "json"})
-		var env engine.SearchJSONResponse
-		require.NoError(t, json.Unmarshal([]byte(textBodyTools(jsonRes)), &env), "json branch must parse")
-		require.Equal(t, 1, env.Total)
-		require.Len(t, env.Results, 1)
-		assert.Equal(t, "p:go", env.Results[0].ID)
-		assert.Equal(t, "GoWorkerPool", env.Results[0].SymbolName)
-
-		gc2, mgr2 := seed()
-		deps2 := &interceptDeps{gc: gc2, segMgr: mgr2}
-		textRes := gatedRoutePractice(opCtx(), deps2, gc2, queryArgs{Graph: "practice", Language: "go", Text: "pool"})
-		body := textBodyTools(textRes)
-		assert.Contains(t, body, "GoWorkerPool", "text path renders RenderPracticeResults markdown")
-		var env2 engine.SearchJSONResponse
-		assert.Error(t, json.Unmarshal([]byte(body), &env2), "text path must not emit JSON")
-	})
-
-	t.Run("fan-out json + text", func(t *testing.T) {
-		seed := func() (*graphclient.GraphClient, *fanOutSegmentSearcher) {
-			gc := newFanOutHarness(t, []string{"go", "python"},
-				practiceNode("p:go", "GoWorkerPool", "bounded goroutines"),
-				practiceNode("p:py", "PyThreadPool", "thread pool executor"),
-			)
-			mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
-				"go":     {{ID: "p:go", Score: 0.90}},
-				"python": {{ID: "p:py", Score: 0.70}},
-			})
-			return gc, mgr
-		}
-
-		gc, mgr := seed()
-		deps := &interceptDeps{gc: gc, segMgr: mgr}
-		jsonRes := gatedRoutePractice(opCtx(), deps, gc, queryArgs{Graph: "practice", Language: "all", Text: "pool", Format: "json"})
-		var env engine.SearchJSONResponse
-		require.NoError(t, json.Unmarshal([]byte(textBodyTools(jsonRes)), &env), "fan-out json branch must parse")
-		require.Equal(t, 2, env.Total)
-		// Score-desc merge: the 0.90 go hit precedes the 0.70 python hit.
-		assert.Equal(t, "p:go", env.Results[0].ID)
-		assert.Equal(t, "p:py", env.Results[1].ID)
-		// Flat shape drops per-graph attribution (markdown-only) — no "Searched ... graphs" header.
-		assert.NotContains(t, textBodyTools(jsonRes), "Searched")
-
-		gc2, mgr2 := seed()
-		deps2 := &interceptDeps{gc: gc2, segMgr: mgr2}
-		textRes := gatedRoutePractice(opCtx(), deps2, gc2, queryArgs{Graph: "practice", Language: "all", Text: "pool"})
-		body := textBodyTools(textRes)
-		assert.Contains(t, body, "Searched 2 practice graphs (go, python)", "text path renders the fan-out markdown header")
-		var env2 engine.SearchJSONResponse
-		assert.Error(t, json.Unmarshal([]byte(body), &env2), "text path must not emit JSON")
-	})
-}
-
-// TestPracticeFanOut_NoSilentZeroWhenMatchesExist asserts that with >=1 practice
-// graph returning hits, a SEARCH does not return a false zero — including when
-// some enumerated graphs match nothing.
-func TestPracticeFanOut_NoSilentZeroWhenMatchesExist(t *testing.T) {
-	t.Run("SEARCH renders seeded hits when one graph is empty", func(t *testing.T) {
-		gc := newFanOutHarness(t, []string{"go", "rust"},
-			practiceNode("p:go", "GoPattern", "go content"),
-		)
-		mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
-			"go":   {{ID: "p:go", Score: 0.81}},
-			"rust": {}, // rust has no match — go still surfaces (no silent zero).
-		})
-		deps := &interceptDeps{gc: gc, segMgr: mgr}
-		handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"graph": "practice", "query": "x"}))
-		require.True(t, handled)
-		body := textBodyTools(out)
-		assert.Contains(t, body, "Searched 2 practice graphs (go, rust)")
-		assert.Contains(t, body, "### 1. GoPattern [high] (concurrency) — go")
-	})
-
-	t.Run("SEARCH omitted language fans out", func(t *testing.T) {
-		gc := newFanOutHarness(t, []string{"go"},
-			practiceNode("p:go", "GoPattern", "go content"),
-		)
-		mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
-			"go": {{ID: "p:go", Score: 0.81}},
-		})
-		deps := &interceptDeps{gc: gc, segMgr: mgr}
-		// No "language" key → omitted-language SEARCH must fan out (not silent-0).
-		handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"graph": "practice", "query": "x"}))
-		require.True(t, handled)
-		body := textBodyTools(out)
-		assert.Equal(t, []string{"go"}, mgr.searchedNames())
-		assert.Contains(t, body, "Searched 1 practice graphs (go)")
-		assert.Contains(t, body, "GoPattern")
-	})
-}
-
-// TestPracticeFanOut_SearchLanguageScopes pins the SEARCH tool's contract for
-// `language`, which this file has now stated three different ways as the surface
-// changed. The history is worth keeping because each version was correct at the
-// time and the last one is the reason this test exists at all:
-//
-//	(1) ACCEPTED AND DROPPED — a caller asking for one language got results
-//	    silently spanning all of them, with no signal the scoping had not applied.
-//	(2) REFUSED as an unknown parameter — honest, because the tool declared no
-//	    `language` and had no single-graph branch to route it to. That refusal
-//	    surface is GONE: the schema now declares the param
-//	    (firstclass_schema.go, SearchToolDef) and the practice arm now branches on
-//	    it (intercept_search_reducible_graph.go, `case "practice"`).
-//	(3) SCOPED — what this test now asserts.
-//
-// The subtest below is the SAME fixture as before, re-pointed at the new
-// behaviour: two seeded graphs, so "scoped to one" is observable as "the other
-// was never searched" rather than merely "no error".
-//
-// The QUERY tool's empty-language browse is unaffected and stays below.
-func TestPracticeFanOut_SearchLanguageScopes(t *testing.T) {
-	t.Run("SEARCH tool language:go searches ONLY go", func(t *testing.T) {
-		gc := newFanOutHarness(t, []string{"go", "python"},
-			practiceNode("p:go", "GoWorkerPool", "bounded goroutines"),
-			practiceNode("p:py", "PyThreadPool", "thread pool executor"),
-		)
-		mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
-			"go":     {{ID: "p:go", Score: 0.90}},
-			"python": {{ID: "p:py", Score: 0.70}},
-		})
-		deps := &interceptDeps{gc: gc, segMgr: mgr}
-		handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"graph": "practice", "language": "go", "query": "pool"}))
-		require.True(t, handled)
-		require.False(t, out.IsError, "language is declared and routed, no longer refused: %s", textBodyTools(out))
-		// THE DISCRIMINATING ASSERTION, and the reason the fixture seeds two
-		// graphs: a schema-only change would accept the param and still fan out,
-		// turning the old loud refusal into a SILENT DROP — strictly worse. The
-		// searched-name list is what tells those two apart.
-		assert.Equal(t, []string{"go"}, mgr.searchedNames(),
-			"a named language searches THAT graph and no other")
-		assert.NotContains(t, textBodyTools(out), "PyThreadPool", "and returns no hit from the graph it did not search")
-	})
-
-	t.Run("QUERY tool empty language stays browse", func(t *testing.T) {
-		// Empty language on the QUERY tool is the list-graphs BROWSE — it must NOT
-		// fan out into a search. listPracticeGraphs enumerates + renders the browse.
-		gc := newFanOutHarness(t, []string{"go", "python"})
-		deps := &interceptDeps{gc: gc, segMgr: newFanOutSegmentSearcher(nil)}
-		res := gatedRoutePractice(opCtx(), deps, gc, queryArgs{Graph: "practice"})
-		body := textBodyTools(res)
-		assert.Contains(t, body, "Practice graphs (2)")
-		assert.NotContains(t, body, "Searched", "empty-language QUERY is browse, not a fan-out search")
-	})
-}
-
-// TestPracticeFanOut_NoLanguageSpansLanguageGraphs is the ticket acceptance
-// criterion: a SEARCH with NO language key returns hits spanning >=2 language
-// graphs (go AND python), each attributed to its source graph.
-func TestPracticeFanOut_NoLanguageSpansLanguageGraphs(t *testing.T) {
-	gc := newFanOutHarness(t, []string{"go", "python"},
+// TestPracticeSearch_LegacyLanguageStillScopes is requirement 5 on the search
+// arms: the eight pre-singleton graphs stay readable through `language`, and a
+// named one is searched INSTEAD OF the combined graph rather than beside it.
+func TestPracticeSearch_LegacyLanguageStillScopes(t *testing.T) {
+	gc := newFanOutHarness(t, []string{"default", "go", "python"},
 		practiceNode("p:go", "GoWorkerPool", "bounded goroutines"),
-		practiceNode("p:py", "PyThreadPool", "thread pool executor"),
 	)
 	mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
-		"go":     {{ID: "p:go", Score: 0.90}},
-		"python": {{ID: "p:py", Score: 0.70}},
+		"default": {{ID: "p:combined", Score: 0.99}},
+		"go":      {{ID: "p:go", Score: 0.90}},
+		"python":  {{ID: "p:py", Score: 0.80}},
 	})
 	deps := &interceptDeps{gc: gc, segMgr: mgr}
-	// No "language" key at all — a single search fans across every language graph.
-	handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"graph": "practice", "query": "pool"}))
+	handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
+		"graph": "practice", "language": "go", "query": "pool",
+	}))
 	require.True(t, handled)
-	require.False(t, out.IsError, "result is not an error: %s", textBodyTools(out))
-	body := textBodyTools(out)
-	// Both language graphs were searched and both hits surfaced, each tagged.
-	assert.Equal(t, []string{"go", "python"}, mgr.searchedNames())
-	assert.Contains(t, body, "Searched 2 practice graphs (go, python)")
-	assert.Contains(t, body, "### 1. GoWorkerPool [high] (concurrency) — go")
-	assert.Contains(t, body, "### 2. PyThreadPool [high] (concurrency) — python")
-	assert.Less(t, strings.Index(body, "GoWorkerPool"), strings.Index(body, "PyThreadPool"))
+	require.False(t, out.IsError, "the legacy read selector is accepted: %s", textBodyTools(out))
+	assert.Equal(t, []string{"go"}, mgr.searchedNames(),
+		"a named language reads THAT pre-singleton graph and no other, including not the combined one")
+	assert.Contains(t, textBodyTools(out), "GoWorkerPool")
 }
 
-// TestSearchPractice_LanguageScopesToOneGraph (FAILS-WHEN-ABSENT) asserts BOTH
-// halves of the gap, because either alone is a defect.
-//
-// A SCHEMA-ONLY change would turn a loud refusal into a SILENT DROP — the caller
-// asks for one language, the tool accepts the param and fans out anyway. A
-// ROUTING-ONLY change is unreachable: the undeclared-param sweep refuses the call
-// before the arm runs. Leg 2 is what catches the first; leg 1 the second.
-func TestSearchPractice_LanguageScopesToOneGraph(t *testing.T) {
-	newDeps := func(t *testing.T) (*interceptDeps, *fanOutSegmentSearcher) {
-		t.Helper()
-		gc := newFanOutHarness(t, []string{"go", "python"},
+// TestPracticeSearch_JSONAndText covers the json contract for the one practice
+// composer that survives. The fan-out half of this test went with the fan-out.
+func TestPracticeSearch_JSONAndText(t *testing.T) {
+	seed := func() (*graphclient.GraphClient, *fanOutSegmentSearcher) {
+		gc := newFanOutHarness(t, []string{"default"},
 			practiceNode("p:go", "GoWorkerPool", "bounded goroutines"),
-			practiceNode("p:py", "PyThreadPool", "thread pool executor"),
 		)
 		mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
-			"go":     {{ID: "p:go", Score: 0.90}},
-			"python": {{ID: "p:py", Score: 0.70}},
+			"default": {{ID: "p:go", Score: 0.90}},
 		})
-		return &interceptDeps{gc: gc, segMgr: mgr}, mgr
+		return gc, mgr
 	}
 
-	t.Run("SCHEMA: language is no longer refused as unknown", func(t *testing.T) {
-		deps, _ := newDeps(t)
-		handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
-			"graph": "practice", "language": "go", "query": "pool",
-		}))
-		require.True(t, handled)
-		assert.False(t, out.IsError, "the param is declared on SearchToolDef: %s", textBodyTools(out))
-		assert.NotContains(t, textBodyTools(out), `unknown parameter "language"`)
-	})
+	gc, mgr := seed()
+	deps := &interceptDeps{gc: gc, segMgr: mgr}
+	jsonRes := gatedRoutePractice(opCtx(), deps, gc, queryArgs{Graph: "practice", Text: "pool", Format: "json"})
+	var env engine.SearchJSONResponse
+	require.NoError(t, json.Unmarshal([]byte(textBodyTools(jsonRes)), &env), "json branch must parse")
+	require.Equal(t, 1, env.Total)
+	require.Len(t, env.Results, 1)
+	assert.Equal(t, "p:go", env.Results[0].ID)
+	assert.Equal(t, "GoWorkerPool", env.Results[0].SymbolName)
 
-	t.Run("ROUTING: the supplied language scopes the search to that graph", func(t *testing.T) {
-		// The leg that catches a schema-only change. Asserted on WHICH GRAPHS WERE
-		// SEARCHED, not on the rendered hits: a fan-out would also surface the go
-		// hit, so a result-only assertion is green against the silent drop.
-		deps, mgr := newDeps(t)
-		_, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
-			"graph": "practice", "language": "go", "query": "pool",
-		}))
-		require.False(t, out.IsError, "%s", textBodyTools(out))
-		assert.Equal(t, []string{"go"}, mgr.searchedNames(), "exactly the named graph was searched")
-	})
-
-	t.Run("DEFAULT PRESERVED: no language still fans across every loaded graph", func(t *testing.T) {
-		// Both-directions cover, and it protects the documented silent-zero defense:
-		// the fan-out is what stops mgr.Search(GraphPractice,"all",…) returning a
-		// confident empty result.
-		deps, mgr := newDeps(t)
-		_, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
-			"graph": "practice", "query": "pool",
-		}))
-		require.False(t, out.IsError, "%s", textBodyTools(out))
-		assert.Equal(t, []string{"go", "python"}, mgr.searchedNames(), "an absent language fans out")
-	})
-
-	t.Run("VOCABULARY: language all behaves as the fan-out, matching query", func(t *testing.T) {
-		// The two tools must agree on what the word means, or a caller who learned
-		// the spelling on one gets a different operation on the other.
-		deps, mgr := newDeps(t)
-		_, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
-			"graph": "practice", "language": "all", "query": "pool",
-		}))
-		require.False(t, out.IsError, "%s", textBodyTools(out))
-		assert.Equal(t, []string{"go", "python"}, mgr.searchedNames(), `"all" IS the fan-out`)
-	})
+	gc2, mgr2 := seed()
+	deps2 := &interceptDeps{gc: gc2, segMgr: mgr2}
+	textRes := gatedRoutePractice(opCtx(), deps2, gc2, queryArgs{Graph: "practice", Text: "pool"})
+	body := textBodyTools(textRes)
+	assert.Contains(t, body, "GoWorkerPool", "text path renders RenderPracticeResults markdown")
+	var env2 engine.SearchJSONResponse
+	assert.Error(t, json.Unmarshal([]byte(body), &env2), "text path must not emit JSON")
 }

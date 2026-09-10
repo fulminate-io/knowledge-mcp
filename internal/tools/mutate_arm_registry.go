@@ -135,6 +135,7 @@ var createArmSpecs = map[armID]armSpec{
 			"status", "content", "metadata",
 		),
 		rejected: paramSet(
+			"source_hub",
 			"repo", "account",
 			"supports",
 			"id", "ids", "name", "expand_to_descendants", "source",
@@ -168,6 +169,7 @@ var createArmSpecs = map[armID]armSpec{
 			"content", "status", "metadata", "supports",
 		),
 		rejected: paramSet(
+			"source_hub",
 			"repo", "account",
 			"id", "ids", "expand_to_descendants", "scope", "enforcement", "step_id",
 			"command", "criterion_type", "from", "to", "relationship", "conclusion", "findings",
@@ -190,6 +192,7 @@ var createArmSpecs = map[armID]armSpec{
 			"description", "status", "metadata",
 		),
 		rejected: paramSet(
+			"source_hub",
 			"repo", "account",
 			"supports",
 			"id", "ids", "expand_to_descendants", "source", "evidence",
@@ -213,6 +216,7 @@ var createArmSpecs = map[armID]armSpec{
 			"ticket_id", "session", "links", "content", "status", "metadata",
 		),
 		rejected: paramSet(
+			"source_hub",
 			"repo", "account",
 			"supports",
 			"id", "ids", "expand_to_descendants", "source", "evidence",
@@ -248,6 +252,7 @@ var createArmSpecs = map[armID]armSpec{
 			"ticket_id", "session", "links",
 		),
 		rejected: paramSet(
+			"source_hub",
 			"repo", "account",
 			"supports",
 			"ids", "expand_to_descendants", "evidence", "question_id", "concludes", "scope",
@@ -278,6 +283,7 @@ var createArmSpecs = map[armID]armSpec{
 			"metadata", "source", "graph", "format",
 		),
 		rejected: paramSet(
+			"source_hub",
 			"repo", "account",
 			"supports",
 			"ids", "expand_to_descendants", "evidence", "question_id", "concludes", "scope",
@@ -306,6 +312,7 @@ var createArmSpecs = map[armID]armSpec{
 		handler:   "engine compileMutateCreate",
 		consumed:  paramSet("operation", "nodes", "edges", "graph", "format"),
 		rejected: paramSet(
+			"source_hub",
 			"repo", "account",
 			"supports",
 			"name",
@@ -337,6 +344,7 @@ var createArmSpecs = map[armID]armSpec{
 			"metadata", "source", "graph", "format",
 		),
 		rejected: paramSet(
+			"source_hub",
 			"repo", "account",
 			"supports",
 			"ids", "expand_to_descendants", "evidence", "question_id", "concludes", "scope",

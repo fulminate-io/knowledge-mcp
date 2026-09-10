@@ -14,7 +14,6 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
 	"github.com/fulminate-io/knowledge-mcp/internal/collectorwire"
-	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 )
 
 // manifest_shadow.go — the shadow-mode divergence split (its class vocabulary and
@@ -28,18 +27,18 @@ import (
 // everything is not a divergence.
 func shadowDivergences(d collectDiff) map[divergenceClass][]string {
 	out := map[divergenceClass][]string{}
-	for path, h := range d.presentFiles {
-		prior, inManifest := d.manifestFiles[path]
+	for key, h := range d.presentKeys {
+		prior, inManifest := d.manifestKeys[key]
 		switch {
 		case inManifest && prior != h:
-			out[divergenceHashMismatch] = append(out[divergenceHashMismatch], path)
-		case !inManifest && len(d.manifestFiles) > 0:
-			out[divergenceDiscoveredOnly] = append(out[divergenceDiscoveredOnly], path)
+			out[divergenceHashMismatch] = append(out[divergenceHashMismatch], key)
+		case !inManifest && len(d.manifestKeys) > 0:
+			out[divergenceDiscoveredOnly] = append(out[divergenceDiscoveredOnly], key)
 		}
 	}
-	for path := range d.manifestFiles {
-		if _, ok := d.presentFiles[path]; !ok {
-			out[divergenceManifestOnly] = append(out[divergenceManifestOnly], path)
+	for key := range d.manifestKeys {
+		if _, ok := d.presentKeys[key]; !ok {
+			out[divergenceManifestOnly] = append(out[divergenceManifestOnly], key)
 		}
 	}
 	for _, paths := range out {
@@ -61,22 +60,34 @@ type collectDiffOutcome struct {
 	baselines []baselineCommit
 	// suppressManifestEcho withholds the served manifest identity from both the
 	// chunks and the Finalize, so the server declines nothing and every uploaded
-	// file genuinely re-lands. Set ONLY by fallbackCollectorVersionChange.
+	// key genuinely re-lands. Set for EVERY collect whose plan is uploadAll — see
+	// fallbackReason's doc for why that is the right key and what echoing on a
+	// full upload destroyed.
 	suppressManifestEcho bool
 }
 
 // uploadDecision is what the rollout mode and the diff jointly decide. It is a
 // value rather than a branch so a test can assert the decision directly.
 type uploadDecision struct {
-	// uploadAll is true when every file goes on the wire regardless of the diff.
+	// kind is the unit `changed` and `deletions` are keyed on. It rides the
+	// decision rather than being re-derived at each consumer because the upload
+	// filter, the chunk's echoed entries and the Finalize carrier all have to
+	// agree with the comparison that produced these two lists — and a consumer
+	// that re-derived the family gate for itself is a second place for the answer
+	// to be decided.
+	kind diffKeyKind
+	// uploadAll is true when every row goes on the wire regardless of the diff.
 	uploadAll bool
-	// changed is the file set a diff upload sends; empty when uploadAll.
+	// changed is the key set a diff upload sends; empty when uploadAll.
 	changed []string
 	// deletions is what rides the deletion carrier; ALWAYS EMPTY unless the diff
-	// governs.
+	// governs. kind decides WHICH carrier: deleted_files for the file key,
+	// deleted_node_ids for the node key.
 	deletions []string
-	// keepFileless is false only when diff mode is ON and the fileless payload's
-	// signature matches the last DONE-confirmed upload.
+	// keepFileless is false only when a FILE-KEYED diff is ON and the fileless
+	// payload's signature matches the last DONE-confirmed upload. A node-keyed
+	// collect has no fileless class at all — every node is its own key — so this
+	// stays true there and the filter's fileless arm is unreachable.
 	keepFileless bool
 }
 
@@ -85,11 +96,20 @@ type uploadDecision struct {
 // SHADOW COMPUTES EVERYTHING AND SENDS NOTHING: it uploads the full set exactly
 // as today and withholds the deletion set entirely, so the DEGRADATION LANE
 // can prove diff==full on real data before any destructive path arms.
+//
+// "SENDS NOTHING" IS ABOUT THE DELETION SET AND NOT ABOUT THE ROWS. uploadAll
+// means every row goes on the wire, and the caller withholds the manifest echo
+// for exactly that reason, so those rows LAND rather than being declined key by
+// key. Reading this line as "shadow changes nothing on the server" is the
+// mistake that let a full upload be declined wholesale while its unchanged keys
+// were then derived as deletions.
 func decideUpload(mode diffMode, d collectDiff, deletions []string, filelessChanged bool) uploadDecision {
 	if mode != diffModeOn {
-		return uploadDecision{uploadAll: true, keepFileless: true}
+		return uploadDecision{kind: d.kind, uploadAll: true, keepFileless: true}
 	}
-	return uploadDecision{changed: d.changedFiles, deletions: deletions, keepFileless: filelessChanged}
+	return uploadDecision{
+		kind: d.kind, changed: d.changedKeys, deletions: deletions, keepFileless: filelessChanged,
+	}
 }
 
 // applyCollectDiff runs the client half of one collect: evaluate the fail-closed
@@ -109,7 +129,7 @@ func decideUpload(mode diffMode, d collectDiff, deletions []string, filelessChan
 func (s *UploadSink) applyCollectDiff(
 	result *collectorwire.CollectResult, mode diffMode, lever diffLever,
 	present map[string][32]byte, resp *knowledgev1.CollectManifestResponse,
-	outcome *collectDiffOutcome,
+	kind diffKeyKind, outcome *collectDiffOutcome,
 ) (diffMode, uploadDecision, error) {
 	// THE SEED RUNS FIRST, BEFORE ANY COMPARISON READS THE STORE. A branch that has
 	// never been collected on this machine holds none of the three baselines, and
@@ -157,28 +177,43 @@ func (s *UploadSink) applyCollectDiff(
 	// split one producer-regression check across two frames.
 	if result.CollectorOutputVersion == 0 {
 		return "", uploadDecision{}, fmt.Errorf(
-			"remote sink: unstamped collector output version on a code collect: " +
-				"the collector did not stamp CollectResult.CollectorOutputVersion")
+			"remote sink: unstamped collector output version on a %s collect of graph %q: "+
+				"the collector did not stamp CollectResult.CollectorOutputVersion",
+			result.GraphType, result.GraphName)
 	}
 	collectorSig := strconv.FormatUint(uint64(result.CollectorOutputVersion), 10)
 	collectorChanged, err := defaultDiscoveryStore.changed(collectorVersionKey(result), collectorSig)
 	if err != nil {
 		return "", uploadDecision{}, err
 	}
-	// THE FILELESS SIGNATURE IS THE THIRD BASELINE, and it is computed HERE rather
-	// than at the commit point because narrowAndGroupRows REASSIGNS result.Nodes to
-	// the filtered subset before commitCollectBaselines runs. Digesting the narrowed
-	// set would record a value the next collect can never match — the identical trap
-	// baselineCommit's own doc records for discoverySignature.
-	filelessSig := filelessSignature(result)
-	filelessChanged, ferr := defaultDiscoveryStore.changed(filelessKey(result), filelessSig)
-	if ferr != nil {
-		return "", uploadDecision{}, ferr
-	}
 	outcome.baselines = []baselineCommit{
 		{key: discoveryKey(result), sig: discoverySig},
 		{key: collectorVersionKey(result), sig: collectorSig},
-		{key: filelessKey(result), sig: filelessSig},
+	}
+	// THE FILELESS SIGNATURE IS THE THIRD BASELINE OF A FILE-KEYED COLLECT, and it
+	// is computed HERE rather than at the commit point because narrowAndGroupRows
+	// REASSIGNS result.Nodes to the filtered subset before commitCollectBaselines
+	// runs. Digesting the narrowed set would record a value the next collect can
+	// never match — the identical trap baselineCommit's own doc records for
+	// discoverySignature.
+	//
+	// A NODE-KEYED COLLECT HAS NO FILELESS CLASS AND TAKES NO SUCH BASELINE. The
+	// fileless set exists because a node belonging to no FILE is outside a
+	// file-keyed manifest by construction and nothing can ever mark it changed;
+	// under the node key every node IS a key, so the class is empty and the digest
+	// would cover the WHOLE graph. Taking it anyway would be actively harmful: one
+	// changed node moves the whole-set digest, keepFileless flips, and the arm that
+	// exists to spare an undiffable set would re-upload every node of a graph the
+	// diff had just narrowed to one.
+	filelessChanged := true
+	if kind == diffKeyFile {
+		filelessSig := filelessSignature(result)
+		changed, ferr := defaultDiscoveryStore.changed(filelessKey(result), filelessSig)
+		if ferr != nil {
+			return "", uploadDecision{}, ferr
+		}
+		filelessChanged = changed
+		outcome.baselines = append(outcome.baselines, baselineCommit{key: filelessKey(result), sig: filelessSig})
 	}
 	if reason, fell := evaluateManifestFallback(manifestState{
 		mode:                    mode,
@@ -187,14 +222,6 @@ func (s *UploadSink) applyCollectDiff(
 		discoveryChanged:        discoveryChanged,
 		collectorVersionChanged: collectorChanged,
 	}); fell {
-		// SUPPRESSION IS SCOPED TO THE NEW TRIGGER ALONE. The other three degrade to
-		// a full UPLOAD, which the server still declines file by file — correct for
-		// them, because their rows genuinely match what it holds. This one fires
-		// precisely because the rows DIFFER in ways no hash comparison can see, so
-		// the decline must be disabled or the forced upload accomplishes nothing.
-		if reason == fallbackCollectorVersionChange {
-			outcome.suppressManifestEcho = true
-		}
 		logManifestFallback(reason, result.GraphName, result.CurrentBranch)
 		// THREE TRIGGERS DEGRADE TO A FULL COLLECT; THE KILL SWITCH DEGRADES TO
 		// SHADOW. Both upload everything and send no deletions, so the safety is
@@ -208,8 +235,21 @@ func (s *UploadSink) applyCollectDiff(
 			mode = diffModeShadow
 		}
 	}
-	d := computeCollectDiff(resp, present)
-	decision := decideUpload(mode, d, deletionSet(d.manifestFiles, d.changedFiles, d.unchangedFiles), filelessChanged)
+	d := computeCollectDiff(resp, present, kind)
+	decision := decideUpload(
+		mode, d, deletionSet(d.manifestKeys, d.changedKeys, d.unchangedKeys, kind), filelessChanged)
+	// THE ECHO IS THE DIFF'S CREDENTIAL, so it is withheld from every collect that
+	// is NOT running the diff. Keying it on the upload plan rather than on the
+	// trigger that produced the plan is deliberate: the plan is the fact the
+	// server's decline actually interacts with, and it is reached with no trigger
+	// at all by a deliberate shadow lever. See fallbackReason's doc for the rule
+	// and for the data loss the trigger-scoped form shipped.
+	//
+	// IT IS SET AFTER decideUpload AND NOT INSIDE THE FALLBACK ARM, which is the
+	// ordering that makes the sentence above checkable: there is exactly one
+	// producer of uploadAll, and this line reads it rather than re-deriving the
+	// conditions that set it.
+	outcome.suppressManifestEcho = decision.uploadAll
 	if mode != diffModeShadow {
 		return mode, decision, nil
 	}
@@ -253,141 +293,6 @@ func fetchManifestWith(
 		return nil, err
 	}
 	return resp.Msg, nil
-}
-
-// filterToChangedFiles keeps only the nodes and edges the diff says must go on
-// the wire: the changed files' rows, plus every FILELESS node when keepFileless
-// says so.
-//
-// FILELESS HAS NO PER-FILE DECLINE BASIS. A node belonging to no file — the
-// hierarchy package nodes, the repo root, the language hub — is outside the
-// manifest by construction, so it is never diffed and nothing there would ever
-// mark it changed. keepFileless carries the caller's WHOLE-SET answer instead: it
-// is false only when diff mode is ON and the fileless payload's signature matches
-// the last DONE-confirmed upload, and true in every other lane.
-//
-// THE SET IS ALL-OR-NOTHING, and it must be. Uploading fileless NODES without
-// their EDGES is the node-present/edge-absent shape that makes the server's
-// residual reclaim delete that source's ENTIRE outbound set — every package hub's
-// CONTAINS edges. That safety is STRUCTURAL here rather than a convention: edges
-// ride on keptIDs[e.FromID], so a dropped fileless node takes its edges with it.
-// Do NOT add a second edge predicate.
-//
-// EDGES FOLLOW THEIR FROM NODE, never their reference site. The owning file of
-// an edge is the file_path of its FROM node, so an edge whose source survives
-// the filter rides with it; one whose source was filtered out would have landed
-// on the wrong file's upload and left its true owner's stale edge uncleared.
-// nodeHashes is the per-row digest array index-aligned with nodes, narrowed by
-// the SAME predicate and returned alongside the kept nodes. It travels through
-// this filter rather than being recomputed after it because the wire contract
-// for node_contribution_hashes is index alignment with the chunked node slice —
-// re-deriving the surviving subset from a second copy of this predicate is the
-// drift this parameter exists to prevent. A nil array narrows to nil, so callers
-// with no digests to carry are unaffected.
-func filterToChangedFiles(
-	nodes []*knowledgev1.Node, nodeHashes [][32]byte, edges []kgwire.BatchEdge, changed []string, keepFileless bool,
-) (
-	[]*knowledgev1.Node, [][32]byte, []kgwire.BatchEdge, error,
-) {
-	// A MISALIGNED DIGEST ARRAY IS AN ERROR, NEVER A TRUNCATION. Narrowing to
-	// whichever array is shorter would hand the chunker digests belonging to other
-	// nodes, and the server would then decline files against hashes that were
-	// never theirs. Absent (nil) is the one legitimate non-matching length.
-	if nodeHashes != nil && len(nodeHashes) != len(nodes) {
-		return nil, nil, nil, fmt.Errorf(
-			"remote sink: diff filter: %d per-row node digests for %d nodes — the array is index-aligned "+
-				"with the node slice by contract, so a differing length means the two came from different passes",
-			len(nodeHashes), len(nodes))
-	}
-	keep := make(map[string]bool, len(changed))
-	for _, p := range changed {
-		keep[p] = true
-	}
-	keptIDs := make(map[string]bool, len(nodes))
-	outNodes := make([]*knowledgev1.Node, 0, len(nodes))
-	var outHashes [][32]byte
-	// Re-slicing to len(nodes) after the equality check above ties the digest
-	// array's length to the node loop's bound in the code itself, rather than only
-	// in the guard, so indexing it by the node index is locally provable.
-	var alignedHashes [][32]byte
-	if nodeHashes != nil {
-		alignedHashes = nodeHashes[:len(nodes):len(nodes)]
-		outHashes = make([][32]byte, 0, len(nodes))
-	}
-	for i, n := range nodes {
-		path := n.GetFilePath()
-		if path == "" && !keepFileless {
-			continue
-		}
-		if path != "" && !keep[path] {
-			continue
-		}
-		keptIDs[n.GetId()] = true
-		outNodes = append(outNodes, n)
-		if alignedHashes != nil {
-			outHashes = append(outHashes, alignedHashes[i])
-		}
-	}
-	outEdges := make([]kgwire.BatchEdge, 0, len(edges))
-	for i, e := range edges {
-		// AN EDGE THIS FILTER CANNOT PLACE IS AN ERROR, NEVER A SILENT DROP.
-		// Placement resolves an edge's owning file through its FROM NODE ID, so an
-		// INDEX-ADDRESSED edge — FromIdx/ToIdx pointing into the node slice, with no
-		// FromID — has nothing to resolve and would simply vanish here: no error, no
-		// log, one lost link. Collector edges are ID-addressed by contract
-		// (parser.ToBatchEdges always emits -1/-1 with both IDs, pinned by
-		// TestToBatchEdges_AlwaysIDAddressed), so reaching this arm means that
-		// contract broke upstream. Dropping information is not an available
-		// response to that.
-		if e.FromID == "" {
-			return nil, nil, nil, fmt.Errorf(
-				"remote sink: diff filter: edge %d of %d is INDEX-ADDRESSED (FromIdx=%d, ToIdx=%d, Type=%q, ToID=%q) "+
-					"and carries no FromID, so its owning file cannot be resolved and the diff would drop it silently; "+
-					"collector edges must be ID-ADDRESSED (FromIdx and ToIdx == -1, with FromID and ToID both set)",
-				i+1, len(edges), e.FromIdx, e.ToIdx, e.Type, e.ToID)
-		}
-		if keptIDs[e.FromID] {
-			outEdges = append(outEdges, e)
-		}
-	}
-	return outNodes, outHashes, outEdges, nil
-}
-
-// narrowAndGroupRows applies the diff filter and then the file grouping to a
-// collect result in place, returning the per-row node digests that match
-// result.Nodes afterwards.
-//
-// THE TWO STEPS SHARE ONE HELPER BECAUSE THEY ARE ONE OBLIGATION: each transforms
-// the node slice — one narrows it, the other permutes it — and the per-row digest
-// array must undergo the SAME transformation, because the chunk builder slices
-// that array by position. A caller that ran one of them without carrying the
-// digests through would store every node under a neighbour's digest, and the
-// server's length check cannot see a permutation. Keeping both here means there
-// is exactly one place where the pair can drift apart.
-//
-// THE GROUPING RUNS UNCONDITIONALLY, the filter only under a narrowed decision:
-// the chunker packs whole files on every collect, diff or full, so the digests
-// must be in file-grouped order on every collect too.
-//
-// Split out of WriteResult so that function stays inside the package's length
-// ceiling, the same reason planDiffUpload and uploadChunks are separate.
-func narrowAndGroupRows(
-	result *collectorwire.CollectResult, nodeHashes [][32]byte, decision uploadDecision,
-) ([][32]byte, error) {
-	if !decision.uploadAll {
-		keptNodes, keptHashes, keptEdges, fErr := filterToChangedFiles(
-			result.Nodes, nodeHashes, result.Edges, decision.changed, decision.keepFileless)
-		if fErr != nil {
-			return nil, fErr
-		}
-		result.Nodes, result.Edges, nodeHashes = keptNodes, keptEdges, keptHashes
-	}
-	groupedNodes, groupedHashes, gErr := groupNodesAndHashesByFile(result.Nodes, nodeHashes)
-	if gErr != nil {
-		return nil, gErr
-	}
-	result.Nodes = groupedNodes
-	return groupedHashes, nil
 }
 
 // divergenceClass names one way a shadow-mode run can disagree with the server.

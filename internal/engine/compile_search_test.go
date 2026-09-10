@@ -123,14 +123,11 @@ func TestCompileSearch_RerankTriState(t *testing.T) {
 }
 
 func TestCompileSearch_OtherReducibleGraphs(t *testing.T) {
-	for _, g := range []string{"practice", "cloud", "cicd", "linkage", "web", "pdf"} {
+	for _, g := range []string{"practice", "linkage", "web", "pdf"} {
 		t.Run(g, func(t *testing.T) {
 			args := map[string]any{"query": "x", "graph": g}
 			if g == "practice" {
 				args["language"] = "go"
-			}
-			if g == "cloud" || g == "cicd" {
-				args["account"] = "acct"
 			}
 			raw, err := json.Marshal(args)
 			require.NoError(t, err)

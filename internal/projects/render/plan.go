@@ -17,9 +17,9 @@ import (
 )
 
 // assemblePlan renders a NodePlan: header + subtree walk + Linked
-// Research + Language patterns. Mirrors the server-side shape at
-// cmd/knowledge-server/tools/tools_assemble.go:164 (renamed from
-// assembleProject — the server used the legacy name).
+// Research + Language patterns. Mirrors the shape of the retired
+// server-side assemble tool, which called this renderer by the legacy
+// name assembleProject.
 //
 // Ported as a free function with store reads swapped for wire-shape
 // calls. The tree rides AssembleSubtree's two batched wire calls rather
@@ -82,7 +82,7 @@ func assemblePlan(ctx context.Context, gc GraphCaller, node *knowledgev1.Node, s
 			languagePatterns = append(languagePatterns, lp)
 		}
 	}
-	renderLanguagePatternsSection(node, languagePatterns, &sb)
+	renderStyleRuleInstruction(&sb, renderLanguagePatternsSection(node, languagePatterns, &sb))
 	renderSectionIndex(&sb, childIndex[node.Id], annotations)
 	// The section BODIES ride only when the caller asked for a range. Without one
 	// the assemble stays the index-plus-tree read it has always been, which is

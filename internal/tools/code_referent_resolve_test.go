@@ -72,7 +72,6 @@ func TestResolveCodeReferents_CodeOnly(t *testing.T) {
 	fc := &fakeGraphCaller{
 		listGraphsResult: listGraphsResultJSON(t,
 			[2]string{"code", repo},
-			[2]string{"cloud", "acct-1"},
 			[2]string{"practice", "go"},
 		),
 		queryResponsesByGraphName: map[graphKey]map[string]kgtools.ToolResult{
@@ -92,7 +91,7 @@ func TestResolveCodeReferents_CodeOnly(t *testing.T) {
 			continue
 		}
 		g := req.GetTarget().GetGraph()
-		assert.NotEqual(t, "cloud", g, "no by-id fetch may target the cloud graph")
+		assert.NotEqual(t, "practice", g, "no by-id fetch may target the practice graph")
 		assert.NotEqual(t, "practice", g, "no by-id fetch may target the practice graph")
 	}
 }

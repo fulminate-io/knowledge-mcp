@@ -41,7 +41,21 @@ func twoSectionView() *sourceView {
 	}
 }
 
-func TestInterpret_SelectEmit_StableIDsAndLineage(t *testing.T) {
+// TestInterpret_SelectEmit_StableIDsAndNoRawGraphEdge is requirement 3's
+// EMITTER-side observation, repointed from the test that used to assert the
+// translated-from edge this emitter no longer builds.
+//
+// THE SOURCE-ENDPOINT ASSERTION IS THE LOAD-BEARING HALF, not the type
+// assertion. A restored provenance edge would carry the translated-from type,
+// but so would any other cross-graph edge somebody added later under a different
+// name, and what requirement 3 forbids is an edge INTO THE RAW GRAPH whatever it
+// is called. So every edge the run produces is checked on both endpoints against
+// the source view's own node ids, and the type check rides alongside it.
+//
+// ITS KNOWN-POSITIVE IS IN THE SAME RUN: the emitted NODES are asserted non-empty
+// and id-deterministic first, so the empty edge list below is a run that really
+// emitted rather than a run that did nothing.
+func TestInterpret_SelectEmit_StableIDsAndNoRawGraphEdge(t *testing.T) {
 	sv := twoSectionView()
 	body := `select section
 emit pattern {
@@ -56,7 +70,6 @@ emit pattern {
 	require.NoError(t, err)
 
 	require.Len(t, result.Nodes, 2, "one pattern per section row")
-	require.Len(t, result.Lineage, 2, "one translated-from edge per emit")
 	assert.Equal(t, 2, result.Stats.NodesEmitted)
 
 	// StableID is deterministic over (target, slug, type, name).
@@ -69,12 +82,21 @@ emit pattern {
 	}
 	assert.True(t, got[wantS1], "emitted node id must equal the StableID for the row")
 
-	// Each lineage edge is a translated-from edge pointing target→source with
-	// Evidence carrying the slug.
-	for _, e := range result.Lineage {
-		assert.Equal(t, kgtypes.EdgeTranslatedFrom, e.Type)
-		assert.Equal(t, slug, SourceFromEvidence(e.Evidence))
-		assert.True(t, e.ToID == "s1" || e.ToID == "s2", "lineage points back at a source node")
+	// REQUIREMENT 3: an emit-only body produces NO edge at all, and in particular
+	// none pointing at a raw source row. The emitter used to append one
+	// translated-from edge per emitted node; it builds none now, so there is
+	// nothing for a downstream filter to strip and nothing a landing could ship
+	// by accident.
+	sourceIDs := map[string]bool{"s1": true, "s2": true}
+	assert.Empty(t, result.Edges,
+		"an emit-only body emits no edges: link rules are the only thing that produces one")
+	for _, e := range result.Edges {
+		assert.NotEqual(t, kgtypes.EdgeTranslatedFrom, e.Type,
+			"the cross-graph provenance edge is retired: no run builds one")
+		assert.False(t, sourceIDs[e.ToID],
+			"no emitted edge may point INTO the raw source graph, whatever its type")
+		assert.False(t, sourceIDs[e.FromID],
+			"and none may point OUT of one either")
 	}
 }
 
@@ -386,24 +408,48 @@ lookup pattern by node.metadata.nope as $q`
 }
 
 // TestInterpret_SourceRef_OverridesAnchor pins evalSourceRef → evalEmit: after a
-// source_ref, every emitted lineage edge's ToID is the overridden anchor value,
-// NOT the source row's NodeID.
+// source_ref, the anchor every emission reports is the overridden value, NOT the
+// source row's NodeID.
+//
+// IT READS THE ANCHOR OFF THE EXTRACT ROW because that is now the only place the
+// anchor is observable. It used to be read off the translated-from edge's ToID;
+// that edge is retired, and a mechanism whose last observer retires with its
+// carrier is a mechanism nothing watches. The run is therefore an EXTRACT run —
+// the anchor lands on ExtractRow.SourceNodeID, which is the field the collect
+// renderer prints as `src=`.
+//
+// THE CONTROL IS THE SAME BODY WITHOUT THE source_ref, in the same test: its rows
+// must report the row NodeIDs instead. Without it, an anchor hard-wired to the
+// literal would satisfy the override assertion.
 func TestInterpret_SourceRef_OverridesAnchor(t *testing.T) {
-	sv := twoSectionView()
-	body := `select section
-source_ref "custom-anchor"
-emit pattern {
+	emitBody := `emit pattern {
     name := section.symbol_name
 }`
-	recipe := parseOrFatal(t, body)
-	result, err := Interpret(context.Background(), recipe, sv, recipeTargetSpec(), "eip", Options{})
+	overridden := parseOrFatal(t, "select section\nsource_ref \"custom-anchor\"\n"+emitBody)
+	result, err := Interpret(context.Background(), overridden, twoSectionView(),
+		recipeTargetSpec(), "eip", Options{Extract: true})
 	require.NoError(t, err)
 
-	require.Len(t, result.Lineage, 2)
-	for _, e := range result.Lineage {
-		assert.Equal(t, "custom-anchor", e.ToID,
-			"lineage anchors to the source_ref override, not the row NodeID")
+	require.NotNil(t, result.Extract)
+	require.Len(t, result.Extract.Rows, 2)
+	for _, row := range result.Extract.Rows {
+		assert.Equal(t, "custom-anchor", row.SourceNodeID,
+			"the emission anchors to the source_ref override, not the row NodeID")
 	}
+
+	plain := parseOrFatal(t, "select section\n"+emitBody)
+	base, err := Interpret(context.Background(), plain, twoSectionView(),
+		recipeTargetSpec(), "eip", Options{Extract: true})
+	require.NoError(t, err)
+
+	require.NotNil(t, base.Extract)
+	require.Len(t, base.Extract.Rows, 2)
+	anchors := map[string]bool{}
+	for _, row := range base.Extract.Rows {
+		anchors[row.SourceNodeID] = true
+	}
+	assert.Equal(t, map[string]bool{"s1": true, "s2": true}, anchors,
+		"THE CONTROL: with no source_ref the anchor is the row's own NodeID, so the override above is the rule firing")
 }
 
 // TestInterpret_GroupByRule_ExposesGroupKeys is the ONLY test that goes red if

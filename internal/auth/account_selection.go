@@ -65,11 +65,17 @@ type AccountSelection struct {
 	// transiently unreadable config does not flood the log. Mirrors
 	// AuthState.warnedOnce (state.go:47).
 	warnedOnce bool
+	// now is the clock the TTL is measured against. Nil in production, where
+	// clockNow falls through to time.Now; tests install a controllable clock
+	// via setClockForTest so a cache-window assertion is a statement about the
+	// TTL rather than about how busy the machine was. Guarded by mu.
+	now func() time.Time
 }
 
 // NewAccountSelection wires an AccountSelection against a config path and TTL.
-// A zero ttl falls back to DefaultAccountCheckTTL — tests MAY pass a smaller
-// ttl to exercise expiry without sleeping, production wiring uses the default.
+// A zero ttl falls back to DefaultAccountCheckTTL; production wiring uses the
+// default. A test that needs to cross the TTL boundary installs a clock with
+// setClockForTest and advances it, rather than shortening the ttl and sleeping.
 func NewAccountSelection(path string, ttl time.Duration) *AccountSelection {
 	if ttl <= 0 {
 		ttl = DefaultAccountCheckTTL
@@ -137,12 +143,13 @@ func (s *AccountSelection) MarkInvalid(id, reason string) {
 // moved off the rejected one. Caller must hold s.mu.
 func (s *AccountSelection) currentLocked(ctx context.Context) string {
 	_ = ctx // the config read is a local file read; ctx is accepted for symmetry with AuthState
-	if !s.lastCheck.IsZero() && time.Since(s.lastCheck) < s.ttl {
+	now := s.clockNow()
+	if !s.lastCheck.IsZero() && now.Sub(s.lastCheck) < s.ttl {
 		return s.id
 	}
 
 	id, err := config.ReadSelectedAccountID(s.path)
-	s.lastCheck = time.Now()
+	s.lastCheck = s.clockNow()
 	if err != nil {
 		// Transient: keep the prior cached value. lastCheck above bumps the
 		// TTL so an unreadable config is not re-read on every request.
@@ -158,6 +165,31 @@ func (s *AccountSelection) currentLocked(ctx context.Context) string {
 		s.invalidReason = ""
 	}
 	return s.id
+}
+
+// clockNow reads the clock the TTL is measured against: the injected one when a
+// test has installed it, wall time otherwise. Mirrors the clock seam already
+// used by graphEvictor.clockNow, PropagationLoop.clockNow and
+// CollectRuntime.clockNow. Caller must hold s.mu.
+func (s *AccountSelection) clockNow() time.Time {
+	if s.now == nil {
+		return time.Now()
+	}
+	return s.now()
+}
+
+// setClockForTest installs the clock this selection measures its TTL against.
+// TEST ONLY: production never calls it, so clockNow always sees a nil now and
+// returns wall time.
+//
+// It exists because a cache-window assertion made against the wall clock is a
+// statement about machine load, not about the TTL: a "still inside the TTL"
+// read that a busy runner delays past the TTL observes a correct refresh and
+// reports it as a defect.
+func (s *AccountSelection) setClockForTest(now func() time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.now = now
 }
 
 // warnReadFailureOnce emits a single WARN per session. Caller must hold s.mu.

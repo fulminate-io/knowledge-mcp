@@ -9,6 +9,7 @@ import (
 	"slices"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/projects/render"
@@ -26,15 +27,13 @@ var llmFailureKeys = []string{
 }
 
 // llmFailureGraphTypes are the LLM-eligible graph types swept when no graph is
-// specified. Mirrors the server resolveClearLLMFailuresTargets list: logs / web
-// / linkage never participate in the LLM pipeline so they cannot
-// accumulate failure markers.
+// specified. Mirrors the server resolveClearLLMFailuresTargets list: web and
+// linkage never participate in the LLM pipeline so they cannot accumulate
+// failure markers.
 var llmFailureGraphTypes = []string{
 	string(kgtypes.GraphKnowledge),
 	string(kgtypes.GraphCode),
 	string(kgtypes.GraphPractice),
-	string(kgtypes.GraphCloud),
-	string(kgtypes.GraphCICD),
 }
 
 // handleClientClearLLMFailures clears the two LLM-pipeline failure markers
@@ -152,7 +151,7 @@ type clearLLMFailureTarget struct {
 }
 
 // resolveClearLLMFailureTargets enumerates the graphs to clear from the
-// operator scoping, mirroring the server resolveClearLLMFailuresTargets, AND
+// operator scoping, mirroring the retired server-side target resolver, AND
 // fans out across every overlay key of each resolved base so overlay-RESIDENT
 // markers are reachable (the count path already iterates per-overlay-key —
 // reads.go). For each base it appends the base target PLUS one target per overlay
@@ -297,8 +296,8 @@ func atSplit(s string) (string, string, bool) {
 }
 
 // clearLLMFailuresInGraph issues the TWO predicate UPDATEs (one per failure
-// marker) against a single graph and returns the (summaryCleared, embedCleared)
-// affected counts plus the combined skipped total across both UPDATEs. Each
+// marker) against a single graph and returns the summary-cleared and
+// embed-cleared affected counts plus the combined skipped total across both UPDATEs. Each
 // UPDATE is an OP_EXISTS predicate write-WHERE + set_metadata empty clear; the
 // skipped total is the count of phantom markers the engine tolerated-and-skipped
 // (not_found in the write-target layer).
@@ -349,39 +348,53 @@ func execClearMarkerUpdate(ctx context.Context, ex render.Executor, tgt clearLLM
 // request-scoped composite of that one graph and consults no selector field at
 // all (tools_graph_routing.go), so base and overlay targets already resolved to
 // the same DB; emitting nil for all of them changes which bytes go on the wire
-// and nothing about which graph is written. Other graph types each carry their
-// name discriminant on a TYPE-SPECIFIC GraphSelector field (Repo for code,
-// Account for cloud/cicd, Language for practice, Name for
-// logs/web/pdf). The server-side resolver
+// and nothing about which graph is written.
+//
+// WHICH FIELD EVERY OTHER FAMILY CARRIES ITS NAME ON IS NOT DECIDED HERE ANY
+// MORE. It is graphsel.InstanceField's answer and nowhere else's, reached through
+// graphsel.GraphSelectorFor. This function used to hold its own four-arm copy of
+// that partition — Repo for code, Language for practice,
+// Name for the rest — which is the shape engine.mutateTarget's doc records as
+// having produced two production defects: a second copy of one partition,
+// updated in one place and not the others. The practice family becoming a
+// singleton is exactly the update this copy would have missed; it would have
+// gone on sending a Language the server no longer accepts on a write, and this
+// arm is on the DEFAULT clear sweep, so the first symptom would have been a
+// no-argument call erroring.
+//
+// The discriminant choice is still load-bearing — the server-side resolver
 // enforces the right field per graph type and rejects a sel.Name on a code graph
-// with "graph=code requires repo: graph selector invalid", so the discriminant
-// choice here is load-bearing.
+// with "graph=code requires repo: graph selector invalid" — which is the reason
+// to derive it rather than to restate it.
 //
 // The OVERLAY dimension (tgt.branch): for code it rides GraphSelector.Branch
-// (the server composes repo@branch and Scopes to the overlay — tools_graph_routing.go:214);
-// for every other non-knowledge type the base@overlay is composed onto the
-// type-specific name discriminant (the server Scope @-split resolves it — cloud
+// (the server composes repo@branch and Scopes to the overlay — tools_graph_routing.go);
+// for every other non-knowledge type the base@overlay is composed onto whichever
+// field the family consumes, before the derivation, so a singleton that consumes
+// none simply drops it (the server Scope @-split resolves it — cloud
 // lifecycle.go, composite_db_lifecycle.go). Empty branch == the base graph
 // (today's behavior).
 func clearTarget(tgt clearLLMFailureTarget) *knowledgev1.GraphSelector {
 	if tgt.graphType == "" || tgt.graphType == string(kgtypes.GraphKnowledge) {
 		return nil
 	}
-	sel := &knowledgev1.GraphSelector{Graph: tgt.graphType}
-	switch tgt.graphType {
-	case string(kgtypes.GraphCode):
-		// Code routes the overlay via the dedicated Branch field (repo@branch),
-		// NOT by composing onto Repo.
-		sel.Repo = tgt.name
+	gt := kgtypes.GraphType(tgt.graphType)
+	if gt == kgtypes.GraphCode {
+		// CODE IS THE ONE ARM THAT IS NOT A PARTITION LOOKUP. It routes the
+		// overlay via the dedicated Branch field (repo@branch) rather than by
+		// composing it onto the instance key, so the composed name every other
+		// family uses would be wrong here.
+		sel := graphsel.GraphSelectorFor(gt, tgt.name, false)
 		sel.Branch = tgt.branch
-	case string(kgtypes.GraphCloud), string(kgtypes.GraphCICD):
-		sel.Account = overlayName(tgt.name, tgt.branch)
-	case string(kgtypes.GraphPractice):
-		sel.Language = overlayName(tgt.name, tgt.branch)
-	default:
-		sel.Name = overlayName(tgt.name, tgt.branch)
+		return sel
 	}
-	return sel
+	// EVERY OTHER FAMILY THROUGH graphsel, not through a switch of its own. A
+	// hand-maintained copy of the instance-key partition is what a corpus check
+	// flags here, and for a measured reason: this function carried a cloud arm
+	// until the family was removed, and a copy that had gone stale instead would
+	// have addressed the wrong field silently. GraphSelectorFor also populates
+	// the typed Family field, which a hand-built selector literal drops.
+	return graphsel.GraphSelectorFor(gt, overlayName(tgt.name, tgt.branch), false)
 }
 
 // overlayName composes "base@overlay" when overlay is non-empty, else returns

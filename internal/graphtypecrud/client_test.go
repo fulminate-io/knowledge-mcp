@@ -67,8 +67,10 @@ func sampleDef(name string) *knowledgev1.GraphTypeDef {
 	return &knowledgev1.GraphTypeDef{
 		Name: name,
 		Collector: &knowledgev1.CollectorSpec{
-			BinaryPath:     "/usr/local/bin/" + name + "-collector",
-			ParamTransport: "stdin",
+			Tool: "collect_" + name,
+			Provider: &knowledgev1.CollectorSpec_Stdio{Stdio: &knowledgev1.StdioProvider{
+				Command: "/usr/local/bin/" + name + "-mcp",
+			}},
 		},
 	}
 }

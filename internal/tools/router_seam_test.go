@@ -17,7 +17,7 @@ import (
 //   - Indexer             → intercept_manage_index.go:27 (Index RPC narrow)
 //   - metadataStatsCaller → intercept_manage_promote.go:42 (MetadataStats RPC narrow)
 //   - render.Executor     → cmd/knowledge/internal/projects/render/wire_fetch.go:31 (Execute RPC narrow)
-//   - statsRPC            → intercept_query_cloud_cicd.go:236 (Stats + Execute narrow)
+//   - statsRPC            → stats_seam.go (Stats + Execute narrow)
 //   - Exporter            → intercept_sync.go:33 (ExportGraph RPC narrow); sync push
 //     actually routes via LocalGraphCaller() in v1, but a Router that loses
 //     ExportGraph would silently break any future caller that arrives via

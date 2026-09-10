@@ -62,7 +62,7 @@ func migratePracticeProxiesOnce(ctx context.Context, gc GraphCaller) {
 // scanSlugLessPracticeProxies returns every SLUG-LESS practice proxy in the
 // knowledge graph. It DRAINS bounded id-keyset pages of a Match(NodeProxy) plan
 // carrying a server-side MetadataPredicate{foreign_graph OP_EQ practice} so only
-// practice proxies come back (no over-fetch of code/cloud/cicd/linkage proxies —
+// practice proxies come back (no over-fetch of code/linkage proxies —
 // the predicate lowers to a server-side Meta("foreign_graph","practice") equality
 // filter via applyMetadataPredicates), then filters the narrowed set client-side
 // to the slug-less discriminant. Metadata predicates survive paging, so the

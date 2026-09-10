@@ -17,8 +17,6 @@ import (
 	"sort"
 	"strings"
 
-	sitter "github.com/smacker/go-tree-sitter"
-
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/treesitter"
 )
 
@@ -61,7 +59,7 @@ func flowArmFor(lang treesitter.Language) (treesitter.FlowStepResolver, bool) {
 // must agree with it word for word on from/to/within.
 //
 // From and To are capture refs resolved through resolveCapture, so the
-// `$outer.X` and `$outer.outer.X` chains work exactly as they do for same_node
+// `$outer.X` and `$outer.$outer.X` chains work exactly as they do for same_node
 // and same_text.
 //
 // WITHIN IS REQUIRED AND AN EMPTY WITHIN IS AN ERROR, NEVER A DEFAULT. Do not
@@ -242,7 +240,7 @@ func evalFlowsTo(l *FlowsToLeaf, scope *evalScope) (bool, error) {
 
 	// (2) Resolve all three. An unresolved ref is propagated, never converted
 	// into a no-match.
-	fromCap, fromNode, err := resolveCapture(scope, l.From)
+	fromCap, _, err := resolveCapture(scope, l.From)
 	if err != nil {
 		return false, err
 	}
@@ -279,7 +277,7 @@ func evalFlowsTo(l *FlowsToLeaf, scope *evalScope) (bool, error) {
 
 	// (5) One arm call for this declaration, memoized per scope node.
 	steps := scope.flowStepsFor(withinNode, arm)
-	return flowReaches(steps, scope.src, fromCap, fromNode, toCap, toNode), nil
+	return flowReaches(steps, scope.src, fromCap, toCap, toNode), nil
 }
 
 // errFlowEndpointOutsideWithin names WHICH endpoint escaped the scope, because
@@ -294,157 +292,4 @@ func errFlowEndpointOutsideWithin(side, ref, within string) error {
 // spanWithin reports whether inner's byte span lies inside outer's.
 func spanWithin(outer, inner Capture) bool {
 	return inner.StartByte >= outer.StartByte && inner.EndByte <= outer.EndByte
-}
-
-// endpointBinds reports whether one flow-step endpoint node belongs to a
-// capture, using the package's own identity rule: spans equal, OR the endpoint
-// contained within the capture.
-//
-// THE CONTAINMENT HALF IS LOAD-BEARING AND WAS CONFIRMED AGAINST THE LANDED
-// ARM, not assumed. The Go reference arm reports endpoints at IDENTIFIER
-// granularity — a parameter's name node, an assignment's target — which is
-// finer than a whole expression, so a sequence capture like $$$ARGS
-// legitimately spans several endpoints and an equality-only rule would bind
-// none of them.
-func endpointBinds(cap Capture, capNode, endpoint *sitter.Node) bool {
-	if endpoint == nil {
-		return false
-	}
-	s, e := endpoint.StartByte(), endpoint.EndByte()
-	if capNode != nil && len(cap.Children) == 0 && capNode.StartByte() == s && capNode.EndByte() == e {
-		return true
-	}
-	return s >= cap.StartByte && e <= cap.EndByte
-}
-
-// flowReaches is the bounded intra-declaration reachability walk: breadth-first
-// from every endpoint bound to From, returning true the moment any endpoint
-// bound to To is reached.
-//
-// THE GRAPH HAS TWO EDGE CLASSES, and the second is a design decision this
-// function owns rather than one the arm supplies. Stating it plainly because a
-// reader will otherwise assume the steps alone define the graph:
-//
-//  1. DECLARED STEPS. Every step with a Target contributes Sources -> Target,
-//     the direction the arm declared. This is the arm's fact.
-//  2. BINDING OCCURRENCES. Two endpoints with the same identifier TEXT inside
-//     one declaration are the same local binding, so they are linked. Without
-//     this the leaf could not answer its own headline question: a parameter is
-//     an endpoint at the signature and its use is a DIFFERENT node at the call
-//     site, and no step joins them — the arm reports grammar shape and leaves
-//     alias closure to its consumer, which here is this function.
-//
-// THE LIMIT OF (2), stated rather than discovered later: it does not model
-// SHADOWING. A declaration that rebinds a name in an inner block is treated as
-// one binding, so this can report a flow that a shadow-aware analysis would
-// deny. That is the conservative direction for a search filter — it over-reports
-// rather than hiding a real flow — but it is a real limit and a shadow-aware
-// closure belongs with the closure engine, not in a where-leaf.
-//
-// THE BOUND IS STRUCTURAL, not a ceiling constant: the visited set is keyed by
-// endpoint span, each endpoint is enqueued at most once, and the step set for
-// one declaration is finite — so the walk is O(V+E) and terminates on a cyclic
-// step set with no truncation signal to report, because nothing accumulates
-// without bound.
-func flowReaches(
-	steps []flowStep, src []byte,
-	fromCap Capture, fromNode *sitter.Node,
-	toCap Capture, toNode *sitter.Node,
-) bool {
-	if len(steps) == 0 {
-		return false
-	}
-	type spanKey struct{ start, end uint32 }
-	key := func(n *sitter.Node) spanKey { return spanKey{n.StartByte(), n.EndByte()} }
-
-	// Index every endpoint once: its node, and the adjacency the two edge
-	// classes imply.
-	byText := map[string][]*sitter.Node{}
-	adj := map[spanKey][]*sitter.Node{}
-	var all []*sitter.Node
-	note := func(n *sitter.Node) {
-		if n == nil {
-			return
-		}
-		all = append(all, n)
-	}
-	for _, st := range steps {
-		note(st.Target)
-		for _, s := range st.Sources {
-			note(s)
-		}
-	}
-	for _, n := range all {
-		t := n.Content(src)
-		byText[t] = append(byText[t], n)
-	}
-	for _, st := range steps {
-		if st.Target == nil {
-			continue
-		}
-		for _, s := range st.Sources {
-			if s != nil {
-				adj[key(s)] = append(adj[key(s)], st.Target)
-			}
-		}
-	}
-
-	// Seed from every endpoint the From capture binds.
-	var queue []*sitter.Node
-	seen := map[spanKey]bool{}
-	for _, n := range all {
-		if endpointBinds(fromCap, fromNode, n) && !seen[key(n)] {
-			seen[key(n)] = true
-			queue = append(queue, n)
-		}
-	}
-
-	for len(queue) > 0 {
-		cur := queue[0]
-		queue = queue[1:]
-		if endpointBinds(toCap, toNode, cur) {
-			return true
-		}
-		next := adj[key(cur)]
-		// Edge class (2): same-binding occurrences elsewhere in this declaration.
-		next = append(next, byText[cur.Content(src)]...)
-		for _, n := range next {
-			if n == nil || seen[key(n)] {
-				continue
-			}
-			seen[key(n)] = true
-			queue = append(queue, n)
-		}
-	}
-	return false
-}
-
-// flowStepsFor returns the flow steps for one declaration, calling the arm at
-// most ONCE per declaration node per match worker.
-//
-// WITHOUT THE MEMO the cost is quadratic in the wrong variable: a pattern
-// matching N sites inside one function would re-walk that whole declaration
-// subtree N times, because each match is evaluated in its own scope. The memo
-// is keyed by the declaration's byte span rather than by pointer identity, so
-// it survives the scope chain the evaluator builds per match.
-//
-// A NIL RESULT IS A REAL ANSWER AND IS CACHED AS ONE. An arm returns nil for a
-// declaration that shows no flow at all, and re-asking would re-walk the
-// subtree every time to learn the same nothing — so presence in the map, not
-// non-emptiness of the value, is what decides a hit.
-func (s *evalScope) flowStepsFor(decl *sitter.Node, arm treesitter.FlowStepResolver) []flowStep {
-	if decl == nil || arm == nil {
-		return nil
-	}
-	if s.flowSteps == nil {
-		// A scope built without a memo still works; it just pays per call.
-		return arm(decl, s.src)
-	}
-	k := [2]uint32{decl.StartByte(), decl.EndByte()}
-	if steps, ok := s.flowSteps[k]; ok {
-		return steps
-	}
-	steps := arm(decl, s.src)
-	s.flowSteps[k] = steps
-	return steps
 }

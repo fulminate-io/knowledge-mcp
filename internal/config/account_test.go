@@ -263,3 +263,68 @@ func TestWriteSelectedAccountID_RefusesEmpty(t *testing.T) {
 		t.Error("a valid id did not change the file — the unchanged-file assertions would be vacuous")
 	}
 }
+
+// TestWriteSelectedAccountID_NeverTruncatesInPlace pins the atomicity of the
+// write. The daemon re-reads this file on a TTL and holds its last-known
+// selection only on a PARSE ERROR, so an in-place truncate-then-write exposes an
+// empty (cleanly parsing, key-less) file that reads as "no selection" and
+// reroutes cloud calls to the primary account for one TTL.
+//
+// The observable: a hard link taken before the write shares the ORIGINAL inode.
+// A writer that truncates in place rewrites that inode, so the link would show
+// the new bytes; a writer that publishes by rename leaves the link holding the
+// original bytes untouched while the path holds the new file.
+func TestWriteSelectedAccountID_NeverTruncatesInPlace(t *testing.T) {
+	const idOne = "acct_01ATOMICATOMICATOMICATOM"
+	const idTwo = "acct_01RENAMERENAMERENAMEREN"
+
+	path := writeTempConfig(t, commentedConfig, 0o600)
+	if err := WriteSelectedAccountID(path, idOne); err != nil {
+		t.Fatalf("seed selection: %v", err)
+	}
+	before := readFileString(t, path)
+
+	shadow := filepath.Join(filepath.Dir(path), "shadow")
+	if err := os.Link(path, shadow); err != nil {
+		t.Skipf("hard links unsupported here: %v", err)
+	}
+
+	if err := WriteSelectedAccountID(path, idTwo); err != nil {
+		t.Fatalf("WriteSelectedAccountID: %v", err)
+	}
+
+	if got := readFileString(t, shadow); got != before {
+		t.Errorf("the original inode was rewritten in place — a concurrent reader could observe a truncated prefix.\n shadow now: %q\n original:   %q", got, before)
+	}
+	after := readFileString(t, path)
+	if want := strings.Replace(before, idOne, idTwo, 1); after != want {
+		t.Errorf("path does not hold the new selection.\n got: %q\nwant: %q", after, want)
+	}
+
+	// No temp straggler: the directory holds exactly the config and the shadow.
+	ents, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	var names []string
+	for _, e := range ents {
+		names = append(names, e.Name())
+	}
+	if len(names) != 2 {
+		t.Errorf("directory holds %v, want exactly [config shadow] — a temp file survived the rename", names)
+	}
+
+	// Mode survives the swap (the temp file is created 0600, so a preserved
+	// 0640 proves the chmod is applied, not inherited).
+	other := writeTempConfig(t, commentedConfig, 0o640)
+	if err := WriteSelectedAccountID(other, idOne); err != nil {
+		t.Fatalf("WriteSelectedAccountID(0640): %v", err)
+	}
+	st, err := os.Stat(other)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if got := st.Mode().Perm(); got != 0o640 {
+		t.Errorf("mode after atomic write = %04o, want 0640", got)
+	}
+}

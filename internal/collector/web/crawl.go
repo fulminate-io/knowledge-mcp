@@ -454,7 +454,7 @@ func (s *crawlState) enqueueDiscovered(raw string, parentDepth int) {
 	}
 	if s.maxPathSegments > 0 && pathSegmentCount(raw) > s.maxPathSegments {
 		slog.Warn("web.crawl: path-segment cap dropped URL",
-			"url", raw, "segments", pathSegmentCount(raw), "cap", s.maxPathSegments)
+			"url", logSafe(raw), "segments", pathSegmentCount(raw), "cap", s.maxPathSegments)
 		s.bumpDegrade(degradePathSegmentCap, 1)
 		return
 	}

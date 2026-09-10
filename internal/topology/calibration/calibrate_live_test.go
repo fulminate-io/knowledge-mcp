@@ -16,8 +16,10 @@ import (
 // envCalibrate gates every live test in this package. It must equal "1".
 const envCalibrate = "CODEQL_CALIBRATE"
 
-// liveToken resolves the API token the way the CI/CD collector does: GITHUB_TOKEN
-// first, GH_TOKEN as the alternate spelling. Once a live run was explicitly
+// liveToken resolves the API token the way every GitHub-reading surface in this
+// repository does: GITHUB_TOKEN first, GH_TOKEN as the alternate spelling. It
+// cited the built-in CI/CD collector as the precedent until that collector was
+// deleted; the CONVENTION outlived it, so the sentence names the convention. Once a live run was explicitly
 // requested a missing token is a FAILURE naming both variables, not a skip — the
 // operator asked for a live run and a silent degrade would report a clean pass
 // for a run that never happened.

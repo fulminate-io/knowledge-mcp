@@ -12,7 +12,6 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/contribhash"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/parser"
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // manifest_test.go — the fail-closed trigger table's own gate.
@@ -29,7 +28,7 @@ func healthyManifestState() manifestState {
 			ManifestId:        "mid-1",
 			HashSchemeVersion: contribhash.ContributionHashSchemeVersion,
 			Entries: []*knowledgev1.ManifestEntry{
-				{FilePath: "pkg/a.go", ContributionHash: bytes.Repeat([]byte{1}, contribHashBytes)},
+				newManifestEntry(diffKeyFile, "pkg/a.go", bytes.Repeat([]byte{1}, contribHashBytes)),
 			},
 		},
 	}
@@ -144,19 +143,6 @@ var errFetchFailedForTest = errTestSentinel("manifest fetch failed")
 type errTestSentinel string
 
 func (e errTestSentinel) Error() string { return string(e) }
-
-// TestDiffEligibleGraph_OnlyCodeIsEligible pins the graph-family gate. The web
-// case is the one that matters: a budget-bounded re-crawl legitimately
-// re-materializes only a subset of its previous paths, and every deletion guard
-// would admit that subset as deliberate.
-func TestDiffEligibleGraph_OnlyCodeIsEligible(t *testing.T) {
-	require.True(t, diffEligibleGraph(kgtypes.GraphCode))
-	for _, gt := range []kgtypes.GraphType{
-		kgtypes.GraphWebRaw, kgtypes.GraphKnowledge, kgtypes.GraphCloud, kgtypes.GraphCICD,
-	} {
-		require.False(t, diffEligibleGraph(gt), "%s must never take the diff path", gt)
-	}
-}
 
 // TestCollectDiffMode_UnsetIsArmed pins the SHIPPED default: with no lever set
 // at all, a collect resolves ARMED. The diff is the collect, not an opt-in.

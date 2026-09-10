@@ -11,8 +11,9 @@ read as details rather than surprises.
 Knowledge is best understood as an operating system for a coding LLM, with four
 kernel layers:
 
-- **Drivers — the collectors.** Collectors pull your code, cloud infrastructure,
-  CI/CD, logs, docs, and patterns into a queryable graph. They are the device
+- **Drivers — the collectors.** Collectors pull your code, docs and
+  patterns into a queryable graph, and a contrib collector adds its own source —
+  cloud inventory, logs, an issue tracker. They are the device
   drivers that turn external sources into something the system can read.
 - **Syscalls — `search` and `traverse`.** The LLM does not grep. It calls
   `search` to find things semantically and by keyword, and `traverse` to walk the
@@ -92,56 +93,61 @@ flowchart TD
 
 ## The 10 graph families
 
-Everything in knowledge lives in a graph, and every graph belongs to one of ten
-*families*. A family is the *kind* of graph; an individual graph is one instance
-of a family (one repo's code graph, one account's cloud graph, one language's
-practice graph). The families and their roles:
+Everything in knowledge lives in a graph, and every graph belongs to a
+*family*. A family is the *kind* of graph; an individual graph is one instance
+of a family (one repo's code graph, one language's
+practice graph). There are seven BUILT-IN families, and a **registered custom
+collector adds its own**: cloud inventory, CI/CD inventory and log collection
+are contrib collectors now, each registering a family of its own. The built-ins and their
+roles:
 
 | Family | Role |
 | --- | --- |
 | `knowledge` | The default graph — memory: thoughts, decisions, plans, findings, rules. |
 | `code` | Tree-sitter symbols and `CALLS` edges for a repository (one graph per repo). |
-| `cloud` | Cloud infrastructure inventory (one graph per account). |
-| `practice` | Architecture and language patterns (one graph per language). |
+| `practice` | Architecture and language patterns (one combined graph; each node names its origin with a `source` hub). |
 | `linkage` | Cross-graph proxy edges that connect the other families into one whole. |
-| `cicd` | CI/CD pipelines and runs (one graph per account). |
-| `logs` | Ephemeral, per-query graphs built from structured log entries; never sent to the summarizer or embedder. |
 | `checks` | Deterministic corpus checks and their fixture examples, across every language — one graph, with `language` a node label. |
 | `web` | Raw per-source graphs emitted by the web collector; the raw text is never embedded directly. |
 | `pdf` | Raw per-source graphs emitted by the PDF collector; likewise never embedded directly. |
 
-These ten — and their canonical ordering — are defined in
+These seven — and their canonical ordering — are defined in
 [`cmd/knowledge/internal/kgtypes/graph_types.go`](../../cmd/knowledge/internal/kgtypes/graph_types.go).
-Two sub-groupings within them are worth knowing, because they govern what a graph
-can *do*:
+A registered family's own behavior is declared in its registration rather than
+here. Two sub-groupings among the built-ins are worth knowing, because they
+govern what a graph can *do*:
 
-- **Sync-eligible (can be pushed to Fulminate Cloud): the first seven —
-  `knowledge`, `code`, `cloud`, `cicd`, `practice`, `linkage`, `checks`.**
-  The only families excluded are the raw, LLM-skipped graphs `logs`, `web`,
-  and `pdf`.
+- **Sync-eligible (can be pushed to Fulminate Cloud): the first five —
+  `knowledge`, `code`, `practice`, `linkage`, `checks`.**
+  The only families excluded are the raw graphs `web` and `pdf`.
 - **Embeddable / rebuildable-segments (carry search segments that can be
-  regenerated from embedded nodes): `knowledge`, `code`, `cloud`, `cicd`,
-  `practice`, `checks`, `web`, `pdf`.** This is the embeddable subset —
-  `linkage` is sync-eligible but carries no embedded vectors, so it has no
-  rebuildable search segments, and `logs` is excluded entirely.
+  regenerated from embedded nodes): `knowledge`, `code`, `practice`,
+  `checks`, `web`, `pdf`.** This is the embeddable subset — `linkage` is
+  sync-eligible but carries no embedded vectors, so it has no rebuildable
+  search segments.
+
+**Three family names are RETIRED and cannot be re-used.** `cloud`, `logs` and
+`cicd` were built-in families until the collectors that filled them became
+contrib collectors. Addressing any of them is refused with the removal reason
+rather than with "no such graph type", and none can be registered as a custom
+type — an operator's leftover storage directory must not be adopted by a new
+family.
 
 ## The selector vocabulary
 
 When you address a graph, the `graph` parameter selects the *family*, not the
-instance. The instance identity — *which* repo, *which* account, *which*
-language — lives in its own typed field:
+instance. The instance identity — *which* repo, *which* language — lives in its
+own typed field:
 
 | Family | Instance field |
 | --- | --- |
 | `code` | `repo` |
-| `cloud`, `cicd` | `account` |
-| `practice` | `language` |
-| everything else | `name` |
+| `practice` | none — one combined graph, narrowed by `source` (a hub id) |
+| everything else, including every registered custom family | `name` |
 
-So you reach a repository's code graph with `graph:"code", repo:"myrepo"`, an
-account's infra graph with `graph:"cloud", account:"prod"`, a language's pattern
-graph with `graph:"practice", language:"go"`, and a log query's graph with
-`graph:"logs", name:"<query_id>"`.
+So you reach a repository's code graph with `graph:"code", repo:"myrepo"`, the
+pattern catalog with `graph:"practice", source:"<hub id>"`, and a registered
+collector's graph with `graph:"<its registration name>", name:"<graph>"`.
 
 **The gotcha:** `graph` is the family, never the instance name. The code graph
 for a repo that happens to be *named* `knowledge` is addressed
@@ -186,19 +192,19 @@ mid-session `knowledge login` or `knowledge logout` re-routes the *next* call
 automatically — no restart needed. (With neither a backend nor a login, a routed
 call returns an error rather than guessing.)
 
-## The triple-graph — code + cloud + knowledge as one whole
+## The triple-graph — code + collected + knowledge as one whole
 
 The most important thing to internalize is that the families are not isolated
-silos. Code, cloud, and knowledge form one connected whole: a decision can point
-at the function it constrains, a finding can point at the cloud resource it
+silos. Code, a collector's own graph, and knowledge form one connected whole: a
+decision can point at the function it constrains, a finding can point at the resource it
 describes, a thought can point at the code it reasons about. The cross-graph
 connections are what make graph-walk retrieval powerful.
 
 Those connections are carried by the `linkage` family as **linkage proxies**, and
 they resolve transparently. As a caller you never deal with the proxy machinery:
 you pass a `knowledge` node id straight into a cross-graph traversal —
-`traverse(graph:"code"|"cloud"|"practice", start:<knowledge node id>)` — and the
-traversal auto-resolves through the linkage proxies to reach the code, cloud, or
+`traverse(graph:"code"|"practice"|<a registered type>, start:<knowledge node id>)` — and the
+traversal auto-resolves through the linkage proxies to reach the code, foreign, or
 practice node on the other side. You never construct or supply a proxy id
 yourself; it is resolved for you.
 

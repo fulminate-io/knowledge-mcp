@@ -33,7 +33,7 @@ var queryStatsArmSpecs = map[armID]armSpec{
 		handler:   "InterceptQueryPracticeLinkage routeWebPDFClient composeRawGraphSegmentSearch",
 		consumed: qparams(qkeys(
 			"graph", "name", "mode", "id", "text", "queries", "format", "fields", "limit")),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgCode, qgThought, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys(
 				"repo", "account", "language", "branch",
@@ -52,7 +52,7 @@ var queryStatsArmSpecs = map[armID]armSpec{
 		operation: "query",
 		handler:   "InterceptQueryPracticeLinkage routeWebPDFClient renderGraphStatsBody",
 		consumed:  qparams(qkeys("graph", "name", "mode", "format", "samples")),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgIdentity, qgPaging, qgCode, qgThought, qgSimulate,
 			qgTopology, qgPivot, qgCloud, qgRules,
 			qkeys("repo", "account", "language", "branch", "text", "queries", "query_vector"),
@@ -72,7 +72,7 @@ var queryStatsArmSpecs = map[armID]armSpec{
 		operation: "query",
 		handler:   "InterceptQueryPracticeLinkage routeWebPDFClient webPDFModules",
 		consumed:  qparams(qkeys("graph", "mode")),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgIdentity, qgPaging, qgStats, qgCode, qgThought, qgSimulate,
 			qgTopology, qgPivot, qgCloud, qgRules,
 			qkeys("name", "repo", "account", "language", "branch", "text", "queries", "query_vector"),
@@ -93,7 +93,7 @@ var queryStatsArmSpecs = map[armID]armSpec{
 		operation: "query",
 		handler:   "InterceptQueryBuiltinStats renderGraphStatsBody",
 		consumed:  qparams(qkeys("graph", "mode", "format", "samples")),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgIdentity, qgPaging, qgCode, qgThought, qgSimulate,
 			qgTopology, qgPivot, qgCloud, qgRules,
 			qkeys("name", "repo", "account", "language", "branch", "text", "queries", "query_vector"),

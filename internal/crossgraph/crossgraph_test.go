@@ -81,19 +81,19 @@ func (f *fakeCaller) Execute(_ context.Context, req *knowledgev1.ExecuteRequest)
 // performs the proxy UPSERT + the from→to LINK through Execute (NOT a gc.Call),
 // both targeting req.TargetGraph, and the proxy id matches BuildCrossGraphProxy.
 func TestResolveAndLink_ProxyUpsertAndLink(t *testing.T) {
-	cloudNode := &knowledgev1.Node{
-		Id: "default/Deployment/app", Type: string(kgtypes.NodeCloudResource), SymbolName: "app",
+	foreignNode := &knowledgev1.Node{
+		Id: "default/Deployment/app", Type: string(kgtypes.NodePattern), SymbolName: "app",
 		Metadata: map[string]string{"resource_type": "Deployment"},
 	}
 	f := &fakeCaller{
 		nodesByGraph: map[string]map[string]*knowledgev1.Node{
-			"cloud": {cloudNode.Id: cloudNode},
+			"practice": {foreignNode.Id: foreignNode},
 		},
-		graphNames: map[string][]string{"cloud": {"prod"}},
+		graphNames: map[string][]string{"practice": {"prod"}},
 	}
 
 	handled, res, err := ResolveAndLink(context.Background(), f, f, LinkRequest{
-		From: cloudNode.Id, To: "myrepo", Relationship: "BUILDS",
+		From: foreignNode.Id, To: "myrepo", Relationship: "BUILDS",
 		TargetGraph: "linkage", Method: "tier1-image", Confidence: 0.9,
 		Stats: f.Stats,
 	})
@@ -107,8 +107,8 @@ func TestResolveAndLink_ProxyUpsertAndLink(t *testing.T) {
 	}
 
 	// (i) Captured plans: an UPSERT(proxy) targeting linkage + a LINK targeting
-	// linkage. (FROM is a cloud node → proxy; TO=myrepo is not a node → best-effort
-	// raw, no second UPSERT.)
+	// linkage. (FROM is a foreign-graph node → proxy; TO=myrepo is not a node →
+	// best-effort raw, no second UPSERT.)
 	var upsert, link *knowledgev1.ExecuteRequest
 	for _, p := range f.plans {
 		if m := p.GetMutation(); m != nil {
@@ -129,8 +129,8 @@ func TestResolveAndLink_ProxyUpsertAndLink(t *testing.T) {
 	// relocated client builder takes the proto carrier directly (proto ProxyTarget
 	// input + *knowledgev1.Node source) — no store-wrapper bridge.
 	wantProxy, berr := BuildCrossGraphProxy(&knowledgev1.ProxyTarget{
-		GraphType: string(kgtypes.GraphCloud), Name: "prod", NodeId: cloudNode.Id,
-	}, cloudNode)
+		GraphType: string(kgtypes.GraphPractice), Name: "prod", NodeId: foreignNode.Id,
+	}, foreignNode)
 	require.NoError(t, berr)
 	assert.Equal(t, wantProxy.GetId(), upsert.GetMutation().GetNodeBodies()[0].GetId(),
 		"proxy id matches the shared BuildCrossGraphProxy builder")

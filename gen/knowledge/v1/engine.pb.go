@@ -54,10 +54,7 @@ const (
 	GraphFamily_GRAPH_FAMILY_UNSPECIFIED GraphFamily = 0
 	GraphFamily_GRAPH_FAMILY_KNOWLEDGE   GraphFamily = 1
 	GraphFamily_GRAPH_FAMILY_CODE        GraphFamily = 2
-	GraphFamily_GRAPH_FAMILY_CLOUD       GraphFamily = 3
-	GraphFamily_GRAPH_FAMILY_CICD        GraphFamily = 4
 	GraphFamily_GRAPH_FAMILY_PRACTICE    GraphFamily = 5
-	GraphFamily_GRAPH_FAMILY_LOGS        GraphFamily = 6
 	GraphFamily_GRAPH_FAMILY_WEB         GraphFamily = 7
 	GraphFamily_GRAPH_FAMILY_PDF         GraphFamily = 8
 	GraphFamily_GRAPH_FAMILY_LINKAGE     GraphFamily = 10
@@ -70,10 +67,7 @@ var (
 		0:  "GRAPH_FAMILY_UNSPECIFIED",
 		1:  "GRAPH_FAMILY_KNOWLEDGE",
 		2:  "GRAPH_FAMILY_CODE",
-		3:  "GRAPH_FAMILY_CLOUD",
-		4:  "GRAPH_FAMILY_CICD",
 		5:  "GRAPH_FAMILY_PRACTICE",
-		6:  "GRAPH_FAMILY_LOGS",
 		7:  "GRAPH_FAMILY_WEB",
 		8:  "GRAPH_FAMILY_PDF",
 		10: "GRAPH_FAMILY_LINKAGE",
@@ -83,10 +77,7 @@ var (
 		"GRAPH_FAMILY_UNSPECIFIED": 0,
 		"GRAPH_FAMILY_KNOWLEDGE":   1,
 		"GRAPH_FAMILY_CODE":        2,
-		"GRAPH_FAMILY_CLOUD":       3,
-		"GRAPH_FAMILY_CICD":        4,
 		"GRAPH_FAMILY_PRACTICE":    5,
-		"GRAPH_FAMILY_LOGS":        6,
 		"GRAPH_FAMILY_WEB":         7,
 		"GRAPH_FAMILY_PDF":         8,
 		"GRAPH_FAMILY_LINKAGE":     10,
@@ -377,7 +368,8 @@ const (
 	// already carries — NOT the Selection/body arms (which it rejects). It maps to
 	// store.DeleteGraph(gt, name) (unload + os.Remove(binPath); cloud twin = the
 	// per-graph table DROP), the pure (type,name) teardown with zero domain
-	// knowledge. Subsumes discard_logs AND code/cloud/cicd whole-graph teardown.
+	// knowledge. Subsumes every family's whole-graph teardown, builtin and
+	// registered-custom alike.
 	MutationPlan_MUTATION_KIND_DROP_GRAPH MutationPlan_MutationKind = 8 // DROP_GRAPH: tear down the envelope-target graph (selector-driven, store.DeleteGraph)
 	// MIGRATE_META_REPR flips a metadata key's storage representation between
 	// scalar (inline) and edge (value-node) form, dispatching store.PromoteKey
@@ -592,7 +584,7 @@ func (IndexRequest_IndexOp) EnumDescriptor() ([]byte, []int) {
 // cap, and the cheap-tick last_seen_gen.
 type PipelineScanRequest struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
-	GraphType string                 `protobuf:"bytes,1,opt,name=graph_type,json=graphType,proto3" json:"graph_type,omitempty"` // graph type (knowledge / code / practice / cloud / cicd / transformers / ...)
+	GraphType string                 `protobuf:"bytes,1,opt,name=graph_type,json=graphType,proto3" json:"graph_type,omitempty"` // graph type (knowledge / code / practice / web / pdf / checks / a registered custom type)
 	// graph name within the type; may carry a "@overlay" suffix.
 	//
 	// SINGLETON EXCEPTION for graph_type "knowledge": a server holds exactly ONE
@@ -1069,7 +1061,7 @@ func (x *PipelineScanItem) GetTombstoned() bool {
 // IT IS A SHARED CARRIER WITH MORE THAN ONE PRODUCER, so WHERE it is populated is
 // documented on each carrying field rather than here — see
 // PipelineScanItem.bm25_fields and CorpusDeltaResponse.bm25_items.
-// content is excluded server-side for code/cloud/cicd (mirrors bm25.DefaultCollector).
+// content is excluded server-side for code (mirrors bm25.DefaultCollector).
 type Bm25Fields struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SymbolName    string                 `protobuf:"bytes,1,opt,name=symbol_name,json=symbolName,proto3" json:"symbol_name,omitempty"`
@@ -1208,7 +1200,7 @@ func (x *PipelineGenPollRequest) GetClientContext() *ClientContext {
 // PipelineScanRequest — the handler resolves a flat gt/name pair directly.
 type PipelineGenPollGraph struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
-	GraphType string                 `protobuf:"bytes,1,opt,name=graph_type,json=graphType,proto3" json:"graph_type,omitempty"` // graph type (knowledge / code / practice / cloud / cicd / transformers / ...)
+	GraphType string                 `protobuf:"bytes,1,opt,name=graph_type,json=graphType,proto3" json:"graph_type,omitempty"` // graph type (knowledge / code / practice / web / pdf / checks / a registered custom type)
 	// graph name within the type; may carry a "@overlay" suffix.
 	//
 	// SINGLETON EXCEPTION for graph_type "knowledge": a server holds exactly ONE
@@ -1934,7 +1926,8 @@ func (x *LayerProbe) GetMaxUpdatedAt() int64 {
 // MutationPlan compiles to the write executor (one serializable txn).
 //
 // The envelope-level `target` GraphSelector routes the request to a graph DB
-// (code/cloud/cicd/practice/logs/web/linkage + knowledge). It is ORTHOGONAL to
+// (code/practice/web/pdf/checks/linkage + knowledge, or a registered custom
+// type). It is ORTHOGONAL to
 // the read/write plan discriminant — a sibling of the oneof, not inside it.
 // Empty/absent target (graph=="") means the knowledge graph. Routing resolves
 // the target DB ONCE per request before any operator compiles, so it does not
@@ -2113,10 +2106,16 @@ type GraphSelector struct {
 	// separate later change.
 	//
 	// Deprecated: Marked as deprecated in knowledge/v1/engine.proto.
-	Graph    string `protobuf:"bytes,1,opt,name=graph,proto3" json:"graph,omitempty"`
-	Repo     string `protobuf:"bytes,2,opt,name=repo,proto3" json:"repo,omitempty"`         // required for family=CODE
-	Account  string `protobuf:"bytes,3,opt,name=account,proto3" json:"account,omitempty"`   // required for family=CLOUD / CICD
-	Name     string `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`         // logs query_id / web|pdf source slug / transformers bucket
+	Graph string `protobuf:"bytes,1,opt,name=graph,proto3" json:"graph,omitempty"`
+	Repo  string `protobuf:"bytes,2,opt,name=repo,proto3" json:"repo,omitempty"` // required for family=CODE
+	// account NAMES NO LIVE FAMILY. It was required for CLOUD and CICD, both now
+	// reserved, so no family this vocabulary carries is keyed by it. The FIELD
+	// stays: removing a proto field is its own change with its own compatibility
+	// cost, and a reserved field number cannot be given back to the next
+	// account-keyed family. Its client-side switch arms are gone, which is a
+	// different question from its presence on the wire.
+	Account  string `protobuf:"bytes,3,opt,name=account,proto3" json:"account,omitempty"`
+	Name     string `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`         // web|pdf source slug
 	Language string `protobuf:"bytes,5,opt,name=language,proto3" json:"language,omitempty"` // required for family=PRACTICE (slugified server-side)
 	Branch   string `protobuf:"bytes,6,opt,name=branch,proto3" json:"branch,omitempty"`     // optional for family=CODE (composed repo@branch)
 	// family is the typed vocabulary. A writer sets BOTH this and `graph`; a
@@ -5522,9 +5521,10 @@ func (x *MetadataStatsResponse) GetFreshnessGen() uint64 {
 // structured foreign-graph reference a proxy node carries. Pure-data carrier
 // (three scalar fields, no methods), so it proto-ifies exactly like
 // OverrideConfig/KeyStats/MetadataStats above. graph_type carries the
-// kgtypes.GraphType string value (GraphCode="code", GraphCloud="cloud",
-// GraphCICD="cicd", GraphPractice="practice", GraphKnowledge="knowledge";
-// empty for branch proxies) — an open-vocabulary string, matching the
+// kgtypes.GraphType string value (GraphCode="code",
+// GraphPractice="practice", GraphKnowledge="knowledge", or a REGISTERED CUSTOM
+// graph type name; empty for branch proxies) — an open-vocabulary string,
+// matching the
 // BatchEdge.Type cast convention (kgwire casts kgtypes.EdgeType -> string for
 // the wire).
 type ProxyTarget struct {
@@ -6284,20 +6284,17 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\n" +
 	"pruned_ids\x18\x04 \x03(\tR\tprunedIds\x12\x18\n" +
 	"\awarning\x18\x05 \x01(\tR\awarning\x12#\n" +
-	"\rfreshness_gen\x18\x06 \x01(\x04R\ffreshnessGen*\xbf\x02\n" +
+	"\rfreshness_gen\x18\x06 \x01(\x04R\ffreshnessGen*\xc5\x02\n" +
 	"\vGraphFamily\x12\x1c\n" +
 	"\x18GRAPH_FAMILY_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16GRAPH_FAMILY_KNOWLEDGE\x10\x01\x12\x15\n" +
-	"\x11GRAPH_FAMILY_CODE\x10\x02\x12\x16\n" +
-	"\x12GRAPH_FAMILY_CLOUD\x10\x03\x12\x15\n" +
-	"\x11GRAPH_FAMILY_CICD\x10\x04\x12\x19\n" +
-	"\x15GRAPH_FAMILY_PRACTICE\x10\x05\x12\x15\n" +
-	"\x11GRAPH_FAMILY_LOGS\x10\x06\x12\x14\n" +
+	"\x11GRAPH_FAMILY_CODE\x10\x02\x12\x19\n" +
+	"\x15GRAPH_FAMILY_PRACTICE\x10\x05\x12\x14\n" +
 	"\x10GRAPH_FAMILY_WEB\x10\a\x12\x14\n" +
 	"\x10GRAPH_FAMILY_PDF\x10\b\x12\x18\n" +
 	"\x14GRAPH_FAMILY_LINKAGE\x10\n" +
 	"\x12\x17\n" +
-	"\x13GRAPH_FAMILY_CHECKS\x10\v\"\x04\b\t\x10\t*\x19GRAPH_FAMILY_TRANSFORMERS*p\n" +
+	"\x13GRAPH_FAMILY_CHECKS\x10\v\"\x04\b\x03\x10\x03\"\x04\b\x04\x10\x04\"\x04\b\x06\x10\x06\"\x04\b\t\x10\t*\x12GRAPH_FAMILY_CLOUD*\x11GRAPH_FAMILY_CICD*\x11GRAPH_FAMILY_LOGS*\x19GRAPH_FAMILY_TRANSFORMERS*p\n" +
 	"\n" +
 	"SearchMode\x12\x1b\n" +
 	"\x17SEARCH_MODE_UNSPECIFIED\x10\x00\x12\x16\n" +

@@ -60,6 +60,25 @@ func TestCrossCutting_GithubMaterializer_Constraints(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(root, "cmd", "knowledge-server")); err != nil {
 			t.Skip("cmd/knowledge-server not present (OSS repo layout)")
 		}
+
+		// THE TEST-CACHE FENCE, and it sits HERE — after the mirror skip and
+		// before the subprocess — for two reasons a reviewer should check.
+		//
+		// AFTER THE SKIP, because this file SHIPS to the public mirror, where
+		// cmd/knowledge-server does not exist: a fence resolved before the skip
+		// would fail there on a tree the mirror correctly does not carry.
+		//
+		// AND A FENCE AT ALL, because `go list -deps` runs in a CHILD PROCESS and
+		// the go tool records what the TEST PROCESS opened. A child's opens are
+		// never the test's, so nothing this subprocess reads reaches this
+		// package's cache key — and the tree it reads is the OTHER module, which
+		// would be dropped from the key even if the test opened it directly by its
+		// real path. Opening the same files through cmd/knowledge/testdata/server-src
+		// names paths inside this module, which the go tool records. Without this,
+		// adding a forbidden import to cmd/knowledge-server and re-running returned
+		// `ok (cached)`: a stored PASS for the guard that exists to catch it.
+		fenceTestCacheOnServerTree(t)
+
 		cmd := exec.Command("go", "list", "-deps", "./cmd/knowledge-server/...")
 		cmd.Dir = root
 		cmd.Env = append(os.Environ(), "CGO_ENABLED=1")

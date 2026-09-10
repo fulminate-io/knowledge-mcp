@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // intercept_manage_drop_graph.go — client-side manage(drop_graph) intercept.
-// drop_graph tears down a whole non-logs graph (the persisted store plus its
-// loaded state) by issuing one MUTATION_KIND_DROP_GRAPH Execute envelope —
-// the SAME wire mutation dropLogGraph (tools_logs_manage_graphs.go) fires for
-// log graphs. The only delta vs dropLogGraph is the target selector: this
-// handler builds it from the operator-supplied (graph, name) via
+// drop_graph tears down a whole graph (the persisted store plus its loaded
+// state) by issuing one MUTATION_KIND_DROP_GRAPH Execute envelope. This handler
+// builds the target selector from the operator-supplied (graph, name) via
 // manageGraphSelector, so a drop routes the name onto the field each family
-// requires (code→Repo, cloud/cicd→Account, practice→Language, else→Name),
-// matching the server dropGraphTarget set (engine_mutate_exec.go).
+// requires (code→Repo, else→Name), matching the server
+// dropGraphTarget set (engine_mutate_exec.go). The practice family reaches none
+// of that: a practice drop is REFUSED outright below, before any Execute,
+// because practice graphs are never a destructive target.
 //
-// drop_graph deliberately does NOT own log-graph teardown: graph=="logs" is
-// rejected with a pointer to manage(discard_logs), which stays the single
-// owner of the logs path (its local-engine unregister has no analog here).
+// IT IS NOW THE ONLY GRAPH TEARDOWN. graph=="logs" used to be rejected here with
+// a pointer to manage(discard_logs), which owned the log path; both the logs
+// family and that operation are gone, so a retired family name is refused by the
+// retired-graph-type gate like every other read of one, and there is no second
+// teardown owner to route to.
 //
 // DESTRUCTIVE OP: drop_graph mirrors the delete tool's dry_run idiom — the
 // default EXECUTES the drop; dry_run:true issues ZERO mutations and renders a
@@ -41,11 +43,12 @@ import (
 // dropGraphFamilies names the graph families the server dropGraphTarget arm
 // accepts (engine_mutate_exec.go:217-271), surfaced verbatim in the gate
 // errors so the client message matches the server's accepted set.
-const dropGraphFamilies = "knowledge, code, cloud, cicd, practice, web, pdf, checks, linkage, or a registered custom type"
+const dropGraphFamilies = "knowledge, code, web, pdf, checks, linkage, or a registered custom type"
 
-// handleClientDropGraph tears down a whole non-logs graph. It requires a
-// non-empty graph, rejects graph=="logs" (manage(discard_logs) owns that
-// path), and — unless dry_run is set — issues ONE MUTATION_KIND_DROP_GRAPH
+// handleClientDropGraph tears down a whole graph. It requires a non-empty graph
+// and refuses a RETIRED family by name — the cloud and logs graph types are gone
+// and manage(discard_logs), which used to own the logs path, went with them —
+// and, unless dry_run is set, issues ONE MUTATION_KIND_DROP_GRAPH
 // Execute whose Target is the manageGraphSelector envelope, then hands off to
 // dropGraphAck for the local cache teardown and the result message. dry_run:true
 // renders a read-only "would drop" preview, issues no mutation and removes
@@ -59,9 +62,25 @@ func handleClientDropGraph(ctx context.Context, deps ClientDeps, a manageArgs) k
 		return errorResult(fmt.Sprintf(
 			`manage(drop_graph) requires "graph" — name the graph to drop (%s)`, dropGraphFamilies))
 	}
-	if a.Graph == "logs" {
-		return errorResult(
-			"manage(drop_graph) does not own log graphs — use manage(discard_logs, name:<query_id>) to drop a log graph")
+	// A RETIRED FAMILY IS REFUSED BY NAME rather than dispatched to a server that
+	// would answer "unknown graph type": these names addressed real graphs one
+	// release ago, and an operator dropping leftovers is exactly the caller who
+	// meets them.
+	if reason, retired := kgtypes.RetiredGraphTypeReason(a.Graph); retired {
+		return errorResult("manage(drop_graph) " + a.Graph + ": graph type is retired: " + reason)
+	}
+	// A PRACTICE GRAPH IS NEVER A DESTRUCTIVE TARGET, and the refusal lives HERE,
+	// before the Execute, rather than downstream.
+	//
+	// POSITION IS THE RULE, not a preference. dropGraphAck tears down the local L2
+	// segment cache once the server-side Execute succeeds, so a refusal placed
+	// after the wire call reports an error about a drop that already happened.
+	//
+	// THE SERVER REFUSES TOO and that is not redundancy to trim: its arm is what
+	// stops a caller that never came through this handler, and this one is what
+	// stops the request being made at all. Neither is the other's fallback.
+	if res, refused := practiceNeverDropped(a.Graph); refused {
+		return res
 	}
 
 	if a.DryRun {
@@ -168,8 +187,9 @@ func dropGraphAck(deps ClientDeps, a manageArgs) string {
 // instance, and dropping its cache silently dropped nothing.
 //
 // The remaining families are unaffected: canonicalization is the identity
-// wherever a real instance field exists (code→repo, cloud/cicd→account,
-// practice→language, custom→name), and the cache path keys on that same string.
+// wherever a real instance field exists (code→repo, custom→name), and the cache
+// path keys on that same string. Practice is not among them: its drop never
+// reaches here.
 func dropGraphCacheTarget(a manageArgs) (kgtypes.GraphType, string) {
 	gt := kgtypes.GraphType(a.Graph)
 	name := a.Name
@@ -187,4 +207,29 @@ func dropGraphLabel(a manageArgs) string {
 		return fmt.Sprintf("%s/%s", a.Graph, a.Name)
 	}
 	return a.Graph
+}
+
+// practiceNeverDropped is the client's practice-graph refusal, as a NAMED guard.
+//
+// IT IS A FUNCTION RATHER THAN AN INLINE COMPARISON on purpose. The rule this
+// enforces is absolute and positional — a practice graph is never a destructive
+// target, and the refusal must sit in the drop handler's own body ahead of the
+// Execute — so it needs to be something a reader and a corpus check can both
+// find by name. An inline `== kgtypes.GraphPractice` is correct and invisible:
+// the next person restructuring this handler has nothing to preserve, and the
+// check that guards the rule has nothing to look for.
+//
+// THE SECOND RETURN IS THE ANSWER, not the error. A caller reads "refused" and
+// returns the result verbatim; there is no arm where a practice drop proceeds
+// with a warning.
+func practiceNeverDropped(graph string) (kgtools.ToolResult, bool) {
+	if kgtypes.GraphType(graph) != kgtypes.GraphPractice {
+		return kgtools.ToolResult{}, false
+	}
+	return errorResult(
+		"manage(drop_graph) practice: a practice graph is NEVER a destructive target. It is " +
+			"never force-deleted, tombstoned or re-emitted over; a rebuild lands a versioned " +
+			"twin beside every resident node and keeps both. Nothing was dropped. " +
+			"To remove a set of practice nodes, delete them by their source hub: " +
+			"delete(graph:\"practice\", source:<hub id>)."), true
 }

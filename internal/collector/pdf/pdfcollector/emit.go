@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -19,7 +18,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 )
 
-// collectorSchemaVersion identifies the SHAPE this pdf collector emits — which
+// CollectorSchemaVersion identifies the SHAPE this pdf collector emits — which
 // node types it produces, which fields carry what, and which metadata keys it
 // stamps. It is stamped on the document root under `collector_schema_version`
 // and is BUMPED in the same change as any alteration to what this collector
@@ -81,58 +80,12 @@ import (
 // re-collecting is an operator action. Two shape changes share version 3
 // because neither has shipped, so no version tells a rotation-only collect
 // from a title-derived one.
-const collectorSchemaVersion = 3
-
-// The THREE values metadata.title_source may carry, declared here and nowhere
-// else. Every stamping site cites one: a bare literal at the stamp is a second
-// declaration, free to drift from this block without the compiler noticing.
-const (
-	titleSourceInfoDict     = "info_dict"
-	titleSourceFirstHeading = "first_heading"
-	titleSourceFilename     = "filename"
-)
-
-// deriveDocumentTitle answers what a reader is shown as this document's title
-// and reports WHICH source answered: the Info dictionary's Title, else the
-// first top-level section heading, else the basename with its extension
-// removed. fileStem is total, so no leg returns "".
 //
-// THE GUARD TRIMS BUT THE RETURN DOES NOT: a real Info-dict title survives
-// byte-identically, while a whitespace-only one falls through instead of
-// rendering as a blank label. metadata.title records what the Info dict
-// literally said; this decides what a reader is shown.
-//
-// TOP-LEVEL MEANS DIRECT CHILDREN OF THE ROOT — the loop never recurses into
-// Children. The untagged path's top-level chunk is a text-less wrapper holding
-// every classified block, so recursing would promote an arbitrary mid-document
-// heading to the document's title.
-func deriveDocumentTitle(meta pdf.Metadata, pdfPath string, chunks []pdf.Chunk) (string, string) {
-	if strings.TrimSpace(meta.Title) != "" {
-		return meta.Title, titleSourceInfoDict
-	}
-	for _, c := range chunks {
-		if nodeTypeForChunk(c) != "section" {
-			continue
-		}
-		if heading := strings.TrimSpace(c.Text); heading != "" {
-			return heading, titleSourceFirstHeading
-		}
-	}
-	return fileStem(pdfPath), titleSourceFilename
-}
-
-// fileStem returns path's final element with its extension removed, trimmed.
-// IT NEVER SLUG-IFIES: no lowercasing, no substitution, no hash suffix — this
-// is a value a human reads as a title, not a graph name, which is why
-// SourceSlug and sanitizeSlug are wrong here. The second arm makes it total: a
-// final element that is all extension ("/.pdf") yields the full base, not "".
-func fileStem(path string) string {
-	base := filepath.Base(path)
-	if stem := strings.TrimSpace(strings.TrimSuffix(base, filepath.Ext(base))); stem != "" {
-		return stem
-	}
-	return strings.TrimSpace(base)
-}
+// IT IS EXPORTED for the same reason the title_source vocabulary below is: a
+// fixture that hard-codes the version is a second declaration free to drift,
+// and one did — the recipe help's fixture graph carried "1" against this
+// constant's 3 until a reader caught it by hand.
+const CollectorSchemaVersion = 3
 
 // emit translates a flat slice of top-level Chunks into *knowledgev1.Node and
 // kgwire.BatchEdge slices ready for the create_batch wire. The root node
@@ -276,7 +229,7 @@ func (e *pdfEmitter) emitDocumentNode(meta pdf.Metadata, title, titleSource stri
 	md := map[string]string{
 		"source":                   "pdf",
 		"path":                     e.pdfPath,
-		"collector_schema_version": strconv.Itoa(collectorSchemaVersion),
+		"collector_schema_version": strconv.Itoa(CollectorSchemaVersion),
 		"title_source":             titleSource,
 	}
 	if meta.Title != "" {
@@ -314,37 +267,10 @@ func (e *pdfEmitter) emitDocumentNode(meta pdf.Metadata, title, titleSource stri
 		Id:         e.docID,
 		Type:       "document",
 		SymbolName: title,
-		Content:    buildDocumentBlurb(meta, title),
+		Content:    BuildDocumentBlurb(meta, title),
 		Source:     "pdf-collect",
 		Metadata:   md,
 	})
-}
-
-// buildDocumentBlurb concatenates the high-signal Info-dict fields into
-// a single string so downstream BM25 indexes have text to match
-// against. Empty fields are skipped.
-//
-// It opens on title — deriveDocumentTitle's answer — so a titleless document's
-// blurb is labeled rather than starting at the author. The author and subject
-// branches read the Info dict directly and are unchanged.
-func buildDocumentBlurb(meta pdf.Metadata, title string) string {
-	var b strings.Builder
-	if title != "" {
-		b.WriteString(title)
-	}
-	if meta.Author != "" {
-		if b.Len() > 0 {
-			b.WriteString(" — ")
-		}
-		b.WriteString(meta.Author)
-	}
-	if meta.Subject != "" {
-		if b.Len() > 0 {
-			b.WriteString("\n")
-		}
-		b.WriteString(meta.Subject)
-	}
-	return b.String()
 }
 
 // emitChunk appends a node for c and recurses into Children. parentID

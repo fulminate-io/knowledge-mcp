@@ -66,9 +66,17 @@ const (
 	EmbedFamilyKnowledge EmbedFamily = "knowledge"
 	EmbedFamilyCode      EmbedFamily = "code"
 	EmbedFamilyPractice  EmbedFamily = "practice"
-	EmbedFamilyCloud     EmbedFamily = "cloud"
-	EmbedFamilyCICD      EmbedFamily = "cicd"
 )
+
+// THE cloud AND cicd FAMILIES ARE GONE FROM THIS VOCABULARY, and their absence is
+// a load-time REFUSAL rather than a silent no-op. Both were built-in graph
+// families with built-in collectors, both are retired, and the starter template
+// this product ships listed them — so a config on an upgrading operator's disk
+// can genuinely carry `[embedder.family.cicd]`. Bad input always errors: the
+// parse fails, names the key and lists the families that would have worked, which
+// is one deleted line of config rather than a graph embedded under an identity
+// nobody chose. No fallback to the default profile is written for them, because a
+// fallback here would record that unchosen identity permanently on first embed.
 
 // AcceptedEmbedFamilies is the set of families a creation default may name,
 // in the order the error message lists them.
@@ -76,8 +84,6 @@ var AcceptedEmbedFamilies = []EmbedFamily{
 	EmbedFamilyKnowledge,
 	EmbedFamilyCode,
 	EmbedFamilyPractice,
-	EmbedFamilyCloud,
-	EmbedFamilyCICD,
 }
 
 // IsValid reports whether f is one of the accepted families.

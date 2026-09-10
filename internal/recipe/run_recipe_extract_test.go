@@ -142,13 +142,19 @@ emit pattern {
 		"body B executed body A's rules — the AST cache key is not content-derived")
 }
 
-// TestRunRecipe_ExtractInline_NeedsExtract asserts an inline body without
-// extract mode is refused, and that the error names EXTRACT MODE — the thing
-// that does work — so the caller learns what to do instead. The NotContains
-// leg is the ratchet: the refusal used to prescribe saving the body to freeze
-// the extraction, recipes are ephemeral and nothing is frozen, and this stops
-// that retired workflow coming back into a runtime error string.
-func TestRunRecipe_ExtractInline_NeedsExtract(t *testing.T) {
+// TestRunRecipe_ExtractInline_NeedsAMode asserts an inline body asking for
+// NEITHER mode is refused, and that the error names BOTH modes that do work — so
+// the caller learns what to do instead rather than only what it did wrong.
+//
+// THE SECOND MODE IS WHY THIS TEST CHANGED. The refusal used to say a run "writes
+// nothing", which was the mechanical truth while extract was the only mode; a
+// landing writes, so that sentence would now be a false reason attached to a true
+// refusal. The NotContains leg on "freeze" is the older ratchet and stays: the
+// refusal must not prescribe the retired save-the-body-to-freeze-it workflow.
+//
+// THE LANDING LEG IS THE CONTROL that keeps the refusal from being unconditional:
+// the same body with a LandTarget and no extract must be ADMITTED.
+func TestRunRecipe_ExtractInline_NeedsAMode(t *testing.T) {
 	caller := extractSourceCaller(2)
 	opts := extractOpts(extractBody)
 	opts.Extract = false
@@ -156,12 +162,24 @@ func TestRunRecipe_ExtractInline_NeedsExtract(t *testing.T) {
 	_, err := RunRecipe(context.Background(), caller, "doc", kgtypes.GraphWebRaw, opts)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "extract:true",
-		"the refusal names the parameter that makes the run legal")
-	assert.Contains(t, err.Error(), "writes nothing",
-		"and states the mechanical reason: there is no other mode because there is no write")
+		"the refusal names the parameter that reads the rows back")
+	assert.Contains(t, err.Error(), "land:true",
+		"and the parameter that writes them, so a caller who wanted the write is not sent to the reader")
+	assert.NotContains(t, err.Error(), "writes nothing",
+		"the reason must not claim a run writes nothing: a landing run writes")
 	assert.NotContains(t, err.Error(), "freeze",
 		"the refusal must not prescribe the retired freeze-by-saving workflow")
 	assert.Empty(t, caller.mutations)
+
+	// THE CONTROL: extract unset but a landing target supplied is a legal run, so
+	// the refusal above is the ABSENCE OF BOTH modes rather than the absence of
+	// extract.
+	landing := extractOpts(extractBody)
+	landing.Extract = false
+	landing.LandTarget = TargetSpec{GraphType: kgtypes.GraphPractice, Name: "default"}
+	res, lerr := RunRecipe(context.Background(), extractSourceCaller(2), "doc", kgtypes.GraphWebRaw, landing)
+	require.NoError(t, lerr, "a landing run with no extract must be admitted")
+	assert.NotEmpty(t, res.Nodes, "and it must emit the nodes the landing will write")
 }
 
 // TestRunRecipe_ExtractInline_NeedsSourceType asserts the other inline

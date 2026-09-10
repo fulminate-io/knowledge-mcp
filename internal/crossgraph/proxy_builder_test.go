@@ -18,13 +18,8 @@ import (
 // server-built proxy IDs, breaking dedup.
 func TestBuildCrossGraphProxy_DeterministicIDShapes(t *testing.T) {
 	src := &knowledgev1.Node{
-		Type:       string(kgtypes.NodeCloudResource),
+		Type:       string(kgtypes.NodePattern),
 		SymbolName: "app",
-		Metadata: map[string]string{
-			"resource_type": "Deployment",
-			"region":        "us-east-1",
-			"provider":      "aws",
-		},
 	}
 
 	cases := []struct {
@@ -40,16 +35,13 @@ func TestBuildCrossGraphProxy_DeterministicIDShapes(t *testing.T) {
 			wantSource: "proxy:myrepo",
 		},
 		{
-			name:       "cloud",
-			target:     &knowledgev1.ProxyTarget{GraphType: string(kgtypes.GraphCloud), Name: "prod", NodeId: "default/Deployment/app"},
-			wantID:     "proxy:cloud:prod:default/Deployment/app",
-			wantSource: "proxy:cloud:prod",
-		},
-		{
-			name:       "cicd",
-			target:     &knowledgev1.ProxyTarget{GraphType: string(kgtypes.GraphCICD), Name: "acme", NodeId: "pipe-7"},
-			wantID:     "proxy:cicd:acme:pipe-7",
-			wantSource: "proxy:cicd:acme",
+			// THE RETIRED cicd FAMILY TAKES THE GENERIC ARM NOW, and it is here as
+			// the negative control rather than as a supported shape: no builder
+			// stamps proxy:cicd:… any more, so a re-added arm would break this row.
+			name:       "a retired family falls to the generic arm",
+			target:     &knowledgev1.ProxyTarget{GraphType: "cicd", Name: "acme", NodeId: "pipe-7"},
+			wantID:     "proxy:custom/cicd:acme:pipe-7",
+			wantSource: "proxy:custom/cicd:acme",
 		},
 		{
 			name:       "practice with slug",
@@ -79,27 +71,6 @@ func TestBuildCrossGraphProxy_DeterministicIDShapes(t *testing.T) {
 				"foreign_graph metadata records the target graph type")
 		})
 	}
-}
-
-// TestBuildCrossGraphProxy_CloudDisplayMetadata covers the cloud display-metadata
-// copy: resource_type/region/provider carry from source onto the proxy.
-func TestBuildCrossGraphProxy_CloudDisplayMetadata(t *testing.T) {
-	src := &knowledgev1.Node{
-		Type:       string(kgtypes.NodeCloudResource),
-		SymbolName: "app",
-		Metadata: map[string]string{
-			"resource_type": "Deployment",
-			"region":        "us-east-1",
-			"provider":      "aws",
-		},
-	}
-	proxy, err := BuildCrossGraphProxy(
-		&knowledgev1.ProxyTarget{GraphType: string(kgtypes.GraphCloud), Name: "prod", NodeId: "id-1"}, src)
-	require.NoError(t, err)
-	assert.Equal(t, "prod", kgtypes.Value(proxy, "account"))
-	assert.Equal(t, "Deployment", kgtypes.Value(proxy, "resource_type"))
-	assert.Equal(t, "us-east-1", kgtypes.Value(proxy, "region"))
-	assert.Equal(t, "aws", kgtypes.Value(proxy, "provider"))
 }
 
 // TestBuildCrossGraphProxy_Guards covers the required-field + unsupported-graph

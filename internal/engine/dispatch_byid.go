@@ -42,7 +42,7 @@ func dispatchQueryByID(ctx context.Context, exec ExecuteFn, args json.RawMessage
 	// Only the default-mode by-id read with an absorption flag is intercepted.
 	// A code/logs graph, a SPECIALIZED mode, or a thought-filter shape stays on
 	// its existing path (those never carried include_edges anyway).
-	if a.ID == "" || a.Mode != "" || isCodeGraph(a.Graph) || a.Graph == "logs" {
+	if a.ID == "" || a.Mode != "" || isCodeGraph(a.Graph) {
 		return kgtools.ToolResult{}, false
 	}
 	wantEdges := boolPtr(a.IncludeEdges)

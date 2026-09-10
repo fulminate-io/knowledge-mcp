@@ -9,8 +9,9 @@ import (
 
 // Manifest keys — the collect layer stuffs these into
 // Options.SourceManifest so RunRecipe can recover both the source slug
-// (which web graph to read) and the recipe name (which recipe body to
-// fetch from GraphTransformers).
+// (which raw graph to read, and the second component of every emitted
+// StableID) and the recipe key. Every run is an inline body now, so the
+// recipe key is a fixed literal rather than the name of a stored node.
 const (
 	manifestKeySource = "source"
 	manifestKeyRecipe = "recipe"

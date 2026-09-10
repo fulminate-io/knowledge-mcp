@@ -161,7 +161,7 @@ func seededStepGc() *scriptedCriterionGc {
 // Success path: 4 RPCs in correct order, success message returned.
 func TestInterceptAddCriterion_Success(t *testing.T) {
 	gc := seededStepGc()
-	deps := &logE2EDeps{gc: gc}
+	deps := &graphCallerDeps{gc: gc}
 
 	args := mustMarshal(t, map[string]any{
 		"operation":   "create",
@@ -222,7 +222,7 @@ func TestInterceptAddCriterion_RoutesStatusContentMetadata_RejectsDerivedName(t 
 			// "type" collides with the derived criterion-type key on purpose.
 			"metadata": map[string]string{"owner": "me", "type": "caller-loses"},
 		})
-		handled, res := InterceptAddCriterion(opCtx(), &logE2EDeps{gc: gc}, kgtools.CallToolParams{
+		handled, res := InterceptAddCriterion(opCtx(), &graphCallerDeps{gc: gc}, kgtools.CallToolParams{
 			Name: "mutate", Arguments: args,
 		})
 		require.True(t, handled)
@@ -266,7 +266,7 @@ func TestInterceptAddCriterion_RoutesStatusContentMetadata_RejectsDerivedName(t 
 				"description": "Test that the thing works", "summary": "the thing works",
 				param: "caller supplied",
 			})
-			handled, res := InterceptAddCriterion(opCtx(), &logE2EDeps{gc: gc}, kgtools.CallToolParams{
+			handled, res := InterceptAddCriterion(opCtx(), &graphCallerDeps{gc: gc}, kgtools.CallToolParams{
 				Name: "mutate", Arguments: args,
 			})
 			require.True(t, handled, "a rejected param must be claimed, not fall through")
@@ -284,7 +284,7 @@ func TestInterceptAddCriterion_RoutesStatusContentMetadata_RejectsDerivedName(t 
 // Validation order: step_id checked first.
 func TestInterceptAddCriterion_EmptyStepID(t *testing.T) {
 	gc := seededStepGc()
-	deps := &logE2EDeps{gc: gc}
+	deps := &graphCallerDeps{gc: gc}
 
 	args := mustMarshal(t, map[string]any{
 		"operation":   "create",
@@ -303,7 +303,7 @@ func TestInterceptAddCriterion_EmptyStepID(t *testing.T) {
 // combined-violation parity holds with server-side handleAddCriterion.
 func TestInterceptAddCriterion_StepNotFound(t *testing.T) {
 	gc := &scriptedCriterionGc{stepNode: nil} // any query → not found
-	deps := &logE2EDeps{gc: gc}
+	deps := &graphCallerDeps{gc: gc}
 
 	args := mustMarshal(t, map[string]any{
 		"operation":   "create",
@@ -325,7 +325,7 @@ func TestInterceptAddCriterion_StepNotFound(t *testing.T) {
 // step_id error fires first (mirrors server-side ordering).
 func TestInterceptAddCriterion_BothMissing_StepIDFirst(t *testing.T) {
 	gc := seededStepGc()
-	deps := &logE2EDeps{gc: gc}
+	deps := &graphCallerDeps{gc: gc}
 
 	args := mustMarshal(t, map[string]any{
 		"operation": "create",
@@ -341,7 +341,7 @@ func TestInterceptAddCriterion_BothMissing_StepIDFirst(t *testing.T) {
 // Empty description after step verification.
 func TestInterceptAddCriterion_EmptyDescription_AfterStepCheck(t *testing.T) {
 	gc := seededStepGc()
-	deps := &logE2EDeps{gc: gc}
+	deps := &graphCallerDeps{gc: gc}
 
 	args := mustMarshal(t, map[string]any{
 		"operation":   "create",
@@ -368,7 +368,7 @@ func TestInterceptAddCriterion_EmptyDescription_AfterStepCheck(t *testing.T) {
 func TestInterceptAddCriterion_UpsertFailure(t *testing.T) {
 	gc := seededStepGc()
 	gc.upsertErr = errors.New("wire timeout")
-	deps := &logE2EDeps{gc: gc}
+	deps := &graphCallerDeps{gc: gc}
 
 	args := mustMarshal(t, map[string]any{
 		"operation":   "create",
@@ -392,7 +392,7 @@ func TestInterceptAddCriterion_UpsertFailure(t *testing.T) {
 // Wrong tool → fall through.
 func TestInterceptAddCriterion_WrongTool_FallsThrough(t *testing.T) {
 	gc := seededStepGc()
-	deps := &logE2EDeps{gc: gc}
+	deps := &graphCallerDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"operation": "create", "type": "criterion"})
 	handled, _ := InterceptAddCriterion(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	assert.False(t, handled)
@@ -401,7 +401,7 @@ func TestInterceptAddCriterion_WrongTool_FallsThrough(t *testing.T) {
 // Wrong type → fall through.
 func TestInterceptAddCriterion_WrongType_FallsThrough(t *testing.T) {
 	gc := seededStepGc()
-	deps := &logE2EDeps{gc: gc}
+	deps := &graphCallerDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"operation": "create", "type": "finding"})
 	handled, _ := InterceptAddCriterion(opCtx(), deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
 	assert.False(t, handled)
@@ -410,7 +410,7 @@ func TestInterceptAddCriterion_WrongType_FallsThrough(t *testing.T) {
 // Wrong operation (update) → fall through.
 func TestInterceptAddCriterion_WrongOperation_FallsThrough(t *testing.T) {
 	gc := seededStepGc()
-	deps := &logE2EDeps{gc: gc}
+	deps := &graphCallerDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"operation": "update", "type": "criterion"})
 	handled, _ := InterceptAddCriterion(opCtx(), deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
 	assert.False(t, handled)

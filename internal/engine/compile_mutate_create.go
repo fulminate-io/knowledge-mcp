@@ -3,7 +3,17 @@
 package engine
 
 import (
+	"maps"
+
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+)
+
+// The practice hub vocabulary, aliased locally so this file names the shared
+// constants once rather than repeating their literals per use.
+const (
+	sourceHubMetaKey  = kgtypes.MetaKeySourceHub
+	sourceHubEdgeType = string(kgtypes.EdgeSourcedFrom)
 )
 
 // createPayload builds the NodeBody + BatchEdgeSpec payload for compileMutateCreate,
@@ -23,13 +33,14 @@ func createPayload(a mutateArgs) ([]*knowledgev1.NodeBody, []*knowledgev1.BatchE
 		}
 		bodies := make([]*knowledgev1.NodeBody, 0, len(a.Nodes))
 		for _, n := range a.Nodes {
+			n.Metadata = withSourceHub(n.Metadata, a.SourceHub)
 			bodies = append(bodies, nodeBodyToProto(n))
 		}
 		edges, ok := batchEdgesToProto(a.Edges)
 		if !ok {
 			return nil, nil, false
 		}
-		return bodies, edges, true
+		return bodies, append(edges, sourceHubEdges(len(bodies), a.SourceHub)...), true
 	}
 	// Single create → one-element NodeBodies (the engine create_batch arm runs the
 	// same CreateBatch primitive for one or N).
@@ -43,10 +54,67 @@ func createPayload(a mutateArgs) ([]*knowledgev1.NodeBody, []*knowledgev1.BatchE
 		Summary:     a.Summary,
 		Content:     a.Content,
 		Status:      derefStatus(a.Status),
-		Metadata:    a.Metadata,
+		Metadata:    withSourceHub(a.Metadata, a.SourceHub),
 		ID:          a.ID,
 		Source:      a.Source,
-	})}, nil, true
+	})}, sourceHubEdges(1, a.SourceHub), true
+}
+
+// withSourceHub stamps the practice hub id onto a created node's metadata.
+//
+// A hub is recorded TWICE and neither recording is redundant: this metadata key
+// is what a browse, a by-hub delete and the ranked search's member resolution
+// all predicate on, and the sourceHubEdges below are what a traverse walks. A
+// metadata key cannot be traversed and an edge cannot be a browse predicate, so
+// the two answer different questions about the same fact.
+//
+// An explicit metadata key the caller already set WINS and is left alone. That is
+// not a silent preference: the tools-side gate (guardPracticeHubBodyHubs) reads
+// EVERY body a practice payload can carry — the top-level `metadata`, each
+// `nodes[]` body of a create_batch, and the upsert body — and refuses one whose
+// key disagrees with the call's hub before the payload reaches here, so by this
+// point the two either agree or only one was supplied.
+func withSourceHub(meta map[string]string, hub string) map[string]string {
+	if hub == "" {
+		return meta
+	}
+	// SIZED FROM ONE LENGTH, NOT A SUM: a make() capacity is a hint —
+	// the one hub key costs at most a growth — while a size built by
+	// addition is a value the allocator has to take on trust.
+	out := make(map[string]string, len(meta))
+	maps.Copy(out, meta)
+	if _, ok := out[sourceHubMetaKey]; !ok {
+		out[sourceHubMetaKey] = hub
+	}
+	return out
+}
+
+// sourceHubEdges emits one node→hub `sourced-from` edge per created body.
+//
+// THE DIRECTION IS node → hub, which is where requirement 2's cardinality lives:
+// exactly one outgoing sourced-from per practice node, assertable at the node
+// rather than by counting a hub's inbound fan. Members are enumerated the other
+// way, with direction:"in" from the hub.
+//
+// IT RIDES THE SAME PLAN AS THE NODES, by slot index into the bodies just built,
+// so the node and its hub link land in ONE CreateBatch. A follow-up LINK call
+// would leave a window in which a node exists with no hub — invisible to every
+// hub-scoped read, and precisely the state a failed collection needs to be
+// deletable from.
+func sourceHubEdges(bodies int, hub string) []*knowledgev1.BatchEdgeSpec {
+	if hub == "" || bodies == 0 {
+		return nil
+	}
+	out := make([]*knowledgev1.BatchEdgeSpec, 0, bodies)
+	for i := range bodies {
+		out = append(out, &knowledgev1.BatchEdgeSpec{
+			FromIdx: int32(i),
+			ToIdx:   -1,
+			ToId:    hub,
+			Type:    sourceHubEdgeType,
+		})
+	}
+	return out
 }
 
 // batchEdgesToProto lowers create_batch's edgeBody list onto proto BatchEdgeSpec,

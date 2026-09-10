@@ -47,6 +47,31 @@ type SegmentOverlaySearcher interface {
 	SearchOverlay(ctx context.Context, gt kgtypes.GraphType, base, overlay, queryText string, queryVec []byte, k int) ([]searchengine.Hit, error)
 }
 
+// SegmentSubsetSearcher is the narrow consumer-side seam the practice HUB search
+// uses to rank INSIDE one source hub's membership. *segmentdist.Manager
+// satisfies it (Manager.SearchAccepting).
+//
+// Kept SEPARATE from SegmentSearcher for the reason the two seams beside it are:
+// folding a second method into SegmentSearcher would break every Search-only
+// test double in this package, and a narrow per-purpose seam over the same
+// concrete is the established deps.go pattern.
+//
+// THE PREDICATE IS APPLIED DURING TOP-K, WHICH IS WHY THIS IS A SEAM AND NOT A
+// CALLER-SIDE FILTER. A hub holding fifty nodes inside a corpus of five thousand
+// must return its own top-N, not whatever few of its members survived a
+// corpus-wide ranking; a post-rank filter answers a shorter list and gives the
+// caller no way to tell a small hub from a deep one. The engine honors the
+// predicate inside each format's collection loop, so a rejected candidate never
+// consumes a slot in k.
+//
+// The predicate sees only an external id, because that is all a segment carries:
+// a caller narrowing by node metadata resolves its id set BEFORE searching and
+// closes over it.
+type SegmentSubsetSearcher interface {
+	SearchAccepting(ctx context.Context, gt kgtypes.GraphType, name, queryText string, queryVec []byte, k int,
+		accepts func(searchengine.ExternalID) bool) ([]searchengine.Hit, error)
+}
+
 // SegmentVectorResolver is the narrow consumer-side seam the mode:"similar" search
 // claim uses to resolve a node's STORED query vector from the client-local HNSW
 // segments by external id. *segmentdist.Manager satisfies it (Manager.VectorByID).

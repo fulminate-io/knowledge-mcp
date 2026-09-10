@@ -37,7 +37,7 @@ import (
 // Checks run SERIALLY by design. ast.Match already fans out across the machine's
 // cores inside a single walk, so N concurrent walks contend for the same worker
 // pool rather than adding throughput.
-func executeAstCheck(ctx context.Context, req foundation.Request, entry corpusEntry, opts scanOptions) ([]foundation.Finding, *ast.WalkStats, error) {
+func executeAstCheck(ctx context.Context, req foundation.Request, entry corpusEntry, opts scanOptions, dec checkScopeDecision) ([]foundation.Finding, *ast.WalkStats, error) {
 	c := entry.Check
 	sev, err := checkSeverity(c)
 	if err != nil {
@@ -70,6 +70,13 @@ func executeAstCheck(ctx context.Context, req foundation.Request, entry corpusEn
 	if err := ast.ValidateWhereKinds(where, lang); err != nil {
 		return nil, nil, fmt.Errorf("topology/%s: check %q: %s names a kind the %s=%q grammar does not have: %w", AnalyzerName, c.ID, corpus.MetaCheckWhere, corpus.MetaLanguage, lang, err)
 	}
+	// And the capture references, for the same reason at the same moment: a
+	// stored check naming a capture nothing declares would walk this whole
+	// corpus and report a clean zero, which on a check whose job is to report
+	// an absence is the answer the caller reads.
+	if err := ast.ValidateWhereCaptureRefs(where, pat); err != nil {
+		return nil, nil, fmt.Errorf("topology/%s: check %q: %s names a capture nothing declares: %w", AnalyzerName, c.ID, corpus.MetaCheckWhere, err)
+	}
 
 	// THE PARSED where MUST REACH ast.Match, AND NO SOURCE GREP CAN SEE WHETHER
 	// IT DID. Parsing and validating a where-tree and then passing nil here
@@ -81,7 +88,7 @@ func executeAstCheck(ctx context.Context, req foundation.Request, entry corpusEn
 	// THE SECOND RETURN IS BOUND, NOT DISCARDED: the run-level scope guard reads
 	// walk.FilesScanned to tell a prefix that narrowed the walk from one that
 	// reached nothing at all.
-	matches, walk, err := ast.Match(ctx, req.RepoRoot, lang, cp, where, checkScope(req, c, opts))
+	matches, walk, err := ast.Match(ctx, req.RepoRoot, lang, cp, where, checkScope(req, c, opts, dec))
 	if err != nil {
 		return nil, nil, fmt.Errorf("topology/%s: check %q: walk %s: %w", AnalyzerName, c.ID, req.Name, err)
 	}
@@ -103,11 +110,30 @@ func executeAstCheck(ctx context.Context, req foundation.Request, entry corpusEn
 // they were two literals the hint reasoned about a narrower walk than the one
 // that ran, and told a caller their prefix matched nothing about files the walk's
 // own filter had taken.
-func checkScope(req foundation.Request, c corpus.Check, opts scanOptions) ast.Scope {
+//
+// THE CHECK'S OWN DECLARED SCOPE IS ALREADY FOLDED INTO dec.prefixes, which is
+// why this function takes a decision rather than reading the check node again:
+// the intersection of the caller's channel with the check's paths is computed
+// once, in resolveCheckScope, and both the walk and the zero-scan hint read that
+// one value. A second composition here would be free to disagree with the first,
+// and the hint would then explain a walk that never ran.
+//
+// A FILE LIST LIFTS BOTH OF THE WALK'S OWN DECLINE PATHS, FOR THE PATHS IT NAMES
+// AND FOR NOTHING ELSE. The caller named the artifact, so discovery's rule chain
+// — generated code, vendored paths, the size cap — does not get to decline it
+// behind their back, and neither does the test-file filter: a declined file
+// reads exactly like a check that did not fire. This is the check-fixture
+// runner's idiom (corpus/fixture_run.go) generalized from one artifact to N.
+// LIFTING CANNOT LEAK PAST THE NAMED SET: it widens what discovery OFFERS and
+// changes nothing about what the walk ACCEPTS, because PackagePrefixes,
+// IncludeTests and the language match are the caller's own narrowing and still
+// apply to whatever discovery returns (ast.Scope's own contract).
+func checkScope(req foundation.Request, c corpus.Check, opts scanOptions, dec checkScopeDecision) ast.Scope {
 	return ast.Scope{
 		Repo:            req.Name,
-		PackagePrefixes: checkPathPrefixes(req.PathPrefix),
-		IncludeTests:    opts.includeTests || c.AppliesToTests,
+		PackagePrefixes: dec.prefixes,
+		IncludeTests:    opts.includeTests || c.AppliesToTests || opts.files != nil,
+		LiftExclusions:  opts.files != nil,
 	}
 }
 

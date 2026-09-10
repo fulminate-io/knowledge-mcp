@@ -22,9 +22,10 @@ you need them.
 ## Concepts
 
 New to knowledge? Read [Concepts](concepts.md) first — the mental model the rest
-of these guides assume: the kernel/OS framing, the ten graph families, the
-selector vocabulary, the client/daemon/server topology, and how code, cloud, and
-knowledge link into one connected graph.
+of these guides assume: the kernel/OS framing, the eight built-in graph families
+and the families a registered contrib collector adds, the selector vocabulary,
+the client/daemon/server topology, and how code, knowledge, and a collected
+family link into one connected graph.
 
 Then read [Capabilities](capabilities.md) — the four capability pillars in
 depth: the reasoning loop, unified search, workflow integration, and the

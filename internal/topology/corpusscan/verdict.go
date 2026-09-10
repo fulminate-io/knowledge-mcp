@@ -102,6 +102,18 @@ func ClassifyRun(findings []foundation.Finding) RunVerdict {
 			v.LLMOnlyNotExecuted = int(f.Metrics["llm_only_total"])
 		case f.Title == DisclosureTitleTestFiles:
 			v.TestFilesScanned = int(f.Metrics[MetricTestFilesScanned])
+		case f.Title == DisclosureTitleOtherLanguage,
+			strings.HasPrefix(f.Title, DisclosurePrefixGraphNotRun),
+			strings.HasPrefix(f.Title, DisclosurePrefixOutOfScope),
+			strings.HasPrefix(f.Title, DisclosurePrefixScopeApplied):
+			// NEITHER IS A FLAGGED SITE, AND NEITHER IS A REFUSAL. A named path
+			// of another language and a graph check the file scope narrowed away
+			// are facts about the SCOPE the caller chose rather than about the
+			// corpus — the run answered the question it was asked over a narrower
+			// set, exactly as test_files_scanned reports. They ride in the
+			// findings so nothing the caller named is absent from the report, and
+			// they are counted here so that reporting them cannot turn a clean
+			// run into a flagged one.
 		default:
 			v.SitesFlagged++
 			flagged[f.Metadata[MetaKeyCheckID]] = true

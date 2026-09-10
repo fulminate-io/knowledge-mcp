@@ -43,7 +43,7 @@ var docsRecipesGuide []byte
 // fragments, and wrapping a fragment in invented context would test the
 // wrapper rather than the documentation; see the sibling test's comment.
 func TestHelpRecipes_WorkedExamplesParse(t *testing.T) {
-	blocks := extractRecipeBlocks(helpRecipes)
+	blocks := extractRecipeBlocks()
 	if len(blocks) == 0 {
 		t.Fatal("no worked recipe bodies found in helpRecipes — extractor is broken or the help lost its examples")
 	}
@@ -88,9 +88,15 @@ func TestSkillRecipeBodies_Parse(t *testing.T) {
 	t.Logf("parsed %d recipe_body payloads from SKILL.md", len(bodies))
 }
 
-// extractRecipeBlocks pulls contiguous indented runs that begin with
-// `select` out of help prose. Indentation is the block marker the help
-// text uses for code.
+// extractRecipeBlocks pulls the worked recipe bodies out of the help topic:
+// contiguous indented runs that begin with `select`. Indentation is the block
+// marker the help text uses for code.
+//
+// IT TAKES NO TEXT PARAMETER. Every caller in this package extracts from
+// helpRecipes and nothing else, so a parameter would be a fiction that reads
+// like generality — the linter says so too. A second corpus with a different
+// block convention gets its own extractor, the way the docs guide and the skill
+// already have one in extractJSONStringValues.
 //
 // IT SKIPS EBNF. The help also carries a grammar whose production for the
 // select rule reads `select = "select" IDENT [ "where" expr ] .` — indented,
@@ -99,7 +105,7 @@ func TestSkillRecipeBodies_Parse(t *testing.T) {
 // positive in the extractor, not a defect in the docs, and it fired on the
 // first run here. A production line is recognized by its ` = ` separator,
 // which no recipe rule uses.
-func extractRecipeBlocks(s string) []string {
+func extractRecipeBlocks() []string {
 	var out []string
 	var cur []string
 	flush := func() {
@@ -108,7 +114,7 @@ func extractRecipeBlocks(s string) []string {
 			cur = nil
 		}
 	}
-	for line := range strings.SplitSeq(s, "\n") {
+	for line := range strings.SplitSeq(helpRecipes, "\n") {
 		indented := strings.HasPrefix(line, "    ")
 		trimmed := strings.TrimSpace(line)
 		switch {
@@ -134,8 +140,14 @@ func extractRecipeBlocks(s string) []string {
 // four-space indent and a leading `select `) and the skill extractor (which
 // keyed on the literal "recipe_body") both returned ZERO over it — measured,
 // against a same-run control of four bodies from helpRecipes.
+//
+// IT READS BOTH KEYS NOW, through docsGuideRecipeBodies. The guide carries three
+// bodies and only the middle one is keyed "content": the other two are the
+// `recipe_body` payloads of runnable collect calls. Keyed on "content" alone this
+// gate logged `parsed 1 recipe bodies` against a guide carrying three, and the
+// two it could not see were gated by nothing in the tree.
 func TestDocsRecipeExamples_Parse(t *testing.T) {
-	bodies := extractJSONStringValues(string(docsRecipesGuide), "content")
+	bodies := docsGuideRecipeBodies()
 	// THE FATAL-ON-EMPTY GUARD ITS TWO SIBLINGS ALREADY CARRY. Without it a run
 	// that extracted nothing prints a PASS line, and the gate is satisfied by a
 	// test that parsed no bytes at all.
@@ -183,6 +195,19 @@ func extractJSONStringValues(s, key string) []string {
 		}
 	}
 	return out
+}
+
+// docsGuideRecipeBodies pulls every recipe body out of the mirrored docs guide,
+// under BOTH keys the guide uses.
+//
+// TWO KEYS, ONE CARRIER. A runnable example passes its body as a collect call's
+// `recipe_body`; the scratch-file example keys it "content" because that is what
+// a scratch file looks like. A reader copies either. An extractor that reads one
+// key covers one third of the carrier and reports a clean pass over the rest.
+func docsGuideRecipeBodies() []string {
+	guide := string(docsRecipesGuide)
+	bodies := extractJSONStringValues(guide, "recipe_body")
+	return append(bodies, extractJSONStringValues(guide, "content")...)
 }
 
 func firstLine(s string) string {

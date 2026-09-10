@@ -94,13 +94,13 @@ record_decision({
 
   <field-quality name="name">
     Write as if someone searches "why did we choose X" or "how does Y work".
-    Good: "Serve reflect modes from the loop cache instead of recomputing per call"
+    Good: "Serve the computed view from a cache instead of recomputing it per call"
     Bad: "Database decision"
   </field-quality>
 
   <field-quality name="choice">
     Specific and concrete.
-    Good: "Use interleaved bin packing with 200 max chunks and 40k token target"
+    Good: "Batch writes at a fixed maximum item count and a fixed payload-size target"
     Bad: "Use batch processing"
   </field-quality>
 
@@ -112,8 +112,8 @@ record_decision({
 
   <field-quality name="alternatives">
     Explain WHY each was rejected, not just list them.
-    Good: "SQLite: rejected because it requires file locking, incompatible with concurrent MCP server access"
-    Bad: "Also considered SQLite"
+    Good: "A single-file store: rejected because it needs a file lock, which the concurrent server access cannot hold"
+    Bad: "Also considered a single-file store"
   </field-quality>
 
 </constraint>

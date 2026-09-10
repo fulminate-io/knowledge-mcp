@@ -36,6 +36,12 @@ const (
 	paritySeedLocalB    = "parity-local-b"
 	paritySeedTicket    = "parity-ticket"
 	paritySeedRule      = "parity-rule"
+	// The two practice endpoints the source_hub row links. They are seeded ONLY
+	// by seedParityHubMembers, into the practice graph alone, because the hub
+	// scoping is decided by which graph an endpoint resolves in as much as by
+	// the key it carries.
+	paritySeedHubA = "parity-hub-member-a"
+	paritySeedHubB = "parity-hub-member-b"
 )
 
 // parityFixture describes how to drive one arm through the fake.
@@ -47,6 +53,13 @@ type parityFixture struct {
 	// literal in the write — injecting an arbitrary value would deselect the arm
 	// and the row would measure a different arm's behavior.
 	discriminants map[string]any
+	// paramSeed installs extra seeding on the fake for ONE param, after
+	// paritySeed has built it. Needed where a param's routing depends on WHICH
+	// GRAPH an id resolves in: the shared seed answers every id out of the flat
+	// map, so a row that must observe a node resolving in practice and NOT in
+	// knowledge cannot express that through `base` alone. Per-param rather than
+	// per-arm so the extra seeding cannot leak into the arm's other rows.
+	paramSeed map[string]func(*fakeGraphCaller)
 	// paramBase replaces `base` for one param. Needed by the two arms whose
 	// consumed set cannot be exercised from a single payload shape: the
 	// operation-polymorphic passthrough (its set is a union over create /
@@ -65,6 +78,16 @@ type parityFixture struct {
 	// viaCriterionIntercept routes through InterceptAddCriterion, which fires
 	// ahead of InterceptMutate for criterion creates.
 	viaCriterionIntercept bool
+	// selectionOnly names params that are SELECTION-ONLY ON THIS ARM — consumed,
+	// but in a way no MutationPlan from this arm's base payload can show.
+	//
+	// IT IS PER-ARM BECAUSE THE CLASS IS. The global selectionOnlyParams set
+	// holds params that are selection-only on EVERY arm; a param can be a value
+	// the write carries on one arm and a selection axis on another, and folding
+	// such a param into the global set would silently retire the write assertion
+	// on every arm where it does land a value. That is the observation this cell
+	// exists to preserve rather than trade away.
+	selectionOnly map[string]bool
 }
 
 // paritySeed builds the fake with every fixture node seeded. One shared seed
@@ -86,6 +109,13 @@ func paritySeed(t *testing.T) *fakeGraphCaller {
 			paritySeedBackend: nodeResultJSON(t, paritySeedBackend, "ticket", map[string]string{
 				"backend": "linear", "linear_id": "uuid-parity",
 			}),
+			// THE HUBS THE PRACTICE ROWS NAME, in the FLAT map so they resolve in
+			// whatever graph a row addresses. A `source_hub` that resolves to no
+			// node is refused on every arm now, so a fixture that seeded only the
+			// members would have every practice row report that refusal instead of
+			// the param classification the row exists to measure.
+			parityProbeHub:       paritySourceHubNode(parityProbeHub),
+			parityPassthroughHub: paritySourceHubNode(parityPassthroughHub),
 		},
 		traversalByRoot: map[string][]*knowledgev1.Node{
 			paritySeedPlan: {child},
@@ -299,6 +329,12 @@ func parityFixtures() map[armID]parityFixture {
 				"operation": "delete", "graph": "knowledge",
 				"ids": []any{paritySeedLocalA}, "id": paritySeedLocalA,
 			},
+			// NO source_hub ENTRY, because this arm now REJECTS the param and a
+			// rejected row is asserted on the error rather than on the write. The
+			// by-hub delete is served by armGraphPassthrough on the practice family;
+			// this arm sees the knowledge family alone, which has no hubs. The
+			// compiler half is asserted by name in engine's
+			// TestCompileDelete_ByHubAcceptsTheMutateArmSpelling.
 		},
 		armAnswer: {
 			base: map[string]any{
@@ -318,6 +354,28 @@ func parityFixtures() map[armID]parityFixture {
 				"from": paritySeedLocalA, "to": paritySeedLocalB, "relationship": "relates-to",
 			},
 			discriminants: map[string]any{"operation": "link", "link_graph": "linkage", "graph": "knowledge"},
+			// source_hub is read ONLY on the practice family — off it the arm's
+			// gate refuses the param by name — so the row is driven on a practice
+			// link whose endpoints are seeded into the combined graph and into no
+			// other. The probe VALUE is the hub the seeded endpoints carry, which
+			// is what makes the row observe the scoping rather than a coincidence:
+			// a guard that ignored the param would pass, and one that compared
+			// against any other hub would fail.
+			paramBase: map[string]map[string]any{
+				"source_hub": {
+					"operation": "link", "graph": "practice", "relationship": "relates-to",
+					"from": paritySeedHubA, "to": paritySeedHubB,
+				},
+			},
+			paramSeed: map[string]func(*fakeGraphCaller){"source_hub": seedParityHubMembers},
+			// AND IT IS SELECTION-ONLY HERE. The hub scopes a CLIENT-SIDE resolve
+			// and lands in no MutationPlan at all — that absence is requirement
+			// 3's own contract (the GraphSelector is byte-identical with and
+			// without it), so a row demanding the probe appear in the write would
+			// fail against correct work. What it does land is asserted by name in
+			// TestPracticeLinkHub_ScopesTheEndpoints, which drives the refusals a
+			// single arbitrary probe cannot reach.
+			selectionOnly: map[string]bool{"source_hub": true},
 		},
 		armLinkFallthrough: {
 			declines: true,
@@ -351,12 +409,17 @@ func parityFixtures() map[armID]parityFixture {
 			discriminants: map[string]any{"operation": "unlink", "graph": "knowledge"},
 		},
 		armGraphPassthrough: {
+			// THE PROBE CARRIES NO `language`, because a practice WRITE refuses it:
+			// practice is one combined graph, so a write has no per-language graph
+			// to land in and the arm errors by name rather than dropping the param.
+			// It carries `source_hub` instead, which is the replacement the refusal
+			// points a caller at.
 			base: map[string]any{
-				"operation": "create", "graph": "practice", "language": "go",
+				"operation": "create", "graph": "practice", "source_hub": "hub-1",
 				"type": "pattern", "name": "probe-name",
 			},
 			discriminants: map[string]any{
-				"operation": "create", "graph": "practice", "language": "go", "type": "pattern",
+				"operation": "create", "graph": "practice", "type": "pattern",
 				// A non-empty link_graph makes the passthrough decline BEFORE its
 				// gate runs, so it deselects the arm: arm-preserving is absent.
 				"link_graph": "",
@@ -367,15 +430,29 @@ func parityFixtures() map[armID]parityFixture {
 			// batch create, and keywords only lands as an UPDATE set_field (the
 			// create NodeBody has no keywords carrier).
 			paramBase: map[string]map[string]any{
-				"nodes": {"operation": "create_batch", "graph": "practice", "language": "go"},
+				// language is driven against the CHECKS half of this arm, which is
+				// the half that reads it: on a practice write it is refused by name,
+				// so a practice-based probe would observe the refusal rather than
+				// the param's declared class.
+				"language": {"operation": "create", "graph": "checks", "type": "finding", "name": "probe-name"},
+				"nodes":    {"operation": "create_batch", "graph": "practice", "source_hub": "hub-1"},
 				"edges": {
-					"operation": "create_batch", "graph": "practice", "language": "go",
+					"operation": "create_batch", "graph": "practice", "source_hub": "hub-1",
 					"nodes": []any{map[string]any{"type": "pattern", "name": "probe-anchor", "summary": "probe anchor"}},
 				},
 				"keywords": {
-					"operation": "update", "graph": "practice", "language": "go",
-					"id": paritySeedLocalA,
+					"operation": "update", "graph": "practice", "source_hub": "hub-1",
+					// THE TARGET HAS TO BE A MEMBER OF hub-1. A practice update
+					// carrying a hub now SCOPES its target to that hub, so an id
+					// grouped under nothing is refused and this row would measure
+					// the refusal instead of keywords' routing. paritySeedLocalA is
+					// a knowledge-graph finding with no hub key, which is exactly
+					// the shape that refusal names.
+					"id": paritySeedPassthroughMember,
 				},
+			},
+			paramSeed: map[string]func(*fakeGraphCaller){
+				"keywords": seedParityPassthroughHubMember,
 			},
 		},
 		// The repo entry is REQUIRED, not decoration: a code-graph mutate with no
@@ -392,6 +469,21 @@ func parityFixtures() map[armID]parityFixture {
 			discriminants: map[string]any{
 				"operation": "update", "graph": "code", "repo": "probe-repo", "id": paritySeedLocalA,
 			},
+			// source_hub is a PRACTICE-FAMILY param, refused at the dispatch head on
+			// every other family — so this arm's code-graph base could only observe
+			// that refusal, never the routing the row claims. The cell is driven on
+			// the practice UNLINK instead: unlink is one of the operations this arm
+			// serves, no arm upstream claims it, and it declines to the engine with
+			// zero client writes, which is what a no-accounting row asserts. The
+			// endpoints are seeded MEMBERS of the probe hub so the scoping passes;
+			// a row driven on non-members would measure the refusal, not the arm.
+			paramBase: map[string]map[string]any{
+				"source_hub": {
+					"operation": "unlink", "graph": "practice", "relationship": "relates-to",
+					"from": paritySeedHubA, "to": paritySeedHubB,
+				},
+			},
+			paramSeed: map[string]func(*fakeGraphCaller){"source_hub": seedParityHubMembers},
 		},
 	}
 	for arm, spec := range mutateArmRegistry {

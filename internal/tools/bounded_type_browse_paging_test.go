@@ -117,7 +117,7 @@ func TestRenderLinkageProxyBreakdown_PagedBrowse(t *testing.T) {
 	f := &pagingFake{byType: map[string][]*knowledgev1.Node{}}
 	want := map[string]int{}
 	for i := range proxies {
-		fg := []string{"code", "cloud", "practice"}[i%3]
+		fg := []string{"code", "web", "practice"}[i%3]
 		n := &knowledgev1.Node{Id: fmt.Sprintf("proxy-%05d", i), Type: string(kgtypes.NodeProxy)}
 		kgtypes.SetValue(n, "foreign_graph", fg)
 		f.byType[string(kgtypes.NodeProxy)] = append(f.byType[string(kgtypes.NodeProxy)], n)

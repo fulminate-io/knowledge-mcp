@@ -33,7 +33,7 @@ func (compFailStubCollector) Name() string { return compFailStubType }
 
 func (compFailStubCollector) Collect(_ context.Context, _ string, _ collector.CollectOptions) (*collectorwire.CollectResult, error) {
 	return &collectorwire.CollectResult{
-		GraphType: kgtypes.GraphCloud,
+		GraphType: kgtypes.GraphPractice,
 		GraphName: "verdict-smoke",
 		Nodes: []*knowledgev1.Node{
 			{Type: "list_item"},
@@ -66,9 +66,9 @@ func TestBuiltinCollectWork_ReportsCompositionFailureAfterTail(t *testing.T) {
 	rt := NewCollectRuntime()
 	deps := &detachFullDeps{rt: rt, gc: &fakeGraphCaller{}}
 
-	composition, _, err := builtinCollectWork(context.Background(), deps,
+	composition, _, err := collectWork(context.Background(), deps,
 		collectArgs{Type: compFailStubType, ID: "verdict-id"},
-		collector.CollectOptions{Sink: noopSink{}}, "")
+		collector.CollectOptions{Sink: noopSink{}}, "", false, builtinCollectRunner())
 
 	require.Error(t, err, "a refused composition must make the collect report failure")
 	assert.Contains(t, err.Error(), "harvest captured nothing usable")
@@ -93,9 +93,9 @@ func TestBuiltinCollectWork_ReportsCompositionFailureAfterTail(t *testing.T) {
 	detachStubStarted = make(chan struct{})
 	detachStubRelease = make(chan struct{})
 	close(detachStubRelease)
-	okComposition, _, okErr := builtinCollectWork(context.Background(), deps,
+	okComposition, _, okErr := collectWork(context.Background(), deps,
 		collectArgs{Type: detachFullPathType, ID: "no-invariant-id"},
-		collector.CollectOptions{Sink: noopSink{}}, "")
+		collector.CollectOptions{Sink: noopSink{}}, "", false, builtinCollectRunner())
 	require.NoError(t, okErr, "a collector declaring no invariant must still report success")
 	assert.Equal(t, "nodes 0, edges 0", okComposition)
 }

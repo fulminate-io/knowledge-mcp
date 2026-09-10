@@ -231,10 +231,17 @@ func TestBranchFirstTouch_SeedsFromSiblingBaselines(t *testing.T) {
 		requireFallback(t, h, fallbackCollectorVersionChange)
 	})
 
-	// THE OTHER TRIGGER, and its ECHO is the discriminator. A discovery-mode change
-	// degrades to a full upload the server still declines file by file — correct,
-	// because those rows genuinely match what it holds — so the identity must still
-	// be echoed. Only the collector-version trigger suppresses it.
+	// THE OTHER TRIGGER, WHICH THE SEED MUST STILL LET FIRE. What this subtest
+	// discriminates is the seed's scope: seeding the collector-version baseline
+	// from the siblings must not also silence a genuine discovery change on the
+	// same collect.
+	//
+	// ITS ECHO IS SUPPRESSED TOO, and that is the corrected expectation rather
+	// than a relaxed one. This collect uploads in FULL and names NO deletions, so
+	// an echoed identity has the server decline every key whose hash matches and
+	// then derive those same keys as uncarried — the P0 the discovery trigger
+	// shipped. The rows matching what the server holds is not a reason to echo;
+	// it is what makes the decline fire.
 	t.Run("branch_discovery_signature_differs_still_falls_back", func(t *testing.T) {
 		result := onBranch(twoFileResult(), firstTouchBranch)
 		result.DiscoveryFingerprint = "fp-a-different-discovery-configuration"
@@ -245,10 +252,11 @@ func TestBranchFirstTouch_SeedsFromSiblingBaselines(t *testing.T) {
 		requireFallback(t, h, fallbackDiscoveryModeChange)
 		chunkIDs, finalizeID := echoedManifestIDs(t, rec)
 		for i, id := range chunkIDs {
-			require.Equal(t, "manifest-matching", id,
-				"chunk %d must still echo the identity: suppression is scoped to the collector-version trigger", i)
+			require.Empty(t, id,
+				"chunk %d must withhold the identity: every full-upload collect does, or the server "+
+					"declines its rows and then derives them as deleted", i)
 		}
-		require.Equal(t, "manifest-matching", finalizeID)
+		require.Empty(t, finalizeID)
 	})
 
 	// DISCRIMINATES THE CHOSEN DESIGN FROM A READ-THROUGH-ONLY ALTERNATIVE, which

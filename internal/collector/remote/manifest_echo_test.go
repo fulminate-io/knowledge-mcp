@@ -12,19 +12,27 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/collectorwire"
 )
 
-// manifest_echo_test.go — the manifest-identity echo, which is what makes the
-// collector-version trigger a REAL re-land rather than a full upload the server
-// declines file by file.
+// manifest_echo_test.go — the manifest-identity echo, which is what makes a
+// FULL-UPLOAD collect a REAL re-land rather than a full upload the server
+// declines key by key.
 //
 // WHY BLANKING THE IDENTITY IS THE WHOLE MECHANISM. The server's decline is not
-// keyed on diff mode: store.DeclinedFilesForChunk declines any file whose echoed
-// manifest identity and per-file hash match what it holds. The collector-version
-// trigger fires precisely when the rows DIFFER in ways no per-file hash can see,
-// so a trigger that only forced uploadAll would upload everything and have every
-// file declined — a mechanism that executes exclusively in the state where it
-// accomplishes nothing. Withholding the identity turns the decline off for that
-// one collect, and only then does the server's file-scoped reclaim clear the
-// superseded rows.
+// keyed on diff mode: store.DeclinedFilesForChunk declines any key whose echoed
+// manifest identity and per-key hash match what it holds. A collect that forces
+// uploadAll while still echoing the identity therefore uploads everything and
+// has every unchanged key declined — a mechanism that executes exclusively in
+// the state where it accomplishes nothing. Withholding the identity turns the
+// decline off for that one collect, and only then does the server's reclaim
+// clear the superseded rows.
+//
+// AND THE ECHO ON A FULL UPLOAD IS NOT MERELY INERT — IT DESTROYS. A full upload
+// carries no deletion set, so the server derives one from its presence rails,
+// and a declined key is accounted for by the declined rail alone. That shipped
+// as a P0: a registered custom collect whose params moved fired the
+// discovery-mode trigger, echoed the identity, had every stable-id row declined
+// and lost them, while reporting a complete successful emission. So the
+// suppression is keyed on decision.uploadAll and the legs below cover EVERY
+// route to a full upload, not just the one trigger that had it first.
 
 // echoedManifestIDs returns the identity every captured chunk carried plus the
 // one the Finalize carried, so an assertion covers BOTH consumers. Blanking one
@@ -104,11 +112,12 @@ func TestCollectorVersionChange_SuppressesManifestEcho(t *testing.T) {
 		require.False(t, any, "an unchanged collect must record NO fallback, got %q", got)
 	})
 
-	// SCOPE. A discovery-mode change is a different trigger with a different
-	// remedy: its files genuinely match what the server holds, so declining them is
-	// CORRECT and suppressing the decline would re-land the whole graph for a
-	// re-scope. The identity must still be echoed here.
-	t.Run("discovery_trigger_still_echoes", func(t *testing.T) {
+	// THE P0's OWN LEG. A discovery-mode change forces a full upload exactly as
+	// the collector-version trigger does, and while it echoed the identity that
+	// upload was declined key by key and the server's derived deletion set
+	// removed every declined row. The rows matching what the server holds is not
+	// a reason to echo — it is what makes the decline fire.
+	t.Run("discovery_trigger_suppresses_echo", func(t *testing.T) {
 		rec, h := runEchoCollect(t, func(result *collectorwire.CollectResult) {
 			require.NoError(t, defaultDiscoveryStore.record(
 				baselineCommit{key: discoveryKey(result), sig: "a-different-discovery-configuration"},
@@ -125,10 +134,64 @@ func TestCollectorVersionChange_SuppressesManifestEcho(t *testing.T) {
 
 		chunkIDs, finalizeID := echoedManifestIDs(t, rec)
 		for i, id := range chunkIDs {
-			require.Equal(t, "manifest-matching", id,
-				"chunk %d must still echo the identity: the suppression is scoped to the collector-version trigger", i)
+			require.Empty(t, id,
+				"chunk %d must withhold the identity: this collect uploads in full and names no deletions, "+
+					"so an echoed identity has the server decline every unchanged key and then derive it as deleted", i)
 		}
-		require.Equal(t, "manifest-matching", finalizeID, "and the Finalize must still echo it")
+		require.Empty(t, finalizeID, "the Finalize must withhold it too, or the collect is half-declined")
+	})
+
+	// THE KILL SWITCH IS A FULL UPLOAD TOO. An operator reaching for the
+	// break-glass lever gets a real re-land rather than an upload the server
+	// declines wholesale — and, on a node-keyed graph, rather than the same
+	// deletion the discovery trigger produced.
+	t.Run("kill_switch_suppresses_echo", func(t *testing.T) {
+		isolateDiscoveryStore(t)
+		client, rec := startRecordingIngest(t)
+		result := twoFileResult()
+		rec.manifest = manifestMatching(result)
+		seedCollectBaselines(result)
+		t.Setenv(collectDiffEnv, "off")
+
+		h := installCapturingSlog(t)
+		require.NoError(t, NewUploadSink(client).WriteResult(context.Background(), "", result))
+
+		got, any := h.recordedFallback()
+		require.True(t, any, "control: the kill switch must actually have fired")
+		require.Equal(t, string(fallbackKillSwitch), got, "control: the KILL SWITCH must be the trigger under test")
+
+		chunkIDs, finalizeID := echoedManifestIDs(t, rec)
+		for i, id := range chunkIDs {
+			require.Empty(t, id, "chunk %d of a kill-switched collect must withhold the identity", i)
+		}
+		require.Empty(t, finalizeID)
+	})
+
+	// THE LEG WITH NO TRIGGER AT ALL, which is why the suppression is keyed on
+	// the upload plan and not on the trigger table. A deliberate shadow request
+	// fires nothing — evaluateManifestFallback returns false for it — and still
+	// uploads in full, so a reason-keyed suppression would leave exactly this
+	// lane echoing an identity for a full upload.
+	t.Run("deliberate_shadow_suppresses_echo", func(t *testing.T) {
+		isolateDiscoveryStore(t)
+		client, rec := startRecordingIngest(t)
+		result := twoFileResult()
+		rec.manifest = manifestMatching(result)
+		seedCollectBaselines(result)
+		t.Setenv(collectDiffEnv, "shadow")
+
+		h := installCapturingSlog(t)
+		require.NoError(t, NewUploadSink(client).WriteResult(context.Background(), "", result))
+
+		got, any := h.recordedFallback()
+		require.False(t, any, "control: a deliberate shadow request must fire NO trigger, got %q", got)
+
+		chunkIDs, finalizeID := echoedManifestIDs(t, rec)
+		for i, id := range chunkIDs {
+			require.Empty(t, id,
+				"chunk %d: shadow uploads in full, so it must withhold the identity even though no trigger fired", i)
+		}
+		require.Empty(t, finalizeID)
 	})
 }
 

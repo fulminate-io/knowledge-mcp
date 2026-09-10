@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"connectrpc.com/connect"
 
@@ -191,23 +192,89 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 }
 
 // validateRegistration is the registration-time gate run by Create and Update.
-// It (1) enforces the record-shape invariants via Validate, then (2) rejects a
-// Name that collides with a built-in GraphType so a registered type can never
-// shadow a built-in. Update enforces the same gate as Create.
+// It enforces the record-shape invariants via Validate, then the name rules via
+// ValidateName. Update enforces the same gate as Create.
 func validateRegistration(d *knowledgev1.GraphTypeDef) error {
 	if err := Validate(d); err != nil {
 		return err
 	}
-	if kgtypes.IsBuiltinGraphType(d.GetName()) {
-		return fmt.Errorf("graphtypecrud: name %q collides with a built-in graph type", d.GetName())
+	return ValidateName(d.GetName())
+}
+
+// ValidateName rejects a family name that collides with a built-in GRAPH TYPE,
+// so a registered family can never shadow one, one that names a RETIRED
+// built-in, and one carrying a COLON, which is a separator in the identifiers
+// derived from a family name.
+//
+// IT IS EXPORTED BECAUSE THE FIRST GATE IS NOW THE CLI. `knowledge collector
+// add` refuses a colliding name BEFORE writing the entry; letting the file take
+// it and failing at the next collect would leave an operator with a written
+// entry that can never run. The upsert path runs the same function, and so does
+// the config-file loader, so the three cannot drift into different answers.
+//
+// IT DOES NOT REFUSE A BUILT-IN COLLECTOR'S NAME, and the distinction is the
+// point rather than a gap. aws, gcp, azure, k8s, github, gitlab and bitbucket
+// are collector names and not graph types, so an entry under one of them is
+// ADMITTED — and the collect dispatch then resolves it to the entry rather than
+// to the compiled-in collector, because the entry name is the graph family. A
+// registered family can shadow a built-in COLLECTOR by design; it can never
+// shadow a built-in GRAPH TYPE, which is what this gate enforces.
+func ValidateName(name string) error {
+	if err := ValidateNameSegments(name); err != nil {
+		return err
+	}
+	if kgtypes.IsBuiltinGraphType(name) {
+		return fmt.Errorf("graphtypecrud: name %q collides with a built-in graph type", name)
 	}
 	// A RETIRED BUILTIN IS NOT A FREE NAME. IsBuiltinGraphType stops claiming a
 	// removed family, so without this check the name becomes registrable and a
 	// custom graph could adopt the leftover directory an upgrading operator still
 	// has on disk — a removed family silently degrading into a registered one.
-	if reason, retired := kgtypes.RetiredGraphTypeReason(d.GetName()); retired {
+	if reason, retired := kgtypes.RetiredGraphTypeReason(name); retired {
 		return fmt.Errorf("graphtypecrud: name %q names a RETIRED built-in graph type and may not be re-registered: %s",
-			d.GetName(), reason)
+			name, reason)
+	}
+	return nil
+}
+
+// ValidateNameSegments enforces the rules a family name owes the IDENTIFIERS
+// DERIVED FROM IT, as opposed to the rules about which names are free to claim.
+// It is the strictly shape half of ValidateName, split out so the config-file
+// loader can reach it without also reaching the claim rules.
+//
+// A COLON IS A SEPARATOR IN AN IDENTIFIER THIS NAME BECOMES A SEGMENT OF, and
+// admission is the only place it can be refused. A cross-graph proxy for a node
+// in a registered family is stored under "proxy:custom/<family>:<graph>:<node
+// id>"; a family carrying a colon adds a segment and shifts every field after
+// it, and that id is PERSISTED, so by the time anything notices, the operator's
+// own stored data is what a later refusal would be rejecting.
+//
+// ONLY THE FAMILY IS CONSTRAINED, and the reason is reachability rather than
+// position. A NODE ID may carry colons freely and routinely does — a code node
+// id is full of them — because it is the last segment. A GRAPH NAME carrying
+// one is not so much harmless as UNCHANGED IN RISK: (graph "a:b", node "c")
+// and (graph "a", node "b:c") already render the same id on every arm,
+// including the four builtin ones, so refusing it here would fix nothing that
+// the builtin arms do not equally have. The FAMILY is different: it is the one
+// segment an operator names at admission, before any id exists, and it is the
+// only one this predicate can reach.
+//
+// A SLASH IS ADMITTED: the generic proxy id's second segment carries one in
+// every case, so a family name with one changes nothing about the id.
+//
+// WHY THE SPLIT RATHER THAN ONE FUNCTION FOR ALL THREE ROUTES. The claim rules
+// answer "may this name be registered", and the config-file loader deliberately
+// does NOT answer that: a client-side test proves the collect dispatch
+// short-circuits a built-in graph type WITHOUT depending on any write path
+// refusing it, and it builds that state by writing such an entry into a config
+// file. Routing the whole of ValidateName through the loader would make that
+// state unconstructible and would silently convert a client-side guarantee into
+// a claim about the loader. The shape rule has no such tension: an identifier
+// nobody can parse is wrong on every route.
+func ValidateNameSegments(name string) error {
+	if strings.Contains(name, ":") {
+		return fmt.Errorf(
+			"graphtypecrud: name %q contains ':', which separates the segments of the identifiers derived from a family name (a cross-graph proxy id is proxy:custom/<family>:<graph>:<node id>)", name)
 	}
 	return nil
 }

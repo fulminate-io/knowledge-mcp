@@ -46,8 +46,16 @@ func addLocalDaemonJSON(ctx context.Context, deps ClientDeps, m map[string]any) 
 	if runs, ok := collectRunSnapshot(deps); ok {
 		addCollectRunsJSON(m, runs)
 	}
-	if rows := collectCoverageRows(ctx, deps); len(rows) > 0 {
+	rows, coverageErr := collectCoverageRows(ctx, deps)
+	if len(rows) > 0 {
 		m["coverage"] = rows
+	}
+	// The JSON arm names a walk failure on its own key rather than inside the
+	// coverage[] block, whose per-row shape is pinned to exactly ten keys. A
+	// consumer reading coverage[] alone would otherwise see a shorter list with
+	// nothing to say a family was dropped.
+	if coverageErr != nil {
+		m["coverage_error"] = coverageErr.Error()
 	}
 	if checks, ok := doctorChecks(ctx, deps); ok {
 		m["doctor"] = checks

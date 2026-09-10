@@ -54,9 +54,6 @@ func ProxyInfo(n *knowledgev1.Node) *knowledgev1.ProxyTarget {
 	case "code":
 		// Dream-analyze code symbol proxy.
 		return &knowledgev1.ProxyTarget{GraphType: string(kgtypes.GraphCode), Name: kgtypes.Value(n, "repo"), NodeId: kgtypes.Value(n, "foreign_id")}
-	case "cloud":
-		// Cloud resource proxy.
-		return &knowledgev1.ProxyTarget{GraphType: string(kgtypes.GraphCloud), Name: kgtypes.Value(n, "account"), NodeId: kgtypes.Value(n, "foreign_id")}
 	case "practice":
 		// Dream-analyze best-practice proxy.
 		return &knowledgev1.ProxyTarget{GraphType: string(kgtypes.GraphPractice), NodeId: kgtypes.Value(n, "foreign_id")}

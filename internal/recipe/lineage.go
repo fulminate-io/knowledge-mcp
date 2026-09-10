@@ -8,16 +8,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
-	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 )
 
 // StableID returns a deterministic 16-character hex ID for a node a recipe run
 // is about to emit into a target graph. The ID is a SHA-256 truncation over
 // (targetGraph, sourceSlug, kind, identity) so re-running the same recipe on the
 // same source graph produces the same IDs, which is what makes a re-run
-// idempotent and what lets the write guard recognize a resident row by id.
+// idempotent and what lets the landing's collision read recognize a resident row
+// by id.
 //
 // The component separator is "\x00" so that adjacent components like
 // ("hohpe-eip", "") and ("hohpe", "eip") do not collide. The null byte is ASCII
@@ -43,52 +41,34 @@ func StableID(targetGraph, sourceSlug, kind, identity string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// translatedFromEvidence is the JSON payload carried on every translated-from
-// edge. The schema is intentionally minimal — consumers parse it field-by-field
-// so additive fields do not break older readers.
-type translatedFromEvidence struct {
-	// Source is the opaque source slug (e.g. "hohpe-eip"). It records which
-	// source run produced the node, so lineage stays attributable per source.
-	Source string `json:"source"`
-}
+// versionIdentitySeparator joins a resident id to the version integer inside the
+// twin's identity component. It is the SAME null byte StableID already uses
+// between its four components, for the same reason: it never appears in
+// well-formed UTF-8, so ("abc", 12) and ("abc1", 2) cannot collide.
+const versionIdentitySeparator = "\x00v"
 
-// TranslatedFromEdge builds the kgwire.BatchEdge a recipe run emits to stamp
-// provenance from a target-graph node (the newly-emitted one) back to the
-// source node in the source graph. The edge carries Evidence JSON with the
-// source slug so a node's emitting run stays identifiable.
+// VersionedTwinID mints the id of version n of a resident node.
 //
-// Both IDs are full string identifiers (FromIdx/ToIdx are -1). The returned edge
-// is appended to Result.Lineage. If marshaling fails (never does in practice;
-// all fields are strings) the function returns an edge with Evidence == "" rather
-// than panicking.
-func TranslatedFromEdge(targetNodeID, sourceRawNodeID, sourceSlug string) kgwire.BatchEdge {
-	payload, err := json.Marshal(translatedFromEvidence{Source: sourceSlug})
-	if err != nil {
-		payload = nil
-	}
-	return kgwire.BatchEdge{
-		FromIdx:  -1,
-		ToIdx:    -1,
-		FromID:   targetNodeID,
-		ToID:     sourceRawNodeID,
-		Type:     kgtypes.EdgeTranslatedFrom,
-		Method:   "transformer",
-		Evidence: string(payload),
-	}
-}
-
-// SourceFromEvidence extracts the Source field from a translated-from edge's
-// Evidence blob. Reads the source a node was translated from, matching the
-// source slug. Returns "" on empty or malformed input.
-func SourceFromEvidence(evidence string) string {
-	if evidence == "" {
-		return ""
-	}
-	var e translatedFromEvidence
-	if err := json.Unmarshal([]byte(evidence), &e); err != nil {
-		return ""
-	}
-	return e.Source
+// THE TWIN MUST CARRY A DIFFERENT ID FROM THE RESIDENT, and that is a constraint
+// rather than a preference: the landing writes through create_batch, which is an
+// ADD and not an upsert, so a twin written under the resident's id would
+// overwrite whatever a human had since edited into that row. That overwrite is
+// exactly what the versioned-twin ruling exists to prevent, so the id is derived
+// instead.
+//
+// IT DERIVES FROM THE RESIDENT'S ID, not from the emit's identity string. The
+// identity feeds StableID and is never stored (assembleEmittedNode consumes it),
+// so at collision time the only thing the landing holds about the resident is its
+// id — which is itself a StableID over the identity, so nothing is lost.
+//
+// IT IS DETERMINISTIC, which is what keeps a landing idempotent in the same way
+// the base id already is: re-running against an unchanged target reproduces the
+// same twin id at the same version, and a third run that finds v2 resident mints
+// v3 rather than a fresh node per run. A random or timestamped suffix would make
+// every re-run land a new node and defeat the collision branch entirely.
+func VersionedTwinID(targetGraph, sourceSlug, kind, residentID string, version int) string {
+	return StableID(targetGraph, sourceSlug, kind,
+		residentID+versionIdentitySeparator+strconv.Itoa(version))
 }
 
 // TargetKey renders a TargetSpec as "<type>/<name>" for use as the first
@@ -98,8 +78,8 @@ func TargetKey(t TargetSpec) string {
 }
 
 // containsEvidence is the JSON payload a contains edge carries. Only the
-// position is read here; the schema is parsed field-by-field so additive fields
-// do not break older readers, exactly as the translated-from payload is.
+// position is read here, and the schema is parsed field-by-field so additive
+// fields do not break older readers.
 type containsEvidence struct {
 	// Position is the child's index under its parent, stamped as a string by
 	// both raw collectors.

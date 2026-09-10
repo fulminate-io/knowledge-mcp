@@ -27,9 +27,9 @@ func TestSegmentBearingGraphs_SkipsAbsentCodeRepo(t *testing.T) {
 	c, _ := buildReconcileClient(t)
 
 	const (
-		presentRepo = "repo-this-machine-has"
-		absentRepo  = "repo-this-machine-lacks"
-		cloudAcct   = "some-cloud-account"
+		presentRepo  = "repo-this-machine-has"
+		absentRepo   = "repo-this-machine-lacks"
+		practiceLang = "some-practice-language"
 	)
 
 	// Presence is stated directly rather than by planting a manifest: the subject
@@ -44,7 +44,7 @@ func TestSegmentBearingGraphs_SkipsAbsentCodeRepo(t *testing.T) {
 	c.workingSet = workingset.New()
 	c.AdmitGraph(kgtypes.GraphCode, presentRepo, "search")
 	c.AdmitGraph(kgtypes.GraphCode, absentRepo, "search")
-	c.AdmitGraph(kgtypes.GraphCloud, cloudAcct, "search")
+	c.AdmitGraph(kgtypes.GraphPractice, practiceLang, "search")
 
 	// All three were admitted — the drop below is the presence gate acting, not an
 	// admission that never happened.
@@ -56,7 +56,7 @@ func TestSegmentBearingGraphs_SkipsAbsentCodeRepo(t *testing.T) {
 	require.ElementsMatch(t,
 		[]segmentGraphRef{
 			{gt: kgtypes.GraphCode, name: presentRepo},
-			{gt: kgtypes.GraphCloud, name: cloudAcct},
+			{gt: kgtypes.GraphPractice, name: practiceLang},
 		},
 		got,
 		"an admitted code graph with no local checkout is dropped, while the code graph WITH a "+

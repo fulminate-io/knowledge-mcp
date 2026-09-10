@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,10 +32,58 @@ func seedSelection(t *testing.T, dir, id string) string {
 	return path
 }
 
+// ttlTestWindow is the TTL every clock-driven selection test is built on. It is
+// deliberately far longer than any run of this suite: the fake clock is the only
+// thing that can cross it, so an assertion that lands on the far side of the
+// window is proof that the code consulted the injected clock, and an assertion
+// on the near side cannot be spoiled by a slow machine.
+const ttlTestWindow = time.Hour
+
+// fakeSelectionClock is a controllable clock for AccountSelection's TTL. Reads
+// happen on the caller's goroutine under the selection mutex, advances on the
+// test goroutine; the mutex here keeps the two honest under -race.
+type fakeSelectionClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func newFakeSelectionClock() *fakeSelectionClock {
+	return &fakeSelectionClock{now: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)}
+}
+
+func (c *fakeSelectionClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+// advancePastTTL moves the clock beyond the cache window, so the next read
+// re-reads the config. Every crossing in these tests is this one.
+func (c *fakeSelectionClock) advancePastTTL() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(2 * ttlTestWindow)
+}
+
+// newClockedSelection builds a selection over path whose TTL is measured
+// against a fake clock the caller advances.
+func newClockedSelection(t *testing.T, path string) (*AccountSelection, *fakeSelectionClock) {
+	t.Helper()
+	clk := newFakeSelectionClock()
+	sel := NewAccountSelection(path, ttlTestWindow)
+	sel.setClockForTest(clk.Now)
+	return sel, clk
+}
+
 // TestAccountSelection_CachesAndRefreshes pins the three cache behaviors: a
 // stored selection is served, an out-of-process rewrite is picked up once the
 // TTL expires, and an unreadable config holds the last known value rather than
 // flapping the routing identity to empty.
+//
+// The TTL boundary is crossed by advancing a fake clock, never by sleeping. A
+// sleep-and-hope test asserts how fast the machine is: this test failed on a
+// loaded CI runner because more than a 20ms TTL elapsed between two adjacent
+// reads and the cache correctly expired.
 func TestAccountSelection_CachesAndRefreshes(t *testing.T) {
 	const first = "acct_01FIRSTFIRSTFIRSTFIRSTFI"
 	const second = "acct_01SECONDSECONDSECONDSEC"
@@ -43,14 +92,14 @@ func TestAccountSelection_CachesAndRefreshes(t *testing.T) {
 	dir := t.TempDir()
 	path := seedSelection(t, dir, first)
 
-	const ttl = 20 * time.Millisecond
-	sel := NewAccountSelection(path, ttl)
+	sel, clk := newClockedSelection(t, path)
 
 	if got := sel.ID(ctx); got != first {
 		t.Fatalf("ID() = %q, want %q", got, first)
 	}
 
-	// Out-of-process change; still inside the TTL, so the cached value stands.
+	// Out-of-process change; the clock has not moved, so the cached value
+	// stands however long the machine took to get here.
 	if err := config.WriteSelectedAccountID(path, second); err != nil {
 		t.Fatalf("rewrite selection: %v", err)
 	}
@@ -60,28 +109,30 @@ func TestAccountSelection_CachesAndRefreshes(t *testing.T) {
 
 	// Past the TTL, the new value is picked up — the known-positive that
 	// proves the reader is live and the hold-last-known case below is real.
-	time.Sleep(2 * ttl)
+	// Only the fake clock can reach here: no run of this suite spans an hour.
+	clk.advancePastTTL()
 	if got := sel.ID(ctx); got != second {
 		t.Errorf("after TTL: ID() = %q, want %q", got, second)
 	}
 
 	// The config becomes unreadable (malformed TOML): hold the last known
-	// value rather than reporting "no selection".
+	// value rather than reporting "no selection". This leg is the source of
+	// the expected "reading the selected Fulminate account failed" WARN.
 	if err := os.WriteFile(path, []byte("this is not = = valid toml ["), 0o600); err != nil {
 		t.Fatalf("corrupt config: %v", err)
 	}
-	time.Sleep(2 * ttl)
+	clk.advancePastTTL()
 	if got := sel.ID(ctx); got != second {
 		t.Errorf("unreadable config: ID() = %q, want the last known %q", got, second)
 	}
 	// And it stays held on a subsequent expiry, without hammering or flapping.
-	time.Sleep(2 * ttl)
+	clk.advancePastTTL()
 	if got := sel.ID(ctx); got != second {
 		t.Errorf("unreadable config (second expiry): ID() = %q, want %q", got, second)
 	}
 
 	// A machine with no selection at all reads as empty.
-	none := NewAccountSelection(seedSelection(t, t.TempDir(), ""), ttl)
+	none, _ := newClockedSelection(t, seedSelection(t, t.TempDir(), ""))
 	if got := none.ID(ctx); got != "" {
 		t.Errorf("no selection: ID() = %q, want empty", got)
 	}
@@ -94,10 +145,9 @@ func TestAccountSelection_IDForRequestOutcomes(t *testing.T) {
 	const other = "acct_01OTHEROTHEROTHEROTHER"
 
 	ctx := context.Background()
-	const ttl = 20 * time.Millisecond
 
 	// Outcome 1: no selection stored — no header, no error.
-	unset := NewAccountSelection(seedSelection(t, t.TempDir(), ""), ttl)
+	unset, _ := newClockedSelection(t, seedSelection(t, t.TempDir(), ""))
 	got, err := unset.IDForRequest(ctx)
 	if err != nil {
 		t.Fatalf("unset: unexpected error %v", err)
@@ -108,7 +158,7 @@ func TestAccountSelection_IDForRequestOutcomes(t *testing.T) {
 
 	// Outcome 2: a stored, unrejected selection is stamped.
 	path := seedSelection(t, t.TempDir(), id)
-	sel := NewAccountSelection(path, ttl)
+	sel, clk := newClockedSelection(t, path)
 	got, err = sel.IDForRequest(ctx)
 	if err != nil {
 		t.Fatalf("stored: unexpected error %v", err)
@@ -134,7 +184,7 @@ func TestAccountSelection_IDForRequestOutcomes(t *testing.T) {
 	}
 
 	// Marking a DIFFERENT id does not refuse the current selection.
-	fresh := NewAccountSelection(seedSelection(t, t.TempDir(), id), ttl)
+	fresh, _ := newClockedSelection(t, seedSelection(t, t.TempDir(), id))
 	fresh.MarkInvalid(other, "not this one")
 	if _, err := fresh.IDForRequest(ctx); err != nil {
 		t.Errorf("marker keyed to another id refused the current selection: %v", err)
@@ -146,7 +196,7 @@ func TestAccountSelection_IDForRequestOutcomes(t *testing.T) {
 	if err := config.WriteSelectedAccountID(path, other); err != nil {
 		t.Fatalf("rewrite selection: %v", err)
 	}
-	time.Sleep(2 * ttl)
+	clk.advancePastTTL()
 	got, err = sel.IDForRequest(ctx)
 	if err != nil {
 		t.Fatalf("after switching accounts: unexpected error %v", err)

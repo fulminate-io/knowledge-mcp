@@ -6,7 +6,7 @@
 // There are two faces onto one corpus-check run: the MCP tool, whose parameters
 // are its schema, and `knowledge check run`, whose parameters are a flag set, a
 // positional list and a verb. A parameter present on one face and absent from
-// the other is not automatically wrong — create has no shell consumer and --port
+// the other is not automatically wrong — create has no shell consumer and --http-port
 // has no MCP meaning — but it must be a RECORDED decision rather than a
 // discovery made later by a caller.
 //
@@ -73,17 +73,25 @@ var schemaCarrier = map[string]string{
 	"path_prefix":   "path-prefix",
 	"ids":           cliPositionalIDs,
 	"include_tests": "include-tests",
+	"files":         "files",
+	"compact":       "compact",
 }
 
 // schemaExempt maps every manage_checks schema property with NO CLI carrier to
 // the justification for that absence. An empty justification is a parked param
 // rather than a decision, and fails.
 var schemaExempt = map[string]string{
-	"top_k": "the CLI takes no render cap: it renders every finding and its consumer reads an exit status, " +
-		"so a cap would clip the body without moving the verdict. Adding --top-k is a scope decision nobody has made.",
-	"format": "the CLI renders one way, through foundation.RenderFindings, AND no manage_checks handler reads format at all — " +
-		"a structural census of $X.Format over the five manage_checks files returns zero against a same-run known positive of " +
-		"72 such sites elsewhere in package tools. Giving format a reader is outside the change that wrote this row and stays a recorded hole.",
+	"top_k": "the CLI takes no render cap, and since the face was routed it renders nothing of its own either: it relays " +
+		"the run's already-rendered body verbatim and reads only the verdict token. A --top-k would therefore have to travel " +
+		"to the run as an argument and bound the body that comes back. It still could not move the verdict — the run classifies " +
+		"the complete finding set before applying any cap (manage_checks_run.go, classify-before-clip) — so all a cap would do " +
+		"here is clip the evidence a reader was handed while the exit status stayed identical. Adding --top-k is a scope " +
+		"decision nobody has made.",
+	"format": "the CLI chooses no render form of its own: it prints the run's body byte for byte, and the one render choice it " +
+		"does forward is compact. AND no manage_checks handler reads format at all — the key is declared on the schema " +
+		"(manage_checks_schema.go) and on the arguments struct (intercept_manage_checks.go) and read nowhere, against a same-run " +
+		"known positive of many a.Format readers elsewhere in package tools. Giving format a reader is outside the change that " +
+		"wrote this row and stays a recorded hole.",
 
 	// create and list have no shell consumer at all: the CLI registers one verb,
 	// and mirroring the whole tool would double the surface for no gate. Stated
@@ -103,8 +111,10 @@ var schemaExempt = map[string]string{
 
 // cliExempt maps every CLI input with NO schema property to its justification.
 var cliExempt = map[string]string{
-	"port": "transport, not a scan parameter: it names the daemon this process dials for the checks corpus, " +
-		"which an MCP caller never chooses because it is already connected.",
+	"http-port": "transport, not a scan parameter: it names the loopback MCP port of the daemon this process asks to " +
+		"perform the run, which an MCP caller never chooses because it is already connected. It replaced --port when " +
+		"the face stopped constructing its own graph client: the two named different servers, so reusing the spelling " +
+		"would have turned a stale invocation into an obscure protocol error instead of an unknown-flag refusal.",
 }
 
 // liveCLIInputs is every input `knowledge check run` accepts, read off the LIVE
@@ -112,7 +122,7 @@ var cliExempt = map[string]string{
 // second hand-written list is what makes a newly registered flag fail here.
 func liveCLIInputs() []string {
 	var f checkRunFlags
-	fs, _ := newCheckRunFlagSet(&f)
+	fs, _, _ := newCheckRunFlagSet(&f)
 	out := []string{cliVerb, cliPositionalIDs}
 	fs.VisitAll(func(fl *flag.Flag) { out = append(out, fl.Name) })
 	sort.Strings(out)

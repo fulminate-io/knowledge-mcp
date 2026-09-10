@@ -28,7 +28,7 @@ import (
 // formatStatsBreakdown. The caller passes the typed
 // resp.GetGraphStats() pointer straight in; this emits the scalar block followed
 // by the sorted-by-count-desc Nodes-by-Type / Edges-by-Type tables. Shared across
-// every graph type's stats mode (knowledge, cloud, cicd, practice, linkage, logs,
+// every graph type's stats mode (knowledge, code, practice, linkage,
 // code). The proto getters are nil-safe (nil stats → all-zero scalar block).
 func RenderStatsBreakdown(stats *knowledgev1.GraphStats) string {
 	var sb strings.Builder

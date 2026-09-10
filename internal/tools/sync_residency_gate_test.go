@@ -36,7 +36,7 @@ func TestSyncPush_RefusesSyncIneligibleBuiltins(t *testing.T) {
 	// graph sync-ineligible — otherwise a regressed SyncEligible and a correct gate
 	// would be indistinguishable from a correct SyncEligible and a gate that refuses
 	// everything, and this half would pass either way.
-	for _, gt := range []kgtypes.GraphType{kgtypes.GraphWebRaw, kgtypes.GraphPDFRaw, kgtypes.GraphLogs} {
+	for _, gt := range []kgtypes.GraphType{kgtypes.GraphWebRaw, kgtypes.GraphPDFRaw} {
 		assert.False(t, kgtypes.SyncEligible(gt),
 			"fixture: %q must be sync-ineligible, or the refusal asserted below proves nothing about the gate", gt)
 

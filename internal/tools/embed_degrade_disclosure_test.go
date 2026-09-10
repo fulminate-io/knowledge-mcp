@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
@@ -68,13 +69,13 @@ func TestEmbedDegrade_DisclosedOnPracticeRenderers(t *testing.T) {
 
 	practiceBody := func(t *testing.T, language string, emb any) string {
 		t.Helper()
-		gc := newFanOutHarness(t, []string{"go", "python"},
+		gc := newFanOutHarness(t, []string{"default", "go"},
 			practiceNode("p:go", "GoWorkerPool", "bounded goroutines"),
-			practiceNode("p:py", "PyThreadPool", "thread pool executor"),
+			practiceNode("p:cb", "CombinedPool", "the combined graph's own entry"),
 		)
 		mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
-			"go":     {{ID: "p:go", Score: 0.90}},
-			"python": {{ID: "p:py", Score: 0.70}},
+			"default": {{ID: "p:cb", Score: 0.90}},
+			"go":      {{ID: "p:go", Score: 0.70}},
 		})
 		deps := &interceptDeps{gc: gc, segMgr: mgr, segCoverage: &gapCoverageFake{covered: 9}}
 		switch e := emb.(type) {
@@ -104,23 +105,33 @@ func TestEmbedDegrade_DisclosedOnPracticeRenderers(t *testing.T) {
 			"the label must track the ACTUAL arm, not be printed unconditionally")
 	})
 
-	t.Run("fan_out", func(t *testing.T) {
-		// The fan-out embeds ONCE and reuses that vector for every graph, so one
-		// failed embed degrades the whole cross-graph ranking.
-		broken := practiceBody(t, "all", failingEmbedder{err: errors.New(embedFailure)})
-		assert.Contains(t, broken, "Searched 2 practice graphs", "the fan-out still ran")
+	t.Run("no_selector", func(t *testing.T) {
+		// The UNSELECTED search reads the one combined graph. It is the arm the
+		// fan-out subtest used to cover: the corpus-wide read, which is now one
+		// engine call rather than a scatter-gather, and it must disclose a dead
+		// semantic arm on exactly the same terms.
+		broken := practiceBody(t, "", failingEmbedder{err: errors.New(embedFailure)})
+		assert.Contains(t, broken, "CombinedPool", "the combined graph was searched")
 		assert.Contains(t, broken, "_search mode: BM25-only_")
 
-		healthy := practiceBody(t, "all", healthyEmbedder{})
+		healthy := practiceBody(t, "", healthyEmbedder{})
 		assert.Contains(t, healthy, "_search mode: vector+text_")
 		assert.NotContains(t, healthy, "BM25-only")
 	})
 
-	t.Run("fan_out_zero_results_names_the_error", func(t *testing.T) {
-		// An EMPTY fan-out with a failed embed must name the error rather than
-		// report a confident no-match, and the graphs must be covered so the
+	t.Run("zero_results_names_the_embed_failure", func(t *testing.T) {
+		// An EMPTY result with a failed embed must NAME the failure rather than
+		// report a confident no-match, and the graph must be covered so the
 		// segment-gap branch does not pre-empt the embed disclosure.
-		gc := newFanOutHarness(t, []string{"go"})
+		//
+		// IT IS A NOTICE RATHER THAN AN ERROR, and that is the single-graph
+		// contract this arm has always had — the arm that errored was the
+		// scatter-gather, where one failed embed silently degraded eight graphs at
+		// once and an empty merge was maximally misleading. The corpus is one graph
+		// now, so the one-graph disclosure is the whole disclosure. What must not
+		// weaken is the naming: the assertions below are on the failure TEXT
+		// reaching the caller, which is what a silent degrade would lose.
+		gc := newFanOutHarness(t, []string{"default"})
 		deps := &interceptDeps{
 			gc:          gc,
 			segMgr:      newFanOutSegmentSearcher(nil),
@@ -128,32 +139,55 @@ func TestEmbedDegrade_DisclosedOnPracticeRenderers(t *testing.T) {
 			emb:         failingEmbedder{err: errors.New(embedFailure)},
 		}
 		res := gatedRoutePractice(opCtx(), deps, gc, queryArgs{
-			Graph: "practice", Language: "all", Text: "pool",
+			Graph: "practice", Text: "pool",
 		})
 		body := textBodyTools(res)
-		assert.True(t, res.IsError, "an empty result set with a dead semantic arm is an error: %s", body)
 		assert.Contains(t, body, embedFailure, "the response names the embed failure")
+		assert.Contains(t, body, "BM25-only", "and says which arm actually ran")
 		assert.NotContains(t, strings.ToLower(body), "no matches")
+
+		// THE DISCRIMINATING LEG: the same empty read with a HEALTHY embedder must
+		// NOT name a failure, so the assertions above are the disclosure tracking
+		// the embedder rather than a paragraph printed on every zero.
+		healthyDeps := &interceptDeps{
+			gc:          gc,
+			segMgr:      newFanOutSegmentSearcher(nil),
+			segCoverage: &gapCoverageFake{covered: 9},
+			emb:         healthyEmbedder{},
+		}
+		healthy := textBodyTools(gatedRoutePractice(opCtx(), healthyDeps, gc, queryArgs{
+			Graph: "practice", Text: "pool",
+		}))
+		assert.NotContains(t, healthy, embedFailure,
+			"a healthy embedder must not produce a failure disclosure")
 	})
 }
 
-// TestEmbedDegrade_DisclosedOnResourceRenderer is the same two-directional gate
-// for the cloud/cicd composer, which carried the identical discard.
-func TestEmbedDegrade_DisclosedOnResourceRenderer(t *testing.T) {
+// TestEmbedDegrade_DisclosedOnRegisteredGraphSearch is the same two-directional
+// gate for the REGISTERED-CUSTOM composer.
+//
+// IT REPLACES THE PER-ACCOUNT RESOURCE COMPOSER'S ROW. That composer served the
+// cicd family and went with it; the registered-custom search is what a contrib
+// collector's inventory graph is read through now, and it carried the identical
+// discard. The property is the composer's, not the family's, so the row moves
+// rather than being deleted.
+func TestEmbedDegrade_DisclosedOnRegisteredGraphSearch(t *testing.T) {
+	const customFamily = "acme-ci"
 	resourceBody := func(t *testing.T, emb any) (string, bool) {
 		t.Helper()
 		gc := newFanOutHarness(t, []string{"acme"},
 			practiceNode("r1", "my-bucket", "a bucket"),
 		)
 		mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "r1", Score: 0.9}}}
-		deps := &interceptDeps{gc: gc, segMgr: mgr}
+		deps := &interceptDeps{gc: gc, segMgr: mgr, gtCRUD: registeredGraphTypes(customFamily)}
 		switch e := emb.(type) {
 		case failingEmbedder:
 			deps.emb = e
 		case healthyEmbedder:
 			deps.emb = e
 		}
-		res := composeResourceSearchClient(opCtx(), deps, mgr, cloudGraphKind, "acme", "bucket", "")
+		res := composeRegisteredGraphSearch(opCtx(), deps, mgr,
+			kgtypes.GraphType(customFamily), "acme", segmentSearchArgs{Query: "bucket"})
 		return textBodyTools(res), res.IsError
 	}
 

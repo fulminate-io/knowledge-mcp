@@ -64,11 +64,10 @@ type recipeDeps struct {
 	gc   GraphCaller
 }
 
-func (d *recipeDeps) LocalLiveness() LocalLiveness          { return nil }
-func (d *recipeDeps) Sink() collector.Sink                  { return d.sink }
-func (d *recipeDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
-func (d *recipeDeps) RootDir() string                       { return "" }
-func (d *recipeDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
+func (d *recipeDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d *recipeDeps) Sink() collector.Sink            { return d.sink }
+func (d *recipeDeps) RootDir() string                 { return "" }
+func (d *recipeDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
 
 func (d *recipeDeps) PropReady() bool     { return true }
 func (d *recipeDeps) PipelineReady() bool { return true }
@@ -206,21 +205,30 @@ func TestInterceptCollect_Recipe_RefusesForce(t *testing.T) {
 	require.True(t, res.IsError)
 	msg := resultText(res)
 	assert.Contains(t, msg, "force", "the refusal names the offending param")
-	assert.Contains(t, msg, "writes nothing", "the refusal states why there is nothing for force to bypass")
+	assert.Contains(t, msg, "versioned twin",
+		"the refusal states the CURRENT reason there is nothing for force to bypass: a landing never overwrites")
+	assert.NotContains(t, msg, "writes nothing",
+		"and no longer claims a recipe run writes nothing — a landing run writes")
 	assert.Empty(t, sink.results, "a refused run writes nothing")
 	assert.Zero(t, caller.execCalls,
 		"RunRecipe must never be reached — its first act is an Execute loading the recipe node")
 }
 
-// TestInterceptCollect_Extract_ParamsNeedRecipe proves each of the four params
-// is refused BY NAME when supplied without transformer=recipe, rather than
-// accepted and dropped.
+// TestInterceptCollect_Extract_ParamsNeedRecipe proves each recipe-only param is
+// refused BY NAME when supplied without transformer=recipe, rather than accepted
+// and dropped.
+//
+// `land` IS IN THE TABLE, and it is the one whose absence would cost the most: a
+// landing flag accepted on a code or logs collect and then dropped tells the
+// caller its nodes were written into the practice graph when nothing was.
 func TestInterceptCollect_Extract_ParamsNeedRecipe(t *testing.T) {
 	for name, value := range map[string]any{
 		"extract":     true,
+		"land":        true,
 		"recipe_body": "select section",
 		"max_rows":    5,
 		"max_bytes":   1024,
+		"offset":      3,
 	} {
 		t.Run(name, func(t *testing.T) {
 			args, err := json.Marshal(map[string]any{
@@ -298,20 +306,27 @@ func TestInterceptCollect_SavedRecipeName_RefusedInlineBodyStillRuns(t *testing.
 	})
 }
 
-// TestInterceptCollect_RecipeWritesNothingAndDryRunIsRefused is the behavioral
-// gate on the write path's removal.
+// TestInterceptCollect_ExtractShipsNothingAndDryRunIsRefused is the behavioral
+// gate on the COLLECTOR-SINK path's removal, and the name is narrower than it was
+// because the claim is: a recipe run no longer "writes nothing" in general — a
+// LANDING run writes, through the mutate route. What survives is the property
+// this test was always really about: an EXTRACT ships nothing to any sink, and
+// the sink is never the write path for anything a recipe produces.
 //
 // IT DOES NOT ASSERT THAT A SYMBOL IS GONE, which the compiler settles. It
-// asserts what a caller observes: every admitted run emits rows and ships
-// NOTHING to any sink, and dry_run — which meant "compute the projection but
-// skip the write" — is refused by name now that there is no write to skip.
+// asserts what a caller observes.
 //
 // THE SINK IS THE SUBJECT. A wrong-but-compiling re-wire that restored a
 // WriteResult call into the extract render path builds clean and passes every
 // message assertion; the empty sink across every input shape is what catches it.
 // Each shape pairs a ZERO sink with a NON-EMPTY extracted row, so the zero is
 // never the emptiness of a run that did nothing.
-func TestInterceptCollect_RecipeWritesNothingAndDryRunIsRefused(t *testing.T) {
+//
+// THE DRY-RUN HALF MOVED WITH THE REFUSAL TEXT. dry_run is still refused by
+// name, permanently, but its stated reason is no longer "there is no write to
+// skip": the extract run IS the projection-without-the-write, so the param names
+// a mode the tool already has under another name.
+func TestInterceptCollect_ExtractShipsNothingAndDryRunIsRefused(t *testing.T) {
 	t.Run("every admitted recipe run emits rows and ships nothing", func(t *testing.T) {
 		shapes := map[string]map[string]any{
 			"plain":           {},
@@ -330,7 +345,7 @@ func TestInterceptCollect_RecipeWritesNothingAndDryRunIsRefused(t *testing.T) {
 				require.False(t, res.IsError, "expected a successful run, got: %s", resultText(res))
 				assert.Contains(t, resultText(res), "Message Router",
 					"the run really did produce a row — the empty sink below is not the emptiness of a no-op")
-				assert.Empty(t, sink.results, "a recipe run ships NOTHING to any sink")
+				assert.Empty(t, sink.results, "an extract run ships NOTHING to any sink")
 			})
 		}
 
@@ -345,7 +360,7 @@ func TestInterceptCollect_RecipeWritesNothingAndDryRunIsRefused(t *testing.T) {
 			require.True(t, handled)
 			require.False(t, res.IsError, "expected a successful run, got: %s", resultText(res))
 			assert.Contains(t, resultText(res), "Message Router")
-			assert.Empty(t, sink.results, "a recipe run ships NOTHING to any sink")
+			assert.Empty(t, sink.results, "an extract run ships NOTHING to any sink")
 		})
 	})
 
@@ -360,8 +375,10 @@ func TestInterceptCollect_RecipeWritesNothingAndDryRunIsRefused(t *testing.T) {
 		require.True(t, res.IsError, "dry_run must be refused, not accepted and dropped")
 		msg := resultText(res)
 		assert.Contains(t, msg, "dry_run", "the refusal names the offending param")
-		assert.Contains(t, msg, "writes nothing",
-			"and states the mechanical reason: there is no write for dry_run to skip")
+		assert.Contains(t, msg, "extract:true",
+			"and names the mode that already does what dry_run meant: an extract IS the preview of a landing")
+		assert.NotContains(t, msg, "writes nothing",
+			"the reason must not claim a recipe run writes nothing — a landing run writes")
 		assert.Empty(t, sink.results)
 		assert.Zero(t, caller.execCalls,
 			"the refusal fires ahead of the run, so no source read is paid for")

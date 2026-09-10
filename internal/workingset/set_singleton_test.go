@@ -5,9 +5,8 @@ package workingset
 // set_singleton_test.go pins the ""→"default" collapse for a family that carries
 // NO instance field at all.
 //
-// THE DISTINCTION IS THE WHOLE POINT. For code / cloud / practice an empty name
-// means the caller named no repo, account or language — a catalog enumeration,
-// which must admit nothing. For a family whose selector policy declares it has no
+// THE DISTINCTION IS THE WHOLE POINT. For code an empty name means the caller
+// named no repo — a catalog enumeration, which must admit nothing. For a family whose selector policy declares it has no
 // instance field, an empty name is not an absent selector: it IS the one
 // instance. Treating the two the same is what left the checks graph permanently
 // outside the working set, so no collector was ever registered for it and its
@@ -42,11 +41,16 @@ func TestNormalize_SingletonEmptyNameIsItsDefaultInstance(t *testing.T) {
 		{"checks with no instance name is its default instance", kgtypes.GraphChecks, "", true, "default"},
 		{"checks explicitly naming default is the same ref", kgtypes.GraphChecks, "default", true, "default"},
 		{"knowledge keeps the precedent this follows", kgtypes.GraphKnowledge, "", true, "default"},
+		// PRACTICE INVERTED when the eight per-language graphs became one. Its
+		// empty name used to be a catalog enumeration and is now the one instance.
+		// The old expectation is not merely stale: a singleton left outside the
+		// working set registers no collector and its nodes stay unembedded through
+		// every drain, which is the silent zero this file was written for.
+		{"practice with no instance name is its default instance", kgtypes.GraphPractice, "", true, "default"},
+		{"practice explicitly naming default is the same ref", kgtypes.GraphPractice, "default", true, "default"},
 		// CONTROLS — an empty instance field for a family that HAS one is an
 		// absent selector, never a default instance.
 		{"code with no repo is a catalog enumeration, not an instance", kgtypes.GraphCode, "", false, ""},
-		{"practice with no language is a catalog enumeration", kgtypes.GraphPractice, "", false, ""},
-		{"cloud with no account is a catalog enumeration", kgtypes.GraphCloud, "", false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

@@ -143,7 +143,7 @@ func TestWantedGraphs_FiltersToDrainableTypes(t *testing.T) {
 	require.True(t, ws.Admit(kgtypes.GraphCode, "repoA", "collect"))
 	require.True(t, ws.Admit(kgtypes.GraphType("hellograph"), "demo", "collect"))
 	// Not drainable: a builtin type the pipeline does not enrich.
-	require.True(t, ws.Admit(kgtypes.GraphLogs, "some-query", "search"))
+	require.True(t, ws.Admit(kgtypes.GraphLinkage, "lk", "search"))
 
 	got := map[string]bool{}
 	for _, ref := range p.wantedGraphs() {
@@ -152,7 +152,7 @@ func TestWantedGraphs_FiltersToDrainableTypes(t *testing.T) {
 
 	assert.True(t, got["code/repoA"], "an eligible builtin type is drained")
 	assert.True(t, got["hellograph/demo"], "a registered custom type is drained")
-	assert.False(t, got["logs/some-query"], "a builtin type the pipeline does not enrich is filtered out")
+	assert.False(t, got["linkage/lk"], "a builtin type the pipeline does not enrich is filtered out")
 	assert.Len(t, got, 2, "exactly the two drainable members")
 }
 

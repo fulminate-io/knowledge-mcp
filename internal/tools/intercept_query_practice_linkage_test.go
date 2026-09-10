@@ -51,6 +51,37 @@ func (f *fanOutSegmentSearcher) Search(
 	return f.hitsByGr[name], f.errsByGr[name]
 }
 
+// SearchAccepting satisfies SegmentSubsetSearcher so the hub-scoped practice
+// search reaches this double instead of erroring on a missing seam.
+//
+// IT APPLIES THE PREDICATE, rather than accepting and ignoring it. A double that
+// took the predicate and returned the unfiltered slice would make every
+// hub-scoping assertion in this package pass on a production path that had
+// stopped narrowing — the exact double-on-the-far-side-of-the-seam defect these
+// fixtures exist to catch.
+func (f *fanOutSegmentSearcher) SearchAccepting(
+	_ context.Context, _ kgtypes.GraphType, name, _ string, _ []byte, _ int,
+	accepts func(searchengine.ExternalID) bool,
+) ([]searchengine.Hit, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls[name]++
+	if err := f.errsByGr[name]; err != nil {
+		return nil, err
+	}
+	hits := f.hitsByGr[name]
+	if accepts == nil {
+		return hits, nil
+	}
+	out := make([]searchengine.Hit, 0, len(hits))
+	for _, h := range hits {
+		if accepts(h.ID) {
+			out = append(out, h)
+		}
+	}
+	return out, nil
+}
+
 // searchedNames returns the sorted set of graph names Search was invoked on.
 func (f *fanOutSegmentSearcher) searchedNames() []string {
 	f.mu.Lock()
@@ -61,13 +92,6 @@ func (f *fanOutSegmentSearcher) searchedNames() []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// callCount returns how many times Search was invoked for a given graph name.
-func (f *fanOutSegmentSearcher) callCount(name string) int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.calls[name]
 }
 
 // plFake routes Execute by plan shape (search vs by-id vs Match) and Stats by

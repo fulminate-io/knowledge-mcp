@@ -28,7 +28,7 @@ import (
 const examineRefusalLead = "examine: graph "
 
 // TestQueryDispatchParity_ExamineNonKnowledgeGraphIsRefusedByName drives the
-// graphs that actually REACH the examine arm. cloud, cicd, linkage, code and
+// graphs that actually REACH the examine arm. practice, linkage, code and
 // logs are deliberately absent from the list: each is claimed by its own arm
 // earlier in bootstrap's chain, so an examine naming one of them never arrives
 // at examine's gate at all — the companion subtest below asserts that rather

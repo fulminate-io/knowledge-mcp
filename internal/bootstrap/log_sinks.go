@@ -234,7 +234,18 @@ func (s *crashFollowingSink) repointLocked() {
 		fmt.Fprintf(s.w, "failed to re-point crash output onto %s: %v\n", s.path, oerr)
 		return
 	}
-	defer f.Close()
+	// THE CLOSE ERROR IS REPORTED, not discarded: this descriptor is opened
+	// writable, and a close that fails is the one signal that the file the
+	// crash descriptor was just installed on is not in the state this function
+	// believes. It goes into the log itself for the same reason the open
+	// failure does — stderr may be the stream that already died. It cannot
+	// abort the re-point: debug.SetCrashOutput has already duplicated the
+	// descriptor by then, so the install stands whatever this close says.
+	defer func() {
+		if cerr := f.Close(); cerr != nil {
+			fmt.Fprintf(s.w, "failed to close the re-pointed crash output file %s: %v\n", s.path, cerr)
+		}
+	}()
 	if serr := setCrashOutput(f); serr != nil {
 		fmt.Fprintf(s.w, "failed to re-point crash output onto %s: %v\n", s.path, serr)
 		return

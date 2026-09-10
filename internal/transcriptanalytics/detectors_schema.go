@@ -203,7 +203,17 @@ func (f Filters) Validate() error {
 		if f.SessionID == "" && f.AgentID == "" {
 			return fmt.Errorf("transcriptanalytics: scope %q requires exactly one of session or agent, and neither was given", ScopeSingle)
 		}
-		if f.SessionID != "" && f.AgentID != "" {
+		// A session alongside an agent is admitted for one case and refused for the other, and
+		// the difference is what the agent selector IS. A cache lane id is unique, so a session
+		// beside it narrows nothing and the pair is a caller error. A spawn NAME is not a value
+		// this package's population filter reads at all — it is resolved to a lane id before a
+		// report runs — so the session beside it is the RESOLUTION SCOPE the caller looked the
+		// name up in, and admitting the pair is what lets that lookup be scoped. The population
+		// filter never applies the session when an agent is ALSO given (corpus.go:160-161
+		// matches on the agent id alone); its session arm at :163 is the agent-less spelling of
+		// scope single, which this guard does not reach. The resolver clears the session in any
+		// case.
+		if f.SessionID != "" && f.AgentID != "" && IsLaneID(f.AgentID) {
 			return fmt.Errorf("transcriptanalytics: scope %q requires exactly one of session or agent, and both were given", ScopeSingle)
 		}
 		return f.rejectUnconsumed("single", !f.Since.IsZero() || !f.Until.IsZero(), "since and until")

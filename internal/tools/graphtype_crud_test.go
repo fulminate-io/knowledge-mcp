@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// graphtype_crud_test.go — covers InterceptGraphType dispatch + the
-// register/update/delete/list handlers.
+// graphtype_crud_test.go — covers InterceptGraphType dispatch + the one
+// operation that survives the config-file contract, list.
+//
+// THE WRITE-OPERATION ROWS WENT WITH THE OPERATIONS. register, update and delete
+// wrote a record the config file now owns; what replaced them is
+// `knowledge collector add | remove`, whose rows live in the bootstrap package,
+// and a REFUSAL row below asserting that the retired names are refused by name
+// rather than quietly accepted.
 
 package tools
 
@@ -27,13 +33,9 @@ import (
 type fakeGraphTypeCRUD struct {
 	mu        sync.Mutex
 	graph     map[string]*knowledgev1.GraphTypeDef
-	creates   []*knowledgev1.GraphTypeDef
 	updates   []*knowledgev1.GraphTypeDef
-	deletes   []string
 	listErr   error
-	createErr error
 	updateErr error
-	deleteErr error
 }
 
 func (f *fakeGraphTypeCRUD) List(_ context.Context) ([]*knowledgev1.GraphTypeDef, error) {
@@ -56,16 +58,6 @@ func (f *fakeGraphTypeCRUD) ByName(_ context.Context, name string) (*knowledgev1
 	return d, ok, nil
 }
 
-func (f *fakeGraphTypeCRUD) Create(_ context.Context, d *knowledgev1.GraphTypeDef) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.createErr != nil {
-		return f.createErr
-	}
-	f.creates = append(f.creates, d)
-	return nil
-}
-
 func (f *fakeGraphTypeCRUD) Update(_ context.Context, d *knowledgev1.GraphTypeDef) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -76,26 +68,15 @@ func (f *fakeGraphTypeCRUD) Update(_ context.Context, d *knowledgev1.GraphTypeDe
 	return nil
 }
 
-func (f *fakeGraphTypeCRUD) Delete(_ context.Context, name string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.deleteErr != nil {
-		return f.deleteErr
-	}
-	f.deletes = append(f.deletes, name)
-	return nil
-}
-
 // graphTypeTestDeps satisfies ClientDeps with only GraphTypeCRUD() wired.
 type graphTypeTestDeps struct {
 	crud GraphTypeCRUDAPI
 }
 
-func (d graphTypeTestDeps) LocalLiveness() LocalLiveness          { return nil }
-func (d graphTypeTestDeps) Sink() collector.Sink                  { return nil }
-func (d graphTypeTestDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
-func (d graphTypeTestDeps) RootDir() string                       { return "" }
-func (d graphTypeTestDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
+func (d graphTypeTestDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d graphTypeTestDeps) Sink() collector.Sink            { return nil }
+func (d graphTypeTestDeps) RootDir() string                 { return "" }
+func (d graphTypeTestDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
 
 func (d graphTypeTestDeps) PropReady() bool     { return true }
 func (d graphTypeTestDeps) PipelineReady() bool { return true }
@@ -147,40 +128,36 @@ func TestInterceptGraphType_NameFiltering(t *testing.T) {
 	}
 }
 
-// TestInterceptGraphType_Register routes register to Create with the parsed
-// record.
-func TestInterceptGraphType_Register(t *testing.T) {
+// TestInterceptGraphType_RetiredWriteOperationsAreRefusedByName pins that the
+// three retired operations are REFUSED, naming what is admitted, rather than
+// falling into a default arm that reports success for a write nothing performed.
+//
+// THE ADMITTED SET IS READ OFF THE LIVE TOOL DEFINITION, not a hand-written
+// list: a schema still advertising `register` while the dispatch refuses it
+// would be a tool whose own description lies to its caller, and only reading
+// both in one test catches that.
+func TestInterceptGraphType_RetiredWriteOperationsAreRefusedByName(t *testing.T) {
 	crud := &fakeGraphTypeCRUD{}
 	deps := graphTypeTestDeps{crud: crud}
-	handled, body, isErr := callGraphType(t, deps,
-		`{"operation":"register","name":"jira","collector":{"binary_path":"/usr/local/bin/jira","param_transport":"stdin"}}`)
-	require.True(t, handled)
-	require.False(t, isErr, body)
-	require.Len(t, crud.creates, 1)
-	assert.Equal(t, "jira", crud.creates[0].GetName())
-	assert.Equal(t, "/usr/local/bin/jira", crud.creates[0].GetCollector().GetBinaryPath())
-}
+	for _, op := range []string{"register", "update", "delete"} {
+		handled, body, isErr := callGraphType(t, deps, `{"operation":"`+op+`"}`)
+		require.True(t, handled)
+		assert.True(t, isErr, "the retired %s operation must be refused: %s", op, body)
+		assert.Contains(t, body, op, "the refusal must name what was asked for")
+		assert.Contains(t, body, "list", "and what is admitted instead")
 
-// TestInterceptGraphType_Update routes update to Update.
-func TestInterceptGraphType_Update(t *testing.T) {
-	crud := &fakeGraphTypeCRUD{}
-	deps := graphTypeTestDeps{crud: crud}
-	handled, body, isErr := callGraphType(t, deps,
-		`{"operation":"update","name":"jira","collector":{"binary_path":"/usr/local/bin/jira","param_transport":"stdin"}}`)
-	require.True(t, handled)
-	require.False(t, isErr, body)
-	require.Len(t, crud.updates, 1)
-	assert.Equal(t, "jira", crud.updates[0].GetName())
-}
+		// THE RETIRED ARGUMENTS GO WITH THE OPERATIONS: a call still carrying the
+		// record fields is refused by the top-level parameter accounting, naming the
+		// key, rather than being decoded and ignored.
+		_, body, isErr = callGraphType(t, deps, `{"operation":"`+op+`","name":"jira","collector":{"http":{"url":"https://p.example/mcp"}}}`)
+		assert.True(t, isErr, "a retired argument must be refused: %s", body)
+		assert.Contains(t, body, "unknown parameter", "the refusal must say what it did not accept")
+	}
+	assert.Empty(t, crud.updates, "a refused operation must write nothing")
 
-// TestInterceptGraphType_Delete routes delete to Delete.
-func TestInterceptGraphType_Delete(t *testing.T) {
-	crud := &fakeGraphTypeCRUD{}
-	deps := graphTypeTestDeps{crud: crud}
-	handled, body, isErr := callGraphType(t, deps, `{"operation":"delete","name":"jira"}`)
-	require.True(t, handled)
-	require.False(t, isErr, body)
-	assert.Equal(t, []string{"jira"}, crud.deletes)
+	enum := GraphTypeToolDef().InputSchema.Properties["operation"].Enum
+	assert.Equal(t, []string{"list"}, enum,
+		"the advertised operation enum must match the dispatch: a schema offering an operation the dispatch refuses is a tool lying to its caller")
 }
 
 // TestInterceptGraphType_ListSurfacesCollectorAndBehavior pins that list output
@@ -191,8 +168,10 @@ func TestInterceptGraphType_ListSurfacesCollectorAndBehavior(t *testing.T) {
 		"jira": {
 			Name: "jira",
 			Collector: &knowledgev1.CollectorSpec{
-				BinaryPath:     "/usr/local/bin/jira",
-				ParamTransport: "stdin",
+				Tool: "collect_jira",
+				Provider: &knowledgev1.CollectorSpec_Stdio{Stdio: &knowledgev1.StdioProvider{
+					Command: "/usr/local/bin/jira-mcp",
+				}},
 			},
 			Behavior: &knowledgev1.BehaviorDefaults{Syncable: &tru},
 		},
@@ -203,8 +182,8 @@ func TestInterceptGraphType_ListSurfacesCollectorAndBehavior(t *testing.T) {
 	require.True(t, handled)
 	require.False(t, isErr, body)
 	assert.Contains(t, body, "jira")
-	assert.Contains(t, body, "/usr/local/bin/jira")
-	assert.Contains(t, body, "stdin")
+	assert.Contains(t, body, "/usr/local/bin/jira-mcp")
+	assert.Contains(t, body, "collect_jira")
 	assert.Contains(t, body, "true", "syncable behavior flag must surface")
 }
 
@@ -214,7 +193,7 @@ func TestInterceptGraphType_ListEmpty(t *testing.T) {
 	handled, body, isErr := callGraphType(t, deps, `{"operation":"list"}`)
 	require.True(t, handled)
 	require.False(t, isErr, body)
-	assert.Contains(t, body, "No graph types registered")
+	assert.Contains(t, body, "No custom collector families are known to the server")
 }
 
 // TestInterceptGraphType_UnknownOperation surfaces a clear error.
@@ -229,12 +208,15 @@ func TestInterceptGraphType_UnknownOperation(t *testing.T) {
 // TestInterceptGraphType_ListJSON pins the json format path.
 func TestInterceptGraphType_ListJSON(t *testing.T) {
 	crud := &fakeGraphTypeCRUD{graph: map[string]*knowledgev1.GraphTypeDef{
-		"jira": {Name: "jira", Collector: &knowledgev1.CollectorSpec{BinaryPath: "/usr/local/bin/jira", ParamTransport: "stdin"}},
+		"jira": {Name: "jira", Collector: &knowledgev1.CollectorSpec{
+			Tool:     "collect_jira",
+			Provider: &knowledgev1.CollectorSpec_Stdio{Stdio: &knowledgev1.StdioProvider{Command: "/usr/local/bin/jira-mcp"}},
+		}},
 	}}
 	deps := graphTypeTestDeps{crud: crud}
 	handled, body, isErr := callGraphType(t, deps, `{"operation":"list","format":"json"}`)
 	require.True(t, handled)
 	require.False(t, isErr, body)
 	assert.Contains(t, body, "jira")
-	assert.Contains(t, body, "binary_path")
+	assert.Contains(t, body, "provider")
 }

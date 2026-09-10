@@ -224,12 +224,12 @@
         {
           "id": "uni",
           "type": "function",
-          "symbol_name": "Ünïcödé→λ",
-          "file_path": "pkg/ünï.go",
+          "symbol_name": "\u00dcn\u00efc\u00f6d\u00e9\u2192\u03bb",
+          "file_path": "pkg/\u00fcn\u00ef.go",
           "language": "go",
           "start_line": 1,
           "end_line": 1,
-          "content": "héllo 世界 🌍",
+          "content": "h\u00e9llo \u4e16\u754c \ud83c\udf0d",
           "signature": null,
           "is_exported": null,
           "is_test": null,
@@ -238,6 +238,74 @@
           "source": null,
           "status": null,
           "hash": "a793c23df79f3f8321490019e87a1976fedf5f9cf94820fcaf3f06f89330d170"
+        }
+      ]
+    },
+    {
+      "label": "custom_fileless_record",
+      "comment": "A REGISTERED CUSTOM COLLECTOR'S RECORD, in the shape that family actually emits: no file path and no language, because a custom node's file path is an optional annotation rather than the unit it is emitted in. It hashes through the SAME fourteen-field tuple the code family uses \u2014 the tuple is not widened for custom graphs \u2014 so eleven of the fourteen fields encode ABSENT and the digest is a function of type, symbol_name and content alone. It is here because the node key made this shape a manifest ENTRY: under the file key it was outside the manifest entirely and no hash of it was ever compared across the two implementations.",
+      "kind": "nodes",
+      "nodes": [
+        {
+          "id": "custom-fileless",
+          "type": "issue",
+          "symbol_name": "ACME-1",
+          "file_path": null,
+          "language": null,
+          "start_line": null,
+          "end_line": null,
+          "content": "the body a registered collector emitted",
+          "signature": null,
+          "is_exported": null,
+          "is_test": null,
+          "test_kind": null,
+          "description": null,
+          "source": null,
+          "status": null,
+          "hash": "95eab06feaa0bb6738f56673b42f1a1b00cf45c63d0f2a1a0058470fdf6d2c63"
+        }
+      ]
+    },
+    {
+      "label": "custom_content_change_must_differ",
+      "comment": "TWO CUSTOM RECORDS IDENTICAL BUT FOR THEIR CONTENT. The node key's whole value rests on this: a record whose body moved must hash differently, or the diff reads it as unchanged and the edit never lands. The pair also pins that the ID is NOT hashed \u2014 the two ids differ and would collide the digests if it were, which would make every record of a custom graph look changed the moment its id space moved.",
+      "kind": "nodes_must_differ",
+      "nodes": [
+        {
+          "id": "custom-pair-a",
+          "type": "issue",
+          "symbol_name": "ACME-2",
+          "file_path": null,
+          "language": null,
+          "start_line": null,
+          "end_line": null,
+          "content": "first body",
+          "signature": null,
+          "is_exported": null,
+          "is_test": null,
+          "test_kind": null,
+          "description": null,
+          "source": null,
+          "status": null,
+          "hash": "8c5678c238b819706d04e74aaa0fa5adabe0832c0c82ce0607757f34d883b02d"
+        },
+        {
+          "id": "custom-pair-b",
+          "type": "issue",
+          "symbol_name": "ACME-2",
+          "file_path": null,
+          "language": null,
+          "start_line": null,
+          "end_line": null,
+          "content": "second body",
+          "signature": null,
+          "is_exported": null,
+          "is_test": null,
+          "test_kind": null,
+          "description": null,
+          "source": null,
+          "status": null,
+          "hash": "5d2b5d3090fc46b758681b7ad534b0f57fd038742ddca4583523a6da55d28437"
         }
       ]
     }

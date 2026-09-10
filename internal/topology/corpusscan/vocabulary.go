@@ -45,6 +45,23 @@ const (
 	// test-file convention for is refused, because there the flag would be a
 	// control that decides nothing.
 	ExtraKeyIncludeTests = "include_tests"
+	// ExtraKeyFiles is the FILE-LIST scope: the walk opens exactly the paths the
+	// caller names, which is what makes a scan over one diff cheap. Absent means
+	// the caller named no file list; present-but-empty is refused rather than
+	// read as "every file", because an empty list is a caller mistake and this
+	// analyzer never widens a scan on bad input.
+	//
+	// THE VALUE IS A JSON ARRAY OF REPO-RELATIVE PATHS, and that encoding is a
+	// decision rather than a convenience. ExtraKeyChecks joins its members with a
+	// comma, which is safe because a check id is 32 hex characters — A PATH IS
+	// NOT. Nothing in discovery's exclusion rules, in the language detector or in
+	// the prefix predicate bars a comma, a newline or any other byte a filesystem
+	// accepts, and a walk over a comma-bearing path scans it. A comma join would
+	// therefore split one legitimate diff entry into two paths that do not exist,
+	// and the caller would read a refusal naming values they never supplied. A
+	// JSON array carries every path the walk can accept, so no legitimate input is
+	// refused for its bytes and nothing is silently split.
+	ExtraKeyFiles = "files"
 	// MaxFindingsPerCheck caps how many match findings a single check renders
 	// before the per-check truncation notice replaces the rest.
 	MaxFindingsPerCheck = 50
@@ -88,15 +105,46 @@ const (
 // counter comes to read zero everywhere it is displayed.
 const MetricTestFilesScanned = "test_files_scanned"
 
+// MetricScopedPrefixes is the metric key the scope-applied disclosure carries
+// the size of a check's effective narrowing on. It is a CONSTANT for the reason
+// MetricTestFilesScanned is: a consumer keying on a hand-typed copy is how a
+// counter comes to read zero everywhere it is displayed.
+const MetricScopedPrefixes = "scoped_prefixes"
+
 // The locked finding titles. Each is consumed by more than one part of this
-// package — a producer emits it and a test asserts on it — so all five are
-// declared once here and cited everywhere else. THE TRAILING SPACE IS
-// LOAD-BEARING on the two prefixes that carry one: an id is concatenated
-// directly after it.
+// package — a producer emits it and a test asserts on it — so every one is
+// declared once here and cited everywhere else.
+//
+// THE COUNT IS DELIBERATELY NOT WRITTEN DOWN, and that is a correction rather
+// than an omission: this header said "all five" while the block held more, and a
+// hand-kept census of a list one edit away from growing is a sentence that goes
+// wrong silently. TestVocabulary_LockedTitlesAreCensusedFromTheDeclaration reads
+// the block out of this file and reports what it holds, so the figure comes from
+// an instrument rather than from a comment.
+//
+// THE TRAILING SPACE IS LOAD-BEARING on every constant whose name says Prefix:
+// an id is concatenated directly after it, and a title whose name says Title has
+// nothing after it and must NOT carry one. That split is a naming rule the same
+// census asserts, so it holds for a constant added after this was written.
+//
+// THREE CONSTANTS WERE RENAMED TO MAKE THAT RULE TRUE rather than the rule
+// softened to accommodate them. The graph-not-run, out-of-scope and
+// scope-applied disclosures each carry a check id and each documented itself as
+// "A PREFIX, NOT A WHOLE TITLE" while being NAMED Title — so the name said one
+// thing and the value did another, which is the drift a census can only catch
+// once the name is load-bearing. The VALUES are unchanged, so no rendered output
+// moves.
 const (
 	// RefusalPrefixUnvalidated titles every per-check refusal in the gate's
 	// states (a) contract malformed, (b) fixture validation failed and
-	// (c) unexecutable check type.
+	// (c) unexecutable check type — AND a fourth state the gate does not own:
+	// (e) a check whose DECLARED SCOPE is malformed, classified as classifyScope
+	// and emitted by admitAndScope after the fixture gate has passed. It is
+	// titled with this prefix rather than a fifth one of its own because the
+	// consequence is identical — the check did not execute, so the run is not
+	// clean — and the verdict fold keys on the prefix, so a separate title would
+	// have to be added there too or a malformed scope would count as a flagged
+	// site.
 	RefusalPrefixUnvalidated = "corpus_scan: unvalidated check "
 	// RefusalPrefixEnvironment titles the gate's state (d): either the run's
 	// os.MkdirTemp precondition probe failing, or an error satisfying
@@ -120,6 +168,69 @@ const (
 	// from that switch adds one to sites_flagged on every run, makes Clean()
 	// false, and renders a clean corpus as FLAGGED with a non-zero exit.
 	DisclosureTitleTestFiles = "corpus_scan: test files scanned"
+	// DisclosureTitleOtherLanguage titles the ONE informational finding naming
+	// the paths a file-list run named that are NOT of the corpus language. They
+	// are dropped rather than refused — a real diff carries markdown and
+	// configuration and the corpus is one language by construction — but they are
+	// NAMED, so no path a caller supplied is ever absent from the report.
+	DisclosureTitleOtherLanguage = "corpus_scan: named files of another language"
+	// DisclosurePrefixGraphNotRun titles the per-check finding recording that a
+	// graph-shaped check had no candidate node inside a file-list scope. Under a
+	// ten-file scope that is the scope working rather than a missing graph, so it
+	// is a disclosure and never an error — and never folded into a clean verdict,
+	// which is the same rule a scoped-out check follows.
+	//
+	// A PREFIX, NOT A WHOLE TITLE: the check id is concatenated directly after
+	// it, so the trailing space is load-bearing exactly as the two refusal
+	// prefixes' are.
+	DisclosurePrefixGraphNotRun = "corpus_scan: graph check not run under the file scope "
+	// DisclosurePrefixOutOfScope titles the per-check finding recording that a
+	// check declared a repo or path scope this run falls outside, so it did not
+	// run. It is the CORPUS-side twin of the caller-side scope facts beside it:
+	// the run answered a narrower question and says which check answered nothing.
+	//
+	// IT IS NOT A REFUSAL AND MUST NEVER BE COUNTED AS ONE. A refusal means the
+	// scan could not do what it was asked; a scoped-out check is doing exactly
+	// what its author declared, so it leaves checks_refused alone and leaves a
+	// clean corpus CLEAN.
+	//
+	// A PREFIX, NOT A WHOLE TITLE: the check id is concatenated directly after
+	// it, so the trailing space is load-bearing.
+	DisclosurePrefixOutOfScope = "corpus_scan: check out of scope "
+	// DisclosurePrefixScopeApplied titles the per-check finding recording that a
+	// check RAN under its own declared narrowing, and over which paths. Without
+	// it a caller who named ten files and read a clean result could not tell that
+	// one check looked at three of them.
+	//
+	// A PREFIX, NOT A WHOLE TITLE: the check id is concatenated directly after it.
+	DisclosurePrefixScopeApplied = "corpus_scan: check scope applied "
+)
+
+// The compact render's two per-line bounds and its one construction cap.
+//
+// THE TWO BOUNDS ARE DIFFERENT KINDS OF NUMBER and reading them as one is the
+// mistake this comment exists to prevent. CompactRowBoundAst is a CONSTRUCTION
+// bound: CompactNameCap is what closes it, so it moves only with the path and
+// line components. CompactRowBoundGraph is a MEASURED TREE PROPERTY, because a
+// graph row's last column carries the whole node id and a truncated id does not
+// resolve — so its width is the corpus's longest path plus its longest symbol,
+// and a tree with longer symbols moves this number and not the other one.
+//
+// Both were computed from components measured over this repository at the tree
+// this scope landed on: severity 8, the longest repo-relative path 137, a line
+// number allowance of 6, a 32-character check id, three tab separators, and for
+// the graph row a longest symbol suffix of 78. That arithmetic yields 247 and
+// 396; the constants below are the documented bounds those round up to.
+const (
+	// CompactNameCap bounds the display-name column of an ast row, in BYTES, cut
+	// on a rune boundary with an ellipsis so a truncation is visible rather than
+	// silent. It is a choice, not a measurement: it is what makes the ast row's
+	// width a property of this renderer instead of a property of the corpus.
+	CompactNameCap = 60
+	// CompactRowBoundAst is the documented per-line bound for an ast_pattern row.
+	CompactRowBoundAst = 256
+	// CompactRowBoundGraph is the documented per-line bound for a graph row.
+	CompactRowBoundGraph = 400
 )
 
 // contractMetaKeys is the check-node metadata vocabulary this analyzer's corpus
@@ -183,6 +294,14 @@ func checkVocabulary() string {
 //	declared honoring-analyzer allowlist.
 //
 //	CHECK SUBSET = Extra[ExtraKeyChecks].
+//
+//	PER-CHECK SCOPE = the CHECK NODE's own style_scope_repo and
+//	style_scope_paths, declared in kgtypes and shared with the practice-side
+//	style rule. It is neither a Request field nor an Extra key because it is not
+//	a run parameter at all: it is corpus data written by a rule's author, saying
+//	which repository and which paths that rule governs. It COMPOSES with the two
+//	caller channels above rather than replacing either, and a check declaring
+//	nothing runs everywhere.
 //
 //	TEST-FILE SCOPE = Extra[ExtraKeyIncludeTests], the run-wide knob, folded
 //	per check with the check node's own applies_to_tests declaration. It is an

@@ -123,13 +123,21 @@ func collectChunkRequests(
 // ORDER relative to the sanitize pass is a property of WriteResult's own frame.
 func (s *UploadSink) planDiffUpload(
 	ctx context.Context, result *collectorwire.CollectResult,
-	mode diffMode, lever diffLever, perFileHashes map[string][32]byte,
+	mode diffMode, lever diffLever, perKeyHashes map[string][32]byte, kind diffKeyKind,
 ) (diffMode, uploadDecision, string, []baselineCommit, error) {
 	// The fingerprint check runs BEFORE the fetch: it names OUR OWN producer
 	// regressing, so it must cost no round trip.
+	//
+	// THE DIAGNOSTIC NAMES THE FAMILY IT ACTUALLY MET. It said "on a code collect"
+	// while code was the only family that reached it; now that a registered custom
+	// collect does too, a hardcoded family would send an operator looking at the
+	// wrong producer — the stamping site differs per family, and the message is
+	// what tells them which one failed to stamp.
 	if result.DiscoveryFingerprint == "" {
-		return "", uploadDecision{}, "", nil, fmt.Errorf("remote sink: empty discovery fingerprint on a code collect: " +
-			"the discovery producer did not stamp CollectResult.DiscoveryFingerprint")
+		return "", uploadDecision{}, "", nil, fmt.Errorf(
+			"remote sink: empty discovery fingerprint on a %s collect of graph %q: "+
+				"the discovery producer did not stamp CollectResult.DiscoveryFingerprint",
+			result.GraphType, result.GraphName)
 	}
 	manifest, mErr := s.fetchManifest(ctx, result)
 	// The SAME failure class WriteResult's picker error already hard-errors on —
@@ -147,15 +155,15 @@ func (s *UploadSink) planDiffUpload(
 	// A manifest that disagrees with its own contract came from the server's render
 	// logic, and the next render comes from the same logic — so this re-fires
 	// forever rather than converging.
-	if !manifestSelfConsistent(manifest) {
+	if !manifestSelfConsistent(manifest, kind) {
 		return "", uploadDecision{}, "", nil, fmt.Errorf(
-			"remote sink: served manifest violates its own contract: %s", manifestDefect(manifest))
+			"remote sink: served manifest violates its own contract: %s", manifestDefect(manifest, kind))
 	}
 	// A discovery-store failure leaves here as an error rather than as a silently
 	// degraded lane: a store that cannot be read or written keeps no baseline, so
 	// the lane it used to take would fire on every collect forever.
 	var outcome collectDiffOutcome
-	resolvedMode, decision, dErr := s.applyCollectDiff(result, mode, lever, perFileHashes, manifest, &outcome)
+	resolvedMode, decision, dErr := s.applyCollectDiff(result, mode, lever, perKeyHashes, manifest, kind, &outcome)
 	if dErr != nil {
 		return "", uploadDecision{}, "", nil, dErr
 	}
@@ -206,7 +214,8 @@ func (s *UploadSink) uploadChunks(
 			slog.Info("remote sink: chunk failed", "i", i+1, "of", len(reqs), "bytes", reqBytes,
 				"dur", elapsed.Round(time.Millisecond), "socket_writes", d.Writes,
 				"socket_bytes", d.Bytes, "in_write_ms", millis(d.InWrite))
-			return fmt.Errorf("remote sink: CollectChunk %d/%d (%d bytes): %w", i+1, len(reqs), reqBytes, err)
+			return fmt.Errorf("remote sink: CollectChunk %d/%d (%d bytes): %w — %s",
+				i+1, len(reqs), reqBytes, err, chunkPositionStatement(i))
 		}
 		slog.Debug("remote sink: chunk sent", "i", i+1, "of", len(reqs),
 			"nodes", len(req.Nodes), "edges", len(req.Edges), "bytes", reqBytes,
@@ -216,6 +225,60 @@ func (s *UploadSink) uploadChunks(
 	slog.Debug("remote sink: all chunks uploaded", "graph", result.GraphName, "branch", result.CurrentBranch,
 		"epoch", epoch, "chunks", len(reqs), "dur", time.Since(uploadStart).Round(time.Millisecond))
 	return nil
+}
+
+// deletionsFor returns the decision's named deletions when they are keyed on
+// want, and nil otherwise — the router between the Finalize request's two
+// deletion carriers.
+//
+// IT IS A FUNCTION RATHER THAN TWO INLINE CONDITIONALS so the exclusivity is
+// stated once: a decision carries ONE list under ONE kind, so asking for the
+// other kind returns nil rather than the same list twice. Written inline at both
+// field assignments, that rule would be two chances to send a node-id set to the
+// file resolver, which fails per-entry validation and refuses the whole deletion
+// phase.
+// perKeyContributionHashes folds this collect's rows into the per-key map the
+// diff compares against the served manifest: per FILE for the code family, per
+// NODE ID for a registered custom one.
+//
+// IT IS THE ONE THING THAT DIFFERS PER FAMILY at this seam, and both halves fold
+// through the SAME group hash — sha256(node_agg || edge_agg) over the group's
+// rows in the spec's order — so the client and the server agree about a key's
+// value the same way under either unit. Named rather than inlined so the choice
+// has a symbol the sink's own frame does not have to carry.
+func perKeyContributionHashes(kind diffKeyKind, result *collectorwire.CollectResult) map[string][32]byte {
+	if kind == diffKeyNode {
+		return contribhash.NodeKeyContributionHashes(result.Nodes, result.Edges)
+	}
+	return contribhash.FileContributionHashes(result.Nodes, result.Edges)
+}
+
+// fileByNodeIDOf builds the id → owning-file projection an edge chunk names its
+// FILE keys through, from the UPLOADED node set — after the diff filter, because
+// only the uploaded nodes can be named.
+//
+// IT IS EMPTY UNDER THE NODE KEY, and that is a statement rather than an
+// optimization: there an edge's owning key is its FromID itself, so there is no
+// projection to make and a map built anyway would be an unread second answer to
+// a question the key already answers.
+func fileByNodeIDOf(kind diffKeyKind, result *collectorwire.CollectResult) map[string]string {
+	if kind == diffKeyNode {
+		return nil
+	}
+	out := make(map[string]string, len(result.Nodes))
+	for _, n := range result.Nodes {
+		if p := n.GetFilePath(); p != "" {
+			out[n.GetId()] = p
+		}
+	}
+	return out
+}
+
+func deletionsFor(decision uploadDecision, want diffKeyKind) []string {
+	if decision.kind != want {
+		return nil
+	}
+	return decision.deletions
 }
 
 func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, result *collectorwire.CollectResult) error {
@@ -301,23 +364,28 @@ func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, resu
 	// pre-incremental upload, not a diff that happens to select everything. Only
 	// the collectbench-tagged constructor can set it; production leaves it false
 	// and this conjunct short-circuits to the ordinary path.
+	// THE FAMILY GATE IS RESOLVED ONCE, HERE, AND CARRIED. It answers both halves
+	// of the same question — whether this collect diffs at all, and on which unit —
+	// so no consumer downstream re-derives it and none can disagree with the
+	// comparison that produced the decision.
+	keyKind := diffKeyKindFor(result.GraphType)
 	resolvedMode := diffModeOff
-	decision := uploadDecision{uploadAll: true}
+	decision := uploadDecision{uploadAll: true, kind: keyKind}
 	var manifestID string
-	// perFileHashes escapes the gate as a VALUE, not as a second call: the chunk
-	// builder sends these same hashes so the server can compare per file, and
-	// recomputing them there would pay the O(repo) pass twice. It stays nil for a
+	// perKeyHashes escapes the gate as a VALUE, not as a second call: the chunk
+	// builder sends these same hashes so the server can compare per key, and
+	// recomputing them there would pay the O(graph) pass twice. It stays nil for a
 	// non-eligible family, which is what makes those collects decline nothing.
-	var perFileHashes map[string][32]byte
+	var perKeyHashes map[string][32]byte
 	// pendingBaselines is what this collect will owe the discovery store IF it
 	// succeeds. It stays empty for a non-eligible family, which records nothing —
 	// those collects consult no baseline either.
 	var pendingBaselines []baselineCommit
-	if !s.benchForceFullNoDiff && diffEligibleGraph(result.GraphType) {
-		perFileHashes = contribhash.FileContributionHashes(result.Nodes, result.Edges)
+	if !s.benchForceFullNoDiff && keyKind != diffKeyNone {
+		perKeyHashes = perKeyContributionHashes(keyKind, result)
 		var dErr error
 		resolvedMode, decision, manifestID, pendingBaselines, dErr = s.planDiffUpload(
-			ctx, result, mode, lever, perFileHashes)
+			ctx, result, mode, lever, perKeyHashes, keyKind)
 		if dErr != nil {
 			return dErr
 		}
@@ -350,20 +418,12 @@ func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, resu
 	// edge set exactly once.
 	edgeChunks := BatchEdgesProto(protoEdges, DefaultBatchBytes)
 
-	// The id → owning-file map is built from the UPLOADED node set, after the diff
-	// filter, because an edge chunk names its files through its FROM node and only
-	// the uploaded nodes can be named.
-	fileByNodeID := make(map[string]string, len(result.Nodes))
-	for _, n := range result.Nodes {
-		if p := n.GetFilePath(); p != "" {
-			fileByNodeID[n.GetId()] = p
-		}
-	}
 	reqs := collectChunkRequests(epoch, result, nodeChunks, edgeChunks, resolvedMode, chunkHashFields{
-		manifestID:    manifestID,
-		nodeHashes:    nodeHashes,
-		perFileHashes: perFileHashes,
-		fileByNodeID:  fileByNodeID,
+		kind:         keyKind,
+		manifestID:   manifestID,
+		nodeHashes:   nodeHashes,
+		perKeyHashes: perKeyHashes,
+		fileByNodeID: fileByNodeIDOf(keyKind, result),
 	})
 	if err := s.uploadChunks(ctx, collectorName, result, reqs, epoch, len(nodeChunks), len(edgeChunks)); err != nil {
 		return err
@@ -383,8 +443,17 @@ func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, resu
 		// The deletion carrier and both guard fields ride the SAME Finalize as the
 		// chunks' epoch, so there is no arrangement where a deletion phase runs
 		// against a collection whose chunks were skipped.
-		DeletedFiles: decision.deletions,
-		ManifestId:   manifestID,
+		//
+		// THE CARRIER IS CHOSEN BY THE DIFF KEY, and the two are mutually exclusive
+		// by construction: one decision produced one list under one kind, so exactly
+		// one of the two fields is ever non-empty on a Finalize. They are separate
+		// fields because the server RESOLVES them differently — a file path resolves
+		// through two passes keyed on file_path plus the directory rule, a node id by
+		// primary key — and a set the server resolves under the wrong rule fails
+		// per-entry validation, which refuses the WHOLE deletion phase.
+		DeletedFiles:   deletionsFor(decision, diffKeyFile),
+		DeletedNodeIds: deletionsFor(decision, diffKeyNode),
+		ManifestId:     manifestID,
 		// COMPUTED, NEVER HARDCODED. A literal true satisfies every field-presence
 		// gate while disarming guard 2 — the only thing standing between a file
 		// that failed to READ and being NAMED as a deletion. Its source is the code

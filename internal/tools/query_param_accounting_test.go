@@ -66,11 +66,20 @@ func gatedRouteWebPDF(ctx context.Context, deps ClientDeps, a queryArgs) (bool, 
 	return routeWebPDFClient(ctx, deps, a, queryArgsPayload(a))
 }
 
-// queryRenderAllowlist is the CLOSED set of params an arm may deliberately
-// ignore. Both are render params: an arm that renders its own result and never
-// consults them ignores them with a justification rather than rejecting a
-// schema-advertised render shape. Nothing else may be parked here.
-var queryRenderAllowlist = map[string]bool{"format": true, "fields": true}
+// queryIgnoredAllowlist is the CLOSED set of params an arm may deliberately
+// ignore. `format` and `fields` are render params: an arm that renders its own
+// result and never consults them ignores them with a justification rather than
+// rejecting a schema-advertised render shape.
+//
+// `account` is the third member and the only non-render one. It is admitted by
+// an owner ruling (2026-09-09) that the parameter stays advertised on the five
+// surfaces that declare it, accepted and ignored, with each schema's pinned
+// wording stating that it does nothing — and no surviving graph family is keyed
+// by it, so unlike a dropped `repo` there is no other graph the dropped value
+// could have named. The set stays CLOSED at three named params: the closure is
+// what stops "this entry point serves multiple shapes" from becoming a
+// justification for parking every routing param an arm drops.
+var queryIgnoredAllowlist = map[string]bool{"format": true, "fields": true, "account": true}
 
 // queryParamGroupTable is every frozen group in query_arm_registry.go, so the
 // group-level partition below cannot silently miss one that was added to the
@@ -89,9 +98,13 @@ var queryParamGroupTable = map[string][]string{
 	"qgStats":    qgStats,
 	"qgCloud":    qgCloud,
 	"qgRules":    qgRules,
+
+	// The practice source-hub selector, added as its own group when the eight
+	// per-language practice graphs became one combined graph.
+	"qgPracticeHub": qgPracticeHub,
 }
 
-// TestQueryParamGroups_PartitionSchema proves the thirteen frozen groups name
+// TestQueryParamGroups_PartitionSchema proves the fourteen frozen groups name
 // each declared param EXACTLY ONCE. This is the group-level twin of the per-arm
 // partition: because the arms compose their sets from these groups, a schema
 // addition that lands in no group is caught here with a single clear failure
@@ -158,7 +171,7 @@ func TestQueryArmRegistry_IsOneObjectAssembledFromItsSiblings(t *testing.T) {
 		"every sibling group must be copied into the one registry, and no armID may collide "+
 			"across groups (a collision silently overwrites and shrinks the total)")
 
-	for _, arm := range []armID{armCloudCICDStats, armCorrelations, armReflectRecall, armBuiltinGraphStats} {
+	for _, arm := range []armID{armPracticeStats, armCorrelations, armReflectRecall, armBuiltinGraphStats} {
 		spec, ok := queryArmRegistry[arm]
 		assert.Truef(t, ok, "arm %s is declared in a sibling file but absent from the assembled registry", arm)
 		assert.NotEmptyf(t, spec.handler, "arm %s came through the assembly without its handler", arm)
@@ -217,9 +230,9 @@ func TestQueryArmAccounting_TablePartitionsSchemaPerArm(t *testing.T) {
 
 			t.Run("ignored keys stay inside the closed allowlist", func(t *testing.T) {
 				for key, justification := range spec.deliberatelyIgnored {
-					assert.Truef(t, queryRenderAllowlist[key],
-						"arm %s deliberately ignores %q, which is not one of the two render params — a param "+
-							"that is neither consumed nor a render param is REJECTED; there is no third option",
+					assert.Truef(t, queryIgnoredAllowlist[key],
+						"arm %s deliberately ignores %q, which is not a member of the closed ignored "+
+							"allowlist — a param that is neither consumed nor an allowlisted ignore is REJECTED",
 						arm, key)
 					assert.NotEmptyf(t, justification,
 						"arm %s ignores %q with no justification", arm, key)

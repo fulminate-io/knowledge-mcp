@@ -69,12 +69,10 @@ func (f *catalogByTypeFake) Stats(
 func rawEnumerationCatalog() *catalogByTypeFake {
 	return &catalogByTypeFake{byType: map[string][]string{
 		string(kgtypes.GraphCode):     {"knowledge"},
-		string(kgtypes.GraphCloud):    {"acct"},
 		string(kgtypes.GraphPractice): {"go"},
 		string(kgtypes.GraphLinkage):  {"default"},
 		string(kgtypes.GraphWebRaw):   {"twelve-factor"},
 		string(kgtypes.GraphPDFRaw):   {"stopford"},
-		string(kgtypes.GraphLogs):     {"q-cloudwatch-1"},
 	}}
 }
 
@@ -88,7 +86,8 @@ func TestRawGraphEnumeration_ReachedByTheCoverageAndIdentityWalks(t *testing.T) 
 		// binary vectors > 0 and segment coverage for the pdf graph") failing at the
 		// enumeration, before the segment probe is ever consulted.
 		fake := rawEnumerationCatalog()
-		targets := coverageTargets(opCtx(), interceptTestDeps{gc: fake})
+		targets, targetsErr := coverageTargets(opCtx(), interceptTestDeps{gc: fake})
+		require.NoError(t, targetsErr)
 
 		got := map[string]bool{}
 		for _, tg := range targets {

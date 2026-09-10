@@ -371,18 +371,20 @@ func renderAndWriteConfig(cfgPath string, detected config.DetectedProvider, cred
 	if err != nil {
 		return fmt.Errorf("knowledge setup: render config: %w", err)
 	}
+	if prior != "" {
+		// The selection rides INSIDE the single write below. Writing the
+		// starter first and re-applying the selection afterwards would leave
+		// a selection-free config on disk between the two writes, and the
+		// daemon reads this file on a TTL: a read in that window routes cloud
+		// calls to the primary account. A silently dropped selection is
+		// precisely the defect this preserve-around exists to close.
+		body = config.UpsertSelectedAccountID(body, prior)
+	}
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o750); err != nil {
 		return fmt.Errorf("knowledge setup: mkdir %s: %w", filepath.Dir(cfgPath), err)
 	}
-	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+	if err := config.WriteFileAtomic(cfgPath, []byte(body), 0o600); err != nil {
 		return fmt.Errorf("knowledge setup: write %s: %w", cfgPath, err)
-	}
-	if prior != "" {
-		// A failure to re-apply is a real error: a silently dropped selection
-		// is precisely the defect this preserve-around exists to close.
-		if err := config.WriteSelectedAccountID(cfgPath, prior); err != nil {
-			return fmt.Errorf("knowledge setup: preserve account selection in %s: %w", cfgPath, err)
-		}
 	}
 	fmt.Fprintf(os.Stdout, "knowledge setup: wrote %s\n", cfgPath)
 	return nil

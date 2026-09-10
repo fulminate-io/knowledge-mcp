@@ -20,6 +20,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/workingset"
 )
 
 type fakeGraphCaller struct {
@@ -59,6 +60,24 @@ type fakeGraphCaller struct {
 	// before nodeMatchResults. Purely additive.
 	nodeMatchErr map[string]error
 
+	// tombstonedIDs marks seeded ids the server would treat as DELETED. A read
+	// that does not set IncludeTombstones misses them; a read that does gets them.
+	// Without it every read answered identically whatever visibility it asked
+	// for, so a guard's tombstone policy was unobservable — see seededNodeResult.
+	tombstonedIDs map[string]bool
+
+	// bulkTruncated forces the PLURAL-Ids hydrate to report Truncated, which is
+	// the verdict FetchNodesByIDs returns and its callers decide on. The fake
+	// never reaches a real row ceiling, so a truncation-refusing guard had no way
+	// to be driven at all.
+	bulkTruncated bool
+
+	// bulkQueryErr fails the PLURAL-Ids hydrate alone. queryErrors keys on a
+	// single id and is consulted only on the by-id path, which sits AFTER the
+	// bulk branch returns — so a bulk read could not be made to fail, and every
+	// guard's read-error arm was undriven.
+	bulkQueryErr error
+
 	// edgesByID answers a RETURN_MODE_EDGES read (render.IterEdges) keyed by the
 	// probed node id → its incident edges, encoded into the typed edges carrier.
 	// The seeded edges carry the metadata fields the migration re-point must preserve.
@@ -83,7 +102,7 @@ type fakeGraphCaller struct {
 	traversalErr error
 
 	// listGraphsResult, when set, is returned for a pipeline_list_graphs Call
-	// (the client graph-overview source used by listForeignGraphs). Purely
+	// (the client graph-overview source used by crossgraph.ListForeignGraphs). Purely
 	// additive; the generic-forward arm answers it otherwise.
 	listGraphsResult *kgtools.ToolResult
 
@@ -141,7 +160,7 @@ type fakeGraphCaller struct {
 
 	// statsResp / statsErr back the statsRPC seam, and statsReqs records every
 	// StatsRequest issued. Having Stats here is what makes the stats-bearing query
-	// arms drivable at all: InterceptQueryStats and InterceptQueryCloudCICD's stats
+	// arms drivable at all: InterceptQueryStats and every other per-graph stats
 	// shape type-assert gc.(statsRPC) and refuse before reading a param when it
 	// fails, and InterceptQueryPracticeLinkage resolves the seam FIRST (statsSeamFor)
 	// so ALL NINE of its arms are unreachable without it — not just the two stats
@@ -154,9 +173,13 @@ type fakeGraphCaller struct {
 }
 
 // graphKey is the (graphType, graphName) lookup key for the name-aware fake
-// maps. graphName is the Target's Language (practice), Repo (code), Account
-// (cloud/cicd) or Name (everything else, including the checks singleton, whose
-// name is empty); an empty Target → ("knowledge", "").
+// maps. graphName is the Target's Repo (code) or Name
+// (everything else, including the checks singleton, whose name is empty); an
+// empty Target → ("knowledge", ""). PRACTICE IS ITS OWN ARM: it is one combined
+// graph, so an unselected practice target keys under the singleton's default
+// instance name and only a LEGACY language names one of the pre-singleton
+// graphs. targetGraphKey below is the authority; read it rather than this
+// summary.
 type graphKey struct {
 	Type string
 	Name string
@@ -164,26 +187,39 @@ type graphKey struct {
 
 // targetGraphKey extracts the (type,name) key from an Execute Target, mirroring
 // the SERVER's selector contract (not the client helper): practice carries its
-// name in Language, code in Repo, cloud and cicd in Account, every other type in
+// name in Language, code in Repo, every other type in
 // Name; an empty Target defaults to knowledge. checks is a SINGLETON whose
 // selector policy rejects a set name, so it lands in the Name arm with an empty
-// name — mirroring the server, which would refuse anything else. The code and cloud/cicd arms
+// name — mirroring the server, which would refuse anything else. The code and
+// practice arms
 // exist because the server's resolvers reject a name-keyed selector for those
-// families before any lookup (resolveCode requires Repo, resolveAccountGraph
-// errors with "graph=cloud requires account"), so a Target with only Name set
+// families before any lookup (resolveCode requires Repo, and resolvePractice
+// refuses a name outside the singleton's root aliases), so a Target with only
+// Name set
 // must deliberately MISS here too — otherwise the fake would keep agreeing with
 // a client that builds selectors the real server refuses.
+//
+// THERE IS NO ACCOUNT ARM. The account-keyed inventory families are retired, so a
+// Target carrying an Account names a field no resolver reads — the fake must miss
+// on it exactly as the server refuses it.
 func targetGraphKey(target *knowledgev1.GraphSelector) graphKey {
 	gt := target.GetGraph()
 	switch gt {
 	case "":
 		return graphKey{Type: "knowledge"}
 	case "practice":
-		return graphKey{Type: gt, Name: target.GetLanguage()}
+		// PRACTICE HOLDS ONE GRAPH, SEALED UNDER "default". Keying it on the
+		// language alone produced graphKey{practice, ""} for every unselected
+		// read — the normal shape now — so every fixture keyed on the graph the
+		// collector actually seals would have missed. A set language is the
+		// LEGACY read and still names one of the pre-singleton graphs, which is
+		// exactly what the server does with it.
+		if lang := target.GetLanguage(); lang != "" {
+			return graphKey{Type: gt, Name: lang}
+		}
+		return graphKey{Type: gt, Name: workingset.DefaultInstanceName}
 	case "code":
 		return graphKey{Type: gt, Name: target.GetRepo()}
-	case "cloud", "cicd":
-		return graphKey{Type: gt, Name: target.GetAccount()}
 	default:
 		return graphKey{Type: gt, Name: target.GetName()}
 	}
@@ -338,7 +374,7 @@ func (f *fakeGraphCaller) Execute(_ context.Context, req *knowledgev1.ExecuteReq
 		}
 		if q.GetReturnMode() != knowledgev1.ReturnMode_RETURN_MODE_TRAVERSAL &&
 			q.GetReturnMode() != knowledgev1.ReturnMode_RETURN_MODE_GRAPH_NAMES {
-			return f.execBulkHydrate(q.GetIds())
+			return f.execBulkHydrate(req, q.GetIds())
 		}
 	}
 	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
@@ -365,40 +401,11 @@ func (f *fakeGraphCaller) Execute(_ context.Context, req *knowledgev1.ExecuteReq
 	if err, ok := f.queryErrors[id]; ok {
 		return nil, err
 	}
-	// Name-aware lookup first (when seeded): resolve only in the request's
-	// (graphType,graphName). A (type,name) miss when the name-keyed map IS
-	// configured for that key means "not in this graph" → not-found.
-	if f.queryResponsesByGraphName != nil {
-		if byID, hasKey := f.queryResponsesByGraphName[targetGraphKey(req.GetTarget())]; hasKey {
-			res, ok := byID[id]
-			if !ok {
-				return &knowledgev1.ExecuteResponse{}, nil // not in this (type,name) graph.
-			}
-			return f.encodeNodeResult(res)
-		}
-	}
-	// Graph-aware lookup first (when seeded): resolve only in the request's
-	// Target graph. Empty Target → "knowledge". A (graph,id) miss when the
-	// graph-keyed map IS configured for that graph means "not in this graph" →
-	// not-found, even if the flat queryResponses has the id.
-	if f.queryResponsesByGraph != nil {
-		graph := req.GetTarget().GetGraph()
-		if graph == "" {
-			graph = "knowledge"
-		}
-		if byID, hasGraph := f.queryResponsesByGraph[graph]; hasGraph {
-			res, ok := byID[id]
-			if !ok {
-				return &knowledgev1.ExecuteResponse{}, nil // not in this graph.
-			}
-			return f.encodeNodeResult(res)
-		}
-	}
-	res, ok := f.queryResponses[id]
+	res, ok := f.seededNodeResult(req, id)
 	if !ok {
-		return &knowledgev1.ExecuteResponse{}, nil // not found.
+		return &knowledgev1.ExecuteResponse{}, nil // not found in the addressed graph.
 	}
-	return f.encodeNodeResult(res)
+	return f.encodeNodeResult(id, res)
 }
 
 // MetadataStats satisfies the promote_metadata composer's metadataStatsCaller
@@ -456,18 +463,31 @@ func (f *fakeGraphCaller) execBulkEdges(q *knowledgev1.QueryPlan) (*knowledgev1.
 // requested id's seeded response IN REQUEST ORDER, through the same typed Nodes
 // carrier the single-id path uses. An unseeded or malformed id is skipped rather
 // than failing the batch, mirroring a partial hydrate.
-func (f *fakeGraphCaller) execBulkHydrate(ids []string) (*knowledgev1.ExecuteResponse, error) {
+//
+// IT RESOLVES THROUGH seededNodeResult, so it addresses the SAME graph the
+// request names — a by-ids read of a node seeded only into practice misses in
+// knowledge exactly as the by-id read does.
+func (f *fakeGraphCaller) execBulkHydrate(
+	req *knowledgev1.ExecuteRequest, ids []string,
+) (*knowledgev1.ExecuteResponse, error) {
+	if f.bulkQueryErr != nil {
+		return nil, f.bulkQueryErr
+	}
 	nodes := make([]*knowledgev1.Node, 0, len(ids))
 	for _, id := range ids {
-		res, ok := f.queryResponses[id]
+		res, ok := f.seededNodeResult(req, id)
 		if !ok {
 			continue
 		}
 		if n, decoded := decodeSeededNode(res); decoded {
-			nodes = append(nodes, n)
+			nodes = append(nodes, f.stampTombstone(id, n))
 		}
 	}
-	return enginetest.ResponseWithNodes(nodes...), nil
+	resp := enginetest.ResponseWithNodes(nodes...)
+	resp.Truncated = f.bulkTruncated
+	return resp, nil
 }
 
-// The seeded-node decode/encode helpers live in fake_graph_caller_seed_test.go.
+// The seeded-node decode/encode helpers, and seededNodeResult — the one
+// Target-aware id resolver both the single-id and the plural-ids read go
+// through — live in fake_graph_caller_seed_test.go.

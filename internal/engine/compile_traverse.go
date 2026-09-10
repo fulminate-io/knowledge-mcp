@@ -128,9 +128,6 @@ func compileTraverse(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 		return nil, false
 	}
 
-	if a.Graph == "logs" {
-		return nil, false // log traversal is rendered by the client intercept.
-	}
 	if a.Start == "" {
 		return nil, false // graph-wide-edges fast path, not a from_id walk.
 	}

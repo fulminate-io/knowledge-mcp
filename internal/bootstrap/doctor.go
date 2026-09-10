@@ -128,6 +128,19 @@ func runDoctor(args []string) error {
 // a remote backend (no local server by design) each probe slept through the
 // reconnect interceptor's retry ladder — ~13s of a ~14.5s manage(status).
 func defaultChecks(port int, configFile string) []checkResult {
+	// routing: local by design — the local install is the subject. Liveness is
+	// only part of what this client does, and calling it the whole reason would
+	// under-describe the site: besides the HealthyCtx probe below, two of the
+	// checks it is threaded into READ THE LOCAL STORE'S OWN RECORDED METADATA to
+	// describe that install — checkCodeStaleness reads the code graph's recorded
+	// sync commit and collection time (doctor_staleness.go, RecordedCodeSyncMeta)
+	// and checkEmbedIdentities enumerates every graph's embed identity
+	// (doctor_embed_identities.go, RecordedGraphIdentities). Those are facts
+	// ABOUT this process's own store rather than graph data the operator is
+	// asking a question of, and doctor's subject IS the local install, so a
+	// routed client would describe a different plane than the one being
+	// diagnosed. The rendered lines say "server not running" and stop when the
+	// probe fails, so neither read can silently answer from somewhere else.
 	gc := graphclient.NewGraphClient(port)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	healthy := gc.HealthyCtx(ctx)

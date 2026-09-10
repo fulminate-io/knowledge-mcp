@@ -40,10 +40,10 @@ const (
 // — which is exactly what an edge-rewrite resolver needs.
 //
 // dir selects outgoing (Forward=true) or incoming (Forward=false). edgeTypes
-// filters to the listed edge types (empty = any). Cloud/cicd edge-type constants
+// filters to the listed edge types (empty = any). Edge-type constants
 // are already stored in their canonical UPPERCASE form (edge_types.go), so they
 // ride AS-GIVEN. The (gt, graphName) selector routes the read to the right backing
-// DB (cloud/cicd by Account, code by Repo) via the same translation selectorArgs
+// DB (practice by Language, code by Repo) via the same translation selectorArgs
 // performs for the query/mutate helpers.
 //
 // Returns wire edges ([]knowledgev1.Edge) straight from engine.DecodeEdges —
@@ -132,7 +132,7 @@ func UnlinkEdgesBatch(ctx context.Context, gc GraphCaller, gt kgtypes.GraphType,
 
 // edgeSelector builds the proto GraphSelector for a RETURN_MODE_EDGES read,
 // mirroring the selectorArgs (gt, graphName) → field routing in proto form:
-// code routes by Repo, cloud/cicd by Account, everything else by Name. This is
+// code routes by Repo, practice by Language, everything else by Name. This is
 // the proto-shaped twin of selectorArgs (which produces the JSON-arg form the
 // query/mutate engine.Compile path consumes); the edge-read builds the proto
 // directly because RETURN_MODE_EDGES is not an engine.Compile tool shape.

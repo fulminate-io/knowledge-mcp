@@ -156,6 +156,14 @@ func handleAstMatch(ctx context.Context, deps ClientDeps, a astArgs) kgtools.Too
 		return errorResult(ferr.Error())
 	}
 
+	// And one leaf over again: a capture reference nothing declares resolves
+	// only when some node matches, so over a corpus the pattern misses it
+	// returns the same clean zero a correct search does. Refusing here is what
+	// keeps the two apart.
+	if cerr := ast.ValidateWhereCaptureRefs(where, parsedPatterns(patterns)...); cerr != nil {
+		return errorResult(cerr.Error())
+	}
+
 	if perr := validateContextPin(a.Context, lang); perr != nil {
 		return errorResult(perr.Error())
 	}
@@ -268,6 +276,14 @@ func handleAstCount(ctx context.Context, deps ClientDeps, a astArgs) kgtools.Too
 	// would be indistinguishable from a correct search that found nothing.
 	if ferr := ast.ValidateWhereFlowArms(where, lang); ferr != nil {
 		return errorResult(ferr.Error())
+	}
+
+	// And one leaf over again: a capture reference nothing declares resolves
+	// only when some node matches, so over a corpus the pattern misses it
+	// returns the same clean zero a correct search does. Refusing here is what
+	// keeps the two apart.
+	if cerr := ast.ValidateWhereCaptureRefs(where, parsedPatterns(patterns)...); cerr != nil {
+		return errorResult(cerr.Error())
 	}
 
 	if perr := validateContextPin(a.Context, lang); perr != nil {

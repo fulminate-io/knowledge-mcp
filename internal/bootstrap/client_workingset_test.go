@@ -188,7 +188,6 @@ func TestCollectSinkAdmitsEveryGraphFamily(t *testing.T) {
 		name      string
 	}{
 		{"code", kgtypes.GraphCode, "repoA"},
-		{"cloud", kgtypes.GraphCloud, "acct-1"},
 		{"practice", kgtypes.GraphPractice, "go"},
 	} {
 		require.NoError(t, sink.WriteResult(context.Background(), tc.collector,
@@ -196,14 +195,12 @@ func TestCollectSinkAdmitsEveryGraphFamily(t *testing.T) {
 	}
 
 	assert.Equal(t, []workingset.Ref{
-		{GraphType: kgtypes.GraphCloud, Name: "acct-1"},
 		{GraphType: kgtypes.GraphCode, Name: "repoA"},
 		{GraphType: kgtypes.GraphPractice, Name: "go"},
 	}, c.WorkingSet().Members(), "every collector family must admit the graph it produced")
 
 	assert.Equal(t, []string{
 		"code:code/repoA",
-		"cloud:cloud/acct-1",
 		"practice:practice/go",
 	}, inner.recorded(), "the inner sink must still receive every write, unchanged")
 }

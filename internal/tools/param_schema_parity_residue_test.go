@@ -75,7 +75,23 @@ import (
 // other fails whichever side was not updated.
 var deleteReadKeys = []string{
 	"ids", "id", "older_than", "type", "session_id", "dry_run", "hard", "graph", "language", "repo", "account", "format",
+	// source is the practice SOURCE HUB selection axis, added when the eight
+	// per-language practice graphs became one: a hub-scoped delete is how an
+	// abandoned collection is removed as a unit.
+	"source",
 }
+
+// deleteReadKeysPlusHub is what the delete path READS, which is one key more
+// than what it DECLARES.
+//
+// THE TWO LISTS DIVERGE BY EXACTLY ONE KEY AND THAT IS THE DESIGN. compileDelete
+// serves both the standalone `delete` tool and mutate(operation:"delete"), and
+// the two schemas legitimately publish different names for the one practice
+// by-hub selection axis: `source` is free on delete and taken on mutate, where
+// it already means the node's own provenance. So the compiler reads both
+// spellings, delete declares only its own, and the extra read key is credited to
+// the mutate schema below rather than forced into this tool's surface.
+var deleteReadKeysPlusHub = append(append([]string(nil), deleteReadKeys...), "source_hub")
 
 // residueParityCase is one tool's row in the parity table.
 type residueParityCase struct {
@@ -130,7 +146,16 @@ func residueParityTable() []residueParityCase {
 		{tool: "custom_collector", def: GraphTypeToolDef, structs: []any{graphTypeArgs{}}},
 		// delete: the struct lives in package engine and is unexported. See
 		// deleteReadKeys and its handshake partner TestDeleteArgs_ReadKeySetIsLocked.
-		{tool: "delete", def: DeleteToolDef, literals: deleteReadKeys, exactKeys: deleteReadKeys},
+		{
+			tool: "delete", def: DeleteToolDef,
+			literals: deleteReadKeysPlusHub, exactKeys: deleteReadKeys,
+			creditedElsewhere: map[string]string{
+				"source_hub": "the mutate arms' spelling of the practice by-hub selection axis, read by the shared " +
+					"compileDelete because mutate(operation:\"delete\") routes there; declared by the mutate schema, " +
+					"whose `source` already means the node's own provenance. The delete tool publishes the same axis " +
+					"as `source`, which is free on its schema",
+			},
+		},
 		{
 			tool: "file_symbols", def: FileSymbolsToolDef,
 			structs: []any{fileSymbolsArgs{}},

@@ -9,35 +9,76 @@ import (
 	"testing"
 )
 
-// guidePath resolves the shipped configuration guide by walking up from this
-// package's directory to the first ancestor carrying BOTH a go.mod and
-// docs/guides/config.md.
+// guideLink is the shipped configuration guide, READ THROUGH THIS PACKAGE'S OWN
+// testdata LINK.
 //
-// NO FIXED ".." COUNT IS CORRECT IN BOTH LAYOUTS, which is why this walks. The
-// guides tree sits beside the ROOT go.mod here and beside the MODULE go.mod in
-// the published mirror, where the sync script copies cmd/knowledge/internal to
-// internal/ — four path segments become one and any fixed count overshoots by
-// two. Walking for the artifact itself also survives a package move, and fails
-// loudly rather than silently comparing against nothing.
+// THE LINK IS A TEST-CACHE FENCE, and it REPLACES a walk-up resolver that could
+// not be one. `go test` keys a package's stored result on the files a run opened
+// and DROPS any opened name that does not resolve inside the tested package's
+// own module root. The previous helper walked up to the first ancestor carrying
+// both a go.mod and docs/guides/config.md, which here is the REPO root — above
+// this module — so the guide was never in this package's key: adding a ```toml
+// example to it and re-running returned `ok (cached)`, a stored PASS for the one
+// guard whose whole subject is the guide's examples. A name under this package's
+// own testdata is inside cmd/knowledge, so the go tool records it, and os.Stat
+// follows the link to the target's size and modification time.
+//
+// THE LINK'S DEPTH DIFFERS IN THE PUBLISHED MIRROR — five levels below the repo
+// root here, three below the mirror root there, because the sync script maps
+// cmd/knowledge/internal to internal/ — so scripts/sync-to-oss.sh re-points it.
+// That mapping is exactly what made a fixed ".." count wrong in both layouts and
+// sent the previous author to a walk; the link plus the re-point is the form
+// that is correct in both AND visible to the cache.
+const guideLink = "testdata/config-guide.md"
+
+// guideTarget is what the link must resolve to. Asserted separately, and never
+// used to READ: resolving the link first names the repo-root path again, which
+// is outside this module, and undoes the fence.
+const guideTarget = "docs/guides/config.md"
+
+// guidePath is the name the failure messages print. It is the LINK, not the
+// resolved target, because the link is what the read actually opened.
 func guidePath(t testing.TB) string {
 	t.Helper()
-	const rel = "docs/guides/config.md"
-	dir, err := os.Getwd()
+	return guideLink
+}
+
+// TestGuideLinkResolves is the PIN on the fence. A checkout without symlink
+// support materializes the link as a one-line text stub, the extractor would
+// then find zero fenced blocks, and the count assertion above would fail on
+// something that is about the checkout rather than about the guide. The mutation
+// that must turn this red is replacing the link with a regular file holding the
+// same bytes: the copy extracts fine and this package goes straight back to
+// being cacheable against a document it never re-read.
+func TestGuideLinkResolves(t *testing.T) {
+	info, err := os.Lstat(guideLink)
 	if err != nil {
-		t.Fatalf("getwd: %v", err)
+		t.Fatalf("%s must exist — it is what puts the guide in this package's test-cache key: %v", guideLink, err)
 	}
-	for {
-		if _, statErr := os.Stat(filepath.Join(dir, "go.mod")); statErr == nil {
-			candidate := filepath.Join(dir, filepath.FromSlash(rel))
-			if _, statErr := os.Stat(candidate); statErr == nil {
-				return candidate
-			}
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatalf("walked to the filesystem root from the test working directory without finding %s beside a go.mod", rel)
-		}
-		dir = parent
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("%s is not a symlink (a checkout without symlink support materializes it as a text stub); "+
+			"this package would then be cacheable against a guide it never read", guideLink)
+	}
+	// Abs BEFORE EvalSymlinks: a relative name yields a relative result, and the
+	// suffix check would compare the link's own target text.
+	abs, err := filepath.Abs(guideLink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		t.Fatalf("%s must resolve; a dangling link fences nothing: %v", guideLink, err)
+	}
+	if !strings.HasSuffix(filepath.ToSlash(resolved), guideTarget) {
+		t.Fatalf("%s resolves to %s, which is not the shipped configuration guide", guideLink, resolved)
+	}
+	// KNOWN POSITIVE: it serves the real guide, not an empty stub.
+	body, err := os.ReadFile(guideLink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "```toml") {
+		t.Fatalf("%s serves no fenced toml example, so the extractor above would measure nothing", guideLink)
 	}
 }
 

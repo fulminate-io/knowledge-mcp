@@ -4,6 +4,7 @@ package tools
 
 import (
 	"encoding/json"
+	"maps"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/chunk"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/classify"
+	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/pdfcollector"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -46,8 +48,17 @@ const helpRecipesWorkedBodyCount = 11
 // BOTH FAMILIES, NO ROUTING TABLE. Every body runs against both fixtures and
 // passes on either. A per-body pdf-or-web table would be a second place to keep
 // in step with the help, and it would drift the first time an example moved.
+//
+// AND IT CATCHES THE DUPLICATE-IDENTITY REFUSAL SEPARATELY FROM THE ROW COUNT.
+// Both fixtures carry two sections sharing a heading and two pages sharing a
+// title, so a body that keys its emit identity on a heading-derived name is
+// REFUSED on them — evalEmit stops the whole run at the first repeat. That
+// refusal is reported here by name rather than only as a zero row count,
+// because the rows=0 arm cannot tell it from a body whose filters matched
+// nothing, and because a body refused on one family while returning rows on
+// the other would otherwise pass this gate silently.
 func TestHelpRecipes_WorkedExamplesValidateAgainstAFixtureGraph(t *testing.T) {
-	blocks := extractRecipeBlocks(helpRecipes)
+	blocks := extractRecipeBlocks()
 	if len(blocks) != helpRecipesWorkedBodyCount {
 		t.Fatalf("extracted %d worked recipe bodies, want exactly %d — an example left the extractor's reach (check its four-space indent) or two merged because the prose between them was dropped",
 			len(blocks), helpRecipesWorkedBodyCount)
@@ -58,6 +69,12 @@ func TestHelpRecipes_WorkedExamplesValidateAgainstAFixtureGraph(t *testing.T) {
 		t.Run(firstLine(b), func(t *testing.T) {
 			pdfRows, pdfOut := runHelpFixtureExtract(t, caller, "pdf", b)
 			webRows, webOut := runHelpFixtureExtract(t, caller, "web", b)
+			for _, run := range []struct{ family, out string }{{"pdf", pdfOut}, {"web", webOut}} {
+				if strings.Contains(run.out, identityCollisionMarker) {
+					t.Errorf("help worked example %d is REFUSED on the %s fixture for a repeated emit identity — key the emit on the row's own id\n--- body\n%s\n--- %s\n%s",
+						i, run.family, b, run.family, run.out)
+				}
+			}
 			if pdfRows < 1 && webRows < 1 {
 				t.Errorf("help worked example %d returned no rows on either fixture\n--- body\n%s\n--- pdf\n%s\n--- web\n%s",
 					i, b, pdfOut, webOut)
@@ -182,9 +199,10 @@ func pdfSignalMetadata() map[string]string {
 	return md
 }
 
-// pdfFixtureGraph mirrors pdfcollector's emitDocument/emitChunk shape: a
-// document root, one heading section carrying the unconditional chunk keys plus
-// the constant-derived signal keys, and three leaves beneath it.
+// pdfFixtureGraph mirrors pdfcollector's emitDocumentNode/emitChunk shape: a
+// document root, TWO heading sections carrying the unconditional chunk keys plus
+// the constant-derived signal keys, and three leaves beneath the first. The two
+// sections share a heading on purpose — see the note at the second one.
 func pdfFixtureGraph() ([]*knowledgev1.Node, []*knowledgev1.Edge) {
 	sectionMD := pdfSignalMetadata()
 	sectionMD["source"] = "pdf"
@@ -194,18 +212,46 @@ func pdfFixtureGraph() ([]*knowledgev1.Node, []*knowledgev1.Edge) {
 	sectionMD["heading_level"] = "1"
 	sectionMD["chunk_kind"] = "section"
 
+	dupSectionMD := pdfSignalMetadata()
+	maps.Copy(dupSectionMD, sectionMD)
+	dupSectionMD["position"] = "1"
+
 	nodes := []*knowledgev1.Node{
+		// Content carries the Info-dict BLURB emitDocumentNode builds, and the
+		// root carries no Description at all — it used to carry one here, a
+		// field no collector writes on any node this fixture holds.
+		//
+		// TWO OF THESE VALUES ARE WRITTEN OUT AND ONE IS CITED, deliberately.
+		// title_source CITES pdfcollector's exported constant because an
+		// admitted corpus check forbids a bare literal at any site that stamps
+		// that key, here included — the vocabulary is closed and the check is
+		// the compiler it otherwise lacks. collector_schema_version and the
+		// Content blurb stay written out, because their gate is
+		// TestFixtureGraphs_MirrorTheCollectorsDeclaredValues, which compares
+		// both against the collectors' own exported declarations: a written
+		// value the gate compares is caught when it drifts, which a cited one
+		// can only be trivially. The version drifted to "1" against a constant
+		// of 3 before that gate existed, and this is what now catches it.
 		{Id: "d1", Type: "document", SymbolName: "Designing Fixtures", Source: "pdf-collect",
-			Description: "a fixture document root",
+			Content: "Designing Fixtures — A Fixture",
 			Metadata: map[string]string{
 				"source": "pdf", "path": "/tmp/fixture.pdf",
-				"collector_schema_version": "1",
+				"collector_schema_version": "3",
+				"title_source":             pdfcollector.TitleSourceInfoDict,
 				"title":                    "Designing Fixtures", "author": "A Fixture",
 			}},
 		// SymbolName AND Content both carry the heading, which is what emitChunk
 		// writes for a section and what makes `body` resolve to it.
 		{Id: "s1", Type: "section", SymbolName: "Event-Driven Services",
 			Content: "Event-Driven Services", Source: "pdf-collect", Metadata: sectionMD},
+		// s2 REPEATS s1's HEADING, and the repeat is the fixture's whole point:
+		// a book whose title or a chapter heading appears twice is ordinary
+		// furniture (a title page and a copyright page carry the same words),
+		// and an emit keyed on a heading-derived name is refused outright on it.
+		// It carries s1's signal metadata so every worked body's filters admit
+		// both rows — a duplicate the filters dropped would prove nothing.
+		{Id: "s2", Type: "section", SymbolName: "Event-Driven Services",
+			Content: "Event-Driven Services", Source: "pdf-collect", Metadata: dupSectionMD},
 		{Id: "p1", Type: "paragraph", Content: "A fixture paragraph under the heading.",
 			Source: "pdf-collect", Metadata: map[string]string{
 				"source": "pdf", "position": "0", "page_first": "10", "page_last": "10"}},
@@ -220,6 +266,7 @@ func pdfFixtureGraph() ([]*knowledgev1.Node, []*knowledgev1.Edge) {
 	}
 	edges := []*knowledgev1.Edge{
 		containsEdge("d1", "s1", 0),
+		containsEdge("d1", "s2", 1),
 		containsEdge("s1", "p1", 0),
 		containsEdge("s1", "cb1", 1),
 		containsEdge("s1", "tb1", 2),
@@ -230,14 +277,20 @@ func pdfFixtureGraph() ([]*knowledgev1.Node, []*knowledgev1.Edge) {
 // webPageFixtureNode mirrors emitPageNode: url, final_url, http_status,
 // content_hash, uri and collector_schema_version unconditionally, plus title
 // when the page has one.
+//
+// AND NO BODY, IN EITHER TEXT FIELD, which is the rest of the page node's shape
+// since the page-level flatten was retired: emitPageNode constructs the node
+// with Id, Type, SymbolName, Source and Metadata and nothing else. This fixture
+// carried a Description until this change, and the docs guide's first example
+// read `body := page.description` — a field populated here and empty against
+// every real crawl, which no gate could see.
 func webPageFixtureNode(id, url, uri, title string) *knowledgev1.Node {
 	return &knowledgev1.Node{
 		Id: id, Type: "page", SymbolName: title, Source: "web-collect",
-		Description: "a fixture page's flattened body",
 		Metadata: map[string]string{
 			"url": url, "final_url": url, "http_status": "200",
 			"content_hash": "deadbeef", "uri": uri,
-			"collector_schema_version": "1",
+			"collector_schema_version": "3",
 			"title":                    title,
 		},
 	}
@@ -293,7 +346,9 @@ func webParagraphFixtureNode(id, text, uri, tag string, pos, domDepth int, links
 	}
 }
 
-// webFixtureGraph assembles the three per-node-type helpers above into one page.
+// webFixtureGraph assembles the three per-node-type helpers above into two
+// pages that share a title, the first of them carrying two sections that share a
+// heading.
 //
 // EACH NODE CARRIES THE KEYS ITS OWN EMITTER WRITES, and the split is what makes
 // this gate mean what it claims. The recipe census is a graph-wide UNION, so a
@@ -309,13 +364,25 @@ func webParagraphFixtureNode(id, text, uri, tag string, pos, domDepth int, links
 // canonical cross-emit body carries `traverse references out as $related`, and
 // an edge type the source graph does not carry is REFUSED BEFORE THE WALK rather
 // than traversed to nothing. The live twelve-factor graph carries 1175 of them,
-// so this is the collector's real shape. The casing is exact.
+// so this is the collector's real shape. The casing is exact, and so is the
+// target — see the edge's own note below.
 func webFixtureGraph() ([]*knowledgev1.Node, []*knowledgev1.Edge) {
 	const pageURI = "https://example.com/guide"
+	const pageTwoURI = "https://example.com/guide-2"
 	nodes := []*knowledgev1.Node{
 		webPageFixtureNode("pg", pageURI, pageURI, "A Fixture Guide"),
+		// pg2 REPEATS pg's TITLE. Two pages of one site sharing a <title> is
+		// ordinary (a paginated article, a translated mirror), and it is what
+		// makes a page-keyed identity collide at the SELECT rather than only
+		// inside a subtree — the canonical cross-ref pipeline and both clause
+		// illustrations key on a page.
+		webPageFixtureNode("pg2", pageTwoURI, pageTwoURI, "A Fixture Guide"),
 		webSectionFixtureNode("w1", "Handling Failure Modes", "failure-modes",
 			pageURI+"#failure-modes", "section", 1, 0, 3),
+		// w2 REPEATS w1's HEADING under the SAME page: the section-level half
+		// of the same class.
+		webSectionFixtureNode("w2", "Handling Failure Modes", "failure-modes-2",
+			pageURI+"#failure-modes-2", "section", 1, 2, 3),
 		webSectionFixtureNode("wnav", "Navigation", "", pageURI, "nav", 1, 1, 2),
 		webParagraphFixtureNode("wp1", "A fixture paragraph of real prose.",
 			pageURI+"#failure-modes", "p", 0, 4, false),
@@ -324,9 +391,108 @@ func webFixtureGraph() ([]*knowledgev1.Node, []*knowledgev1.Edge) {
 	edges := []*knowledgev1.Edge{
 		containsEdge("pg", "w1", 0),
 		containsEdge("pg", "wnav", 1),
+		containsEdge("pg", "w2", 2),
 		containsEdge("w1", "wp1", 0),
 		containsEdge("wnav", "wp2", 0),
-		{FromId: "pg", ToId: "w1", Type: string(kgtypes.EdgeReferences)},
+		// PAGE TO PAGE, which is the only references shape a crawl leaves behind:
+		// emitLinks writes the edge from the page id to a `web:url:` placeholder
+		// and resolveInternalLinks rewrites an internal one to the visited page's
+		// node id. A section-target edge stood beside this one until this change
+		// and no collector path produces it. The page target is also what the
+		// canonical cross-ref pipeline needs: it emits a pattern per PAGE and
+		// looks one up on the traversed row, so a section target misses on every
+		// row and the gate cannot tell a working pipeline from a broken one.
+		{FromId: "pg", ToId: "pg2", Type: string(kgtypes.EdgeReferences)},
 	}
 	return nodes, edges
+}
+
+// TestFixtureGraphs_CarryOnlyShapesTheCollectorsEmit is the fidelity gate on the
+// two fixture graphs: it holds each one to what its collector actually leaves
+// behind, on the properties a recipe example can be misled by.
+//
+// WHY A FIXTURE NEEDS A GATE AT ALL. Every other gate in this package reads rows
+// off a run against these graphs, so a shape no collector emits makes a shipped
+// example look like it works. Both were violated here, and one was load-bearing:
+// the page node carried a Description and the docs guide's first example read
+// `body := page.description` — populated on this fixture, empty against every
+// real crawl, and nothing in the tree could see the difference.
+//
+// THE PRODUCTION SIDE IS GATED WHERE THE PRODUCTION IS, because the two packages
+// cannot import each other's unexported emitters. The web package's
+// TestEmit_PageIsItsChunksNotItsBody drives a real crawl and asserts the page
+// node carries no body in Content and none in Description either; emitPageNode
+// (collector/web/emit_nodes.go) builds the node from Id, Type, SymbolName,
+// Source and Metadata alone, emitLinks (same file) writes a references edge to
+// another PAGE id or to a `web:url:` placeholder that resolveInternalLinks
+// rewrites to the visited page's id, and emitDocumentNode
+// (collector/pdf/pdfcollector/emit.go) gives the pdf root a Content blurb and no
+// Description. This is the fixture half of that agreement, asserted here and
+// named on both sides.
+func TestFixtureGraphs_CarryOnlyShapesTheCollectorsEmit(t *testing.T) {
+	nodes, edges := webFixtureGraph()
+
+	pages := map[string]bool{}
+	for _, n := range nodes {
+		if n.Type == "page" {
+			pages[n.Id] = true
+		}
+	}
+	// THE FLOOR, so a derivation that found nothing cannot report clean.
+	if len(pages) < 2 {
+		t.Fatalf("the web fixture carries %d page nodes, want at least the two that share a title — the assertions below would pass over an empty set", len(pages))
+	}
+
+	for _, n := range nodes {
+		if n.Type != "page" {
+			continue
+		}
+		if n.Content != "" || n.Description != "" {
+			t.Errorf("web fixture page %q carries a body (Content=%q Description=%q); emitPageNode writes neither, so an example reading a page body renders populated here and empty on every real crawl",
+				n.Id, n.Content, n.Description)
+		}
+		// ...and it still carries its identity, so "no body" is not being
+		// satisfied by a page node that carries nothing at all.
+		if n.SymbolName == "" || n.Metadata["uri"] == "" {
+			t.Errorf("web fixture page %q lost its title or its address", n.Id)
+		}
+	}
+
+	references := 0
+	for _, e := range edges {
+		if e.Type != string(kgtypes.EdgeReferences) {
+			continue
+		}
+		references++
+		if !pages[e.ToId] {
+			t.Errorf("web fixture references edge %s -> %s targets a node that is not a page; emitLinks only ever targets another page id or a `web:url:` placeholder, so no crawl produces this edge",
+				e.FromId, e.ToId)
+		}
+	}
+	if references == 0 {
+		t.Fatal("the web fixture carries no references edge, so the target assertion above ran over nothing — the help's cross-emit body needs one, and an absent edge type is refused before the walk")
+	}
+
+	pdfNodes, _ := pdfFixtureGraph()
+	roots := 0
+	for _, n := range pdfNodes {
+		if n.Type != "document" {
+			continue
+		}
+		roots++
+		if n.Description != "" {
+			t.Errorf("pdf fixture document root %q carries a Description %q; emitDocumentNode writes SymbolName, Content and Metadata and no Description",
+				n.Id, n.Description)
+		}
+		if n.Content == "" {
+			t.Errorf("pdf fixture document root %q carries no Content; emitDocumentNode writes BuildDocumentBlurb's Info-dict blurb there, and a root with neither field is not the shape either", n.Id)
+		}
+		if n.Metadata["title_source"] == "" {
+			t.Errorf("pdf fixture document root %q carries no title_source; emitDocumentNode stamps it unconditionally", n.Id)
+		}
+	}
+	if roots != 1 {
+		t.Fatalf("the pdf fixture carries %d document roots, want exactly 1 — the assertions above ran over the wrong population", roots)
+	}
+	t.Logf("fixture shapes: %d web pages, %d references edges, %d pdf document root", len(pages), references, roots)
 }

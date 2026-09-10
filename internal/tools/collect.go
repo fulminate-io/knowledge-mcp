@@ -15,11 +15,8 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
-	"github.com/fulminate-io/knowledge-mcp/internal/collector/cloud"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/web"
-	"github.com/fulminate-io/knowledge-mcp/internal/externalcollector"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
-	clientlinker "github.com/fulminate-io/knowledge-mcp/internal/linker"
 	"github.com/fulminate-io/knowledge-mcp/internal/recipe"
 )
 
@@ -28,18 +25,20 @@ import (
 // RemoteUploadSink. Returns (true, result) when the call was handled; the
 // caller forwards to the server only if this returns false.
 //
-// Every collector type runs through this path: code (via
-// handleClientReindexCode), aws / gcp / azure / k8s / github / gitlab /
-// bitbucket / web / logs / pdf all run client-side with opts.Sink =
-// deps.Sink(). Web threads CrawlOptions through ctx; logs reads the
-// configured backend node from the server (via the standard query path)
-// to obtain the plaintext-after-decryption credential, runs logs.Pipeline
-// locally in no-store mode, runs the client-side MaterializeLogGraph
-// pure transform, and ships the resulting nodes+edges via the standard
-// UploadSink.WriteResult — same wire path as code/cloud/cicd. PDF
-// takes id as an absolute path to a .pdf file and dispatches directly
-// to collector.Collect — no per-type context plumbing is required
-// because the chunker reads everything from the file itself.
+// Every BUILT-IN collector type runs through this path: code (via
+// handleClientReindexCode), github / gitlab / bitbucket / web / pdf all run
+// client-side with opts.Sink = deps.Sink(). Web threads CrawlOptions through
+// ctx; PDF takes id as an absolute path to a .pdf file and dispatches directly
+// to collector.Collect — no per-type context plumbing is required because the
+// chunker reads everything from the file itself.
+//
+// THE CLOUD AND LOG PROVIDER TYPES ARE NO LONGER BUILT IN. aws, gcp, azure,
+// k8s, cloudwatch, loki and stackdriver are contrib collectors: separate
+// binaries registered as custom graph types, collected through the
+// lookupCustomCollector path below. A collect naming one of them with nothing
+// registered under that name is refused by the registry with the message that
+// names the custom-collector route, which is the whole reason that message
+// names a route at all.
 func InterceptCollect(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "collect" {
 		return false, kgtools.ToolResult{}
@@ -55,6 +54,15 @@ func InterceptCollect(ctx context.Context, deps ClientDeps, params kgtools.CallT
 	if a.Type == "" {
 		return true, errorResult("collect: 'type' is required")
 	}
+	// A RETIRED BUILTIN FAMILY IS REFUSED BY NAME, ahead of every other
+	// disposition. `cloud` and `logs` named real collect types one release ago,
+	// and IsBuiltinGraphType no longer claims them, so without this they would
+	// fall through to the custom-collector resolver and be reported as names
+	// nobody registered — an answer that reads as a typo for a call that used to
+	// work. The retirement sentence names the route that replaced them.
+	if reason, retired := kgtypes.RetiredGraphTypeReason(a.Type); retired {
+		return true, errorResult("collect " + a.Type + ": graph type is retired: " + reason)
+	}
 	// Readiness gate (bind-first startup): a collect ships chunks the client-side LLM pipeline
 	// drains (summary + embed + segment ship). During the bind-first wiring window
 	// the pipeline is not yet wired, so a collect would upload chunks with nothing
@@ -63,10 +71,6 @@ func InterceptCollect(ctx context.Context, deps ClientDeps, params kgtools.CallT
 	if !deps.PipelineReady() {
 		return true, errorResult("collect: daemon still starting — LLM pipeline not ready yet, retry shortly")
 	}
-	if a.Type == "logs" {
-		return true, runLogsCollect(ctx, deps, a)
-	}
-
 	// Resolve the standing collect runtime via the optional seam. Present on the
 	// production *client; absent on a router-less/degraded test client, in which
 	// case collectWaitOrDetach falls back to a synchronous run.
@@ -94,36 +98,32 @@ func InterceptCollect(ctx context.Context, deps ClientDeps, params kgtools.CallT
 	}
 	ctx = base
 
-	// Registered (non-builtin) graph type: a collect whose type misses the
-	// builtin collector registry but matches a registered GraphTypeDef runs the
-	// external collector plugin. This probe sits BEFORE the `a.ID == ""` guard
-	// so a params-only registered collector (key inside params, empty top-level
-	// id) is accepted; builtin types (collector.Lookup hit) fall through to the
-	// guard + collector.Collect unchanged.
-	if handled, res := tryRegisteredCollect(ctx, deps, a); handled {
-		return true, res
+	// Registered (non-builtin) CUSTOM graph type: a collect whose type misses the
+	// builtin collector registry but matches a registered GraphTypeDef is
+	// collected by proxying that registration's MCP provider. The record is
+	// resolved HERE — the lookup is a wire call and needs the enriched ctx — and
+	// then travels with the collect through the SAME tail a builtin collect runs.
+	// A builtin type (collector.Lookup hit) resolves to nil and the path below is
+	// unchanged for it.
+	customDef, lookupErr := lookupCustomCollector(ctx, deps, a.Type)
+	if lookupErr != nil {
+		return true, errorResult(lookupErr.Error())
 	}
 
 	// Derive the id a web collect did not supply, then refuse a collect that
 	// still has none. Both live in resolveCollectID because their ORDER is the
 	// contract: deriving first is what makes the id optional for web-with-seeds
 	// and unchanged for every other collect.
+	//
+	// A CUSTOM COLLECT REACHES THIS GUARD TOO, and that is a deliberate
+	// tightening: the registration name is the graph family and the collect id is
+	// the INSTANCE inside it, so a custom collect with no id names no graph. The
+	// retired exec contract accepted one (the id was only a graph_name default a
+	// collector could override), and accepting one now would record an in-flight
+	// identity with an empty name — a gate that can never match anything.
 	if res, bad := resolveCollectID(&a); bad {
 		return true, res
 	}
-
-	// Cloud collectors use a cascade set for cross-provider dedup; the cicd path
-	// has no matching infrastructure.
-	cloudCS := cloud.NewCascadeSet()
-	cloudCS.Mark(a.Type, a.ID)
-	ctx = cloud.WithCascadeSet(ctx, cloudCS)
-
-	// ResolutionMap travels alongside the cascade set so cascade targets
-	// with a lossy ID (e.g. AKS kubeconfig context) can recover the
-	// provider-canonical resource ID downstream. AKS subcollectors
-	// populate CollectTarget.ResolutionID; cascade dispatch loops call
-	// rm.Record(t.Id, t.ResolutionID) before invoking the cascade.
-	ctx = cloud.WithResolutionMap(ctx, cloud.NewResolutionMap())
 
 	opts := collector.CollectOptions{
 		Force:   a.Force,
@@ -165,12 +165,21 @@ func InterceptCollect(ctx context.Context, deps ClientDeps, params kgtools.CallT
 		}
 	}
 
-	return true, routeBuiltinCollect(ctx, deps, a, opts, rt)
+	return true, routeCollect(ctx, deps, a, opts, rt, customDef)
 }
 
-// routeBuiltinCollect runs the pre-walk identity work and then routes the builtin
-// collect through the standing runtime: cap the synchronous wait at 60s, coalesce
-// a duplicate target already in flight, and detach the run past the cap.
+// routeCollect runs the pre-walk identity work and then routes the collect
+// through the standing runtime: cap the synchronous wait at 60s, coalesce a
+// duplicate target already in flight, and detach the run past the cap.
+//
+// customDef is the registered record for a CUSTOM graph type, or nil for a
+// builtin one. It is the only thing that differs between the two: the identity
+// derivation reads it to know the collect names a registered family, and the
+// work closure runs the MCP provider instead of collector.Collect. Everything
+// after that — the collision check, the wait-or-detach runtime, the linker, the
+// postpopulate hook, the pipeline wake and the composition verdict — is the same
+// code on both paths, which is what "custom graphs act under the same rules as
+// code graphs" means concretely.
 //
 // Extracted from InterceptCollect to keep that dispatch function within the
 // funlen budget, the same reason withWebCrawlOptions below was split out of it.
@@ -181,17 +190,19 @@ func InterceptCollect(ctx context.Context, deps ClientDeps, params kgtools.CallT
 // enrichment. successText is the CURRENT literal; collectWaitOrDetach suffixes it
 // with the run's rendered node-type composition on the sub-60s / fallback paths,
 // and a run reporting no composition returns it byte-identically.
-func routeBuiltinCollect(
+func routeCollect(
 	ctx context.Context,
 	deps ClientDeps,
 	a collectArgs,
 	opts collector.CollectOptions,
 	rt *CollectRuntime,
+	customReg *resolvedCollector,
 ) kgtools.ToolResult {
+	custom := customReg != nil
 	// The name this collect will land under, plus the pre-walk collision check
 	// and the legacy-graph notice — all BEFORE the work closure, so a refusal
 	// costs no crawl and no parse.
-	graphName, notice, err := prepareRawCollect(ctx, deps, a)
+	graphName, notice, err := prepareRawCollect(ctx, deps, a, custom)
 	if err != nil {
 		return errorResult(err.Error())
 	}
@@ -201,11 +212,15 @@ func routeBuiltinCollect(
 	// nothing between the two mutates a.Type, a.ID or a.SeedURLs — so what this
 	// call adds is the FAMILY, which must come from the dispatcher's switch and
 	// never from a bare kgtypes.GraphType(a.Type) conversion.
-	gateType, gateName, gateErr := collectGateGraphIdentity(a.Type, a.ID, a.SeedURLs)
+	gateType, gateName, gateErr := collectGateGraphIdentity(a.Type, a.ID, a.SeedURLs, custom)
 	if gateErr != nil {
 		return errorResult(gateErr.Error())
 	}
-	work := func() (string, string, error) { return builtinCollectWork(ctx, deps, a, opts, graphName) }
+	run := builtinCollectRunner()
+	if custom {
+		run = customCollectRunner(deps, customReg)
+	}
+	work := func() (string, string, error) { return collectWork(ctx, deps, a, opts, graphName, custom, run) }
 	successText := fmt.Sprintf("Collected %s %s — streamed to server.", a.Type, a.ID)
 	return collectWaitOrDetach(rt, a.Type, collectTargetKey(a.Type, a.ID), fmt.Sprintf("%s %s", a.Type, a.ID),
 		gateType, gateName, successText, notice, work)
@@ -260,9 +275,19 @@ func withWebCrawlOptions(ctx context.Context, a collectArgs) (context.Context, b
 // runRecipeCollect handles `collect type=web|pdf transformer=recipe`. The recipe
 // transform runs CLIENT-SIDE: recipe.RunRecipe reads the source raw graph over
 // the GraphCaller wire into an in-memory view, interprets the caller's inline
-// body, and returns the extracted rows. NOTHING IS SHIPPED — the run reaches no
-// Sink and no target graph. The collect `type` is passed as the expected source
-// type, because an inline body carries none.
+// body, and returns the emitted set. The collect `type` is passed as the expected
+// source type, because an inline body carries none.
+//
+// TWO ARMS, AND THE FLAG PICKS ONE. An EXTRACT run renders the emitted rows and
+// writes nothing anywhere. A LANDING run (`land:true`) writes them into the
+// combined practice graph under a source hub, through the mutate route. A run
+// asking for neither is refused by recipe.RunRecipe, naming both.
+//
+// EVERY LANDING REFUSAL RUNS BEFORE THE SOURCE IS READ. recipeRunOptions refuses
+// the render params first; preflightLanding then probes the target graph and
+// reads the raw graph's recorded origin, both ahead of recipe.RunRecipe. A
+// refusal reached after the run has already paid for the read it was meant to
+// prevent, and a refusal reached after the WRITE has already written.
 func runRecipeCollect(ctx context.Context, deps ClientDeps, a collectArgs) kgtools.ToolResult {
 	// recipe.RunRecipe reads the source graph into an in-memory view and holds the
 	// projected result, so scavenge on the way out — mirrors builtinCollectWork's
@@ -279,54 +304,35 @@ func runRecipeCollect(ctx context.Context, deps ClientDeps, a collectArgs) kgtoo
 	// assignment makes all three name the graph the run actually read.
 	givenID := a.ID
 	a.ID = resolveRawSourceGraphName(a.Type, givenID)
+
+	// THE LANDING PREFLIGHT SITS HERE, between the param refusals and the run,
+	// because both of its refusals are about state the run cannot change: whether
+	// there is a graph to write into, and whether the raw graph knows where it
+	// came from. Deciding them after the source read would pay for a read the
+	// answer makes pointless.
+	var pre *landingPreflight
+	if a.Land {
+		p, perr := preflightLanding(ctx, deps, a)
+		if perr != nil {
+			return errorResult(perr.Error())
+		}
+		pre = p
+		opts.LandTarget = landingTarget()
+	}
+
 	res, err := recipe.RunRecipe(ctx, deps.GraphCaller(), a.ID, kgtypes.GraphType(a.Type), opts)
 	if err != nil {
 		return errorResult("collect " + a.Type + " recipe: " + err.Error() +
 			rawSourceNotFoundHint(a.Type, givenID, a.ID))
 	}
-	// EVERY ADMITTED RUN IS AN EXTRACT, so there is one render and no branch.
-	// The other branch summarized nodes emitted and rows found already resident
-	// in a target graph — a report about work that no longer happens, over a
-	// write path that no longer exists.
+	if pre != nil {
+		out, lerr := landRecipeRun(ctx, deps, a, pre, res)
+		if lerr != nil {
+			return errorResult(lerr.Error())
+		}
+		return textResult(renderLanding(a, out))
+	}
 	return textResult(renderExtract(a, res))
-}
-
-// tryRegisteredCollect runs the external collector plugin for a registered
-// (non-builtin) graph type. It returns (false, _) when a.Type is a builtin
-// collector OR no registered GraphTypeDef matches it — the caller then continues
-// the builtin path unchanged. On a registered match it execs the binary via
-// externalcollector.RunExternal and ships the result through deps.Sink(),
-// returning (true, result) so the caller returns immediately.
-//
-// The registered branch does NOT enter cloud cascade dispatch (RunExternal ->
-// Sink().WriteResult is a direct ship), so it deliberately skips the CascadeSet /
-// ResolutionMap plumbing the builtin cloud path needs.
-func tryRegisteredCollect(ctx context.Context, deps ClientDeps, a collectArgs) (bool, kgtools.ToolResult) {
-	if _, lookErr := collector.Lookup(a.Type); lookErr == nil {
-		return false, kgtools.ToolResult{} // builtin type — caller owns it.
-	}
-	if deps.GraphTypeCRUD() == nil {
-		return false, kgtools.ToolResult{}
-	}
-	def, found, _ := deps.GraphTypeCRUD().ByName(ctx, a.Type)
-	if !found {
-		return false, kgtools.ToolResult{}
-	}
-	// The registered external collector holds the full CollectResult in memory
-	// until deps.Sink().WriteResult below, so scavenge on the way out. Placed AFTER
-	// the three early return-false guards (builtin type / nil CRUD / not-found) so
-	// a builtin collect — which returns at the first guard, synchronously, on the
-	// front of every `collect` — does not eat a useless STW GC (builtinCollectWork
-	// already scavenges its own path).
-	defer debug.FreeOSMemory()
-	res, err := externalcollector.RunExternal(ctx, def, a.Params, a.ID)
-	if err != nil {
-		return true, errorResult(err.Error())
-	}
-	if err := deps.Sink().WriteResult(ctx, a.Type, res); err != nil {
-		return true, errorResult(err.Error())
-	}
-	return true, textResult(fmt.Sprintf("Collected %s — streamed to server.", a.Type))
 }
 
 // pipelineWaker is the OPTIONAL deps capability the collect interceptor uses to
@@ -334,139 +340,3 @@ func tryRegisteredCollect(ctx context.Context, deps ClientDeps, a collectArgs) (
 // required ClientDeps method so the many test fakes that run no pipeline are
 // unaffected; the production *client implements it over Pipeline.WakeAll.
 type pipelineWaker interface{ WakePipeline() }
-
-// postCollectLinkerTypes is the set of collector types that trigger the
-// post-collect cross-graph linker. Mirrors the prior server-side
-// gate (GraphCloud / GraphCICD) plus the
-// collector-type extensions the linker exercises (aws/gcp/azure/k8s
-// land in cloud; github/gitlab/bitbucket land in cicd).
-var postCollectLinkerTypes = map[string]bool{
-	"aws": true, "gcp": true, "azure": true, "k8s": true,
-	"github": true, "gitlab": true, "bitbucket": true,
-	"cicd": true,
-}
-
-// runPostCollectLinker runs the client cross-graph linker (clientlinker.RunAll)
-// in-process after a successful collector.Collect for cloud/CI-CD-shaped
-// collector types — the IDENTICAL call handleClientLinker (manage.go) makes.
-// This replaces the prior manage(link) self-bounce (client → server manage(link)
-// → which is itself client-intercepted → the same RunAll), pure round-trip
-// overhead. Best-effort: slog.Warn on nil-caller, run error, or per-sub-linker
-// errors, but the caller's textResult is returned unchanged so the linker tail
-// never fails an otherwise-successful collect. Like the postpopulate tail it runs
-// under a non-admitting operation, so walking every graph of the families it
-// links cannot earn any of them a place in the working set.
-func runPostCollectLinker(ctx context.Context, deps ClientDeps, collectorType string) {
-	if !postCollectLinkerTypes[collectorType] {
-		return
-	}
-	// Post-collect linker follows the data: under the locked model the collect
-	// sink wrote to cloud when logged in (local otherwise), so the cross-graph
-	// linker walks through the SAME login-routed GraphCaller — the
-	// just-collected nodes live wherever the sink put them.
-	gc := deps.GraphCaller()
-	if gc == nil {
-		slog.Warn("post-collect linker: GraphCaller unavailable (skipping)", "collector", collectorType)
-		return
-	}
-	ctx = graphclient.WithOperation(ctx, graphclient.OpPostCollectFanout)
-	res, err := clientlinker.RunAll(ctx, gc, clientlinker.LinkOptions{})
-	if err != nil {
-		slog.Warn("post-collect linker failed", "collector", collectorType, "error", err)
-		return
-	}
-	if len(res.Errors) > 0 {
-		slog.Warn("post-collect linker reported errors", "collector", collectorType, "errors", res.Errors)
-	}
-}
-
-// collectArgs is the client-side collect command argument contract. It lives
-// only in the client binary (collection runs client-side after the binary
-// split). Type-specific fields are zero-valued when type does not match and
-// ignored by other dispatch paths.
-type collectArgs struct {
-	Type    string `json:"type"`
-	ID      string `json:"id"`
-	Force   bool   `json:"force"`
-	Promote bool   `json:"promote,omitempty"` // code only: force base + repoint default branch to the collected branch
-
-	// Params is the generic param passthrough for a registered (non-builtin)
-	// graph-type collector: the registered external binary carries all of its
-	// domain params inside this single object, validated against the collector's
-	// param_schema before exec. The built-in collectors (code/web/logs/pdf/
-	// cloud) ignore it and read their typed fields below instead.
-	Params map[string]any `json:"params,omitempty"`
-
-	// Web-specific. Threaded through ctx via web.WithCrawlOptions.
-	SeedURLs          []string `json:"seed_urls,omitempty"`
-	FollowPatterns    []string `json:"follow_patterns,omitempty"`
-	MaxDepth          int      `json:"max_depth,omitempty"`
-	MaxPages          int      `json:"max_pages,omitempty"`
-	MaxPathSegments   int      `json:"max_path_segments,omitempty"`
-	MaxPagesPerHost   int      `json:"max_pages_per_host,omitempty"`
-	MaxConcurrency    int      `json:"max_concurrency,omitempty"`
-	MaterializeGithub bool     `json:"materialize_github,omitempty"`
-	PolitenessMs      int      `json:"politeness_ms,omitempty"`
-	UserAgent         string   `json:"user_agent,omitempty"`
-	MaxDownloadBytes  int64    `json:"max_download_bytes,omitempty"`
-
-	// Web/PDF transformer dispatch. Transformer="recipe" runs the recipe
-	// transform CLIENT-SIDE via recipe.RunRecipe (see runRecipeCollect):
-	// Recipe names the recipe in the GraphTransformers/recipes bucket, and
-	// DryRun previews the projection without writing. Any other Transformer
-	// value is rejected; the fields are parsed so the error message can name
-	// them rather than "unknown argument".
-	// Extract turns a recipe run into EXTRACT MODE: nothing is written and the
-	// emitted rows come back for inspection, bounded by MaxRows and MaxBytes and
-	// windowed by Offset. Body is an INLINE recipe body run instead of a saved
-	// one, and requires Extract. MaxBytes deliberately does NOT travel through
-	// recipe.Options — only the renderer knows rendered sizes, so the byte cap is
-	// applied there. Offset DOES travel through recipe.Options: the cursor is
-	// applied where the rows are captured.
-	Transformer string `json:"transformer,omitempty"`
-	Recipe      string `json:"recipe,omitempty"`
-	DryRun      bool   `json:"dry_run,omitempty"`
-	Extract     bool   `json:"extract,omitempty"`
-	RecipeBody  string `json:"recipe_body,omitempty"`
-	MaxRows     int    `json:"max_rows,omitempty"`
-	MaxBytes    int    `json:"max_bytes,omitempty"`
-	Offset      int    `json:"offset,omitempty"`
-
-	// Logs-specific. The collector resolves the provider config either by
-	// reading the configured log_backend node (when Backend is set) or
-	// from the inline fields below. All other fields shape the logwire.Query
-	// passed to provider.Collect.
-	Backend     string            `json:"backend,omitempty"`
-	Provider    string            `json:"provider,omitempty"`
-	URL         string            `json:"url,omitempty"`
-	Credential  string            `json:"credential,omitempty"`
-	AuthType    string            `json:"auth_type,omitempty"`
-	KubeContext string            `json:"kube_context,omitempty"`
-	Source      string            `json:"source,omitempty"`
-	Start       string            `json:"start,omitempty"`
-	End         string            `json:"end,omitempty"`
-	TextFilter  string            `json:"text_filter,omitempty"`
-	SeverityMin string            `json:"severity_min,omitempty"`
-	MaxEntries  int               `json:"max_entries,omitempty"`
-	Filters     map[string]string `json:"filters,omitempty"`
-	RawQuery    string            `json:"raw_query,omitempty"`
-}
-
-// runLogsCollect handles the `collect` tool when type=logs. The flow:
-//
-//  1. Resolve the provider config (from a configured log_backend node,
-//     looked up via the standard query path, OR from inline fields).
-//  2. Instantiate the provider and Configure it with the resolved map.
-//  3. Build a logwire.Query from the args.
-//  4. Run logs.Pipeline.Collect locally in no-store mode (the client has
-//     no DB; the materialized graph rides the wire to the server).
-//  5. Run the client-side MaterializeLogGraph pure transform to convert
-//     templates / streams / chunks / correlations / resolutions into a
-//     ([]*knowledgev1.Node, []kgwire.BatchEdge) batch.
-//  6. Ship the batch via UploadSink.WriteResult — same wire as code,
-//     cloud, and cicd collectors.
-//
-// Credentials never leave this function — they are pulled from the
-// log_backend node into the in-process provider config and consumed by
-// provider.Configure. Tool I/O carries the backend NAME, never the
-// credential value.

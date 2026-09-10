@@ -63,7 +63,15 @@ import (
 // the graph, and only a local server holding no durable counts for an old image
 // leaves CountsRead false. See formatUnmanagedCoverageRow
 // (manage_status_coverage_unmanaged.go) for what it says instead.
+// A REGISTERED FAMILY WITH NO GRAPH IS DISPATCHED AHEAD OF BOTH, because its
+// counts are absent for a third reason: there is nothing to count yet. The
+// unmanaged shape below would tell an operator a graph exists whose counts a
+// backend declined, and the empty-graph arm would tell them one exists and is
+// empty. See manage_status_coverage_registered.go.
 func formatCoverageRow(r CoverageRow) string {
+	if r.NoInstance {
+		return formatRegisteredCoverageRow(r)
+	}
 	if !r.CountsRead {
 		return formatUnmanagedCoverageRow(r)
 	}

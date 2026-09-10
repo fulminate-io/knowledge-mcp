@@ -6,8 +6,7 @@
 graph content and `query` reads it, `manage` controls the machinery around the
 graph: it reports pipeline status, pauses and resumes the summarize/embed
 workers, garbage-collects tombstoned nodes, rebuilds caches and search segments,
-manages code-graph branches, and configures log backends. It is dispatched by the
-`operation` field.
+and manages code-graph branches. It is dispatched by the `operation` field.
 
 There is intentionally no `manage(reindex)` — the pipeline discovers changed
 nodes on its own, and re-running the relevant collector (`collect`) is how you
@@ -17,7 +16,7 @@ refresh source nodes.
 
 Reach for `manage` for housekeeping and diagnosis rather than content work:
 checking whether summarization is keeping up, freeing space after large
-deletions, recovering a corrupted cache, or wiring up a log backend.
+deletions, or recovering a corrupted cache.
 
 `operation` is always required. The other required inputs by operation:
 
@@ -30,14 +29,11 @@ deletions, recovering a corrupted cache, or wiring up a log backend.
 | `clear_llm_failures` | — | Clear failure markers; `graph`/`name` scope it. |
 | `prune` | `graph` | Hard-delete tombstoned nodes; `before` windows it. |
 | `rebuild_cache` | `graph: "code"` or `graph: "knowledge"`, `name` | Re-derive a graph's summary/embed caches (free, no model calls). For `graph: "knowledge"` the `name` defaults to `"default"` (base layer only — no `@`-overlay names in v1). |
-| `rebuild_segments` | `graph` — any embeddable type (`knowledge`, `code`, `cloud`, `cicd`, `practice`) or a registered custom type, `name` | Rebuild BM25+HNSW search segments from embedded nodes. For `graph: "knowledge"` the `name` defaults to `"default"` (base layer only — no `@`-overlay names in v1). |
+| `rebuild_segments` | `graph` — any embeddable type (`knowledge`, `code`, `practice`) or a registered custom type, `name` | Rebuild BM25+HNSW search segments from embedded nodes. For `graph: "knowledge"` the `name` defaults to `"default"` (base layer only — no `@`-overlay names in v1). |
 | `prune-cache` | — | One-shot reclaim of orphaned L2 search segments (superseded `.seg` blobs the invalidation-driven reclaim never unlinked) across `knowledge/default` and every code repo. Previews by default; `execute: true` deletes. |
-| `drop_graph` | `graph` (+ the family instance field) | Tear down a whole non-logs graph (store + loaded state) via one DROP_GRAPH mutation; `dry_run: true` previews. Use `discard_logs` for log graphs. |
+| `drop_graph` | `graph` (+ the family instance field) | Tear down a whole graph (store + loaded state) via one DROP_GRAPH mutation; `dry_run: true` previews. |
 | `list_branches` / `delete_branch` | `name` (+ `branch` for delete) | Manage code-graph branch overlays. |
-| `link` | — | Run the image/Helm/Dockerfile linkers to create code-to-cloud edges. |
-| `configure_log_backend` | `name`, `provider`, `url`, `auth_type` | Register a log backend (`credential` as needed; optional for `auth_type: "kubeconfig"`). |
-| `list_log_backends` / `list_logs` | — | List configured backends / collected log graphs. |
-| `discard_logs` | — | Drop one log graph (`name`) or all (omit `name`). |
+| `link` | — | Run the Dockerfile linker to create code-to-code edges. |
 | `pprof_start` / `pprof_stop` | — | Bracket a CPU profile of the knowledge client (where collectors run); `pprof_stop` returns a fetch URL. |
 | `set_metadata_overrides` | `graph`, `name` | Pin metadata keys to the scalar map (`force_scalar`) or value-node edges (`force_edge`); at least one non-empty. |
 | `promote_metadata` | `graph`, `name` | Refresh cardinality stats and flip each key's representation per the hysteresis bands (`dry_run` reports without writing). |
@@ -64,10 +60,8 @@ A full error round auto-pauses the pipeline and it does not self-heal —
 <!-- BEGIN GENERATED: params -->
 | Parameter | Type | Required | Enum | Description |
 | --- | --- | --- | --- | --- |
-| `auth_type` | string |  |  | Authentication mechanism for configure_log_backend (bearer, basic, aws_profile, api_key, service_account, kubeconfig, ...) |
 | `before` | string |  |  | For prune: cutoff for which tombstoned nodes to hard-delete. A relative window ('24h', '2d') or an absolute RFC3339 timestamp; only tombstones tombstoned before it are pruned. Omit to prune ALL tombstoned nodes. |
 | `branch` | string |  |  | Branch name (for delete_branch, list_branches). For repair_edges: repair ONLY that one branch overlay of name — branch REQUIRES name (branch with an empty name is an error), and the value is the BARE overlay name ('launch-fixes'), though the composed catalog key ('myrepo@launch-fixes') is accepted and normalized. Omit branch and a repair covers the base graph AND every branch overlay of each targeted repo. |
-| `credential` | string |  |  | Credential value for configure_log_backend — stored encrypted at rest. Accepts the raw value (e.g., a bearer token, API key, or service account JSON) or a $ENV_VAR reference resolved at query time. Optional when auth_type=kubeconfig. |
 | `dry_run` | boolean |  |  | For promote_metadata: when true, run the decision pass and report intended actions without mutating the graph. For drop_graph: when true, render a 'would drop' preview and issue ZERO mutations. Default false (executes). |
 | `execute` | boolean |  |  | For prune-cache: when true, DELETE the orphaned segments; default false renders a would-remove preview only. For repair_edges: when true, REMOVE the enumerated cross-file CONTAINS fossils; default false renders the preview only. |
 | `force` | boolean |  |  | For promote_metadata: when true, bypass the hysteresis bands and use the simple distinct<1000 rule. Operator one-shot path only. |
@@ -76,15 +70,14 @@ A full error round auto-pauses the pipeline and it does not self-heal —
 | `force_scalar` | array of string |  |  | Metadata keys pinned to the scalar map for set_metadata_overrides. Replaces the existing list. |
 | `force_scalar[]` | string |  |  |  |
 | `format` | string |  |  | Output format: 'text' (default) or 'json' (structured) |
-| `graph` | string |  |  | Target graph type for clear_llm_failures (knowledge, code, practice, cloud, cicd) |
+| `graph` | string |  |  | Target graph type for clear_llm_failures (knowledge, code, practice) |
 | `keys` | string |  |  | For promote_metadata: comma-separated metadata key filter. Only the named keys are considered for promotion/demotion; empty means every key the stats snapshot observed. |
-| `kube_context` | string |  |  | Kubeconfig context name from ~/.kube/config. Required when provider=k8s and auth_type=kubeconfig. Auth is resolved via client-go using the operator's environment (gcloud/aws-iam-authenticator/service-account tokens). |
-| `name` | string |  |  | Repository name (the repo name to record for register_repo; or log_backend name for configure_log_backend; or query_id for discard_logs) |
-| `operation` | string | yes | status, pprof_start, pprof_stop, delete_branch, list_branches, link, configure_log_backend, list_log_backends, list_logs, discard_logs, set_metadata_overrides, promote_metadata, migrate_embed_identity, clear_llm_failures, pause_pipeline, resume_pipeline, pipeline_status, prune, prune-cache, rebuild_cache, rebuild_segments, drop_graph, register_repo, repair_edges | Operation to perform |
+| `name` | string |  |  | Graph instance name (the repo name to record for register_repo; the repo / account / language / name the target family is keyed by elsewhere) |
+| `operation` | string | yes | status, pprof_start, pprof_stop, delete_branch, list_branches, link, set_metadata_overrides, promote_metadata, migrate_embed_identity, clear_llm_failures, pause_pipeline, resume_pipeline, pipeline_status, prune, prune-cache, rebuild_cache, rebuild_segments, drop_graph, register_repo, repair_edges, import_style_rules | Operation to perform |
+| `path` | string |  |  | For import_style_rules: an ABSOLUTE path to the rule-list JSON file. A relative path would resolve against the daemon's working directory rather than the caller's, so it is refused rather than guessed at. |
 | `profile` | string |  |  | For migrate_embed_identity: the name of the embedder profile to migrate the graph TO. Must name a profile the config defines ([embedder.profile.<name>], or "default" for the single [embedder] table); an unknown name is refused naming the defined profiles. |
-| `provider` | string |  |  | Log backend provider for configure_log_backend (cloudwatch, loki, elasticsearch, stackdriver, k8s, ...) |
 | `reason` | string |  |  | For pause_pipeline: optional operator reason surfaced by pipeline_status. Defaults to a generic 'manually paused by operator' string when omitted. |
 | `reset` | boolean |  |  | For rebuild_segments: when true, ignore the stored watermark and rebuild the WHOLE corpus. Default false scans only what changed since the last rebuild that landed. |
 | `root` | string |  |  | Absolute checkout directory for register_repo |
-| `url` | string |  |  | Log backend base URL for configure_log_backend |
+| `source` | string |  |  | For import_style_rules: the id of the `source` hub node every imported rule is grouped under. Spelled `source` rather than `source_hub` because the name is free on this schema — the practice hub selector publishes `source` wherever it is free and `source_hub` only on the arms (mutate, search) where `source` already means something else. |
 <!-- END GENERATED: params -->

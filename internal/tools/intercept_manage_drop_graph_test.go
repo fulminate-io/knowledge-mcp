@@ -168,15 +168,31 @@ func TestInterceptManage_DropGraph_EmptyGraphRejected(t *testing.T) {
 	assert.Empty(t, fc.execRequests, "no Execute RPC when the required graph is missing")
 }
 
-// TestInterceptManage_DropGraph_LogsRejected asserts graph=logs is rejected with
-// a pointer to discard_logs (the logs-path-owner invariant) and fires no Execute.
-func TestInterceptManage_DropGraph_LogsRejected(t *testing.T) {
-	fc := &fakeGraphCaller{}
-	handled, res := dropGraphCall(t, fc, `{"operation":"drop_graph","graph":"logs","name":"q-123"}`)
-	require.True(t, handled)
-	assert.True(t, res.IsError, "graph=logs must error")
-	assert.Contains(t, toolResultText(res), "discard_logs", "the error points at discard_logs")
-	assert.Empty(t, fc.execRequests, "no Execute RPC for graph=logs")
+// TestInterceptManage_DropGraph_RetiredFamilyRejected replaces the logs-rejection
+// row. graph=logs used to be refused here with a pointer to discard_logs, which
+// owned the log path; both the family and that operation are gone, so a retired
+// name is refused as RETIRED and there is no second teardown owner to route to.
+//
+// AN OPERATOR MEETING THIS IS THE UPGRADE CASE, which is why the name is refused
+// rather than passed to a server that would answer "unknown graph type": the
+// caller is most likely trying to clean up a leftover bucket, and the sentence
+// they need is the one that says the family was removed.
+func TestInterceptManage_DropGraph_RetiredFamilyRejected(t *testing.T) {
+	for _, tc := range []struct{ graph, args string }{
+		{"logs", `{"operation":"drop_graph","graph":"logs","name":"q-123"}`},
+		{"cloud", `{"operation":"drop_graph","graph":"cloud","name":"aws-prod"}`},
+	} {
+		t.Run(tc.graph, func(t *testing.T) {
+			fc := &fakeGraphCaller{}
+			handled, res := dropGraphCall(t, fc, tc.args)
+			require.True(t, handled)
+			assert.True(t, res.IsError, "a retired family must error")
+			assert.Contains(t, toolResultText(res), "retired",
+				"the refusal says the family was REMOVED, not that the name never existed")
+			assert.Contains(t, toolResultText(res), tc.graph, "and it names the value it rejected")
+			assert.Empty(t, fc.execRequests, "no Execute RPC for a retired family")
+		})
+	}
 }
 
 // TestInterceptManage_DropGraph_DryRunPreviewOnly asserts dry_run:true issues
@@ -279,27 +295,4 @@ func TestInterceptManage_DropGraph_NoLocalDropperStillDropsServerSide(t *testing
 	assert.Contains(t, body, "Dropped graph hellograph/demo")
 	assert.Contains(t, body, "local segment cache not inspected")
 	assert.NotContains(t, body, "node(s) removed")
-}
-
-// TestInterceptManage_DropGraph_LogsPathRegression asserts the existing
-// handleDiscardLogs path still tears down a named log graph unchanged AFTER the
-// new drop_graph op lands — i.e. the new op did not perturb the logs discard
-// path. Drives the existing fakeLogGraphCaller harness (setupLogTestHandler) and
-// confirms the discard removes the corpus + fires its own DROP_GRAPH Execute.
-func TestInterceptManage_DropGraph_LogsPathRegression(t *testing.T) {
-	const qid = "q-regress"
-	h := setupLogTestHandler(t, qid)
-	fc, ok := h.graphCallerOverride.(*fakeLogGraphCaller)
-	require.True(t, ok, "the log test handler is wired with a fakeLogGraphCaller")
-	require.Contains(t, fc.graphs, qid, "the log corpus is seeded before discard")
-
-	res := h.handleDiscardLogs(t.Context(), qid)
-	require.False(t, res.IsError, "discard_logs: %s", toolResultText(res))
-
-	assert.NotContains(t, fc.graphs, qid, "the named log graph is torn down")
-	require.Len(t, fc.execs, 1, "discard fired exactly one Execute")
-	assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_DROP_GRAPH, fc.execs[0].GetMutation().GetKind(),
-		"discard still drives a DROP_GRAPH mutation (byte-unchanged logs path)")
-	assert.Equal(t, "logs", fc.execs[0].GetTarget().GetGraph(), "discard targets graph=logs")
-	assert.Equal(t, qid, fc.execs[0].GetTarget().GetName(), "discard targets the named log graph")
 }

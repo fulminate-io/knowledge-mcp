@@ -62,9 +62,6 @@ func InterceptQueryExplainTimeline(ctx context.Context, deps ClientDeps, params 
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
 		return false, kgtools.ToolResult{}
 	}
-	if a.Graph == "logs" {
-		return false, kgtools.ToolResult{} // logs owned by InterceptLogsQuery.
-	}
 	if a.Mode != "explain" && a.Mode != "timeline" {
 		return false, kgtools.ToolResult{}
 	}
@@ -217,7 +214,7 @@ func renderExplainWithNames(ctx context.Context, exec engine.ExecuteFn, target *
 		// so a broken read rendered EVERY endpoint under the truncated-id fallback
 		// name RenderExplainEdges falls back to, indistinguishable from peers that
 		// genuinely have no SymbolName. That is the silent-narrowing class the sibling
-		// fetchTypeSamples fix (intercept_query_cloud_cicd.go) split apart: a fault
+		// per-type sample fetch's own fix split apart: a fault
 		// the reader must know about is never reported as an ordinary answer.
 		//
 		// THE GENUINELY-ABSENT CASE IS UNTOUCHED and still renders its fallback name

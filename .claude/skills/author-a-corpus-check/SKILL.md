@@ -8,9 +8,8 @@ user-invocable: false
 
 <!-- version: 2 -->
 
-WHY THIS SYSTEM EXISTS (from its owner): grep gates were being shoe-horned onto
-structural assertions, and a grep is too narrow to catch a broad defect class —
-it matches one spelling while the class relocates one construct over. Corpus
+WHY THIS SYSTEM EXISTS: a grep is too narrow to gate a broad defect class — it
+matches one spelling while the class relocates one construct over. Corpus
 checks are the first-class instrument for shape assertions: pattern-matched
 against parsed syntax, admitted only with a proven fixture pair, durable across
 plans. Reaching for grep on a shape is the defect this rulebook exists to end.

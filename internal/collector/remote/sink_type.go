@@ -16,8 +16,8 @@ import (
 // rest across the package's other sink_*.go files.
 
 // IngestClientPicker resolves the IngestService client to use for one call.
-// It is invoked PER CALL (WriteResult, collectChunkWithRetry, FetchCloudSubgraph)
-// so a mid-session `knowledge login` flip re-routes the next chunk to the cloud
+// It is invoked PER CALL (WriteResult, collectChunkWithRetry) so a mid-session
+// `knowledge login` flip re-routes the next chunk to the cloud
 // backend without a process restart. Router.IngestClient(ctx) satisfies this
 // shape (router.go); NewUploadSink wraps a fixed client into a constant picker.
 type IngestClientPicker func(ctx context.Context) (knowledgev1connect.IngestServiceClient, error)

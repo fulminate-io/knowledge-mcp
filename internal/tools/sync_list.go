@@ -159,18 +159,22 @@ func renderSyncListTable(rows []syncListRow, loggedIn bool) string {
 }
 
 // syncParamsDisplay returns the (graph,name) selector label a user passes to
-// `sync push` for this graph, routed per-type so the right selector shows.
-// DISPLAY-only — mirrors the field-routing of manageGraphSelector
-// (intercept_manage_index.go:52) but emits a label string, not a GraphSelector.
+// `sync push` for this graph. DISPLAY-only — it emits a label string, not a
+// GraphSelector.
+//
+// IT DOES NOT MIRROR THE FIELD ROUTING, AND THE DOC THAT SAID IT DID WAS FALSE
+// BEFORE THIS CHANGE TOUCHED IT. Every arm of the switch that stood here emitted
+// the identical `graph:<type> name:<name>`, so it printed `name:` for a practice
+// graph whose field was `language` and for a code graph whose field is `repo` —
+// two spellings the server would refuse if a user pasted them. Four arms that
+// return one string are not a routing, so the arms are gone and the one string
+// is written once.
+//
+// THE LABEL IS DELIBERATELY GENERIC RATHER THAN PER-FAMILY. This is a table
+// column, and `sync push` resolves its own target from (graph, name) — so the
+// honest label names what the user types into THAT call, not what the wire
+// selector ends up carrying. A per-family label here would be a fifth copy of
+// the partition for a display string.
 func syncParamsDisplay(gt kgtypes.GraphType, name string) string {
-	switch gt {
-	case kgtypes.GraphPractice:
-		return fmt.Sprintf("graph:practice name:%s", name)
-	case kgtypes.GraphCode:
-		return fmt.Sprintf("graph:code name:%s", name)
-	case kgtypes.GraphCloud, kgtypes.GraphCICD:
-		return fmt.Sprintf("graph:%s name:%s", gt, name)
-	default:
-		return fmt.Sprintf("graph:%s name:%s", gt, name)
-	}
+	return fmt.Sprintf("graph:%s name:%s", gt, name)
 }

@@ -50,7 +50,7 @@ func TestRebuildSegments_ChecksResolvesItsCanonicalInstance(t *testing.T) {
 //
 // For a family that HAS an instance field, an empty name is a caller mistake and
 // must still be refused by name — canonicalization is the identity there, so the
-// required-name check keeps its whole job for code, cloud, cicd and practice.
+// required-name check keeps its whole job for code and practice.
 func TestRebuildSegments_StillRequiresANameWhereOneExists(t *testing.T) {
 	deps := rebuildClientDeps{scanner: &fakeRebuildScanner{}, shipper: &fakeRebuildShipper{}}
 

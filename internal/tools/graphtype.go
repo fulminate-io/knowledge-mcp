@@ -1,11 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// graphtype.go — client-side intercept for the `custom_collector` MCP tool's
-// register/update/delete/list operations. The record is a graph-resident
-// config node owned by the server; every op is CRUD over it via a
-// wire-loopback client (deps.GraphTypeCRUD()), following the shape the worker
-// tool's list/create/update/delete handlers used before the worker system was
-// removed.
+// graphtype.go — client-side intercept for the `custom_collector` MCP tool,
+// which is READ-ONLY: one operation, `list`, over the graph-resident behavior
+// records the server holds, read through a wire-loopback client
+// (deps.GraphTypeCRUD()).
+//
+// THE WRITE OPERATIONS WERE REMOVED WITH THE REGISTRATION CONTRACT. A custom
+// collector is registered by an entry in a `collectors.json` config file, so a
+// tool that also wrote a record would be a SECOND writer for one registration —
+// the two-surfaces cost the config-file design exists to avoid. `knowledge
+// collector add | list | get | remove` is the write surface.
+//
+// LIST SURVIVES BECAUSE IT ANSWERS A QUESTION NOTHING ELSE DOES: it reports what
+// the SERVER holds, which is what the routing gate and the whole summarize /
+// embed / sync pipeline actually read. That makes it the diagnostic for both
+// directions of disagreement — an entry present in a file whose family is not
+// yet searchable, and a legacy catalog family with no entry at all.
 //
 // The custom_collector tool schema lives client-side at
 // cmd/knowledge/internal/tools/graphtype_schema.go (GraphTypeToolDef);
@@ -22,16 +32,19 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
 
-// GraphTypeCRUDAPI is the narrow surface the custom_collector handlers call on the
-// client-side wire-loopback CRUD client. *graphtypecrud.Client satisfies this
-// interface structurally; tests inject a fake. It is the narrow-CRUD-surface
-// convention applied to the gen *knowledgev1.GraphTypeDef record type.
+// GraphTypeCRUDAPI is the narrow surface this package calls on the client-side
+// wire-loopback CRUD client. *graphtypecrud.Client satisfies this interface
+// structurally; tests inject a fake. It is the narrow-CRUD-surface convention
+// applied to the gen *knowledgev1.GraphTypeDef record type.
+//
+// UPDATE IS THE ONE WRITER, and it writes the BEHAVIOR record alone: the config
+// loader forwards an entry's behavior to the server on every resolve so the
+// family is routable, searchable and syncable. Update and Create compile to the
+// identical mutate(upsert) wire call.
 type GraphTypeCRUDAPI interface {
 	List(ctx context.Context) ([]*knowledgev1.GraphTypeDef, error)
 	ByName(ctx context.Context, name string) (*knowledgev1.GraphTypeDef, bool, error)
-	Create(ctx context.Context, d *knowledgev1.GraphTypeDef) error
 	Update(ctx context.Context, d *knowledgev1.GraphTypeDef) error
-	Delete(ctx context.Context, name string) error
 }
 
 // InterceptGraphType is the entry point invoked by the intercept chain. Returns
@@ -51,16 +64,9 @@ func InterceptGraphType(ctx context.Context, deps ClientDeps, params kgtools.Cal
 	}
 
 	switch a.Operation {
-	case "register":
-		return true, handleGraphTypeRegister(ctx, deps, a)
-	case "update":
-		return true, handleGraphTypeUpdate(ctx, deps, a)
-	case "delete":
-		return true, handleGraphTypeDelete(ctx, deps, a)
 	case "list":
 		return true, handleGraphTypeList(ctx, deps, a)
 	default:
-		return true, unknownOperationResult("custom_collector", a.Operation,
-			[]string{"register", "update", "delete", "list"})
+		return true, unknownOperationResult("custom_collector", a.Operation, []string{"list"})
 	}
 }

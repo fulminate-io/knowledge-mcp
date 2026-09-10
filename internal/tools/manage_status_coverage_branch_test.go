@@ -76,7 +76,8 @@ func targetsByLabel(targets []coverageTarget) map[string]coverageTarget {
 func TestCoverageTargets_BranchGraphs(t *testing.T) {
 	deps := &coverageDeps{gc: branchFixture()}
 
-	targets := coverageTargets(context.Background(), deps)
+	targets, targetsErr := coverageTargets(context.Background(), deps)
+	require.NoError(t, targetsErr)
 	byLabel := targetsByLabel(targets)
 
 	for _, tc := range []struct{ label, key string }{
@@ -122,7 +123,8 @@ func TestCoverageTargets_BranchGraphs(t *testing.T) {
 func TestCoverageTargets_NoPhantomRows(t *testing.T) {
 	deps := &coverageDeps{gc: branchFixture()}
 
-	targets := coverageTargets(context.Background(), deps)
+	targets, targetsErr := coverageTargets(context.Background(), deps)
+	require.NoError(t, targetsErr)
 
 	var forPlain []string
 	for _, tgt := range targets {
@@ -150,7 +152,7 @@ func TestCoverageTargets_CodeOnly(t *testing.T) {
 	fake := branchFixture()
 	deps := &coverageDeps{gc: fake}
 
-	coverageTargets(context.Background(), deps)
+	_, _ = coverageTargets(context.Background(), deps)
 
 	var overlayAsks []string
 	for _, req := range fake.execReqs {
@@ -183,7 +185,8 @@ func TestCoverageRows_BranchNoSegProbe(t *testing.T) {
 	}
 	deps := &coverageDeps{gc: branchFixture(), segCov: seg}
 
-	rows := collectCoverageRows(context.Background(), deps)
+	rows, rowsErr := collectCoverageRows(context.Background(), deps)
+	require.NoError(t, rowsErr)
 	byGraph := make(map[string]CoverageRow, len(rows))
 	for _, r := range rows {
 		byGraph[r.Graph] = r

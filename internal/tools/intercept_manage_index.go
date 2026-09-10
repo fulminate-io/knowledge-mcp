@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -43,12 +44,28 @@ func manageIndexer(deps ClientDeps) (Indexer, error) {
 }
 
 // manageGraphSelector builds the Index RPC GraphSelector for a manage op,
-// routing the operator-supplied name to the field the target graph REQUIRES:
-// code→Repo, cloud/cicd→Account, practice→Language, everything else→Name. An
+// routing the operator-supplied name to the field the target graph REQUIRES. An
 // empty graph is the knowledge default. Each graph type validates its own
 // required selector field server-side (e.g. graph=code requires repo), so a
 // name lowered onto the wrong field is rejected — mirrors the render
 // graphTarget routing and the server resolveTargetDB expectations.
+//
+// WHICH FIELD THAT IS COMES FROM graphsel AND NOWHERE ELSE. This function used
+// to restate the whole partition in a four-arm switch (code→Repo,
+// practice→Language, everything else→Name), which is one of
+// the copies engine.mutateTarget's doc records as having produced two production
+// defects. Practice becoming a singleton is exactly the update that copy would
+// have missed, and it would have missed it across all six of this builder's
+// callers at once — set_metadata_overrides, rebuild_cache, prune, drop_graph,
+// sync push and repair_edges.
+//
+// THE KNOWLEDGE SPECIAL CASE STAYS HAND-WRITTEN, and that is a decision rather
+// than a leftover. It suppresses the names {"", "default", "knowledge"} for a
+// family graphsel classifies as FieldName, and graphsel's own omitDefaultName
+// does not express it: that flag suppresses "" and "default" and not
+// "knowledge". Folding it into the derivation would start sending a name the
+// server's knowledge alias arm happens to tolerate, which is a behavior change
+// dressed as a simplification.
 func manageGraphSelector(graph, name string) *knowledgev1.GraphSelector {
 	if graph == "" || graph == string(kgtypes.GraphKnowledge) {
 		// The knowledge graph always uses the default instance; an explicit
@@ -60,25 +77,19 @@ func manageGraphSelector(graph, name string) *knowledgev1.GraphSelector {
 		}
 		return sel
 	}
-	sel := &knowledgev1.GraphSelector{Graph: graph}
-	switch graph {
-	case string(kgtypes.GraphPractice):
-		sel.Language = name
-	case string(kgtypes.GraphCode):
-		sel.Repo = name
-	case string(kgtypes.GraphCloud), string(kgtypes.GraphCICD):
-		sel.Account = name
-	default:
-		sel.Name = name
-	}
-	return sel
+	// THE INSTANCE-KEY PARTITION IS graphsel's, not a switch of this function's
+	// own. A hand-maintained copy is what a corpus check flags here, and the
+	// reason is measured rather than stylistic: this function carried a cloud
+	// arm until the family was removed, and a copy that had gone stale instead
+	// would have put the name on a field the resolver does not read.
+	return graphsel.GraphSelectorFor(kgtypes.GraphType(graph), name, false)
 }
 
 // handleClientSetMetadataOverrides drives the Index set_metadata_overrides op:
 // it lowers the force_scalar / force_edge lists onto the Index RPC params
 // (comma-joined, the wire shape overrideConfigFromParams reads), fires ONE Index
 // RPC (the server self-persists via SaveOverrideConfig — no extra persist op),
-// and renders the ack via a port of the server formatOverrideAck.
+// and renders the ack via a port of the retired server-side ack formatter.
 func handleClientSetMetadataOverrides(ctx context.Context, deps ClientDeps, a manageArgs) kgtools.ToolResult {
 	ix, err := manageIndexer(deps)
 	if err != nil {
@@ -108,7 +119,7 @@ func handleClientSetMetadataOverrides(ctx context.Context, deps ClientDeps, a ma
 }
 
 // normalizeOverrideKeys trims whitespace and drops empty entries (mirrors the
-// server splitNormalizeCSV / buildOverrideConfig trimming).
+// trimming the retired server-side override config builder did).
 func normalizeOverrideKeys(keys []string) []string {
 	out := make([]string, 0, len(keys))
 	for _, k := range keys {
@@ -120,8 +131,8 @@ func normalizeOverrideKeys(keys []string) []string {
 }
 
 // overrideTargetLabels returns the (graph_type, name) labels for the ack. The
-// knowledge graph always labels its instance "default" (parity with the server
-// handleSetMetadataOverrides allow-empty-name knowledge case).
+// knowledge graph always labels its instance "default" (parity with the
+// allow-empty-name knowledge case of the retired server-side handler).
 func overrideTargetLabels(a manageArgs) (string, string) {
 	gt := a.Graph
 	if gt == "" {
@@ -134,8 +145,8 @@ func overrideTargetLabels(a manageArgs) (string, string) {
 	return gt, name
 }
 
-// renderOverrideAck ports the server formatOverrideAck (tools_manage_metadata.go)
-// — lists every key in both buckets + the replace-not-merge reminder.
+// renderOverrideAck ports the retired server-side ack formatter — lists every
+// key in both buckets + the replace-not-merge reminder.
 func renderOverrideAck(gt, name string, scalar, edge []string) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "metadata override config saved for %s/%s\n", gt, name)
@@ -163,7 +174,7 @@ func renderOverrideAck(gt, name string, scalar, edge []string) string {
 // handleClientDeleteBranch drives the Index delete_branch op over the injected
 // repo (a.Name) + the branch overlay name (a.Branch). The server pre-flights
 // existence and returns NotFound on a miss; a missing branch surfaces that error
-// verbatim. Renders the deletion ack matching the server handleDeleteBranch.
+// verbatim. Renders the deletion ack the retired server-side handler produced.
 func handleClientDeleteBranch(ctx context.Context, deps ClientDeps, a manageArgs) kgtools.ToolResult {
 	ix, err := manageIndexer(deps)
 	if err != nil {
@@ -186,8 +197,8 @@ func handleClientDeleteBranch(ctx context.Context, deps ClientDeps, a manageArgs
 }
 
 // handleClientListBranches drives the Index list_branches op and renders the
-// overlay list — markdown table (port of server handleListBranches) or the JSON
-// payload (port of handleListBranchesJSON) per a.Format.
+// overlay list — a markdown table or a JSON payload per a.Format, both ported
+// from the retired server-side list-branches handler.
 func handleClientListBranches(ctx context.Context, deps ClientDeps, a manageArgs) kgtools.ToolResult {
 	ix, err := manageIndexer(deps)
 	if err != nil {
@@ -218,7 +229,7 @@ func branchGraphSelector(a manageArgs) *knowledgev1.GraphSelector {
 	return &knowledgev1.GraphSelector{Graph: string(kgtypes.GraphCode), Repo: a.Name}
 }
 
-// renderBranchTable ports the server handleListBranches markdown table. Ranges
+// renderBranchTable ports the retired server-side markdown table. Ranges
 // the proto branch carriers by pointer (the proto GraphInfo holds a noCopy
 // MessageState — a value range would copylocks).
 func renderBranchTable(repo string, branches []*knowledgev1.GraphInfo) string {
@@ -242,7 +253,7 @@ func renderBranchTable(repo string, branches []*knowledgev1.GraphInfo) string {
 	return sb.String()
 }
 
-// formatManageBytes ports the server formatBytes (tools_branch.go).
+// formatManageBytes ports the retired server-side byte formatter.
 func formatManageBytes(b int64) string {
 	switch {
 	case b >= 1<<30:

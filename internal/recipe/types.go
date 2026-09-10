@@ -8,10 +8,12 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 )
 
-// TargetSpec identifies the graph a recipe run writes into. A recipe targets
-// exactly one (GraphType, Name) pair, resolved from the recipe node's
-// target_graph_type + target_name metadata. The client-side counterpart of the
-// former server transformer.TargetSpec.
+// TargetSpec identifies the graph a run's emitted ids are hashed under, and — on
+// a LANDING run — the graph its nodes are written into. A run targets exactly one
+// (GraphType, Name) pair, supplied by the caller: an extract run gets the extract
+// sentinel, because its ids never reach storage, and a landing run gets the real
+// combined-practice key, because the collision read that decides base-versus-twin
+// looks those ids up in that graph and the two must be the same key.
 type TargetSpec struct {
 	// GraphType is the target domain graph type (typically kgtypes.GraphPractice).
 	// Never a source-only graph type (raw web / pdf / logs).
@@ -22,23 +24,42 @@ type TargetSpec struct {
 }
 
 // Options carries the per-invocation knobs RunRecipe and the interpreter honor.
-// The client-side counterpart of the former server transformer.Options, narrowed
-// to the fields the client path actually uses — the server's OnProgress was never
-// consulted by the eval bodies and is dropped, and Force and DryRun are both
-// retired: a recipe run writes nothing at all, so there is neither a destructive
-// knob nor a write to skip.
+//
+// Force and DryRun are both retired and are NOT coming back under the landing:
+// force meant "overwrite a colliding resident", and a landing never overwrites —
+// a collision lands a versioned twin and both rows are retained — while dry_run
+// meant "compute the projection but skip the write", which is what an EXTRACT run
+// already is. Neither names a distinction this surface still has.
 type Options struct {
 	// SourceManifest is the opaque context blob the collect layer builds,
 	// encoding the source slug + recipe name as `source=<slug>;recipe=<name>`
 	// (see FormatSourceManifest / ParseSourceManifest). RunRecipe parses it to
-	// obtain the source slug (stamped into translated-from Evidence for lineage)
-	// and the fixed inline recipe key.
+	// obtain the source slug — the second component of every emitted StableID,
+	// and the default value of each emitted node's `source` field — plus the
+	// fixed inline recipe key.
 	SourceManifest string
 
 	// Extract turns a run into EXTRACT MODE: the emitted rows are captured onto
-	// Result.Extract for the caller to read. It is the only mode an admitted run
-	// has — nothing is ever written — and RunRecipe refuses a run without it.
+	// Result.Extract for the caller to read and nothing is written.
 	Extract bool
+
+	// LandTarget names the graph a LANDING run writes into, and its emptiness IS
+	// the mode discriminant: a zero TargetSpec is an extract-only run and a
+	// non-zero one is a landing.
+	//
+	// ONE FIELD RATHER THAN A BOOL PLUS A TARGET, because two fields can disagree.
+	// A `Land bool` set with no target, or a target set with the bool clear, is a
+	// state the caller can reach and neither the interpreter nor the landing could
+	// act on; there is no such state here.
+	//
+	// IT IS THE CALLER'S TO SUPPLY. The recipe package knows nothing about which
+	// graph a practice landing belongs in, and hard-coding one here would put the
+	// combined graph's name in a second place that could drift from the first. The
+	// collect layer resolves it once and passes it.
+	//
+	// An admitted run has at least one of Extract and LandTarget set; RunRecipe
+	// refuses one with neither, naming both.
+	LandTarget TargetSpec
 
 	// Body is an INLINE recipe body, used instead of loading a saved recipe by
 	// name. Only meaningful in extract mode.
@@ -66,32 +87,29 @@ type Options struct {
 }
 
 // Result carries the outputs of a recipe run. Every run accumulates its
-// emissions into Nodes / Edges / Lineage in memory and ships them NOWHERE: the
-// rows the caller reads come back on Extract. This is the
-// client-side counterpart of the former server transformer.Result, retyped onto
-// the wire node (*knowledgev1.Node) and the client edge build-carrier
-// (kgwire.BatchEdge).
+// emissions into Nodes / Edges in memory and writes nothing itself; the rows an
+// extract reads come back on Extract, and a landing composes its create_batch
+// from Nodes and Edges. Retyped onto the wire node (*knowledgev1.Node) and the
+// client edge build-carrier (kgwire.BatchEdge).
 type Result struct {
 	// Nodes is the list of target-graph nodes the run emitted. Order is
 	// emission order. Pointer elements: knowledgev1.Node carries a noCopy.
 	Nodes []*knowledgev1.Node
 
-	// Edges is the list of target-graph structural edges between the Nodes
-	// (from `link` rules). Does NOT include the Lineage translated-from edges.
+	// Edges is the list of target-graph structural edges between the Nodes, from
+	// the body's `link` rules. It is the ONLY edge list a run produces: the
+	// translated-from edges back into the raw source graph are retired, so there
+	// is no second carrier and nothing for a ship-side filter to strip.
 	Edges []kgwire.BatchEdge
-
-	// Lineage is the list of translated-from edges pointing from the
-	// newly-emitted nodes back to their source nodes in the source graph. Each
-	// edge carries Evidence JSON with source=<slug>.
-	Lineage []kgwire.BatchEdge
 
 	// Stats holds the per-run counters surfaced to the MCP collect response.
 	Stats Stats
 
 	// Extract carries the captured rows of an EXTRACT-mode run, and is nil on
-	// every other run. Nodes/Edges/Lineage above accumulate exactly as they
-	// always have, including in extract mode — only this caller-facing row list
-	// is bounded.
+	// every other run. Nodes and Edges above accumulate exactly as they always
+	// have, including in extract mode — only this caller-facing row list is
+	// bounded, which is why a landing refuses the row-window params rather than
+	// writing more than it shows.
 	Extract *ExtractResult
 }
 
@@ -103,12 +121,6 @@ type Stats struct {
 	NodesEmitted int
 	// SkippedChunks counts rows skipped for lacking an identity signal.
 	SkippedChunks int
-	// SkippedExisting counts emitted nodes the write guard dropped because the
-	// target already holds a byte-identical row under the same id. It is a
-	// SILENT, SUCCESSFUL outcome — distinct from a collision, which refuses the
-	// whole write — and it exists so a re-run that legitimately wrote nothing is
-	// distinguishable in the response from one that emitted nothing at all.
-	SkippedExisting int
 	// ElapsedMillis is wall-clock duration of the RunRecipe call.
 	ElapsedMillis int64
 	// LookupsResolved counts `lookup` rule invocations that found a matching
@@ -120,4 +132,14 @@ type Stats struct {
 	// LinkMisses counts `link` rule invocations skipped because either endpoint
 	// was empty (unbound $var) or not emitted earlier in this run.
 	LinkMisses int
+}
+
+// Landing reports whether these options describe a LANDING run — one whose
+// emitted nodes are written into a target graph — as opposed to an extract-only
+// run that returns rows and writes nothing.
+//
+// It reads the target rather than a separate flag so there is exactly one place
+// the mode is decided and no pair of fields that can disagree about it.
+func (o Options) Landing() bool {
+	return o.LandTarget.GraphType != ""
 }

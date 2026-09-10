@@ -31,7 +31,7 @@ help("workflows")
 Tool topics cover `query`, `traverse`, `mutate`, `delete`, `manage`, `ast`,
 `thoughts`, `record_decision`, `search`, `file_symbols`, `assemble`, `sync`, the
 `create_*` batch creators, and `help` itself. Reference topics cover
-`node_types`, `edge_types`, `statuses`, `workflows`, `logs`, `patterns`,
+`node_types`, `edge_types`, `statuses`, `workflows`, `patterns`,
 `recipes`, and `topology`.
 
 ## Parameters
@@ -39,5 +39,5 @@ Tool topics cover `query`, `traverse`, `mutate`, `delete`, `manage`, `ast`,
 <!-- BEGIN GENERATED: params -->
 | Parameter | Type | Required | Enum | Description |
 | --- | --- | --- | --- | --- |
-| `topic` | string |  | overview, node_types, edge_types, statuses, workflows, logs, patterns, recipes, topology, query, traverse, mutate, delete, manage, manage_checks, ast, thoughts, create_project, create_ticket, create_plan, create_research, create_test_plan, record_decision, search, file_symbols, help, assemble, sync | Topic to get help on. Omit for overview. Tool names: query, traverse, mutate, delete, manage, ast, thoughts, create_project, create_ticket, create_plan, create_research, create_test_plan, record_decision, search, file_symbols, help, assemble, sync, manage_checks. Reference topics: node_types, edge_types, statuses, workflows, logs, patterns, recipes, topology. |
+| `topic` | string |  | overview, node_types, edge_types, statuses, workflows, patterns, recipes, topology, query, traverse, mutate, delete, manage, manage_checks, ast, thoughts, create_project, create_ticket, create_plan, create_research, create_test_plan, record_decision, search, file_symbols, help, assemble, sync, analyze_usage | Topic to get help on. Omit for overview. Tool names: query, traverse, mutate, delete, manage, ast, thoughts, create_project, create_ticket, create_plan, create_research, create_test_plan, record_decision, search, file_symbols, help, assemble, sync, manage_checks, analyze_usage. Reference topics: node_types, edge_types, statuses, workflows, patterns, recipes, topology. |
 <!-- END GENERATED: params -->

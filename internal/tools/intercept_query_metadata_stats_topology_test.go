@@ -63,9 +63,12 @@ func TestMetadataStats_TableAndJSON(t *testing.T) {
 	assert.Contains(t, body, "## Metadata stats — knowledge graph (1 keys)")
 	assert.Contains(t, body, "| severity |")
 
-	payload := engine.MetadataStatsJSONPayload("knowledge", "", "go", "", rows)
+	payload := engine.MetadataStatsJSONPayload("knowledge", "", "go", rows)
 	assert.Equal(t, "knowledge", payload["graph"])
 	assert.Equal(t, "go", payload["language"])
+	assert.NotContains(t, payload, "account",
+		"the payload carries no account key: no surviving family is keyed by account, and emitting "+
+			"one made the json body differ between a call with the ignored parameter and one without")
 	b, err := json.Marshal(payload)
 	require.NoError(t, err)
 	assert.Contains(t, string(b), `"key":"severity"`)

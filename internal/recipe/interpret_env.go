@@ -39,8 +39,10 @@ type Env struct {
 	// NodeID at emit time.
 	EmitMap map[string]map[string]string
 
-	// SourceRef is the node ID the next emit should stamp its
-	// translated-from edge against. When empty, the interpreter falls
+	// SourceRef is the node ID the next emit REPORTS as its anchor. It
+	// stamps no edge: the translated-from edge an emit once built is
+	// retired, and the anchor reaches the caller on the extract row
+	// alone. When empty, the interpreter falls
 	// back to the current row's NodeID — the typical case. A prior
 	// RuleSourceRef populates this explicitly so emitted nodes can
 	// point at a different source anchor (e.g. a page rather than the
@@ -125,7 +127,10 @@ func cloneRowVars(vars map[string]string) map[string]string {
 	if vars == nil {
 		return map[string]string{}
 	}
-	out := make(map[string]string, len(vars)+1)
+	// SIZED FROM ONE LENGTH, NOT A SUM: a make() capacity is a hint —
+	// the caller's one added binding costs at most a growth — while a size
+	// built by addition is a value the allocator has to take on trust.
+	out := make(map[string]string, len(vars))
 	maps.Copy(out, vars)
 	return out
 }

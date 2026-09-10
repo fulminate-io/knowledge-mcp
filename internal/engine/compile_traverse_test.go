@@ -85,7 +85,7 @@ func TestCompileTraverse_CrossGraphTarget(t *testing.T) {
 
 // TestCompileTraverse_CustomGraph pins traverse selector threading for a
 // registered custom graph type: graph + name reach the server-side resolver
-// (compileTraverse gates only on graph=="logs"; a custom type passes). Guards a
+// (compileTraverse gates on `start` alone; a custom type passes). Guards a
 // future closed-allowlist regression on the client read path.
 func TestCompileTraverse_CustomGraph(t *testing.T) {
 	req, ok := compileTraverse(json.RawMessage(`{"start":"n1","graph":"hellograph","name":"demo"}`))
@@ -111,8 +111,7 @@ func TestCompileTraverse_DenyCases(t *testing.T) {
 		name string
 		args string
 	}{
-		{"logs graph", `{"start":"n1","graph":"logs","name":"q1"}`},
-		{"no start (graph-wide-edges)", `{"graph":"logs","name":"q1"}`},
+		{"no start (graph-wide-edges)", `{"graph":"practice","language":"go"}`},
 		{"invalid direction", `{"start":"n1","direction":"sideways"}`},
 	}
 	for _, tc := range cases {
@@ -165,7 +164,6 @@ func TestDispatch_PrecheckTraverseUnknownDirection(t *testing.T) {
 	}{
 		{"from_id walk", `{"start":"n1","direction":"sideways"}`},
 		{"start-less graph-wide", `{"direction":"sideways"}`},
-		{"logs graph", `{"start":"n1","graph":"logs","name":"q1","direction":"sideways"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -213,41 +211,6 @@ func TestDispatch_TraverseAcceptedDirectionsStillWalk(t *testing.T) {
 
 // TestDispatch_StartlessLogsTraverse_DeniedWhileOtherGraphsEnumerate pins the
 // disposition the logs intercept's fall-through comment now describes: a
-// start-less logs traverse is claimed by nobody — dispatchGraphWideEdges
-// declines graph=="logs" and compileTraverse declines it too — so it reaches the
-// Compile-miss deny with NO Execute RPC.
-//
-// The knowledge leg is the known-positive: the SAME start-less shape on another
-// graph is SERVED by the graph-wide arm and issues an Execute. Without it, a
-// wiring change that broke every start-less traverse would leave the logs leg
-// passing for the wrong reason.
-//
-// This pins the CURRENT disposition. Whether a logs graph-wide enumeration
-// should be served, and whether the deny should name the missing start instead
-// of the generic unrecognized-shape text, are open questions — if either is
-// answered, this test changes with the answer.
-func TestDispatch_StartlessLogsTraverse_DeniedWhileOtherGraphsEnumerate(t *testing.T) {
-	t.Run("logs is denied", func(t *testing.T) {
-		d := &dispatchCounters{}
-		out, err := Dispatch(context.Background(),
-			d.exec(nil, errors.New("exec must not run — a start-less logs traverse is denied")),
-			nil,
-			"traverse", json.RawMessage(`{"graph":"logs","name":"q1"}`))
-		require.NoError(t, err, "the deny is rendered, not returned as a Go error")
-		assert.True(t, out.IsError, "a start-less logs traverse is denied")
-		assert.Equal(t, 0, d.execCalls, "a denied shape issues NO Execute RPC")
-	})
-	t.Run("knowledge enumerates", func(t *testing.T) {
-		d := &dispatchCounters{}
-		out, err := Dispatch(context.Background(),
-			d.exec(&knowledgev1.ExecuteResponse{}, nil),
-			nil,
-			"traverse", json.RawMessage(`{"graph":"knowledge"}`))
-		require.NoError(t, err)
-		assert.False(t, out.IsError, "the same shape on knowledge is the graph-wide enumeration")
-		assert.Positive(t, d.execCalls, "the served shape reaches the wire")
-	})
-}
 
 // TestCompileTraverse_IncludeEdgeMetadata asserts an include_edge_metadata
 // traverse now COMPILES (T2.4c): the carrier flag is set, and the engine

@@ -120,7 +120,7 @@ func TestEmit_RefusesWholeWhenAnEdgeFailureLanded(t *testing.T) {
 	t.Parallel()
 
 	e := newPDFEmitter(fixturePath, time.Time{})
-	e.emitDocumentNode(pdf.Metadata{Title: "X"}, "X", titleSourceInfoDict)
+	e.emitDocumentNode(pdf.Metadata{Title: "X"}, "X", TitleSourceInfoDict)
 	e.emitChunk(e.docID, "", pdf.Chunk{Kind: pdf.BlockParagraph, Text: "body", PageRange: [2]int{0, 0}}, 0)
 
 	// Sanity: without a failure this emitter yields its accumulation.

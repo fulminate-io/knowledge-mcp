@@ -112,9 +112,20 @@ func Dispatch(ctx context.Context, exec ExecuteFn, stats StatsFn, tool string, a
 	// branch, so a create/update/delete never reaches the resolver at all and
 	// never costs a Stats read. resolutionNotice carries the unmatched-spelling
 	// unlink disclosure through to the render below.
+	// THE PRACTICE HUB RULES, at the position every caller reaches. They run for
+	// the mutate tool AND for the standalone `delete` tool, whose `source` is the
+	// same hub axis under another spelling — before this, that tool reached the
+	// by-hub selection with no resolution at all and deleted whatever id it was
+	// given. See practice_hub_guard.go.
+	if tool == "mutate" || tool == "delete" {
+		if herr := guardPracticeDispatch(ctx, exec, args); herr != nil {
+			return errorResult(herr.Error()), nil
+		}
+	}
+
 	var resolutionNotice string
 	if tool == "mutate" {
-		next, notice, rerr := resolveArgsEdgeTypes(ctx, stats, tool, args)
+		next, notice, rerr := prepareMutateArgs(ctx, stats, tool, args)
 		if rerr != nil {
 			return errorResult(rerr.Error()), nil
 		}
@@ -273,7 +284,7 @@ func renderDeleteTool(args json.RawMessage, resp *knowledgev1.ExecuteResponse) (
 
 // renderSearchTool renders a compiled search response with the mode-label
 // suffix. The search tool is always RETURN_MODE_SEARCH; the mode is hybrid
-// (no suffix) for the `search` tool. A cloud/cicd resource_type is post-filtered
+// (no suffix) for the `search` tool. A resource_type is post-filtered
 // here on the client (OP_PREFIX is inert on a QSearch, so the
 // trim moved from the engine post-rank to this render path).
 func renderSearchTool(args json.RawMessage, resp *knowledgev1.ExecuteResponse) (kgtools.ToolResult, error) {
@@ -412,31 +423,47 @@ func firstQueryLabel(query string, queries []string) string {
 	return query
 }
 
-// queryGraphLabelFor mirrors the server queryGraphLabel:
-// the short graph identifier for the render header. Empty graph → "knowledge".
+// queryGraphLabelFor composes the short graph identifier for the render header:
+// the family, qualified by whichever instance the read addressed. Empty graph →
+// "knowledge".
+//
+// IT IS WHERE A PRACTICE READ SAYS WHICH CORPUS ANSWERED, which is the one place
+// a caller looks. The three practice spellings are distinguishable on purpose:
+// a bare "practice" is the whole combined graph, "practice:<hub>" is a read
+// narrowed to one source hub, and "practice:<language>" is a LEGACY read of one
+// pre-singleton graph. Rendering the same word for all three would make a
+// whole-corpus read and a hub-scoped one indistinguishable in the response.
+//
+// An earlier version of this comment claimed the function mirrored a server
+// symbol of a similar name. No such symbol exists anywhere in the tree.
 func queryGraphLabelFor(a queryArgs) string {
 	switch a.Graph {
 	case "", "knowledge":
 		return "knowledge"
 	case "practice":
+		// THE HUB IS CHECKED FIRST because the two cannot both apply: `language`
+		// is the legacy read of a pre-singleton graph and `source` narrows the
+		// combined one, so a call carrying both has already been refused upstream.
+		if a.Source != "" {
+			return "practice:" + a.Source
+		}
 		if a.Language != "" {
 			return "practice:" + a.Language
 		}
 		return "practice"
 	case "checks":
-		// One graph, so the family name IS the instance name — unlike practice,
-		// there is no per-language instance to disambiguate in the header.
+		// One graph, so the family name IS the instance name. Practice is the same
+		// case now — an unselected practice read renders a bare "practice" — and
+		// differs only in that practice qualifies by hub or by legacy language when
+		// one is named, where checks has nothing to qualify by.
 		return "checks"
-	case "cloud":
-		if a.Account != "" {
-			return "cloud:" + a.Account
-		}
-		return "cloud"
-	case "cicd":
-		if a.Account != "" {
-			return "cicd:" + a.Account
-		}
-		return "cicd"
+	// THERE IS NO "cloud" ARM. It qualified the label by `account` for the
+	// account-keyed inventory family, which is retired: the name is refused by
+	// RetiredGraphTypeReason before any read, so the arm could never produce a
+	// label again — and while it stood it was the last client-side site that
+	// turned the accepted-and-ignored `account` parameter into part of an answer.
+	// Do not restore it: a collected inventory graph is a registered custom type
+	// now, and the default arm labels it by name.
 	case "web":
 		if a.Name != "" {
 			return "web:" + a.Name

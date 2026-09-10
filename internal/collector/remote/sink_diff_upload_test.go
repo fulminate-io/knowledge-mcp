@@ -104,9 +104,7 @@ func manifestMatching(result *collectorwire.CollectResult) *knowledgev1.CollectM
 		HashSchemeVersion: contribhash.ContributionHashSchemeVersion,
 	}
 	for path, h := range hashes {
-		resp.Entries = append(resp.Entries, &knowledgev1.ManifestEntry{
-			FilePath: path, ContributionHash: append([]byte(nil), h[:]...),
-		})
+		resp.Entries = append(resp.Entries, newManifestEntry(diffKeyFile, path, append([]byte(nil), h[:]...)))
 	}
 	return resp
 }
@@ -259,7 +257,7 @@ func TestDiffUpload_OneFileChangeUploadsOnlyThatFileAndFilelessSet(t *testing.T)
 
 // TestDiffUpload_FileMissingFromManifestReadsChanged covers the OTHER half of the
 // diff condition. computeCollectDiff asks
-// `if prior, ok := d.manifestFiles[path]; ok && prior == h` — an ABSENT entry and a
+// `if prior, ok := d.manifestKeys[key]; ok && prior == h` — an ABSENT entry and a
 // DIFFERING entry reach the changed branch through different halves of that
 // conjunction, and a regression could break either alone. The test above exercises
 // the differing-hash half; this one exercises the absent half, which is precisely

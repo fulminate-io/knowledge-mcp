@@ -15,6 +15,7 @@ package ast
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	sitter "github.com/smacker/go-tree-sitter"
 
@@ -70,7 +71,7 @@ func evalSubPattern(ctx context.Context, l *SubPatternLeaf, scope *evalScope, di
 				continue
 			}
 			if l.Where == nil {
-				bindAs(scope, l.As, c)
+				bindAs(scope, l.As, c, caps, nodes)
 				return true, nil
 			}
 			sub := scope.pushSubPattern(caps, nodes, scope.src)
@@ -79,7 +80,7 @@ func evalSubPattern(ctx context.Context, l *SubPatternLeaf, scope *evalScope, di
 				return false, werr
 			}
 			if ok {
-				bindAs(scope, l.As, c)
+				bindAs(scope, l.As, c, caps, nodes)
 				return true, nil
 			}
 		}
@@ -87,28 +88,96 @@ func evalSubPattern(ctx context.Context, l *SubPatternLeaf, scope *evalScope, di
 	return false, nil
 }
 
+// subPatternNamespaceSep joins a sub-pattern leaf's declared `as` name to one
+// of that sub-pattern's own capture names, producing the composite key a
+// sibling leaf references (`as:"T"` over a pattern binding `$C` exports "T.C").
+//
+// A DOT IS UNAMBIGUOUS BY CONSTRUCTION, which is why the export needs no new
+// syntax and resolveCapture needs no new code. Capture names come from `$X`
+// placeholders and are substituted to identifiers the per-language IdentRule
+// validates (go_lang.go's isGoIdent and its siblings), and no registered
+// grammar admits a dot in an identifier — so "T.C" has exactly one reading and
+// cannot collide with any name a where-tree is able to write today.
+const subPatternNamespaceSep = "."
+
 // bindAs writes the matched ancestor/descendant node into the caller's
 // scope under name, so subsequent leaves in the same composer can
 // resolve it via resolveCapture. No-op when name is empty (the common
 // case — most sub-pattern uses don't need the matched node downstream).
 //
+// IT ALSO EXPORTS THE SUB-PATTERN'S OWN CAPTURES, NAMESPACED UNDER name. caps
+// and nodes are the bindings the winning candidate produced; each is written
+// back as `name + "." + capture`, alongside the `name` -> matched-node binding
+// that has always been written. That is what makes a sub-pattern's captures
+// reachable from a SIBLING leaf — `flows_to{to:"T.C"}` beside a
+// `contains_pattern{as:"T"}` that binds `$C`.
+//
+// WHY NAMESPACED RATHER THAN PROMOTED FLAT. A flat promotion collides: an outer
+// pattern binding `$C` and a sub-pattern binding `$C` would silently shadow one
+// another, and a silent shadow is precisely the class this repository's
+// bad-input rule forbids. Namespacing makes the collision impossible instead of
+// detecting it. It costs resolveCapture nothing — that function strips
+// `$outer.` prefixes and then indexes captures.byName, so a literal key "T.C"
+// resolves through the unmodified lookup and "$outer.T.C" resolves one scope up
+// by the same path.
+//
+// WHAT IT DOES NOT DO, stated rather than left to be discovered. A leaf with no
+// `as` declares no namespace, so it exports nothing and its captures stay
+// unreachable by any spelling — the loud arm is the REFERENCE, which is refused
+// by name. And the export does NOT lift the no-backtracking limit: evalSubPattern
+// returns on the FIRST candidate whose variant matches, so the exported captures
+// are that candidate's, exactly as the `as` handle has always been. Existential
+// quantification over candidates still requires putting the constraint INSIDE
+// the sub-pattern's own where with `$outer.` refs.
+//
+// A RE-BIND CLEARS THE PREVIOUS NAMESPACE FIRST. Two leaves sharing one `as`
+// name over patterns binding different captures would otherwise leave the first
+// leaf's keys readable after the second overwrote `name` itself, and a stale
+// node read as a fresh one is the worst of the available failures. Clearing
+// turns that read into the ordinary unresolved-capture refusal.
+//
 // The binding fires only when the leaf returns true. In `not` wrappers
 // the binding still happens on inner-match (because the inner reached
 // `return true`), then the surrounding `not` flips the verdict — so
-// referencing the `as` capture from a sibling-of-`not` is a usage
-// smell. Documented on SubPatternLeaf.As.
-func bindAs(scope *evalScope, name string, node *sitter.Node) {
+// referencing the `as` capture, or any key exported under it, from a
+// sibling-of-`not` is a usage smell. Documented on SubPatternLeaf.As.
+func bindAs(scope *evalScope, name string, node *sitter.Node, caps *Captures, nodes map[string]*sitter.Node) {
 	if name == "" || scope == nil || node == nil {
 		return
 	}
 	if scope.captures == nil {
 		scope.captures = newCaptures()
 	}
-	scope.captures.byName[name] = nodeToCapture(node, scope.src)
 	if scope.nodeByName == nil {
 		scope.nodeByName = map[string]*sitter.Node{}
 	}
+	clearNamespace(scope, name)
+	scope.captures.byName[name] = nodeToCapture(node, scope.src)
 	scope.nodeByName[name] = node
+	if caps == nil {
+		return
+	}
+	for capName, cap := range caps.byName {
+		key := name + subPatternNamespaceSep + capName
+		scope.captures.byName[key] = cap
+		if nodes != nil {
+			if n, ok := nodes[capName]; ok && n != nil {
+				scope.nodeByName[key] = n
+			}
+		}
+	}
+}
+
+// clearNamespace removes every key previously exported under name, so a re-bind
+// of the same `as` handle cannot leave a stale capture readable. See bindAs.
+func clearNamespace(scope *evalScope, name string) {
+	prefix := name + subPatternNamespaceSep
+	for k := range scope.captures.byName {
+		if strings.HasPrefix(k, prefix) {
+			delete(scope.captures.byName, k)
+			delete(scope.nodeByName, k)
+		}
+	}
 }
 
 // subPatternPinNone is the context pin a where-leaf sub-pattern compiles under:

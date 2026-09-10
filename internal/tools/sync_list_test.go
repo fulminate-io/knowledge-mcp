@@ -42,11 +42,10 @@ type fakeSyncListDeps struct {
 	host     string
 }
 
-func (d *fakeSyncListDeps) LocalLiveness() LocalLiveness          { return nil }
-func (d *fakeSyncListDeps) Sink() collector.Sink                  { return nil }
-func (d *fakeSyncListDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
-func (d *fakeSyncListDeps) RootDir() string                       { return "" }
-func (d *fakeSyncListDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
+func (d *fakeSyncListDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d *fakeSyncListDeps) Sink() collector.Sink            { return nil }
+func (d *fakeSyncListDeps) RootDir() string                 { return "" }
+func (d *fakeSyncListDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
 
 func (d *fakeSyncListDeps) PropReady() bool     { return true }
 func (d *fakeSyncListDeps) PipelineReady() bool { return true }
@@ -89,7 +88,6 @@ func TestHandleSyncList_LoggedOut(t *testing.T) {
 			string(kgtypes.GraphPractice):  {{Name: "go"}},
 			// ineligible types — must never appear in the output even though
 			// the local caller would yield them.
-			string(kgtypes.GraphLogs):   {{Name: "q-123"}},
 			string(kgtypes.GraphWebRaw): {{Name: "hohpe-eip"}},
 			string(kgtypes.GraphPDFRaw): {{Name: "some-pdf"}},
 		},
@@ -111,7 +109,7 @@ func TestHandleSyncList_LoggedOut(t *testing.T) {
 	// Local caller asked ONLY about eligible types, never logs/web/pdf.
 	for _, gt := range local.seenGraphs {
 		switch kgtypes.GraphType(gt) {
-		case kgtypes.GraphLogs, kgtypes.GraphWebRaw, kgtypes.GraphPDFRaw:
+		case kgtypes.GraphWebRaw, kgtypes.GraphPDFRaw:
 			t.Errorf("local caller queried ineligible type %q", gt)
 		}
 	}
@@ -149,7 +147,7 @@ func TestSyncListRender_DisplayRule(t *testing.T) {
 	rows := []syncListRow{
 		{graphType: kgtypes.GraphKnowledge, name: "default", synced: true, syncTime: now},
 		{graphType: kgtypes.GraphPractice, name: "go", synced: false, syncTime: 0},
-		{graphType: kgtypes.GraphCloud, name: "acme", synced: true, syncTime: now},
+		{graphType: kgtypes.GraphPractice, name: "acme", synced: true, syncTime: now},
 	}
 	out := renderSyncListTable(rows, true /*loggedIn*/)
 
@@ -162,8 +160,8 @@ func TestSyncListRender_DisplayRule(t *testing.T) {
 	if !strings.Contains(out, "graph:practice name:go") {
 		t.Errorf("expected practice sync params, got:\n%s", out)
 	}
-	if !strings.Contains(out, "graph:cloud name:acme") {
-		t.Errorf("expected cloud sync params, got:\n%s", out)
+	if !strings.Contains(out, "graph:practice name:acme") {
+		t.Errorf("expected practice sync params, got:\n%s", out)
 	}
 
 	for ln := range strings.SplitSeq(strings.TrimRight(out, "\n"), "\n") {
@@ -177,7 +175,7 @@ func TestSyncListRender_DisplayRule(t *testing.T) {
 			if strings.Contains(ln, "ago") {
 				t.Errorf("unsynced row must have blank Last-synced, got: %q", ln)
 			}
-		case strings.HasPrefix(ln, "knowledge/default"), strings.HasPrefix(ln, "cloud/acme"):
+		case strings.HasPrefix(ln, "knowledge/default"), strings.HasPrefix(ln, "practice/acme"):
 			// Synced row: status "yes", Last-synced non-blank (a relative age).
 			if !strings.Contains(ln, "yes") {
 				t.Errorf("synced row missing 'yes' status: %q", ln)

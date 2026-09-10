@@ -266,7 +266,7 @@ func unpackTar(r io.Reader, dstDir string, counts *unpackCounts) *materializerWa
 			if errors.Is(err, errSizeExceeded) {
 				return &materializerWarning{Reason: "size_cap_mid_stream"}
 			}
-			slog.Warn("github_materializer: tar.Next failed, remaining entries lost", "err", err)
+			slog.Warn("github_materializer: tar.Next failed, remaining entries lost", "err", logSafeErr(err))
 			counts.tarReadFailed()
 			return nil
 		}
@@ -275,7 +275,7 @@ func unpackTar(r io.Reader, dstDir string, counts *unpackCounts) *materializerWa
 			continue // top-level dir entry itself
 		}
 		if isUnsafeTarPath(stripped) {
-			slog.Warn("github_materializer: rejected unsafe tar path", "path", hdr.Name)
+			slog.Warn("github_materializer: rejected unsafe tar path", "path", logSafe(hdr.Name))
 			counts.unsafePath()
 			continue
 		}
@@ -283,7 +283,7 @@ func unpackTar(r io.Reader, dstDir string, counts *unpackCounts) *materializerWa
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(dst, 0o750); err != nil {
-				slog.Warn("github_materializer: mkdir failed, entry lost", "path", dst, "err", err)
+				slog.Warn("github_materializer: mkdir failed, entry lost", "path", logSafe(dst), "err", logSafeErr(err))
 				counts.unpackFailed()
 			}
 		case tar.TypeReg:
@@ -291,13 +291,13 @@ func unpackTar(r io.Reader, dstDir string, counts *unpackCounts) *materializerWa
 				if errors.Is(err, errSizeExceeded) {
 					return &materializerWarning{Reason: "size_cap_mid_stream"}
 				}
-				slog.Warn("github_materializer: write failed, entry lost", "path", dst, "err", err)
+				slog.Warn("github_materializer: write failed, entry lost", "path", logSafe(dst), "err", logSafeErr(err))
 				counts.unpackFailed()
 			}
 		default:
 			// symlinks, devices, fifos, char-special, hardlinks
 			slog.Warn("github_materializer: non-regular tar entry skipped",
-				"path", hdr.Name, "typeflag", hdr.Typeflag)
+				"path", logSafe(hdr.Name), "typeflag", hdr.Typeflag)
 			counts.nonRegular()
 		}
 	}
@@ -355,17 +355,46 @@ func (c *unpackCounts) tarReadFailed() {
 // writeTarFile copies one tar entry's body into dst, creating parent
 // directories as needed. errSizeExceeded propagates so the caller can
 // emit a mid-stream warning.
-func writeTarFile(r io.Reader, dst string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
-		return err
+//
+// THE CLOSE ERROR IS PART OF THE WRITE, which is why it is joined rather than
+// discarded: a write that the kernel has only buffered can fail at close and
+// nowhere else, so dropping the close error reports a truncated file as a
+// complete one and the unpack carries on with a half-written source file. The
+// COPY error still wins when both fail — it is the earlier and more specific
+// fact, and errSizeExceeded travels on it, which is what the caller matches.
+func writeTarFile(r io.Reader, dst string) (err error) {
+	if mkErr := os.MkdirAll(filepath.Dir(dst), 0o750); mkErr != nil {
+		return mkErr
 	}
-	f, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
+	f, openErr := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if openErr != nil {
+		return openErr
 	}
-	defer f.Close()
-	if _, err := io.Copy(f, r); err != nil {
-		return err
+	defer func() { err = joinCloseErr(err, f.Close(), dst) }()
+	if _, copyErr := io.Copy(f, r); copyErr != nil {
+		return copyErr
+	}
+	return nil
+}
+
+// joinCloseErr folds a writable file's close error into the result of the write
+// that preceded it.
+//
+// THE WRITE ERROR WINS when there is one: it is the earlier and more specific
+// fact, and errSizeExceeded travels on it, which is what unpackTar matches with
+// errors.Is to tell a mid-stream size cap from a per-entry loss. A close error
+// arriving on top of it would silently retag the outcome.
+//
+// IT IS A SEPARATE FUNCTION so the precedence is observable: a deferred close
+// on a temp file effectively never fails, so a test driving writeTarFile cannot
+// exercise the arm where both errors are present, and the rule would ship
+// unobserved if it lived inline.
+func joinCloseErr(writeErr, closeErr error, dst string) error {
+	if writeErr != nil {
+		return writeErr
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close %s: %w", dst, closeErr)
 	}
 	return nil
 }

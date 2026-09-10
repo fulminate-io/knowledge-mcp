@@ -18,7 +18,7 @@ import (
 )
 
 // captureCaller records every Execute request so the wire helpers can be
-// asserted: exactly-one-mutation, correct selector FIELD (Account vs Repo vs
+// asserted: exactly-one-mutation, correct selector FIELD (Language vs Repo vs
 // Name), and the create_batch nodes[]+edges[] payload.
 type captureCaller struct {
 	reqs []*knowledgev1.ExecuteRequest
@@ -40,13 +40,23 @@ func (c *captureCaller) mutations() []*knowledgev1.ExecuteRequest {
 	return out
 }
 
-func TestLinkEdgesBatch_OneMutationCloudAccount(t *testing.T) {
+// TestLinkEdgesBatch_OneMutationSingletonFamily is the SINGLETON half of the
+// routing claim; TestLinkEdgesBatch_CodeRoutesByRepo below is the instance-keyed
+// half.
+//
+// PRACTICE IS THE SUBJECT AND ITS CLAIM IS INVERTED. This test read "practice
+// routes by Language" while the family held eight per-language graphs; it holds
+// one now, so a caller-supplied name is projected AWAY and the Target must carry
+// no instance field at all. Asserting the emptiness rather than deleting the test
+// is what catches a projection that starts routing a name here again — the
+// server's practice policy row refuses one, so a routed name is a refused write.
+func TestLinkEdgesBatch_OneMutationSingletonFamily(t *testing.T) {
 	cc := &captureCaller{}
 	edges := []knowledgev1.Edge{
-		{FromId: "a", ToId: "b", Type: string(kgtypes.EdgeTrusts), Method: "m"},
-		{FromId: "c", ToId: "d", Type: string(kgtypes.EdgeTrusts), Method: "m"},
+		{FromId: "a", ToId: "b", Type: string(kgtypes.EdgeBuilds), Method: "m"},
+		{FromId: "c", ToId: "d", Type: string(kgtypes.EdgeBuilds), Method: "m"},
 	}
-	if err := LinkEdgesBatch(context.Background(), cc, kgtypes.GraphCloud, "aws-123", edges); err != nil {
+	if err := LinkEdgesBatch(context.Background(), cc, kgtypes.GraphPractice, "go", edges); err != nil {
 		t.Fatalf("LinkEdgesBatch: %v", err)
 	}
 	muts := cc.mutations()
@@ -54,14 +64,14 @@ func TestLinkEdgesBatch_OneMutationCloudAccount(t *testing.T) {
 		t.Fatalf("expected exactly 1 Execute mutation (no per-edge loop), got %d", len(muts))
 	}
 	tgt := muts[0].GetTarget()
-	if tgt.GetGraph() != "cloud" {
-		t.Errorf("Target.Graph = %q, want cloud", tgt.GetGraph())
+	if tgt.GetGraph() != "practice" {
+		t.Errorf("Target.Graph = %q, want practice", tgt.GetGraph())
 	}
-	if tgt.GetAccount() != "aws-123" {
-		t.Errorf("Target.Account = %q, want aws-123 (cloud routes by Account, NOT Name)", tgt.GetAccount())
+	if tgt.GetLanguage() != "" {
+		t.Errorf("Target.Language = %q, want empty (practice is a singleton: a write consumes no instance field)", tgt.GetLanguage())
 	}
 	if tgt.GetName() != "" {
-		t.Errorf("Target.Name = %q, want empty (cloud must NOT route by Name)", tgt.GetName())
+		t.Errorf("Target.Name = %q, want empty (a singleton must NOT route by Name either)", tgt.GetName())
 	}
 	plan := muts[0].GetMutation()
 	if got := len(plan.GetEdges()); got != 2 {
@@ -86,18 +96,18 @@ func TestLinkEdgesBatch_CodeRoutesByRepo(t *testing.T) {
 	if tgt.GetRepo() != "myrepo" {
 		t.Errorf("Target.Repo = %q, want myrepo (code routes by Repo)", tgt.GetRepo())
 	}
-	if tgt.GetAccount() != "" || tgt.GetName() != "" {
-		t.Errorf("code write leaked Account=%q Name=%q", tgt.GetAccount(), tgt.GetName())
+	if tgt.GetLanguage() != "" || tgt.GetName() != "" {
+		t.Errorf("code write leaked Account=%q Name=%q", tgt.GetLanguage(), tgt.GetName())
 	}
 }
 
 func TestLinkNodesAndEdgesBatch_NodesAndEdgesOneMutation(t *testing.T) {
 	cc := &captureCaller{}
 	nodes := []*knowledgev1.Node{
-		{Id: "n1", Type: string(kgtypes.NodeCloudResource), SymbolName: "sentinel-1"},
+		{Id: "n1", Type: string(kgtypes.NodePattern), SymbolName: "sentinel-1"},
 	}
-	edges := []knowledgev1.Edge{{FromId: "src", ToId: "n1", Type: string(kgtypes.EdgeAllowsIngressFrom), Method: "m"}}
-	if err := LinkNodesAndEdgesBatch(context.Background(), cc, kgtypes.GraphCloud, "aws-123", nodes, edges); err != nil {
+	edges := []knowledgev1.Edge{{FromId: "src", ToId: "n1", Type: string(kgtypes.EdgeDeploys), Method: "m"}}
+	if err := LinkNodesAndEdgesBatch(context.Background(), cc, kgtypes.GraphPractice, "go", nodes, edges); err != nil {
 		t.Fatalf("LinkNodesAndEdgesBatch: %v", err)
 	}
 	muts := cc.mutations()
@@ -114,8 +124,8 @@ func TestLinkNodesAndEdgesBatch_NodesAndEdgesOneMutation(t *testing.T) {
 	if len(plan.GetEdges()) != 1 {
 		t.Errorf("plan edges = %d, want 1", len(plan.GetEdges()))
 	}
-	if muts[0].GetTarget().GetAccount() != "aws-123" {
-		t.Errorf("Target.Account = %q, want aws-123", muts[0].GetTarget().GetAccount())
+	if lang := muts[0].GetTarget().GetLanguage(); lang != "" {
+		t.Errorf("Target.Language = %q, want empty: practice is a singleton and consumes no instance field", lang)
 	}
 }
 
@@ -181,7 +191,7 @@ func TestUserMutateCompile_DoesNotSetSystemManagedCreate(t *testing.T) {
 
 func TestLinkEdgesBatch_EmptyNoRPC(t *testing.T) {
 	cc := &captureCaller{}
-	if err := LinkEdgesBatch(context.Background(), cc, kgtypes.GraphCloud, "aws-123", nil); err != nil {
+	if err := LinkEdgesBatch(context.Background(), cc, kgtypes.GraphPractice, "go", nil); err != nil {
 		t.Fatalf("LinkEdgesBatch empty: %v", err)
 	}
 	if len(cc.reqs) != 0 {
@@ -189,9 +199,9 @@ func TestLinkEdgesBatch_EmptyNoRPC(t *testing.T) {
 	}
 }
 
-func TestBrowseEdges_ReadCloudByAccount(t *testing.T) {
+func TestBrowseEdges_ReadRoutesTheSingletonTarget(t *testing.T) {
 	cc := &captureCaller{}
-	if _, err := BrowseEdges(context.Background(), cc, kgtypes.GraphCloud, "aws-123", "zone-1", OutgoingEdges, []kgtypes.EdgeType{kgtypes.EdgeTargets}); err != nil {
+	if _, err := BrowseEdges(context.Background(), cc, kgtypes.GraphPractice, "go", "zone-1", OutgoingEdges, []kgtypes.EdgeType{kgtypes.EdgeManages}); err != nil {
 		t.Fatalf("BrowseEdges: %v", err)
 	}
 	if len(cc.reqs) != 1 {
@@ -199,11 +209,11 @@ func TestBrowseEdges_ReadCloudByAccount(t *testing.T) {
 	}
 	req := cc.reqs[0]
 	tgt := req.GetTarget()
-	if tgt.GetGraph() != "cloud" || tgt.GetAccount() != "aws-123" {
-		t.Errorf("edge read routed to graph=%q account=%q, want cloud/aws-123", tgt.GetGraph(), tgt.GetAccount())
+	if tgt.GetGraph() != "practice" || tgt.GetLanguage() != "" {
+		t.Errorf("edge read routed to graph=%q language=%q, want practice with no instance field", tgt.GetGraph(), tgt.GetLanguage())
 	}
 	if tgt.GetName() != "" {
-		t.Errorf("edge read must NOT route cloud by Name, got Name=%q", tgt.GetName())
+		t.Errorf("edge read must NOT route a singleton family by Name, got Name=%q", tgt.GetName())
 	}
 	q := req.GetQuery()
 	if q.GetReturnMode() != knowledgev1.ReturnMode_RETURN_MODE_EDGES {
@@ -215,14 +225,14 @@ func TestBrowseEdges_ReadCloudByAccount(t *testing.T) {
 	if !q.GetForward() {
 		t.Errorf("edge read must be Forward=true (outgoing)")
 	}
-	if et := q.GetSelection().GetEdgeTypes(); len(et) != 1 || et[0] != "TARGETS" {
-		t.Errorf("edge read must filter EdgeTypes=[TARGETS], got %v", et)
+	if et := q.GetSelection().GetEdgeTypes(); len(et) != 1 || et[0] != "MANAGES" {
+		t.Errorf("edge read must filter EdgeTypes=[MANAGES], got %v", et)
 	}
 }
 
 func TestBrowseEdges_EmptyFromIDNoRPC(t *testing.T) {
 	cc := &captureCaller{}
-	if _, err := BrowseEdges(context.Background(), cc, kgtypes.GraphCloud, "aws-123", "", OutgoingEdges, nil); err != nil {
+	if _, err := BrowseEdges(context.Background(), cc, kgtypes.GraphPractice, "go", "", OutgoingEdges, nil); err != nil {
 		t.Fatalf("BrowseEdges empty: %v", err)
 	}
 	if len(cc.reqs) != 0 {
@@ -230,9 +240,9 @@ func TestBrowseEdges_EmptyFromIDNoRPC(t *testing.T) {
 	}
 }
 
-func TestUnlinkEdge_CloudByAccount(t *testing.T) {
+func TestUnlinkEdge_RoutesTheSingletonTarget(t *testing.T) {
 	cc := &captureCaller{}
-	if err := UnlinkEdge(context.Background(), cc, kgtypes.GraphCloud, "aws-123", "zone-1", "dangling.elb.amazonaws.com", kgtypes.EdgeTargets); err != nil {
+	if err := UnlinkEdge(context.Background(), cc, kgtypes.GraphPractice, "go", "zone-1", "dangling-runner", kgtypes.EdgeManages); err != nil {
 		t.Fatalf("UnlinkEdge: %v", err)
 	}
 	muts := cc.mutations()
@@ -240,11 +250,11 @@ func TestUnlinkEdge_CloudByAccount(t *testing.T) {
 		t.Fatalf("expected exactly 1 unlink mutation, got %d", len(muts))
 	}
 	tgt := muts[0].GetTarget()
-	if tgt.GetGraph() != "cloud" || tgt.GetAccount() != "aws-123" {
-		t.Errorf("unlink routed to graph=%q account=%q, want cloud/aws-123", tgt.GetGraph(), tgt.GetAccount())
+	if tgt.GetGraph() != "practice" || tgt.GetLanguage() != "" {
+		t.Errorf("unlink routed to graph=%q language=%q, want practice with no instance field", tgt.GetGraph(), tgt.GetLanguage())
 	}
 	if tgt.GetName() != "" {
-		t.Errorf("unlink must NOT route cloud by Name, got Name=%q", tgt.GetName())
+		t.Errorf("unlink must NOT route a singleton family by Name, got Name=%q", tgt.GetName())
 	}
 	plan := muts[0].GetMutation()
 	if plan.GetKind() != knowledgev1.MutationPlan_MUTATION_KIND_UNLINK {
@@ -252,13 +262,13 @@ func TestUnlinkEdge_CloudByAccount(t *testing.T) {
 	}
 }
 
-func TestBrowseNodes_QueryCloudByAccount(t *testing.T) {
+func TestBrowseNodes_QueryRoutesTheSingletonTarget(t *testing.T) {
 	cc := &captureCaller{}
 	// A POSITIVE limit: this seam serves one bounded page and refuses a payload
 	// without one, so a limit:0 payload would never reach the routing this test is
 	// about. The subject here is the (gt, graphName) → Target translation.
-	if _, err := BrowseNodes(context.Background(), cc, kgtypes.GraphCloud, "aws-123", map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
+	if _, err := BrowseNodes(context.Background(), cc, kgtypes.GraphPractice, "go", map[string]any{
+		"type":  string(kgtypes.NodePattern),
 		"limit": 25,
 	}); err != nil {
 		t.Fatalf("BrowseNodes: %v", err)
@@ -267,11 +277,11 @@ func TestBrowseNodes_QueryCloudByAccount(t *testing.T) {
 		t.Fatalf("expected 1 Execute query, got %d", len(cc.reqs))
 	}
 	tgt := cc.reqs[0].GetTarget()
-	if tgt.GetGraph() != "cloud" || tgt.GetAccount() != "aws-123" {
-		t.Errorf("browse routed to graph=%q account=%q, want cloud/aws-123", tgt.GetGraph(), tgt.GetAccount())
+	if tgt.GetGraph() != "practice" || tgt.GetLanguage() != "" {
+		t.Errorf("browse routed to graph=%q language=%q, want practice with no instance field", tgt.GetGraph(), tgt.GetLanguage())
 	}
 	if tgt.GetName() != "" {
-		t.Errorf("browse must NOT route cloud by Name, got Name=%q", tgt.GetName())
+		t.Errorf("browse must NOT route a singleton family by Name, got Name=%q", tgt.GetName())
 	}
 }
 
@@ -401,17 +411,17 @@ func TestBrowseAllNodes_DrainsMultiplePages(t *testing.T) {
 func TestBrowseNodes_RejectsNonPositiveLimit(t *testing.T) {
 	cases := map[string]map[string]any{
 		"limit zero": {
-			"type":  string(kgtypes.NodeCloudResource),
+			"type":  string(kgtypes.NodePattern),
 			"limit": 0,
 		},
 		"limit key absent entirely": {
-			"type": string(kgtypes.NodeCloudResource),
+			"type": string(kgtypes.NodePattern),
 		},
 	}
 	for name, extra := range cases {
 		t.Run(name, func(t *testing.T) {
 			cc := &captureCaller{}
-			got, err := BrowseNodes(context.Background(), cc, kgtypes.GraphCloud, "aws-123", extra)
+			got, err := BrowseNodes(context.Background(), cc, kgtypes.GraphPractice, "go", extra)
 			if err == nil {
 				t.Fatalf("expected a refusal, got %d nodes and no error", len(got))
 			}
@@ -434,7 +444,7 @@ func TestBrowseNodes_RejectsNonPositiveLimit(t *testing.T) {
 // rather than refusing everything.
 func TestBrowseNodes_AllowsByIDPayload(t *testing.T) {
 	cc := &captureCaller{}
-	if _, err := BrowseNodes(context.Background(), cc, kgtypes.GraphCloud, "aws-123", map[string]any{
+	if _, err := BrowseNodes(context.Background(), cc, kgtypes.GraphPractice, "go", map[string]any{
 		"ids": []string{"i-0abc"},
 	}); err != nil {
 		t.Fatalf("a by-id payload must be served without a limit, got %v", err)

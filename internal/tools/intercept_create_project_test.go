@@ -213,11 +213,10 @@ func (f fakeTensionsProvider) GetTensions() ([]clientthought.TensionReport, bool
 	return f.tensions, f.computed
 }
 
-func (d interceptTestDeps) LocalLiveness() LocalLiveness          { return nil }
-func (d interceptTestDeps) Sink() collector.Sink                  { return nil }
-func (d interceptTestDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
-func (d interceptTestDeps) RootDir() string                       { return "" }
-func (d interceptTestDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
+func (d interceptTestDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d interceptTestDeps) Sink() collector.Sink            { return nil }
+func (d interceptTestDeps) RootDir() string                 { return "" }
+func (d interceptTestDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
 
 func (d interceptTestDeps) PropReady() bool     { return !d.propNotReady }
 func (d interceptTestDeps) PipelineReady() bool { return true }

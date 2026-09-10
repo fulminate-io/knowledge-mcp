@@ -63,6 +63,25 @@ func TestTopologyDispatcher_ForwardsTheIncludeTestsKnob(t *testing.T) {
 			"the dispatcher forwards Extra verbatim, so the knob is honored on this face too")
 	})
 
+	t.Run("the file-list key rides the same forwarding", func(t *testing.T) {
+		// THE THIRD FACE GETS THE NEW SCOPE FOR FREE, which is the whole argument
+		// for putting it on Extra rather than on foundation.Request: a first-class
+		// field would have needed an entry in the dispatcher's path_prefix-style
+		// honoring allowlist and would have been dropped here without one.
+		body := toolResultText(driveTopologyCorpusScan(t, map[string]string{"files": `["sites_test.go"]`}))
+		assert.Contains(t, body, "sites_test.go",
+			"a file list reaches the analyzer through this face too, and it opens a test file the default walk declines")
+		assert.NotContains(t, body, "at sites.go:",
+			"and it does not scan a file the caller did not name")
+	})
+
+	t.Run("the analyzer's strict parse guards the file list on this face too", func(t *testing.T) {
+		body := toolResultText(driveTopologyCorpusScan(t, map[string]string{"files": "sites.go"}))
+		assert.Contains(t, body, "files",
+			"a malformed value must be refused naming the key, got %q", body)
+		assert.Contains(t, body, "JSON array", "and state the encoding it expects")
+	})
+
 	t.Run("the analyzer's own parse is what keeps this face honest", func(t *testing.T) {
 		// No schema property and no flag stands between a topology caller and
 		// the analyzer, so a malformed value has exactly one gate. This is the

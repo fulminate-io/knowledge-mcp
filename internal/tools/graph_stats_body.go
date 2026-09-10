@@ -19,7 +19,7 @@ import (
 // json envelope, with optional bounded per-type sample names.
 //
 // The package carries three near-identical copies of this body — the knowledge,
-// practice and cloud/cicd stats arms — differing only in their GraphSelector,
+// practice and registered-custom stats arms — differing only in their GraphSelector,
 // their markdown header and their json identity keys. This is that body factored
 // once, with web/pdf as its first caller. THE THREE EXISTING CALLERS ARE
 // DELIBERATELY NOT RETROFITTED: convergence here is lazy by standing direction,

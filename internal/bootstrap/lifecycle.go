@@ -351,6 +351,10 @@ func waitForServer(port int, deadline time.Duration) error {
 	// goroutines running for the life of the process. Close owns the connections
 	// it dialed and ends them outright, which makes the teardown a fact rather
 	// than the outcome of a race.
+	//
+	// routing: local by design — lifecycle. The question is whether the server
+	// this process just spawned on this port has come up; only the local one can
+	// answer it, and a routed client would report the health of something else.
 	gc := graphclient.NewGraphClient(port)
 	defer gc.Close()
 
@@ -413,6 +417,8 @@ type closer interface {
 // and it is why the OSS gate starts its container cold rather than adopting a
 // running one.
 func ensureServerReachable(port int, root, graphStorage string, pprof bool) error {
+	// routing: local by design — lifecycle. The probe decides whether to SPAWN a
+	// local server on this port, so it has to be the local server it probes.
 	gc := graphclient.NewGraphClient(port)
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	healthy := gc.HealthyCtx(ctx)

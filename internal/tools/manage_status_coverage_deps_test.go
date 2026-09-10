@@ -21,21 +21,25 @@ import (
 // coverageDeps is the minimal ClientDeps whose GraphCaller is the coverageFake and
 // whose SegmentCoverage seam is an optional coverageSegReader stub (nil when the
 // test does not exercise the segment column).
+//
+// crud is the registration catalog the coverage walk reads to find REGISTERED
+// custom families. NIL for every test that does not program one, which is the
+// degraded-client shape the walk must keep serving the builtin rows for.
 type coverageDeps struct {
 	gc     GraphCaller
 	segCov SegmentCoverageReader
+	crud   GraphTypeCRUDAPI
 }
 
-func (d *coverageDeps) LocalLiveness() LocalLiveness          { return nil }
-func (d *coverageDeps) Sink() collector.Sink                  { return nil }
-func (d *coverageDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
-func (d *coverageDeps) RootDir() string                       { return "" }
-func (d *coverageDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
+func (d *coverageDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d *coverageDeps) Sink() collector.Sink            { return nil }
+func (d *coverageDeps) RootDir() string                 { return "" }
+func (d *coverageDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
 
 func (d *coverageDeps) PropReady() bool     { return true }
 func (d *coverageDeps) PipelineReady() bool { return true }
 
-func (d *coverageDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
+func (d *coverageDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return d.crud }
 func (d *coverageDeps) Embedder() embed.BinaryEmbedder               { return nil }
 func (d *coverageDeps) BackendResolver() BackendResolver             { return nil }
 func (d *coverageDeps) GraphCaller() GraphCaller                     { return d.gc }

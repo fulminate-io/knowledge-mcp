@@ -8,7 +8,7 @@ package tools
 // sibling partition test (query_param_accounting_test.go) proves the table is
 // structurally complete; the bijection test proves every arm is wired; this
 // proves the classification is TRUE of the code. The grid is
-// queryArmCount x the live schema — 48 x 61 = 2928 cells.
+// queryArmCount x the live schema — 50 x 62 = 3100 cells.
 //
 // Not parallel by construction: fakeGraphCaller accumulates call state on
 // unsynchronised slices, so t.Parallel() would race it — the same constraint
@@ -87,17 +87,14 @@ package tools
 //	    retirement message and reads nothing — same class as (a). It is the ONLY
 //	    member of this class: the web/pdf ranked search now drains and ranks its
 //	    graph client-side, so it reads and belongs to the default class.
-//	(c) SEARCH ARMS (knowledge, practice, practice fan-out, cloud/cicd, registered-
+//	(c) SEARCH ARMS (knowledge, practice, practice fan-out, registered-
 //	    custom, code) return the not-ready / degraded error unless deps supply
 //	    PipelineReady AND a SegmentSearcher. Both are supplied here — see the
 //	    searcher field on interceptTestDeps — so these run the default shape.
 //	(d) armTopology needs the foundation analyzer registry, and its dead_code
 //	    analyzer additionally needs a filesystem. The fixture drives a REGISTERED
 //	    non-dead_code analyzer over the fake, keeping it on the default shape.
-//	(e) armLogsQuery needs log engine state. Its gate runs BEFORE handleLogsQuery,
-//	    so rejected rows are exact; the consumed/ignored rows are driven against a
-//	    persisted log graph the fixture seeds.
-//	(f) armEngineDispatch is UNREACHABLE through InterceptQuery: the
+//	(e) armEngineDispatch is UNREACHABLE through InterceptQuery: the
 //	    intercept only claims a call when
 //	    maybeEmbedQuery succeeds, and maybeEmbedQuery keys on the payload field
 //	    "query", which QueryToolDef does not declare — so the unknown-key sweep

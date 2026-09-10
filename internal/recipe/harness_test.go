@@ -124,8 +124,9 @@ func sourceOnlyCaller(rows ...*knowledgev1.Node) *routingCaller {
 	}
 }
 
-// inlineOpts builds the run options for an inline extract over the eip fixture
-// slug. Extract is always true: it is the only mode an admitted run has.
+// inlineOpts builds the run options for an inline EXTRACT over the eip fixture
+// slug. Extract is set and LandTarget is not, which is what makes the run an
+// extract; landInlineOpts below is its landing twin.
 func inlineOpts(body string) Options {
 	return Options{
 		SourceManifest: FormatSourceManifest("hohpe-eip", "inline"),
@@ -134,11 +135,30 @@ func inlineOpts(body string) Options {
 	}
 }
 
-// runInline drives RunRecipe over a source-only caller with an inline body.
-//
-// The nil sink is not a shortcut: an extract never writes, so the parameter is
-// unreachable from here. It goes away entirely when the write path does.
+// runInline drives RunRecipe over a source-only caller with an inline EXTRACT
+// body. RunRecipe writes nothing on either mode, so the caller is the only
+// collaborator there is.
 func runInline(t *testing.T, caller *routingCaller, body string) (*Result, error) {
 	t.Helper()
 	return RunRecipe(context.Background(), caller, "src-graph", kgtypes.GraphWebRaw, inlineOpts(body))
+}
+
+// landInlineOpts builds the run options for an inline LANDING over the eip
+// fixture slug, pinned to the combined practice graph. Extract is deliberately
+// LEFT UNSET so the options exercise the landing arm alone rather than a run that
+// would be admitted by the extract flag whatever the landing branch did.
+func landInlineOpts(body string) Options {
+	return Options{
+		SourceManifest: FormatSourceManifest("hohpe-eip", "inline"),
+		Body:           body,
+		LandTarget:     TargetSpec{GraphType: kgtypes.GraphPractice, Name: "default"},
+	}
+}
+
+// runLanding drives RunRecipe over a source-only caller with an inline landing
+// body. RunRecipe still writes nothing — the collect layer owns the write — so
+// what this exercises is the admission and the target key the ids hash under.
+func runLanding(t *testing.T, caller *routingCaller, body string) (*Result, error) {
+	t.Helper()
+	return RunRecipe(context.Background(), caller, "src-graph", kgtypes.GraphWebRaw, landInlineOpts(body))
 }

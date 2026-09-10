@@ -8,7 +8,7 @@ package tools
 // NAME derivation (clamped to the description's first line). Split from
 // intercept_add_criterion_test.go, which the repo's 500-line file gate requires
 // to stay under that limit; both files share that file's fakes
-// (scriptedCriterionGc, seededStepGc, logE2EDeps) and its testStepID fixture.
+// (scriptedCriterionGc, seededStepGc, graphCallerDeps) and its testStepID fixture.
 
 import (
 	"errors"
@@ -34,7 +34,7 @@ func TestInterceptAddCriterion_MultiLineDescription_NameClampedToFirstLine(t *te
 		"Why: a verifies-only criterion never renders under its step."
 
 	gc := seededStepGc()
-	deps := &logE2EDeps{gc: gc}
+	deps := &graphCallerDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{
 		"operation":   "create",
 		"type":        "criterion",
@@ -108,7 +108,7 @@ func TestInterceptAddCriterion_LinkFailure_IsAnError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			gc := seededStepGc()
 			gc.linkErr = tc.linkErr
-			deps := &logE2EDeps{gc: gc}
+			deps := &graphCallerDeps{gc: gc}
 
 			args := mustMarshal(t, map[string]any{
 				"operation":   "create",
@@ -149,7 +149,7 @@ func TestInterceptAddCriterion_LinkFailure_IsAnError(t *testing.T) {
 // criterion create would pass every sub-test above.
 func TestInterceptAddCriterion_BothLinksSucceed_NoError(t *testing.T) {
 	gc := seededStepGc()
-	deps := &logE2EDeps{gc: gc}
+	deps := &graphCallerDeps{gc: gc}
 
 	args := mustMarshal(t, map[string]any{
 		"operation":   "create",

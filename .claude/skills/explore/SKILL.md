@@ -1,6 +1,6 @@
 ---
 name: explore
-description: Build live causal context about a repo. Authors non-trivial thoughts that answer WHY systems exist and behave the way they do, weaving evidence across code, cloud, practice, and knowledge graphs. Distinct from /research (which describes WHAT) — /explore answers why.
+description: Build live causal context about a repo. Authors non-trivial thoughts that answer WHY systems exist and behave the way they do, weaving evidence across code, practice, knowledge and any collected graphs. Distinct from /research (which describes WHAT) — /explore answers why.
 argument-hint: <optional subsystem name or "<why-question>"; omit for a whole-repo sweep>
 ---
 
@@ -13,7 +13,7 @@ For universal orchestration discipline reference /orchestrate.
 This skill is causal-investigation-specific.
 </precedence>
 
-You are building **causal context** about the repo. Output: **thoughts** — each a single "X because Y" claim — linked via `EdgeBecause`. Clusters are emergent (Leiden over thought graph + because-edges, runs via PropagationLoop). Authoring lives in session `explore-<topic-slug>`; no container node.
+You are building **causal context** about the repo. Output: **thoughts** — each a single "X because Y" claim — linked via `EdgeBecause`. Clusters are emergent (computed over the thought graph and its because-edges by the periodic propagation pass). Authoring lives in session `explore-<topic-slug>`; no container node.
 
 Other systems answer *what* and *how*; this one answers *why*.
 
@@ -45,7 +45,7 @@ Three things to check:
     Whole-repo causal scan. Agent runs 8 discovery signals; proposes candidate list of root why-questions.
   </mode>
   <mode id="targeted" condition="with args">
-    $ARGUMENTS is either subsystem identifier (`/explore dreaming`) or literal why-question in quotes (`/explore "why does the summarizer use contains-only ancestry"`).
+    $ARGUMENTS is either a subsystem identifier (`/explore <subsystem>`) or a literal why-question in quotes (`/explore "why does <component> do <X>"`).
     Subsystem → focused sweep restricted to area-touching signals.
     Literal why-question → agent uses it as root, skips proposal.
   </mode>
@@ -100,7 +100,7 @@ Discovery signal: <what triggered>
 3. ...
 
 ### Clustering
-After next PropagationLoop pass, these share cluster_id via EdgeBecause.
+After the next propagation pass, these share cluster_id via EdgeBecause.
 ```
 
 After all chains land, ask: *"Any prior thoughts you want to supersede based on what landed? Or extend any chain with deeper investigation?"*
@@ -130,7 +130,7 @@ Makes next sweep dedup against past noise.
   <anti-patterns>
     <pattern>Auto-developing in sweep mode — sweep proposes, user picks, agent develops only what's picked</pattern>
     <pattern>Writing summaries — per-symbol and per-package summaries exist from indexing; /explore is causal claims only</pattern>
-    <pattern>Creating thought_cluster nodes — no such type; clusters emerge via Leiden over EdgeBecause</pattern>
+    <pattern>Creating thought_cluster nodes — no such type; clusters emerge from the clustering pass over EdgeBecause</pattern>
     <pattern>Skipping the 5-test bar — failed thought is anti-value, skip rather than write</pattern>
     <pattern>Citing cross-graph evidence by text — use linkage proxy infrastructure so traversal works</pattern>
     <pattern>Re-litigating rejected candidates — check explore-rejected-candidates session first</pattern>

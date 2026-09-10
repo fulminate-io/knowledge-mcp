@@ -197,6 +197,60 @@ const (
 	// transformer run. Evidence carries the source slug.
 	EdgeTranslatedFrom EdgeType = "translated-from" // target-domain node → source node (transformer provenance)
 
+	// EdgeSourcedFrom links a practice node to the HUB it is grouped under in the
+	// combined practice graph. INTRA-GRAPH, and pointing node → hub.
+	//
+	// IT IS NOT EdgeTranslatedFrom, AND A MIGRATED NODE CAN CARRY BOTH.
+	// translated-from is cross-graph transformer provenance — a practice node back
+	// to the web, code or knowledge node it was synthesized from. sourced-from is
+	// membership inside one graph: which origin this node belongs to, so a whole
+	// collected run can be enumerated or deleted as a unit. A reader treating
+	// either as the other is wrong about a different question.
+	//
+	// NOTHING PRODUCES translated-from TODAY. The recipe emitter was its last
+	// writer and stopped building it: a raw graph is scratch its owner drops once
+	// the curated set exists, so an edge into one points at rows that stop
+	// existing. The constant stays for the historical edges already in the corpus.
+	//
+	// THE DIRECTION IS node → hub BECAUSE THE CARDINALITY LIVES AT THE NODE END:
+	// exactly one outgoing sourced-from per practice node, which is assertable per
+	// node instead of by counting a hub's inbound fan. Members are enumerated the
+	// other way, with direction:"in" from the hub.
+	//
+	// The -from spelling is the vocabulary's existing provenance form
+	// (translated-from, synthesized-from, branches-from) rather than a new one.
+	//
+	// DECLARED IN BOTH MODULES AND GUARDED BY NEITHER. There is no edge-type
+	// census or parity test spanning kgtypes and store the way the node-type
+	// census twins do, so the per-module constant assertions in each package's
+	// tests are what stand in for one: a one-sided add would otherwise surface
+	// only as a read refusal on one flavor.
+	EdgeSourcedFrom EdgeType = "sourced-from" // practice node → its source hub (intra-graph grouping)
+
+	// EdgeNextVersion links an OLD version of a practice node to the NEW one a
+	// re-landing minted beside it. INTRA-GRAPH, and pointing old → new.
+	//
+	// BOTH NODES ARE RETAINED, which is the whole reason this is a link rather
+	// than an overwrite: a recipe re-run over a source that has since been
+	// hand-massaged must not touch the resident row, so the landing mints a twin
+	// under a distinct id and records the succession here. Walking out from a node
+	// reaches its successor; walking in reaches its predecessor.
+	//
+	// THE DIRECTION IS old → new BECAUSE THE OLD NODE IS THE ONE THAT EXISTS FIRST.
+	// A newly landed twin can name its predecessor at write time, but the edge is
+	// emitted from the predecessor so that following the chain forward — the
+	// question a reader actually asks, "what is the current version of this" — is
+	// one direction rather than a reverse walk per hop.
+	//
+	// IT IS NOT `supersedes`. That spelling means the old row is RETIRED, and the
+	// owner's ruling for this relation is "both are retained"; it also has no
+	// constant in either module, so it would be a fresh enrolment either way.
+	//
+	// DECLARED IN BOTH MODULES AND GUARDED BY NEITHER, exactly as EdgeSourcedFrom
+	// above records. The per-module constant assertions in
+	// edge_types_version_test.go in each package are what stand in for a census.
+	EdgeNextVersion EdgeType = "next-version" // old version → the new one landed beside it (intra-graph)
+
 	// EdgeMetaValue links a node to a shared value-node that holds the
 	// actual content for one of its metadata keys. Emitted by the
 	// self-tuning metadata storage layer (plan T1) when the per-graph

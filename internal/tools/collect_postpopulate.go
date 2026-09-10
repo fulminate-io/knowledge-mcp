@@ -20,25 +20,28 @@ import (
 // carries beyond that relocation are the breadth dispatch and the failure
 // surfacing, both documented on runPostCollectPostPopulate below.
 
-// postPopulateGraphType maps a collector type onto the store graph type whose
-// named graphs the family's PostPopulate hook reads + writes. cloud providers
-// (aws/gcp/azure/k8s) all back onto GraphCloud; CICD providers (github/
-// bitbucket/gitlab) onto GraphCICD; the codesync collector ("code") onto GraphCode.
-// A collector type with no entry has no postpopulate hook and is a no-op.
+// postPopulateGraphType maps a BUILT-IN collector type onto the store graph type
+// whose named graphs the family's PostPopulate hook reads + writes. The codesync
+// collector ("code") backs onto GraphCode, and it is the only entry left: the
+// three CI/CD provider rows went with the built-in cicd collector and its graph
+// family. A collector type with no entry has no postpopulate hook and is a no-op,
+// which is what every registered custom collector type is: a contrib collector
+// owns its own enrichment and runs it inside its own process, so there is no
+// client-side hook to dispatch.
+//
+// THE MAP IS KEPT AS A MAP AT ONE ENTRY DELIBERATELY. Its shape is the
+// collector-type → graph-type correspondence, and that correspondence is not the
+// identity: a collector named for a provider can fill a family named for the
+// domain, which is exactly what the removed rows did. Collapsing it to a
+// conversion would compile today and mint an unmatchable graph type the next time
+// a collector's name and its family's name differ.
 var postPopulateGraphType = map[string]kgtypes.GraphType{
-	"aws":       kgtypes.GraphCloud,
-	"gcp":       kgtypes.GraphCloud,
-	"azure":     kgtypes.GraphCloud,
-	"k8s":       kgtypes.GraphCloud,
-	"github":    kgtypes.GraphCICD,
-	"bitbucket": kgtypes.GraphCICD,
-	"gitlab":    kgtypes.GraphCICD,
-	"code":      kgtypes.GraphCode,
+	"code": kgtypes.GraphCode,
 }
 
 // runPostCollectPostPopulate fires the registered PostPopulate hook for the
-// collector family after a successful collect (cloud/cicd/code) over the
-// GraphCaller wire seam, and errors when asked-for enrichment did not happen.
+// collector family after a successful collect (code) over the GraphCaller wire
+// seam, and errors when asked-for enrichment did not happen.
 //
 // IT IS NOT BEST-EFFORT (unlike its sibling runPostCollectLinker): the error
 // rides builtinCollectWork into collectWaitOrDetach, which converts it into an
@@ -55,20 +58,23 @@ var postPopulateGraphType = map[string]kgtypes.GraphType{
 // rather than skipping audibly.
 //
 // The hook key is the COLLECTOR TYPE (a.Type) — the registered keys are exactly
-// the collector Name() values (aws/gcp/azure/k8s/github/bitbucket/gitlab/code), NOT a
-// graph-name prefix (cloud graph names carry no family prefix: aws=accountID,
-// gcp=projectID, azure=subscriptionID, k8s=contextName — all share GraphCloud).
+// the collector Name() values, NOT a graph-name prefix. The map above is the
+// whole set and is the thing to read; no count is repeated here, because a
+// count in a comment about a live map is what rots first.
 //
 // HOW WIDELY THE HOOK FIRES IS NOT ASSUMED HERE: breadth is DECLARED per hook at
 // registration (postpopulate.Register) and this orchestrator dispatches on the
 // value postpopulate.Lookup returns, never on the collector type.
-//   - postpopulate.BreadthFamilyBroad (every cloud and cicd hook): enumerate every
-//     graph of the family's graph type via postpopulate.ListGraphNames and fire the
-//     hook against each. A single cloud collect can cascade multiple provider
-//     graphs, so the collected graph alone is not the whole subject; each of these
-//     hooks self-filters by graph CONTENT (the resolveClusterLinkage-style silent
+//   - postpopulate.BreadthFamilyBroad: enumerate every graph of the family's
+//     graph type via postpopulate.ListGraphNames and fire the hook against each,
+//     because one collect of such a family can cascade several graphs and the
+//     collected graph alone is not the whole subject; each of these hooks
+//     self-filters by graph CONTENT (the resolveClusterLinkage-style silent
 //     no-op), enriching the graphs it owns and no-opping on the rest. All-graphs
-//     enumeration + idempotent re-run mirrors clientlinker.RunAll.
+//     enumeration + idempotent re-run mirrors clientlinker.RunAll. NO COMPILED-IN
+//     HOOK DECLARES THIS BREADTH TODAY: the ones that did went with the built-in
+//     cloud collectors. The arm stays because breadth is declared per hook at
+//     registration, not inferred from the type.
 //   - postpopulate.BreadthScoped (the code hook): fire ONCE, against the graph that
 //     was just collected. A code collect produces exactly one graph and the hook
 //     body (LinkStepsToCode) inspects neither graph name nor content before it
@@ -77,7 +83,28 @@ var postPopulateGraphType = map[string]kgtypes.GraphType{
 //
 // The fan-out also runs under a non-admitting operation, so firing against a graph
 // of the type cannot earn it a place in the working set.
-func runPostCollectPostPopulate(ctx context.Context, deps ClientDeps, collectorType, collectedGraph string) error {
+//
+// A REGISTERED-CUSTOM COLLECT RUNS NO COMPILED-IN HOOK AT ALL, and that is the
+// third arm of the capability-absence side. The hook key is the collector type,
+// so a collect dispatched to a REGISTRATION under a name a compiled-in collector
+// also holds presents the identical string here: postpopulate.Lookup finds the
+// internal hook and the family-broad arm below would enumerate every graph of
+// that hook's family and write into each — graphs the collect never touched and
+// whose provider it is not. The registration's family is its own, so the only
+// enrichment a compiled-in hook could do for it is enrichment of someone else's
+// data.
+//
+// IT IS CAPABILITY ABSENCE, NOT WORK FAILURE: no enrichment was asked for by
+// this collect and none was skipped, so it returns nil beside the no-hook case
+// rather than failing the collect. The guard is keyed on the REGISTERED-CUSTOM
+// FACT and on NO FAMILY, deliberately: a guard written against one family's
+// names would leave every other family's names shadowable, and which families
+// have compiled-in hooks is a fact about the map above rather than about this
+// rule.
+func runPostCollectPostPopulate(ctx context.Context, deps ClientDeps, collectorType, collectedGraph string, registeredCustom bool) error {
+	if registeredCustom {
+		return nil
+	}
 	hook, ok := postpopulate.Lookup(collectorType)
 	if !ok {
 		// web, pdf, logs, any sub-collector type: nothing to enrich, nothing to fail.

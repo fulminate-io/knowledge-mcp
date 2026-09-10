@@ -41,7 +41,7 @@ table sends you there.
 | Which checks cover the shapes I touch? | `manage_checks({operation:"run", language:"<lang>", repo:"<abs path>", ids:[...]})`; read the hits |
 | A structural requirement: a shape that must, or must never, appear | `manage_checks({operation:"create", language, name, summary, description, check_type:"ast_pattern", dsl_pattern, check_where, severity, fixture_bad, fixture_good})`; admission fires on the bad fixture and stays silent on the good one; then `run` it over the tree |
 | How much did a lane spend, and on which tools? | `analyze_usage({operation:"run-detectors", scope:"single", agent:"<lane id>"})` (orchestrator) |
-| The idiom or pattern for this mechanism | `search({graph:"practice", language:"all", queries:[...]})` |
+| The idiom or pattern for this mechanism | `search({graph:"practice", queries:[...]})`; narrow to one origin with `source_hub:"<hub id>"` |
 | The node types and edge types a graph carries | `query({mode:"stats", graph:"<family>"})` |
 | A plan, ticket or project's shape | `query({mode:"plan_tree", id:"..."})` then `query({ids:[...], fields:[...]})` for bodies and metadata |
 | Why a node is in an unexpected state | `query({mode:"examine", id:"..."})` |
@@ -63,8 +63,8 @@ than they are right.
 The shell is correct, and only correct, for:
 
 - Building, testing, linting and running the project's own targets.
-- Git reads: `git log`, `git show`, `git diff`, `git rev-parse`, `git
-  worktree list`; and the lane's own scratch-copy operations.
+- Git reads: `git log`, `git show`, `git diff`, `git rev-parse`; and the
+  lane's own scratch-copy operations.
 - Log files, build output, process and port state, timing.
 - Dotfiles, editor and CLI configuration, generated or binary artifacts, and
   files the indexer does not chunk.

@@ -26,7 +26,7 @@ const knowledgeSearchDefaultLimit = 10
 // isKnowledgeDefaultGraph reports whether a search/graph value targets the
 // knowledge graph's default instance — an empty graph (the engine treats ""
 // as knowledge) or the explicit "knowledge". This is the ONE arm GO-LIVE
-// reroutes to the client engine in this step; cloud/cicd/practice/code are
+// reroutes to the client engine in this step; practice/code are
 // handled elsewhere.
 func isKnowledgeDefaultGraph(graph string) bool {
 	return graph == "" || graph == "knowledge"

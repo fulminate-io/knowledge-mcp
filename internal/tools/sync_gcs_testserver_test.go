@@ -74,6 +74,16 @@ type fakeSyncBackend struct {
 	confirmCalls int
 	pullCalls    int
 
+	// The (graph_type, name) each control-plane call carried. The cloud side of a
+	// sync addresses a graph by this pair alone, so it is the only place a test
+	// can see WHICH graph the push or pull asked the account for.
+	lastPresignGraphType string
+	lastPresignName      string
+	lastConfirmGraphType string
+	lastConfirmName      string
+	lastPullGraphType    string
+	lastPullName         string
+
 	// --- the asynchronous confirm: job identity and scripted job states ---
 
 	// confirmJobID is the job id confirm hands back in its 202. Defaults to
@@ -133,8 +143,13 @@ func newFakeSyncBackend(t *testing.T) *fakeSyncBackend {
 }
 
 func (b *fakeSyncBackend) handlePresign(w http.ResponseWriter, r *http.Request) {
+	var req syncPresignRequest
+	reqBody, _ := io.ReadAll(r.Body)
+	_ = json.Unmarshal(reqBody, &req)
 	b.mu.Lock()
 	b.presignCalls++
+	b.lastPresignGraphType = req.GraphType
+	b.lastPresignName = req.Name
 	b.mu.Unlock()
 	objID := "push-obj"
 	resp := syncPresignResponse{
@@ -170,6 +185,8 @@ func (b *fakeSyncBackend) handleConfirm(w http.ResponseWriter, r *http.Request) 
 	}
 	b.mu.Lock()
 	b.confirmedPlaintext = plaintext
+	b.lastConfirmGraphType = req.GraphType
+	b.lastConfirmName = req.Name
 	omit := b.confirmOmitJobID
 	jobID := b.confirmJobID
 	state := b.confirmState
@@ -280,6 +297,8 @@ func (b *fakeSyncBackend) handlePull(w http.ResponseWriter, r *http.Request) {
 	b.mu.Lock()
 	b.pullCalls++
 	b.lastPullWatermark = req.Watermark
+	b.lastPullGraphType = req.GraphType
+	b.lastPullName = req.Name
 	plaintext := b.pullPlaintext
 	unchanged := b.pullUnchanged
 	watermark := b.pullWatermark

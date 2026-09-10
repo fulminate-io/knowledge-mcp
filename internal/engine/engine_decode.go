@@ -44,7 +44,7 @@ func nanosToTime(nanos int64) time.Time {
 // drops the store.Node wrapper layer from the client read path. Method-free DTO.
 //
 // Graph + GraphInstance carry the result's SOURCE-GRAPH identity: the
-// graph family ("code"/"cloud"/"cicd"/"practice"/"knowledge"/"logs") and the
+// graph family ("code"/"practice"/"knowledge"/a registered type) and the
 // per-result instance (repo / account / language / log queryID; empty for the
 // knowledge default). Every json-emitting compose path stamps them at hydrate/
 // merge time from the selector it already has, so a json consumer (the graph-UI)
@@ -151,11 +151,12 @@ func DecodeNodes(resp *knowledgev1.ExecuteResponse) ([]*knowledgev1.Node, error)
 // DecodeNodesContentB64 is the inverse of the server's content_b64 encode
 // (engine_encode.go encodeNodeContentB64): it decodeNodes then base64-decodes
 // each non-empty Node.Content back into raw bytes. Use it ONLY when the QueryPlan
-// carried content_b64=true (the log-chunk fetch); the plain DecodeNodes stays
-// byte-transparent (a base64 string is a valid Content string) so the 30+ existing
-// DecodeNodes consumers are UNAFFECTED. The decode logic mirrors
-// decodeLogBrowseResponse's wantContent arm (tools_logs_wire_fetch.go:259-265):
-// base64.StdEncoding over the Content string, skipping empties.
+// carried content_b64=true (a chunk fetch whose payload is not valid UTF-8); the
+// plain DecodeNodes stays byte-transparent (a base64 string is a valid Content
+// string) so the 30+ existing DecodeNodes consumers are UNAFFECTED. The decode is
+// base64.StdEncoding over the Content string, skipping empties — the same shape
+// the client's own removed log-browse decoder used, and the reason this helper
+// exists rather than a per-caller decode.
 func DecodeNodesContentB64(resp *knowledgev1.ExecuteResponse) ([]*knowledgev1.Node, error) {
 	nodes, err := decodeNodes(resp)
 	if err != nil {

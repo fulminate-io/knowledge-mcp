@@ -162,7 +162,10 @@ func TestScope_RejectsUnknownScopeAndMissingSelector(t *testing.T) {
 		{"session-tree with no session", Filters{Scope: ScopeSessionTree}, false},
 		{"session-tree with an agent", Filters{Scope: ScopeSessionTree, SessionID: "SA", AgentID: "agent-a"}, true},
 		{"single with neither selector", Filters{Scope: ScopeSingle}, false},
-		{"single with both selectors", Filters{Scope: ScopeSingle, SessionID: "SA", AgentID: "agent-a"}, false},
+		// CHANGED with the lane-name selector: single refuses the pair for the cache LANE
+		// ID form only. For a spawn name the session is the resolution scope and the pair
+		// is admitted, which TestScope_SingleAdmitsASessionScopedLaneName asserts.
+		{"single with both selectors, the agent given as a cache lane id", Filters{Scope: ScopeSingle, SessionID: "SA", AgentID: "aplanner-0123456789abcdef"}, false},
 		{"single with a time bound", Filters{Scope: ScopeSingle, SessionID: "SA", Since: since}, true},
 		{"time-range with neither bound", Filters{Scope: ScopeTimeRange}, false},
 		{"time-range with a session", Filters{Scope: ScopeTimeRange, Since: since, SessionID: "SA"}, true},

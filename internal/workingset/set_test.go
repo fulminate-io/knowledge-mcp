@@ -51,9 +51,9 @@ func TestNormalize_KnowledgeDefaultAndBranchStrip(t *testing.T) {
 			want: Ref{}, wantOK: false,
 		},
 		{
-			name: "a cloud account is carried through unchanged",
-			gt:   kgtypes.GraphCloud, instance: "acct-1",
-			want: Ref{GraphType: kgtypes.GraphCloud, Name: "acct-1"}, wantOK: true,
+			name: "a practice language is carried through unchanged",
+			gt:   kgtypes.GraphPractice, instance: "go",
+			want: Ref{GraphType: kgtypes.GraphPractice, Name: "go"}, wantOK: true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -3,10 +3,10 @@
 // Package graphtypecrud holds the client-side CRUD surface for the
 // user-registered graph-type configuration record (NodeGraphTypeDef).
 // A graph-type registration is the combined record that defines how to collect
-// a new arbitrary graph type (the external collector binary) AND how the system
-// should treat its graph (summary/embed/sync behavior). It is persisted as a
-// per-account, graph-resident config node — mirroring the NodeLogBackend
-// config-node idiom — so it is the single source of truth read
+// a new arbitrary graph type (the MCP provider to dial and the tool to call on
+// it) AND how the system should treat its graph (summary/embed/sync behavior). It is persisted as a
+// per-account, graph-resident config node — the config-node idiom the other
+// per-account records use — so it is the single source of truth read
 // by BOTH the client (T3 collector dispatch) and the server (T2 behavior
 // resolver).
 //

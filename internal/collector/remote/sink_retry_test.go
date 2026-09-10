@@ -111,13 +111,6 @@ func (s *scriptedIngest) FinalizeStatus(
 	}), nil
 }
 
-func (s *scriptedIngest) FetchCloudSubgraph(
-	context.Context,
-	*connect.Request[knowledgev1.FetchCloudSubgraphRequest],
-) (*connect.Response[knowledgev1.FetchCloudSubgraphResponse], error) {
-	return connect.NewResponse(&knowledgev1.FetchCloudSubgraphResponse{}), nil
-}
-
 // startScriptedIngest stands an h2c httptest server in front of eng and returns
 // the wired client. Same vehicle as startCountingIngest in sink_picker_test.go.
 func startScriptedIngest(t *testing.T, eng *scriptedIngest) knowledgev1connect.IngestServiceClient {

@@ -191,8 +191,12 @@ func (m *Manager) trimReEmittedTombstones(
 // It is unionTombstones' in-package twin, kept here rather than shared because the two
 // modules exchange no hand-written packages.
 func unionExternalIDs(retained, added []searchengine.ExternalID) []searchengine.ExternalID {
-	seen := make(map[searchengine.ExternalID]struct{}, len(retained)+len(added))
-	out := make([]searchengine.ExternalID, 0, len(retained)+len(added))
+	// SIZED FROM ONE LENGTH, NOT A SUM: a make() capacity is a hint —
+	// the added IDs cost at most a growth, and the union is usually mostly
+	// retained — while a size built by addition is a value the allocator has
+	// to take on trust.
+	seen := make(map[searchengine.ExternalID]struct{}, len(retained))
+	out := make([]searchengine.ExternalID, 0, len(retained))
 	add := func(id searchengine.ExternalID) {
 		if _, dup := seen[id]; dup {
 			return

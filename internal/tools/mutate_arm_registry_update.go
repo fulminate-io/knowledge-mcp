@@ -58,6 +58,7 @@ var updateArmSpecs = map[armID]armSpec{
 			"verified_quote", "cited_range",
 		),
 		rejected: paramSet(
+			"source_hub",
 			"repo", "account",
 			"supports",
 			"type", "evidence", "question_id", "concludes",
@@ -93,6 +94,7 @@ var updateArmSpecs = map[armID]armSpec{
 			"name", "description", "summary", "content", "metadata", "keywords", "source",
 		),
 		rejected: paramSet(
+			"source_hub",
 			"repo", "account",
 			"supports",
 			"type", "evidence", "question_id",
@@ -123,6 +125,7 @@ var updateArmSpecs = map[armID]armSpec{
 			"verified_quote", "cited_range",
 		),
 		rejected: paramSet(
+			"source_hub",
 			"repo", "account",
 			"supports",
 			"type", "question_id", "concludes", "step_id", "from", "to", "relationship",
@@ -151,6 +154,7 @@ var updateArmSpecs = map[armID]armSpec{
 			"verified_quote", "cited_range",
 		),
 		rejected: paramSet(
+			"source_hub",
 			"repo", "account",
 			"supports",
 			"type", "evidence", "question_id", "concludes", "scope", "enforcement", "step_id",
@@ -183,6 +187,7 @@ var updateArmSpecs = map[armID]armSpec{
 			"status", "keywords", "metadata", "format",
 		),
 		rejected: paramSet(
+			"source_hub",
 			"repo", "account",
 			"supports",
 			"type", "id", "expand_to_descendants", "source", "evidence", "question_id", "concludes",
@@ -210,6 +215,7 @@ var updateArmSpecs = map[armID]armSpec{
 		handler:   "engine compileMutateUpdateBatch",
 		consumed:  paramSet("operation", "items", "graph", "format"),
 		rejected: paramSet(
+			"source_hub",
 			"repo", "account",
 			"supports",
 			"name",
@@ -239,6 +245,7 @@ var updateArmSpecs = map[armID]armSpec{
 		handler:   "engine compileMutateBulkMetadata",
 		consumed:  paramSet("operation", "updates", "graph", "format"),
 		rejected: paramSet(
+			"source_hub",
 			"repo", "account",
 			"supports",
 			"type", "id", "ids", "expand_to_descendants", "evidence", "question_id", "concludes",
@@ -264,11 +271,24 @@ var updateArmSpecs = map[armID]armSpec{
 
 	// Delete archives any tracker-backed ids then forwards a tombstone carrying
 	// only operation/ids/graph/language.
+	//
+	// source_hub IS REJECTED HERE, and the correction is worth stating because the
+	// previous declaration was true of the COMPILER and false of the ARM. The
+	// by-hub delete is real — compileDelete lowers the hub onto a metadata
+	// predicate and removes that hub's members — but the arm that serves it is
+	// armGraphPassthrough, which claims the practice family upstream. THIS arm is
+	// reached only after InterceptMutate's non-knowledge-graph guard, so it sees
+	// the KNOWLEDGE family and nothing else, and the knowledge family has no
+	// source hubs. Declaring the param consumed here described a delete this arm
+	// can never receive. The delete TOOL publishes the same axis as `source`,
+	// because that name is free on its schema and taken on this one; both
+	// spellings reach one compiler, on the practice family.
 	armDelete: {
 		operation: "delete",
 		handler:   "handleInterceptMutateDelete",
 		consumed:  paramSet("operation", "id", "ids", "graph"),
 		rejected: paramSet(
+			"source_hub",
 			"repo", "account",
 			"supports",
 			"type", "name", "description", "summary", "content", "status", "expand_to_descendants",
@@ -302,6 +322,7 @@ var updateArmSpecs = map[armID]armSpec{
 			"summary",
 		),
 		rejected: paramSet(
+			"source_hub",
 			"repo", "account",
 			"supports",
 			"type", "ids", "name", "description", "content", "status",

@@ -58,43 +58,47 @@ func TestParseCheckRunFlags_IncludeTestsIsTriState(t *testing.T) {
 	})
 }
 
-// TestCheckRunRequestExtra_CarriesTheKnob pins the wiring from the flag to the
-// analyzer's own input, which is the step a flag-parsing test alone cannot see.
-func TestCheckRunRequestExtra_CarriesTheKnob(t *testing.T) {
+// TestCheckRunToolArgs_CarriesTheKnob pins the wiring from the flag to the
+// arguments the run is asked with, which is the step a flag-parsing test alone
+// cannot see. It moved from the analyzer's Extra map to the manage_checks
+// arguments when the face stopped running the scan in-process; the property is
+// the same one, at the seam the code now crosses.
+func TestCheckRunToolArgs_CarriesTheKnob(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		args  []string
-		want  string
+		want  bool
 		unset bool
 	}{
 		{name: "omitted", args: []string{"--repo", "r", "--language", "go"}, unset: true},
-		{name: "true", args: []string{"--repo", "r", "--language", "go", "--include-tests"}, want: "true"},
-		{name: "false", args: []string{"--repo", "r", "--language", "go", "--include-tests=false"}, want: "false"},
+		{name: "true", args: []string{"--repo", "r", "--language", "go", "--include-tests"}, want: true},
+		{name: "false", args: []string{"--repo", "r", "--language", "go", "--include-tests=false"}, want: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, err := parseCheckRunFlags(tc.args)
 			require.NoError(t, err)
-			extra := checkRunExtra(f)
-			got, present := extra[corpusscan.ExtraKeyIncludeTests]
+			got, present := checkRunToolArgs(f, checkRunTestRepo)["include_tests"]
 			if tc.unset {
 				assert.False(t, present, "an omitted flag must leave the key absent, not set to a value the caller never wrote")
 				return
 			}
-			require.True(t, present, "an explicit flag must reach the analyzer")
+			require.True(t, present, "an explicit flag must reach the run")
 			assert.Equal(t, tc.want, got)
 		})
 	}
 }
 
-// TestReportCheckRun_LineCarriesTheTestFileCount is R3 at this face, driven over
-// the SAME shared findings table the cross-face agreement test uses, so the two
+// TestReportCheckRun_RelaysTheTestFileCount is R3 at this face, driven over the
+// SAME shared findings table the cross-face agreement test uses, so the two
 // faces cannot come to disagree about what they are counting.
 //
-// THE LINE IS TIED TO THE SHARED FOLD, not to a literal: every row's rendered
-// count must equal what corpusscan.ClassifyRun makes of the same findings. A CLI
-// that counted disclosures itself would pass a literal assertion on one row and
-// fail here on the next.
-func TestReportCheckRun_LineCarriesTheTestFileCount(t *testing.T) {
+// WHAT IT ASSERTS NOW THE RUN IS ROUTED. The count is the run's own, folded by
+// corpusscan.ClassifyRun on the machine that performed the scan; this face's
+// duty is to relay the line UNCHANGED. A face that re-rendered the counters
+// would be a second answer to a question already answered, and this row is what
+// catches it: every row's rendered count must equal what the shared fold makes
+// of the same findings.
+func TestReportCheckRun_RelaysTheTestFileCount(t *testing.T) {
 	sawNonZero := false
 	for _, tc := range checkVerdictFixtures() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -103,20 +107,21 @@ func TestReportCheckRun_LineCarriesTheTestFileCount(t *testing.T) {
 				sawNonZero = true
 			}
 			var buf bytes.Buffer
-			_ = reportCheckRunTo(&buf, tc.findings)
+			_ = reportCheckRunTo(&buf, renderedRunFor(tc.findings))
 			line, _, _ := strings.Cut(buf.String(), "\n")
 			assert.Contains(t, line, fmt.Sprintf("test_files_scanned=%d", want),
-				"the shell face renders the shared fold's count, not one of its own")
+				"the shell face relays the shared fold's count, not one of its own")
 		})
 	}
 	// KNOWN-POSITIVE CONTROL: the table drove at least one non-zero count, so
 	// the agreement above is not satisfied by two faces that both always say 0.
 	assert.True(t, sawNonZero, "the shared table must drive a run that reached test files")
 
-	// The whole line for the empty run, so a counter silently dropped from the
-	// format string is caught rather than being invisible to a contains-check.
+	// The whole line for the empty run, so a counter silently dropped between
+	// the run and this face is caught rather than being invisible to a
+	// contains-check.
 	var buf bytes.Buffer
-	require.NoError(t, reportCheckRunTo(&buf, nil))
+	require.NoError(t, reportCheckRunTo(&buf, renderedRunFor(nil)))
 	assert.Contains(t, strings.SplitN(buf.String(), "\n", 2)[0],
-		"corpus_scan: checks_flagged=0 sites_flagged=0 checks_refused=0 llm_only_not_executed=0 test_files_scanned=0 truncated=false")
+		"corpus_scan: CLEAN  checks_flagged=0 sites_flagged=0 checks_refused=0 llm_only_not_executed=0 test_files_scanned=0 truncated=false")
 }

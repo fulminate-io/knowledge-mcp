@@ -187,7 +187,8 @@ def main():
         print(__doc__)
         return 2
     mode, path = sys.argv[1], sys.argv[2]
-    doc = json.load(open(path))
+    with open(path) as fh:
+        doc = json.load(fh)
     bad = []
     if mode == "pins":
         check_pins(doc, bad)

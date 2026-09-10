@@ -71,6 +71,8 @@ func dispatchSubcommand(sub string, rest []string) (err error, recognized bool) 
 		err = withSelectionRestart(func() error { return runAccountVerb(rest) })
 	case "check":
 		err = runCheckVerb(rest)
+	case "collector":
+		err = runCollectorVerb(rest)
 	case "start":
 		err = runStart(rest)
 	case "stop":

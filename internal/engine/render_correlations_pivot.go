@@ -16,11 +16,10 @@ import (
 // InterceptQueryCorrelationsPivot composer (cmd/knowledge/internal/tools)
 // consumes. Direct ports of the server's formatGenericCorrelations and
 // formatPivotMatrix + buildPivotMatrix + extractNodeField, all removed from the
-// server when the render moved client-side. The
-// logs path fills the SAME PivotMatrix shape and reuses these same generic
-// writers — porting the generic family covers the logs structural shape too,
-// but this composer drives only the non-logs path (logs is owned by
-// InterceptLogsQuery earlier in the chain).
+// server when the render moved client-side. Any per-query log family a contrib
+// collector registers fills the SAME PivotMatrix shape and reuses these same
+// generic writers, so porting the generic family covers that structural shape
+// too.
 //
 // Edge.Method POPULATIONS ARE KEYED BY EDGE TYPE.
 //

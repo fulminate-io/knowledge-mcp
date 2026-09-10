@@ -94,6 +94,13 @@ func ValidateFixtures(ctx context.Context, c Check, bad, good Fixture) error {
 	if err := ast.ValidateWhereKinds(where, c.Language); err != nil {
 		return fmt.Errorf("corpus: %s names a kind the %s=%q grammar does not have: %v: %w", MetaCheckWhere, MetaLanguage, c.Language, err, ErrFixtureValidation)
 	}
+	// Same refusal, and it is load-bearing on THIS path: a fixture pair is two
+	// tiny files, so a where-tree naming an undeclared capture is very likely to
+	// match nothing at all, and the admission gate would read that silence as
+	// "the check does not fire on the bad fixture" rather than as a broken tree.
+	if err := ast.ValidateWhereCaptureRefs(where, pat); err != nil {
+		return fmt.Errorf("corpus: %s names a capture nothing declares: %v: %w", MetaCheckWhere, err, ErrFixtureValidation)
+	}
 
 	// Both fixtures are counted BEFORE either direction is judged, so a refusal
 	// in either direction can report both counts. A reader diagnosing "silent on

@@ -150,6 +150,27 @@ func renderLinkageProxyBreakdown(ctx context.Context, gc statsRPC) string {
 	return sb.String()
 }
 
+// emptyLinkageMessage is what an operator reads when the linkage graph holds
+// nothing, which is exactly when they are looking for what would fill it.
+//
+// WHAT FILLS IT TODAY, read at this tree rather than assumed: linker/client.go
+// RunAll dispatches ONE pass, and linker/dockerfile.go LinkDockerfiles is it —
+// for every code graph it parses each Dockerfile's COPY and ADD directives and
+// emits a BUILDS edge for the file or package each one names. It runs from
+// manage(operation:"link") and from the post-collect tail of a CODE collect;
+// a code collect does not trigger it.
+//
+// THE SENTENCE THIS REPLACES said linkage graphs are created "by the tier-1
+// linker when code-to-cloud relationships are detected". Those passes went with
+// the built-in cloud collectors — collect_linker.go says so from the other side
+// — so the message was telling an operator to wait for a relationship nothing
+// derives. A message that names no producer would have been better than that;
+// naming the one that exists is better still. Pinned by
+// TestLinkageEmptyMessage_NamesTheProducerThatExists.
+const emptyLinkageMessage = "No linkage graph found. The linkage graph is filled by the cross-graph linker, " +
+	"whose one pass derives BUILDS edges from each Dockerfile's COPY and ADD directives to the code-graph files " +
+	"and packages they name. Run manage(operation: \"link\"), or a code collect, which fires the same pass."
+
 // listLinkageGraphs enumerates the loaded linkage graphs + the topology hint.
 func listLinkageGraphs(ctx context.Context, gc statsRPC) kgtools.ToolResult {
 	// The linkage graph is a single instance (empty name); fetch its counts.
@@ -164,7 +185,7 @@ func listLinkageGraphs(ctx context.Context, gc statsRPC) kgtools.ToolResult {
 			"linkage list-graphs: could not read the linkage graph's counts: %v — this is a READ FAILURE, not an absent graph", err))
 	}
 	if nodes == 0 && edges == 0 {
-		return textResult("No linkage graph found. Linkage graphs are created by the tier-1 linker when code-to-cloud relationships are detected.")
+		return textResult(emptyLinkageMessage)
 	}
 	var sb strings.Builder
 	sb.WriteString("Linkage graph:\n\n")

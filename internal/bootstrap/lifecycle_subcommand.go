@@ -30,8 +30,8 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
-// lifecycleFlags carries the subset of clientFlags the lifecycle
-// subcommands respect. Keeping them here so the subcommand parser
+// lifecycleFlags carries the subset of the daemon Config flags the
+// lifecycle subcommands respect. Keeping them here so the subcommand parser
 // doesn't have to re-derive defaults from the MCP-mode path.
 type lifecycleFlags struct {
 	port         int
@@ -86,14 +86,16 @@ func parseLifecycleFlags(name string, args []string) (lifecycleFlags, error) {
 //
 // On success, prints the spawned PID and the path the server is
 // logging to. On failure (binary not found, healthcheck timeout),
-// returns the error so runAuthSubcommand surfaces it on stderr +
-// exit 1.
+// returns the error so the subcommand dispatcher surfaces it on
+// stderr + exit 1.
 func runStart(args []string) error {
 	f, err := parseLifecycleFlags("start", args)
 	if err != nil {
 		return err
 	}
 
+	// routing: local by design — lifecycle. `start` is idempotent by asking
+	// whether a local server is already listening on the port it would spawn on.
 	gc := graphclient.NewGraphClient(f.port)
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	healthy := gc.HealthyCtx(ctx)
@@ -150,6 +152,8 @@ func runStop(args []string) error {
 		return err
 	}
 
+	// routing: local by design — lifecycle. `stop` shuts down the local process
+	// on this port and first asks whether there is one to stop.
 	gc := graphclient.NewGraphClient(f.port)
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	if !gc.HealthyCtx(ctx) {
@@ -217,6 +221,12 @@ func runStatus(args []string) error {
 		return err
 	}
 
+	// routing: local by design — lifecycle. `status` reports on the local server
+	// PROCESS — its pid, its port, its graph path and the counts that one store
+	// holds. Those are facts about this process, not a view of the graph a
+	// routed reader would answer with, and reporting the routed plane's numbers
+	// under `knowledge status` would describe a server that is not the one being
+	// started and stopped by the two verbs beside it.
 	gc := graphclient.NewGraphClient(f.port)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	healthy := gc.HealthyCtx(ctx)

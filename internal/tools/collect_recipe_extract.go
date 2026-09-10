@@ -39,6 +39,7 @@ import (
 func rejectRecipeOnlyArgs(a collectArgs) error {
 	set := map[string]bool{
 		"extract":     a.Extract,
+		"land":        a.Land,
 		"recipe_body": a.RecipeBody != "",
 		"max_rows":    a.MaxRows != 0,
 		"max_bytes":   a.MaxBytes != 0,
@@ -290,20 +291,32 @@ func recipeRunOptions(a collectArgs) (recipe.Options, error) {
 			"collect %s transformer=recipe: 'params' is not consumed by a builtin recipe run — a recipe takes no parameters. "+
 				"Bind the value into the recipe body instead: `bind $x := \"...\"` gives a recipe-wide binding that survives the whole run", a.Type)
 	}
+	// FORCE IS REFUSED HERE, PERMANENTLY, and the STATED REASON moved when the
+	// landing arrived. It used to be "a recipe run writes nothing"; a landing
+	// writes, so that sentence would now be a false reason attached to a true
+	// refusal. The refusal survives on a different and equally permanent ground:
+	// force meant "overwrite whatever is already there", and a landing NEVER
+	// overwrites — an emitted id that already exists lands a versioned twin beside
+	// the resident and both rows are retained. There is nothing left to bypass.
 	if a.Force {
 		return recipe.Options{}, fmt.Errorf(
-			"collect %s transformer=recipe: 'force' is retired for recipe runs — a recipe run returns rows and writes nothing, "+
+			"collect %s transformer=recipe: 'force' is retired for recipe runs — force meant overwriting a colliding "+
+				"row, and a landing never overwrites: a resident id lands a versioned twin beside it and both are kept, "+
 				"so there is nothing for force to bypass", a.Type)
 	}
-	// DRY_RUN IS REFUSED HERE, PERMANENTLY, in the same shape and for the same
-	// stated reason as force above it. dry_run meant "compute the projection but
-	// skip the write"; there is no write to skip, so the knob names a distinction
-	// that no longer exists. A declared-then-dropped param is worse than one that
-	// does not exist.
+	// DRY_RUN IS REFUSED HERE, PERMANENTLY, in the same shape as force above it,
+	// and its stated reason moved for the same cause. dry_run meant "compute the
+	// projection but skip the write". That is now a FIRST-CLASS MODE rather than a
+	// missing one: an extract run computes exactly the projection a landing would
+	// write and writes none of it, so dry_run names a distinction the tool already
+	// draws under another name. A declared-then-dropped param is worse than one
+	// that does not exist, and a second spelling of an existing mode is worse than
+	// either.
 	if a.DryRun {
 		return recipe.Options{}, fmt.Errorf(
-			"collect %s transformer=recipe: 'dry_run' is retired for recipe runs — a recipe run returns rows and writes nothing, "+
-				"so there is no write for dry_run to skip; pass extract:true to read the rows back", a.Type)
+			"collect %s transformer=recipe: 'dry_run' is retired for recipe runs — the preview of what a landing would "+
+				"write IS the extract run: pass extract:true (without land) to see the emitted rows, then land:true to "+
+				"write them", a.Type)
 	}
 	// THE RECIPE NAME IS REFUSED HERE, PERMANENTLY, in the same shape and for the
 	// same stated reason as the two refusals above it. Naming a saved recipe meant
@@ -323,6 +336,37 @@ func recipeRunOptions(a collectArgs) (recipe.Options, error) {
 		return recipe.Options{}, fmt.Errorf(
 			"collect %s transformer=recipe: 'recipe_body' (an inline recipe body) is required", a.Type)
 	}
+	// MAX_ROWS AND OFFSET ARE REFUSED ON A LANDING RUN, and the reason is that
+	// they bound the wrong thing. Both are EXTRACT-MODE RENDER parameters: the
+	// emitter appends every matched row to the emitted set unconditionally and
+	// only the extract CAPTURE is windowed, so a landing under a row cap would
+	// write the whole population while showing the caller a page of it. That is a
+	// write a reader cannot see, which is worse than either accepting or ignoring
+	// the param.
+	//
+	// THE REFUSAL IS CONDITIONED ON THE LANDING, NEVER ON THE PARAMS. Both stay
+	// fully live on the extract arm and page exactly as they always have.
+	//
+	// EACH IS NAMED SEPARATELY when both are sent, because a caller reaches for
+	// them one at a time and a message naming only the first sends them back for a
+	// second round.
+	if a.Land {
+		var windowed []string
+		if a.MaxRows != 0 {
+			windowed = append(windowed, "max_rows")
+		}
+		if a.Offset != 0 {
+			windowed = append(windowed, "offset")
+		}
+		if len(windowed) > 0 {
+			return recipe.Options{}, fmt.Errorf(
+				"collect %s transformer=recipe land: %s %s an extract-mode RENDER parameter with no meaning for a "+
+					"write — a landing writes the WHOLE emitted set and its response reports the full count, so a row "+
+					"window would bound what you SEE and not what is written. Drop %s to land, or drop 'land' and pass "+
+					"extract:true to page the rows: the extract run IS the preview of what a landing would write",
+				a.Type, strings.Join(windowed, " and "), pluralIs(len(windowed)), strings.Join(windowed, " and "))
+		}
+	}
 	return recipe.Options{
 		// An inline body has no recipe node to name, and the manifest parser
 		// refuses an empty key, so every run carries this fixed literal.
@@ -330,6 +374,12 @@ func recipeRunOptions(a collectArgs) (recipe.Options, error) {
 		Extract:        a.Extract,
 		Body:           a.RecipeBody,
 		// MaxBytes is deliberately absent — the byte cap is the renderer's.
+		//
+		// MaxRows and Offset ride as given. On a LANDING run they are unreachable
+		// rather than ignored: the block above refuses a landing that carries
+		// either, so a non-zero value cannot reach here with LandTarget set.
+		// LandTarget itself is pinned by the caller after this returns, because
+		// resolving the target is a graph question rather than a param one.
 		MaxRows: a.MaxRows,
 		Offset:  a.Offset,
 	}, nil

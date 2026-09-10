@@ -58,7 +58,7 @@ func seedRulesFixture() *rulesFakeGc {
 
 func TestInterceptQueryRules_Populated(t *testing.T) {
 	gc := seedRulesFixture()
-	deps := &logE2EDeps{gc: gc}
+	deps := &graphCallerDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "rule"})
 
 	handled, res := InterceptQueryRules(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
@@ -72,7 +72,7 @@ func TestInterceptQueryRules_Populated(t *testing.T) {
 
 func TestInterceptQueryRules_Filtered(t *testing.T) {
 	gc := seedRulesFixture()
-	deps := &logE2EDeps{gc: gc}
+	deps := &graphCallerDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "rule", "scope": "*.go"})
 
 	handled, res := InterceptQueryRules(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
@@ -86,7 +86,7 @@ func TestInterceptQueryRules_Filtered(t *testing.T) {
 
 func TestInterceptQueryRules_Empty(t *testing.T) {
 	gc := &rulesFakeGc{rules: nil}
-	deps := &logE2EDeps{gc: gc}
+	deps := &graphCallerDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "rule"})
 
 	handled, res := InterceptQueryRules(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
@@ -100,7 +100,7 @@ func TestInterceptQueryRules_Empty(t *testing.T) {
 
 func TestInterceptQueryRules_NoMatch(t *testing.T) {
 	gc := seedRulesFixture()
-	deps := &logE2EDeps{gc: gc}
+	deps := &graphCallerDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "rule", "scope": "zzz_nothing"})
 
 	handled, res := InterceptQueryRules(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
@@ -134,7 +134,7 @@ type browseJSONEnvelope struct {
 // while the default (no-format) caller still receives the human markdown.
 func TestInterceptQueryRules_JSON(t *testing.T) {
 	gc := seedRulesFixture()
-	deps := &logE2EDeps{gc: gc}
+	deps := &graphCallerDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "rule", "format": "json"})
 
 	handled, res := InterceptQueryRules(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
@@ -168,7 +168,7 @@ func TestInterceptQueryRules_JSON(t *testing.T) {
 // the empty markdown text would break the caller's JSON.parse.
 func TestInterceptQueryRules_JSON_Empty(t *testing.T) {
 	gc := &rulesFakeGc{rules: nil}
-	deps := &logE2EDeps{gc: gc}
+	deps := &graphCallerDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "rule", "format": "json"})
 
 	handled, res := InterceptQueryRules(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
@@ -185,7 +185,7 @@ func TestInterceptQueryRules_JSON_Empty(t *testing.T) {
 
 func TestInterceptQueryRules_WrongType_FallsThrough(t *testing.T) {
 	gc := seedRulesFixture()
-	deps := &logE2EDeps{gc: gc}
+	deps := &graphCallerDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "finding"})
 	handled, _ := InterceptQueryRules(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	assert.False(t, handled)
@@ -193,7 +193,7 @@ func TestInterceptQueryRules_WrongType_FallsThrough(t *testing.T) {
 
 func TestInterceptQueryRules_WrongTool_FallsThrough(t *testing.T) {
 	gc := seedRulesFixture()
-	deps := &logE2EDeps{gc: gc}
+	deps := &graphCallerDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "rule"})
 	handled, _ := InterceptQueryRules(opCtx(), deps, kgtools.CallToolParams{Name: "search", Arguments: args})
 	assert.False(t, handled)

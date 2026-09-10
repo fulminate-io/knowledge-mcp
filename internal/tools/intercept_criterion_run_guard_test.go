@@ -41,7 +41,7 @@ func TestInterceptAddCriterion_BareRunCommandRejected(t *testing.T) {
 		"summary":     "the recipe suite is green",
 		"command":     bareRunCommand,
 	})
-	handled, res := InterceptAddCriterion(opCtx(), &logE2EDeps{gc: gc}, kgtools.CallToolParams{
+	handled, res := InterceptAddCriterion(opCtx(), &graphCallerDeps{gc: gc}, kgtools.CallToolParams{
 		Name: "mutate", Arguments: args,
 	})
 	require.True(t, handled, "a rejected create must be claimed, not fall through")
@@ -71,7 +71,7 @@ func TestInterceptAddCriterion_BareRunMetadataKeyRejected(t *testing.T) {
 		"summary":     "the recipe suite is green",
 		"metadata":    map[string]string{"command": bareRunCommand},
 	})
-	handled, res := InterceptAddCriterion(opCtx(), &logE2EDeps{gc: gc}, kgtools.CallToolParams{
+	handled, res := InterceptAddCriterion(opCtx(), &graphCallerDeps{gc: gc}, kgtools.CallToolParams{
 		Name: "mutate", Arguments: args,
 	})
 	require.True(t, handled)

@@ -26,11 +26,13 @@ import (
 // on, is that NO per-row Execute is issued during the load or during any
 // subsequent interpretation read.
 //
-// A RECIPE RUN WRITES NOTHING. It returns rows on Result.Extract and ships them
-// to no sink and no graph. The write path — a target pre-read, a refuse-on-
-// collision guard and a Sink ship — was removed with the saved recipes that
-// carried the target address; there is no target to write to and no verb that
-// writes.
+// RunRecipe ITSELF WRITES NOTHING, and that is a property of this function
+// rather than of the feature. It returns the emitted nodes and edges on Result
+// and ships them to no sink and no graph. A LANDING run is composed by the
+// collect layer from the same Result (see the tools package's
+// collect_recipe_land.go), which owns the target-graph read, the refusals and the
+// create_batch; what this function does for a landing is pin the target key the
+// emitted ids hash under, so the ids the landing looks up are the ids it writes.
 //
 // expectedSourceType, when non-empty, is validated against the recipe's
 // source_graph_type metadata: a mismatch (e.g. a `collect type=pdf` against a
@@ -44,11 +46,11 @@ import (
 //
 // Sequence:
 //  1. ParseSourceManifest(opts.SourceManifest) → sourceSlug, recipeName.
-//  2. runInlineExtract: parse opts.Body, take the source type from the caller,
-//     load the source view, Interpret, and return the captured rows.
+//  2. runInlineBody: parse opts.Body, take the source type from the caller, load the
+//     source view, Interpret, and return the emitted set plus any captured rows.
 //
 // Stats are returned in the Result for the caller (the collect tool) to
-// surface. Nothing is written back anywhere.
+// surface.
 func RunRecipe(
 	ctx context.Context,
 	caller foundation.GraphCaller,
@@ -64,7 +66,7 @@ func RunRecipe(
 	// INLINE BODY is the only path. It parses what the caller supplied and never
 	// reads a recipe bucket.
 	if opts.Body != "" {
-		return runInlineExtract(ctx, caller, sourceGraphName, expectedSourceType, sourceSlug, opts, start)
+		return runInlineBody(ctx, caller, sourceGraphName, expectedSourceType, sourceSlug, opts, start)
 	}
 
 	// A BODYLESS CALL IS A LOUD ERROR, not a nil dereference. The saved arm used
@@ -89,8 +91,8 @@ type astCacheKey struct {
 	id string
 }
 
-// runInlineExtract is the INLINE-BODY path: parse the caller's body, read the
-// source graph, interpret, and return the captured rows. It never writes.
+// runInlineBody is the INLINE-BODY path: parse the caller's body, read the source
+// graph, interpret, and return the Result. It never writes, on either mode.
 //
 // TWO VALUES THE SAVED PATH GETS FROM THE RECIPE NODE HAVE NO SOURCE HERE, so
 // both are supplied explicitly rather than left to a default:
@@ -106,7 +108,7 @@ type astCacheKey struct {
 //
 // The saved path's target metadata block is skipped entirely: it validates a
 // write target that an inline extract does not have and does not need.
-func runInlineExtract(
+func runInlineBody(
 	ctx context.Context,
 	caller foundation.GraphCaller,
 	sourceGraphName string,
@@ -115,14 +117,17 @@ func runInlineExtract(
 	opts Options,
 	start time.Time,
 ) (*Result, error) {
-	// EXTRACT IS THE ONLY MODE, and the refusal states the MECHANICAL reason
-	// only. A recipe run returns rows and writes nothing, so there is no other
-	// mode for it to be in. It used to prescribe saving the body to freeze the
-	// extraction; recipes are ephemeral and nothing is frozen, and a refusal that
-	// prescribes a retired workflow is worse than one that prescribes nothing.
-	if !opts.Extract {
+	// A RUN HAS TO DO SOMETHING WITH WHAT IT EMITS, and the two things it can do
+	// are return the rows and land them. A run asking for NEITHER emits into a
+	// buffer nobody reads, so it is refused by name rather than run to a silent
+	// nothing. The refusal states the MECHANICAL reason only and names both modes;
+	// it used to prescribe saving the body to freeze the extraction, and a refusal
+	// that prescribes a retired workflow is worse than one that prescribes nothing.
+	landing := opts.Landing()
+	if !opts.Extract && !landing {
 		return nil, fmt.Errorf(
-			"recipe: a recipe run returns rows and writes nothing — pass extract:true to read the rows back")
+			"recipe: a run must either return its rows or land them — pass extract:true to read the rows back, " +
+				"or land:true to write them into the combined practice graph")
 	}
 	if expectedSourceType == "" {
 		return nil, fmt.Errorf(
@@ -137,11 +142,23 @@ func runInlineExtract(
 	if err != nil {
 		return nil, err
 	}
-	// The sentinel target is confined to in-run stable-id bookkeeping: extract
-	// skips the write, so it never reaches storage. Its NAME is the source slug
-	// so two inline runs over different documents cannot collide in that
-	// bookkeeping.
+	// THE TARGET KEY IS THE FIRST COMPONENT OF EVERY EMITTED ID, so which one a
+	// run hashes under decides whether its ids mean anything outside the run.
+	//
+	// An EXTRACT-only run gets the sentinel, confined to in-run stable-id
+	// bookkeeping: nothing it emits reaches storage, so a real graph key would
+	// claim ids in a graph the run never touches. Its NAME is the source slug so
+	// two inline runs over different documents cannot collide in that bookkeeping.
+	//
+	// A LANDING run gets the CALLER'S TARGET, and it must: the collision read that
+	// decides base-versus-twin looks each emitted id up in that same graph, so an
+	// id hashed under the sentinel would miss every resident there is and the
+	// landing would write a fresh node over a hand-edited one on an add-not-upsert
+	// path. Pinning it here is what makes the two agree by construction.
 	target := TargetSpec{GraphType: extractSentinelGraphType, Name: sourceSlug}
+	if landing {
+		target = opts.LandTarget
+	}
 	result, err := Interpret(ctx, ast, sv, target, sourceSlug, opts)
 	if err != nil {
 		return result, err

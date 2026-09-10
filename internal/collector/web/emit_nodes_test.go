@@ -250,14 +250,14 @@ func TestEmitFromPage_PositionMetadataOnEveryContainedNode(t *testing.T) {
 // bump does not false-red the test, plus a separate assertion that the constant
 // is greater than zero so its value cannot be read as unstamped.
 func TestEmitFromPage_StampsCollectorSchemaVersion(t *testing.T) {
-	if collectorSchemaVersion <= 0 {
-		t.Fatalf("collectorSchemaVersion = %d, want > 0 — zero cannot be told from unstamped", collectorSchemaVersion)
+	if CollectorSchemaVersion <= 0 {
+		t.Fatalf("CollectorSchemaVersion = %d, want > 0 — zero cannot be told from unstamped", CollectorSchemaVersion)
 	}
 	p := buildFixture()
 	nodes, edges := mustEmitFromPage(t, p, time.Time{})
 	byID := indexNodes(nodes)
 
-	want := strconv.Itoa(collectorSchemaVersion)
+	want := strconv.Itoa(CollectorSchemaVersion)
 	if got := nodes[0].Metadata["collector_schema_version"]; got != want {
 		t.Errorf("page root collector_schema_version = %q, want %q", got, want)
 	}

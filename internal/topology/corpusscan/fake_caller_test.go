@@ -64,8 +64,6 @@ func refuseUnconsumedSelectorFields(t *knowledgev1.GraphSelector) error {
 		switch graphsel.InstanceField(gt) {
 		case graphsel.FieldRepo:
 			consumed = "repo"
-		case graphsel.FieldAccount:
-			consumed = "account"
 		case graphsel.FieldLanguage:
 			consumed = "language"
 		default:
@@ -85,6 +83,17 @@ func refuseUnconsumedSelectorFields(t *knowledgev1.GraphSelector) error {
 		// code carries its branch alongside its repo; every other family consumes
 		// exactly one instance field.
 		if f.name == "branch" && gt == kgtypes.GraphCode {
+			continue
+		}
+		// PRACTICE IS THE ONE FAMILY THAT CONSUMES A FIELD THAT IS NOT ITS
+		// INSTANCE FIELD, and the fake has to say so or it refuses a selector the
+		// real server serves. graphsel reports practice as addressing ONE graph,
+		// which is true — but the server's policy row keeps consumesLanguage true
+		// so the eight PRE-SINGLETON graphs stay readable through the legacy
+		// selector, and that validator runs on the read path. Deriving the whole
+		// answer from graphsel alone made this fake STRICTER than its subject,
+		// which is the same class of defect as being laxer: it disagrees.
+		if f.name == "language" && gt == kgtypes.GraphPractice {
 			continue
 		}
 		return fmt.Errorf("fake: graph=%q does not consume %s=%q — the real server refuses this selector", gt, f.name, f.val)
@@ -289,21 +298,17 @@ func findingsByTitlePrefix(findings []foundation.Finding, prefix string) []found
 	return out
 }
 
-// matchFindings returns the findings that flag a site — everything carrying a
-// check_id whose title is not one of this analyzer's own disclosures.
+// matchFindings returns the findings that flag a site — everything that is not
+// one of this analyzer's own refusals, disclosures or truncation notices.
+//
+// IT ASKS THE PRODUCTION TAXONOMY rather than keeping a second copy of it. The
+// hand-listed version went stale the moment a disclosure was added: every
+// site-count assertion in this package silently gained a phantom site, which is
+// the same drift ClassifyRun's own default arm punishes in production.
 func matchFindings(findings []foundation.Finding) []foundation.Finding {
 	var out []foundation.Finding
 	for _, f := range findings {
-		if f.Severity == foundation.SeverityCritical && len(findingsByTitlePrefix([]foundation.Finding{f}, RefusalPrefixUnvalidated)) > 0 {
-			continue
-		}
-		if len(findingsByTitlePrefix([]foundation.Finding{f}, RefusalPrefixEnvironment)) > 0 {
-			continue
-		}
-		if len(findingsByTitlePrefix([]foundation.Finding{f}, TruncationPrefixCheck)) > 0 {
-			continue
-		}
-		if f.Title == TruncationTitleRun || f.Title == DisclosureTitleLLMOnly || f.Title == DisclosureTitleTestFiles {
+		if IsLeadFinding(f) {
 			continue
 		}
 		out = append(out, f)
@@ -358,14 +363,40 @@ func TestFakeRefusesUnconsumedSelectorFields(t *testing.T) {
 		{"checks with a language", &knowledgev1.GraphSelector{Graph: "checks", Language: "go"}},
 		{"checks with a name", &knowledgev1.GraphSelector{Graph: "checks", Name: "go"}},
 		{"checks with an account", &knowledgev1.GraphSelector{Graph: "checks", Account: "acct"}},
-		// The two scopeKey is blind to, which is why the guard exists at all.
+		// The two scopeKey is blind to, which is why the guard exists at all. The
+		// EXTRA field is what refuses them: `language` itself is still consumed by
+		// practice, for the legacy read, which the control below asserts.
 		{"practice with a branch", &knowledgev1.GraphSelector{Graph: "practice", Language: "go", Branch: "b"}},
 		{"practice with an account", &knowledgev1.GraphSelector{Graph: "practice", Language: "go", Account: "a"}},
+		// NEW WITH THE SINGLETON: practice has no instance field, so a `name` is
+		// not the graph it selects — the server refuses one outside its root
+		// aliases, and so must the fake.
+		{"practice with a name", &knowledgev1.GraphSelector{Graph: "practice", Name: "go"}},
+		{"practice with a repo", &knowledgev1.GraphSelector{Graph: "practice", Repo: "r"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := refuseUnconsumedSelectorFields(tc.sel); err == nil {
 				t.Error("a selector field the family does not consume must be REFUSED — the real server refuses it, " +
 					"and a fake that serves it anyway agrees with a broken client")
+			}
+		})
+	}
+
+	// THE ACCEPT CONTROL, and it is the assertion that inverted with the
+	// singleton. A bare legacy practice read must be SERVED: the server's practice
+	// policy row keeps consumesLanguage true so the eight pre-singleton graphs
+	// stay readable, and a fake that refused it would fail a correct client. It is
+	// paired with the unselected read, which is the new normal case.
+	for _, tc := range []struct {
+		name string
+		sel  *knowledgev1.GraphSelector
+	}{
+		{"practice legacy read", &knowledgev1.GraphSelector{Graph: "practice", Language: "go"}},
+		{"practice unselected read", &knowledgev1.GraphSelector{Graph: "practice"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := refuseUnconsumedSelectorFields(tc.sel); err != nil {
+				t.Errorf("the real server serves this selector; a fake that refuses it fails a correct client: %v", err)
 			}
 		})
 	}

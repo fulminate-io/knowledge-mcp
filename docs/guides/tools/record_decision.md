@@ -43,7 +43,7 @@ are what later searches match. For the full parameter reference, run
 | `choice` | string | yes |  | What was decided |
 | `format` | string |  |  | Output format: 'text' (default) or 'json' (structured: {id, name, warnings}). |
 | `informed_by` | string |  |  | Comma-separated node IDs of findings/research that informed this decision |
-| `links` | array of string |  |  | Node IDs to relate the decision to (node--relates-to-->target). Knowledge-graph IDs ride the atomic create; code/cloud IDs are linked post-create via the cross-graph linkage. An unresolvable ID is dropped with a warning, never blocking the write. |
+| `links` | array of string |  |  | Node IDs to relate the decision to (node--relates-to-->target). Knowledge-graph IDs ride the atomic create; foreign-graph IDs are linked post-create via the cross-graph linkage. An unresolvable ID is dropped with a warning, never blocking the write. |
 | `links[]` | string |  |  |  |
 | `name` | string | yes |  | Decision name (e.g., 'Keep HNSW in blob, drop only BM25') |
 | `rationale` | string | yes |  | Why this was chosen |

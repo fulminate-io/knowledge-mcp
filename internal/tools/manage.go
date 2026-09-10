@@ -75,8 +75,9 @@ type cloudStatusInfo interface {
 //
 // There is no manage(reindex) operation — the per-graph collector + global
 // pipeline drains naturally. Code collect runs via the dedicated `collect` MCP
-// tool (or `make collect`) which calls codegraph.Sync / SyncBranch against
-// RemoteUploadSink.
+// tool (or `make collect`), which drives the client-side collector and ships
+// its chunks through a RemoteUploadSink. (There is no codegraph package and no
+// SyncBranch entry point: both names predate the client-side collector.)
 func InterceptManage(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	a, claimed, refusal := decodeManageCall(params)
 	if !claimed {
@@ -100,12 +101,8 @@ func InterceptManage(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 		return true, handleManagePromoteMetadata(ctx, deps, a, params.Arguments)
 	case "clear_llm_failures":
 		return true, handleClientClearLLMFailures(ctx, deps, a)
-	case "pause_pipeline":
-		return true, handlePausePipeline(deps, a)
-	case "resume_pipeline":
-		return true, handleResumePipeline(deps)
-	case "pipeline_status":
-		return true, handlePipelineStatus(deps, a.Format)
+	case "pause_pipeline", "resume_pipeline", "pipeline_status":
+		return true, handlePipelineLifecycleManage(deps, a)
 	case "set_metadata_overrides":
 		return true, handleClientSetMetadataOverrides(ctx, deps, a)
 	case "delete_branch":
@@ -126,10 +123,17 @@ func InterceptManage(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 		return true, handleClientRepairEdges(ctx, deps, a)
 	case "register_repo":
 		return true, handleRegisterRepo(a)
+	case OpStyleRulesImport:
+		return true, handleImportStyleRules(ctx, deps, a)
 	default:
 		// A KNOWN operation this switch does not dispatch belongs to a claimant
-		// further down the chain (InterceptLogsManage) — decline so it gets there.
-		// Anything else is genuinely unknown and terminates here.
+		// further down the chain — decline so it gets there. Anything else is
+		// genuinely unknown and terminates here. THE DECLINE ARM CANNOT FIRE
+		// TODAY: every name in manageOperations is dispatched above, since the
+		// downstream claimant that owned four of them left with the built-in log
+		// collectors. It stays because the known-set is DATA (manage_operations.go)
+		// and the next operation added there before its arm is written must reach
+		// its claimant rather than be rejected here.
 		if manageOperationKnown(a.Operation) {
 			return false, kgtools.ToolResult{}
 		}
@@ -138,10 +142,9 @@ func InterceptManage(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 }
 
 // handleClientLinker dispatches manage(link) to the client-side cross-
-// graph linker (cmd/knowledge/internal/linker). The server's
-// handleLinker is now stubbed to a client-intercept-required sentinel — the
-// linker body lives client-side because it walks the graphs via gc.Call
-// and emits derived edges through mutate(link, link_graph:"linkage").
+// graph linker (cmd/knowledge/internal/linker). The linker body lives
+// client-side because it walks the graphs via gc.Call and emits derived
+// edges through mutate(link, link_graph:"linkage").
 func handleClientLinker(ctx context.Context, deps ClientDeps, a manageArgs) kgtools.ToolResult {
 	gc := deps.GraphCaller()
 	if gc == nil {
@@ -151,12 +154,14 @@ func handleClientLinker(ctx context.Context, deps ClientDeps, a manageArgs) kgto
 	if err != nil {
 		return errorResult("manage(link): " + err.Error())
 	}
+	// THE THREE RETIRED PASSES ARE ABSENT FROM BOTH RENDERS RATHER THAN ZERO IN
+	// THEM. image, helm and workload_identity each read a cloud graph on one side
+	// and went with the built-in cloud collectors; reporting image=0 would tell
+	// an operator the pass ran and matched nothing, which is a different fact
+	// from the pass not existing.
 	if a.Format == "json" {
 		payload := map[string]any{
-			"image_links":             res.ImageLinks,
-			"helm_links":              res.HelmLinks,
-			"dockerfile_links":        res.DockerfileLinks,
-			"workload_identity_links": res.WorkloadIdentityLinks,
+			"dockerfile_links": res.DockerfileLinks,
 		}
 		errs := make([]string, 0, len(res.Errors))
 		for _, e := range res.Errors {
@@ -167,29 +172,33 @@ func handleClientLinker(ctx context.Context, deps ClientDeps, a manageArgs) kgto
 		}
 		return jsonResult(payload)
 	}
-	total := res.ImageLinks + res.HelmLinks + res.DockerfileLinks + res.WorkloadIdentityLinks
 	return textResult(fmt.Sprintf(
-		"Linker complete: %d total links (image=%d, helm=%d, dockerfile=%d, workload_identity=%d), errors=%d",
-		total, res.ImageLinks, res.HelmLinks, res.DockerfileLinks, res.WorkloadIdentityLinks, len(res.Errors)))
+		"Linker complete: %d total links (dockerfile=%d), errors=%d",
+		res.DockerfileLinks, res.DockerfileLinks, len(res.Errors)))
 }
 
-// manageArgs covers the fields the client-side manage intercepts read,
-// including the log-backend + log-graph management fields. The
-// configure_log_backend / list_log_backends / list_logs / discard_logs
-// dispatchers (tools_logs_manage_backend.go, tools_logs_manage_graphs.go) reach
-// for these same field names.
+// manageArgs covers the fields the client-side manage intercepts read.
+//
+// THE FIVE LOG-BACKEND FIELDS ARE GONE WITH THEIR OPERATIONS. provider, url,
+// auth_type, credential and kube_context existed for configure_log_backend,
+// which wrote a log-backend node carrying the operator's credential; the
+// operation, its redacting reader and the node type all left with the built-in
+// log collectors, so the fields have no dispatcher to reach for them. Keeping
+// them would leave `credential` in the manage argument surface with nothing that
+// reads it.
 type manageArgs struct {
-	Operation   string `json:"operation"`
-	Graph       string `json:"graph"`
-	Name        string `json:"name"`
-	Branch      string `json:"branch"`
-	Root        string `json:"root"`
-	Format      string `json:"format"`
-	Provider    string `json:"provider"`
-	URL         string `json:"url"`
-	AuthType    string `json:"auth_type"`
-	Credential  string `json:"credential"`
-	KubeContext string `json:"kube_context"`
+	Operation string `json:"operation"`
+	Graph     string `json:"graph"`
+	Name      string `json:"name"`
+	Branch    string `json:"branch"`
+	Root      string `json:"root"`
+	// Source is import_style_rules' hub selector and Path is its rule-list file.
+	// `source` is the spelling because the name is FREE on this schema: the
+	// practice hub selector publishes `source` wherever it is free and
+	// `source_hub` only where that name is already taken.
+	Source string `json:"source"`
+	Path   string `json:"path"`
+	Format string `json:"format"`
 	// Profile names the embedder profile migrate_embed_identity migrates a graph
 	// TO. It is a profile NAME rather than four inline identity fields so a
 	// migration cannot name an embedder no profile describes — the client that
@@ -212,8 +221,8 @@ type manageArgs struct {
 	Execute bool `json:"execute"`
 
 	// set_metadata_overrides force-lists, read by the client
-	// intercept and lowered onto the Index RPC params payload. Mirror the
-	// server manageArgs fields handleSetMetadataOverrides reads.
+	// intercept and lowered onto the Index RPC params payload. They mirror the
+	// fields the retired server-side override handler read.
 	ForceScalar []string `json:"force_scalar"`
 	ForceEdge   []string `json:"force_edge"`
 

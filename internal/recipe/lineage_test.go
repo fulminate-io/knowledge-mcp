@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -57,31 +56,51 @@ func TestStableID_ByteIdenticalToServer(t *testing.T) {
 	assert.Equal(t, got, StableID("practice/design-patterns", "hohpe-eip", "pattern", "message-router"))
 }
 
-func TestTranslatedFromEdge_EvidenceCarriesSource(t *testing.T) {
-	const slug = "hohpe-eip"
-	e := TranslatedFromEdge("target-id-1", "web:page:123", slug)
-	assert.Equal(t, "target-id-1", e.FromID)
-	assert.Equal(t, "web:page:123", e.ToID)
-	assert.Equal(t, kgtypes.EdgeTranslatedFrom, e.Type)
-	assert.Equal(t, -1, e.FromIdx)
-	assert.Equal(t, -1, e.ToIdx)
-	assert.Equal(t, "transformer", e.Method)
-
-	// Evidence must be valid JSON carrying the source slug.
-	require.NotEmpty(t, e.Evidence)
-	assert.JSONEq(t, `{"source":"hohpe-eip"}`, e.Evidence)
-
-	// Round-trip extraction.
-	assert.Equal(t, slug, SourceFromEvidence(e.Evidence))
-}
-
-func TestSourceFromEvidence_TolerantOfMalformed(t *testing.T) {
-	assert.Empty(t, SourceFromEvidence(""))
-	assert.Empty(t, SourceFromEvidence("not json"))
-	assert.Empty(t, SourceFromEvidence(`{"other":"x"}`))
-}
-
 func TestTargetKey_Format(t *testing.T) {
 	k := TargetKey(TargetSpec{GraphType: kgtypes.GraphPractice, Name: "design-patterns"})
 	assert.Equal(t, "practice/design-patterns", k)
+}
+
+// TestVersionedTwinID_DistinctPerVersionAndDeterministic is requirement 4's
+// ID-MINTING observation, at the primitive.
+//
+// THE DISTINCTNESS FROM THE RESIDENT IS THE LOAD-BEARING ROW. The landing writes
+// through create_batch, which is an ADD: a twin sharing the resident's id
+// overwrites it, which is the hand-edited-node regression the whole versioning
+// design exists to prevent. Sameness here is not a cosmetic collision, it is data
+// loss.
+func TestVersionedTwinID_DistinctPerVersionAndDeterministic(t *testing.T) {
+	const (
+		target   = "practice/default"
+		slug     = "hohpe-eip"
+		kind     = "pattern"
+		resident = "0123456789abcdef"
+	)
+
+	v2 := VersionedTwinID(target, slug, kind, resident, 2)
+	v3 := VersionedTwinID(target, slug, kind, resident, 3)
+
+	assert.Len(t, v2, 16, "a twin id is a StableID and carries its width")
+	assert.NotEqual(t, resident, v2,
+		"the twin must NOT carry the resident's id: create_batch is an add, so a shared id overwrites the row a human edited")
+	assert.NotEqual(t, v2, v3, "each version mints its own id")
+
+	// DETERMINISM: re-running the same landing against an unchanged target
+	// reproduces the same twin, which is what keeps a re-run idempotent rather
+	// than minting a fresh node per run.
+	assert.Equal(t, v2, VersionedTwinID(target, slug, kind, resident, 2),
+		"the same (target, slug, kind, resident, version) reproduces the same twin id")
+
+	// EVERY COMPONENT IS LOAD-BEARING, so a twin under a different graph, source
+	// or type is a different node.
+	assert.NotEqual(t, v2, VersionedTwinID("practice/other", slug, kind, resident, 2))
+	assert.NotEqual(t, v2, VersionedTwinID(target, "other-slug", kind, resident, 2))
+	assert.NotEqual(t, v2, VersionedTwinID(target, slug, "use_case", resident, 2))
+
+	// THE SEPARATOR IS NOT DECORATION: without a component separator that cannot
+	// appear in an id, ("abc", 12) and ("abc1", 2) would hash to one twin.
+	assert.NotEqual(t,
+		VersionedTwinID(target, slug, kind, "abc", 12),
+		VersionedTwinID(target, slug, kind, "abc1", 2),
+		"the resident id and the version are separated by a byte that cannot occur in either")
 }

@@ -131,7 +131,7 @@ func renderSearchResponse(resp *knowledgev1.ExecuteResponse, query, format strin
 }
 
 // renderSearchResponseFiltered is renderSearchResponse plus a client-side
-// resource_type prefix post-filter. The cloud/cicd
+// resource_type prefix post-filter. The registered-custom
 // resource_type filter does NOT compose with a QSearch post-rank server-side,
 // so the client trims the decoded SearchList here. An empty prefix is
 // a no-op (RenderForCaller renders the full set).

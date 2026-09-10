@@ -39,7 +39,7 @@ func dispatchGraphWideEdges(ctx context.Context, exec ExecuteFn, args json.RawMe
 	if err := json.Unmarshal(args, &a); err != nil {
 		return kgtools.ToolResult{}, false // malformed → let the generic flow surface it.
 	}
-	if a.Start != "" || a.Graph == "logs" {
+	if a.Start != "" {
 		return kgtools.ToolResult{}, false // from_id walk / logs intercept → not graph-wide.
 	}
 	// Re-stamp over the tool-level traverse term: this is the start-less

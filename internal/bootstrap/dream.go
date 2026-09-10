@@ -89,7 +89,7 @@ func (c *client) runInterceptChainInner(ctx context.Context, params kgtools.Call
 	// Per-graph + composite-mode + code query-domain intercepts. MUST run
 	// BEFORE InterceptQuery — InterceptQuery embeds + routes a default/hybrid-mode
 	// query through engine.Dispatch → compileQuery, which default-denies ONLY
-	// code/logs, so a cloud/cicd/practice/linkage text-search would otherwise FALL
+	// code, so a practice/linkage text-search would otherwise FALL
 	// THROUGH to a GENERIC search and the per-graph renderers (renderResourceSearch
 	// / renderPracticeResults) would never run. Each member self-gates on graph (or
 	// mode), so a knowledge/default query falls cleanly through to InterceptQuery.
@@ -113,12 +113,6 @@ func (c *client) runInterceptChainInner(ctx context.Context, params kgtools.Call
 	if handled, res := tools.InterceptSync(ctx, c, params); handled {
 		return params, true, res
 	}
-	if handled, res := tools.InterceptLogsManage(ctx, c, params); handled {
-		return params, true, res
-	}
-	if handled, res := tools.InterceptLogsQuery(ctx, c, params); handled {
-		return params, true, res
-	}
 	// Cluster of query-rendering intercepts (plan_tree,
 	// list_projects, decisions, evidence, lineage, rules, examine
 	// projects). Extracted out of this chain to keep the
@@ -126,7 +120,10 @@ func (c *client) runInterceptChainInner(ctx context.Context, params kgtools.Call
 	if handled, res := runQueryRenderingIntercepts(ctx, c, params); handled {
 		return params, true, res
 	}
-	if handled, res := tools.InterceptLogsTraversal(ctx, c, params); handled {
+	// The traverse tool's undeclared-parameter gate. It CLAIMS NOTHING on a
+	// well-formed call — only a refusal is handled — so its position in the chain
+	// is free; it sits where the logs traversal claim that used to carry it sat.
+	if handled, res := tools.InterceptTraverseParams(ctx, c, params); handled {
 		return params, true, res
 	}
 	if handled, res := tools.InterceptAst(ctx, c, params); handled {
@@ -244,7 +241,7 @@ func runQueryRenderingIntercepts(ctx context.Context, c *client, params kgtools.
 // one call site total, not one per intercept.
 func runQueryDomainIntercepts(ctx context.Context, c *client, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	// GAP-A: query(mode:stats) on the knowledge/default graph. The per-graph stats
-	// intercepts below each gate on their own graph (cloud/cicd/code/practice/
+	// intercepts below each gate on their own graph (code/practice/
 	// linkage), so a bare knowledge stats matched none and fell through to the
 	// generic deny. This member self-gates on mode==stats && graph∈{"",knowledge}.
 	if handled, res := tools.InterceptQueryStats(ctx, c, params); handled {
@@ -273,9 +270,6 @@ func runQueryDomainIntercepts(ctx context.Context, c *client, params kgtools.Cal
 	// real graph another arm owns is DECLINED rather than shadowed — which is why
 	// its position relative to the per-graph stats arms does not change behavior.
 	if handled, res := tools.InterceptQueryBuiltinStats(ctx, c, params); handled {
-		return true, res
-	}
-	if handled, res := tools.InterceptQueryCloudCICD(ctx, c, params); handled {
 		return true, res
 	}
 	if handled, res := tools.InterceptQueryPracticeLinkage(ctx, c, params); handled {

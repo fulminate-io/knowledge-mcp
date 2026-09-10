@@ -100,15 +100,14 @@ var censusSurvivors = map[survivorKey]string{
 	// is REQUIRED rather than incidental — renderBrowseResponse reads
 	// resp.GetTotal() for the "_Use offset=N to see more._" footer
 	// (engine/render_misc.go), so setting SkipTotal here would silently delete
-	// pagination from every practice browse. The sibling cloud/cicd browse now pays
-	// the same cost for the same reason: RenderResourceBrowse reads Total for its
+	// pagination from every practice browse. The sibling registered-custom browse now pays
+	// the same cost for the same reason: a paged browse render reads Total for its
 	// HEADER count as well as its footer, and skipping it put the page length in
 	// the header as a corpus figure. A keyset drain — the other
 	// legitimate response — is wrong for these arms: every practice browse filter
 	// (type, types, status, meta) lowers onto the Selection and is applied
 	// server-side, so there is no client-side filter to drain the corpus for.
 	{"tools/intercept_query_practice_browse.go", "practiceBrowse", kindBrowseNoSkipTotal}: "Limit+Offset bound the rows; the Total is what renderBrowseResponse's pagination footer reads, so skipping it would delete paging rather than bound anything",
-	{"tools/intercept_query_cloud_cicd.go", "resourceBrowse", kindBrowseNoSkipTotal}:      "Limit+Offset bound the rows; the Total is what RenderResourceBrowse's header count and pagination footer read, so skipping it would delete paging and put the page length back in the header as a corpus figure",
 
 	// --- ambiguous_selection ---
 	// (none: the recent-browse arm's double Selection assignment was collapsed to

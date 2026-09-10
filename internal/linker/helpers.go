@@ -14,6 +14,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/crossgraph"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 )
 
@@ -40,8 +41,8 @@ func asExecutor(gc GraphCaller) (linkerExecutor, error) {
 
 // browseNodesViaEngine compiles a type-browse query through the Execute carrier
 // seam and decodes the typed Nodes carrier into []*knowledgev1.Node. Shared by the
-// code/cloud type-browse helpers (queryCodeFiles / queryCodePackages /
-// queryCloudResources). args is the query tool's JSON arg shape (graph / repo /
+// code type-browse helpers (queryCodeFiles / queryCodePackages). args is the
+// query tool's JSON arg shape (graph / repo /
 // name / type / limit); the engine lowers it via compileQuery (the
 // relaxed code guard lets a type-browse through — only code id/text is denied).
 //
@@ -194,7 +195,10 @@ func drainNodesViaEngine(ctx context.Context, gc GraphCaller, args map[string]an
 		return nil, err
 	}
 	return paging.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
-		page := make(map[string]any, len(args)+3)
+		// SIZED FROM ONE LENGTH, NOT A SUM: a make() capacity is a hint —
+		// the three page keys cost at most a growth — while a size built by
+		// addition is a value the allocator has to take on trust.
+		page := make(map[string]any, len(args))
 		maps.Copy(page, args)
 		// Set AFTER the copy: writing the page keys last is what stops a
 		// caller's stale limit from defeating the drain.
@@ -296,4 +300,25 @@ func resultText(res kgtools.ToolResult) string {
 		b.WriteString(c.Text)
 	}
 	return b.String()
+}
+
+// queryCodeFiles returns EVERY NodeFile entry in a named code graph via the
+// Execute carrier seam (drainNodesViaEngine → keyset pages → nodes_json
+// carrier). The caller matches file paths against its own index, so this drains
+// rather than taking one bounded page.
+//
+// IT LIVES IN THE SHARED HELPER FILE and not beside its caller, because it once
+// lived beside a DIFFERENT caller: it was written in the Helm pass and read by
+// the Dockerfile pass, so deleting the Helm pass took the Dockerfile pass's
+// node read with it. A helper with callers in two files belongs in neither.
+func queryCodeFiles(ctx context.Context, gc GraphCaller, codeGraphName string) ([]*knowledgev1.Node, error) {
+	nodes, err := drainNodesViaEngine(ctx, gc, map[string]any{
+		"graph": "code",
+		"repo":  codeGraphName,
+		"type":  string(kgtypes.NodeFile),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("query code files (%s): %w", codeGraphName, err)
+	}
+	return nodes, nil
 }

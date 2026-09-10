@@ -88,9 +88,9 @@ are named in Out of scope.
 so attach only a pattern the work is genuinely an instance of, never a mediocre
 match to look thorough. `no_patterns_reason` is the honest choice for defect
 fixes, doc edits and sui-generis work. `language_patterns` are defensive
-vigilance markers and optional. Discovery fans out across every practice graph
-(`search({graph:"practice", language:"all", queries:[...]})`); a single-graph
-miss is not "no pattern fits".
+vigilance markers and optional. Discovery searches the whole combined practice
+graph (`search({graph:"practice", queries:[...]})`); a miss under one phrasing
+is not "no pattern fits".
 
 ## Closing tickets for a project
 
@@ -98,4 +98,6 @@ Every project carries two tickets sequenced last: a comment-and-documentation
 sweep over every claim the project's changes could have invalidated, verified
 against final merged source; and a project-wide live confirmation that
 exercises every feature ticket's deliverable end to end on the built system.
-Feature tickets stay open until the confirmation verifies them.
+A ticket is Done when its final code review ships and its branch lands.
+The live-confirmation ticket owns what it finds after that, as its own
+findings and fix commits, never by reopening a landed ticket.

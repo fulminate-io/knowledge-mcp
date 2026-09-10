@@ -3,10 +3,14 @@
 // Package graphsel centralizes the per-graph-family instance-key mapping that
 // the client uses to address a specific graph instance on the wire.
 //
-// Every graph type carries exactly one instance key: a code graph is keyed by
-// repo, a cloud/CICD graph by account, a practice graph by language, and
-// everything else by name. That single disposition was previously duplicated as
-// a verbatim GraphCode→repo / GraphCloud,GraphCICD→account / default→name switch
+// Every graph type carries at most one instance key: a code graph is keyed by
+// repo, and everything else by name — except the SINGLETON families, knowledge,
+// checks and practice, which carry no instance key at all and resolve to their
+// one graph. Practice joined that set when the eight per-language graphs became
+// one; `language` survives only as a read-only selector for those pre-singleton
+// graphs and is set per-read by the practice arms, never here. That single
+// disposition was previously duplicated as a verbatim GraphCode→repo /
+// default→name switch
 // across
 // segmentdist, topology/foundation, postpopulate, and pipeline. This package
 // holds that switch exactly once (InstanceField) and exposes thin builders for
@@ -31,17 +35,16 @@ import (
 //
 // The enum is the shared contract, so this map cannot disagree with the server
 // about WHICH FAMILIES EXIST — only about the local type name each one is called
-// here. A graph type absent from this map produces UNSPECIFIED, which a reader
+// here. A family RESERVED in the enum (cloud, logs, cicd, transformers) has no entry
+// here and no constant to key one with: the reservation is what stops the number
+// being reused, and the absence here is what stops this binary addressing it. A graph type absent from this map produces UNSPECIFIED, which a reader
 // treats as "this writer predates the enum" and answers from the string field,
 // so a missing entry degrades to the pre-enum behaviour rather than to a wrong
 // family.
 var familyOfType = map[kgtypes.GraphType]knowledgev1.GraphFamily{
 	kgtypes.GraphKnowledge: knowledgev1.GraphFamily_GRAPH_FAMILY_KNOWLEDGE,
 	kgtypes.GraphCode:      knowledgev1.GraphFamily_GRAPH_FAMILY_CODE,
-	kgtypes.GraphCloud:     knowledgev1.GraphFamily_GRAPH_FAMILY_CLOUD,
-	kgtypes.GraphCICD:      knowledgev1.GraphFamily_GRAPH_FAMILY_CICD,
 	kgtypes.GraphPractice:  knowledgev1.GraphFamily_GRAPH_FAMILY_PRACTICE,
-	kgtypes.GraphLogs:      knowledgev1.GraphFamily_GRAPH_FAMILY_LOGS,
 	kgtypes.GraphWebRaw:    knowledgev1.GraphFamily_GRAPH_FAMILY_WEB,
 	kgtypes.GraphPDFRaw:    knowledgev1.GraphFamily_GRAPH_FAMILY_PDF,
 	kgtypes.GraphLinkage:   knowledgev1.GraphFamily_GRAPH_FAMILY_LINKAGE,
@@ -97,15 +100,36 @@ type Field int
 const (
 	// FieldRepo — code graphs are keyed by repo.
 	FieldRepo Field = iota
-	// FieldAccount — cloud / CICD graphs are keyed by account.
-	FieldAccount
 	// FieldName — every other graph family is keyed by name.
+	//
+	// THERE IS NO FieldAccount, and its absence is a decision rather than an
+	// omission. The account-keyed families were cloud and the CI inventory, both
+	// retired with their built-in collectors, so the constant lost its last
+	// producer: no graph type returned it and every arm switching on it was
+	// unreachable. Retired code is removed rather than left inert, so the constant
+	// and its arms went with the families. A future account-keyed family
+	// reintroduces both together.
+	//
+	// FieldLanguage BELOW IS KEPT ON THE OPPOSITE REASONING, and the two are not in
+	// tension. Practice READS still accept a legacy language for a pre-singleton
+	// graph, so a caller projecting one still needs a field to project into; no
+	// read path anywhere accepts an account, so there is nothing left to project.
+	//
+	// GraphSelector.account SURVIVES ON THE WIRE, and the asymmetry is deliberate:
+	// removing a proto field is its own change with its own compatibility cost,
+	// while a client switch arm nothing can reach is dead code inside one binary.
 	FieldName
-	// FieldLanguage — practice graphs are keyed by language.
+	// FieldLanguage — the LEGACY practice instance key. No builtin family returns
+	// it any more: practice became a singleton and moved to the FieldNone arm
+	// below. `language` survives only as the read-only selector addressing the
+	// old instance-keyed practice graphs, and that path runs through the practice
+	// read arms rather than through this switch. The constant and the arms that
+	// read it stay so a caller projecting a legacy language still has a field.
 	//
 	// CHECKS IS DELIBERATELY NOT HERE. Checks carry a `language` metadata key on
 	// every node, so language selects a SUBSET WITHIN the one checks graph rather
-	// than selecting which graph to open.
+	// than selecting which graph to open. Practice now works the same way: its
+	// hub is a `source_hub` metadata key on every node, not a graph to open.
 	FieldLanguage
 	// FieldNone — the family addresses NO instance: it holds exactly one graph,
 	// so there is no key to carry and every instance field must stay empty.
@@ -126,11 +150,7 @@ func InstanceField(gt kgtypes.GraphType) Field {
 	switch gt {
 	case kgtypes.GraphCode:
 		return FieldRepo
-	case kgtypes.GraphCloud, kgtypes.GraphCICD:
-		return FieldAccount
-	case kgtypes.GraphPractice:
-		return FieldLanguage
-	case kgtypes.GraphChecks:
+	case kgtypes.GraphChecks, kgtypes.GraphPractice:
 		// checks carries NO instance identity anywhere: it is a singleton with no
 		// named consumer, so no builder should ever put a name on it. Naming it
 		// here rather than leaving it to the FieldName default is what stops a
@@ -143,6 +163,14 @@ func InstanceField(gt kgtypes.GraphType) Field {
 		// instance identity IS the name field even though the server's knowledge
 		// resolver ignores it. Those are two different questions —
 		// AddressesOneGraph below answers the second one.
+		//
+		// PRACTICE JOINED THIS ARM when the eight per-language practice graphs
+		// became one combined graph. Its per-source grouping is a `source_hub`
+		// metadata key on every node, exactly as checks' language is, so there is
+		// no practice instance to address and the server's practice policy row
+		// consumes no instance field. `language` remains accepted on practice READ
+		// arms as the legacy selector for the old graphs, and that path does not
+		// run through here.
 		return FieldNone
 	default:
 		return FieldName
@@ -160,7 +188,7 @@ func InstanceField(gt kgtypes.GraphType) Field {
 //
 // A selector naming only a graph TYPE, which is the shape a catalog enumeration
 // compiles to, yields an empty instance name for every family whose key is
-// repo / account / language.
+// repo or language.
 func InstanceKeyOf(sel *knowledgev1.GraphSelector) (kgtypes.GraphType, string, bool) {
 	if sel == nil {
 		return "", "", false
@@ -175,8 +203,6 @@ func InstanceKeyOf(sel *knowledgev1.GraphSelector) (kgtypes.GraphType, string, b
 	switch InstanceField(gt) {
 	case FieldRepo:
 		return gt, sel.GetRepo(), true
-	case FieldAccount:
-		return gt, sel.GetAccount(), true
 	case FieldLanguage:
 		return gt, sel.GetLanguage(), true
 	case FieldNone:
@@ -202,8 +228,6 @@ func GraphSelectorFor(gt kgtypes.GraphType, name string, omitDefaultName bool) *
 	switch InstanceField(gt) {
 	case FieldRepo:
 		sel.Repo = name
-	case FieldAccount:
-		sel.Account = name
 	case FieldName:
 		if !omitDefaultName || (name != "" && name != "default") {
 			sel.Name = name
@@ -222,8 +246,6 @@ func ScopePayload(gt kgtypes.GraphType, name string, omitDefaultName bool) map[s
 	switch InstanceField(gt) {
 	case FieldRepo:
 		payload["repo"] = name
-	case FieldAccount:
-		payload["account"] = name
 	case FieldName:
 		if !omitDefaultName || (name != "" && name != "default") {
 			payload["name"] = name
@@ -235,15 +257,16 @@ func ScopePayload(gt kgtypes.GraphType, name string, omitDefaultName bool) map[s
 }
 
 // ApplyInstanceKey assigns name into exactly one of the caller-owned repo /
-// account / name / language struct fields per (gt). When omitDefaultName is
-// true, a name field is left untouched for the empty string or the literal
-// "default".
-func ApplyInstanceKey(gt kgtypes.GraphType, name string, repo, account, nameField, language *string, omitDefaultName bool) {
+// name / language struct fields per (gt). When omitDefaultName is true, a name
+// field is left untouched for the empty string or the literal "default".
+//
+// IT TAKES NO account POINTER, because no family is keyed by account any more:
+// cloud and the CI inventory were, and both are retired. A parameter no arm can
+// write to is a field a caller would keep filling for a case that cannot arise.
+func ApplyInstanceKey(gt kgtypes.GraphType, name string, repo, nameField, language *string, omitDefaultName bool) {
 	switch InstanceField(gt) {
 	case FieldRepo:
 		*repo = name
-	case FieldAccount:
-		*account = name
 	case FieldName:
 		if !omitDefaultName || (name != "" && name != "default") {
 			*nameField = name
@@ -263,19 +286,17 @@ func ApplyInstanceKey(gt kgtypes.GraphType, name string, repo, account, nameFiel
 // every builder agrees with every reader by construction.
 //
 // WHY THIS EXISTS. Callers used to hand every field they had to the target
-// builder at once, so a write could carry a repo AND an account AND a language
+// builder at once, so a write could carry a repo AND a name AND a language
 // and rely on the server to sort it out — which it does not: a field the target
 // family does not consume is REFUSED, not ignored. Projecting first means a
 // selector can only ever carry the field its family reads.
-func InstanceValueOf(gt kgtypes.GraphType, repo, account, name, language string) string {
+func InstanceValueOf(gt kgtypes.GraphType, repo, name, language string) string {
 	if AddressesOneGraph(gt) {
 		return ""
 	}
 	switch InstanceField(gt) {
 	case FieldRepo:
 		return repo
-	case FieldAccount:
-		return account
 	case FieldLanguage:
 		return language
 	case FieldNone:
@@ -307,7 +328,7 @@ func InstanceValueOf(gt kgtypes.GraphType, repo, account, name, language string)
 // entirely, so covering only "knowledge" would fix the spelling nobody sends.
 func AddressesOneGraph(gt kgtypes.GraphType) bool {
 	switch gt {
-	case "", kgtypes.GraphKnowledge, kgtypes.GraphLinkage, kgtypes.GraphChecks:
+	case "", kgtypes.GraphKnowledge, kgtypes.GraphLinkage, kgtypes.GraphChecks, kgtypes.GraphPractice:
 		return true
 	default:
 		return false

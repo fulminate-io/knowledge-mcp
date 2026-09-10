@@ -13,7 +13,7 @@ import (
 // and the families that take none. It rides every refusal below, because the
 // standing rule for bad input here is that the error names the offending value
 // AND the vocabulary that would have worked.
-const mutateInstanceSelectorVocabulary = "accepted graph-instance selectors: repo (code), account (cloud, cicd), language (practice); knowledge, checks and linkage address one graph and take none"
+const mutateInstanceSelectorVocabulary = "accepted graph-instance selectors: repo (code), language (practice); knowledge, checks and linkage address one graph and take none"
 
 // requireGraphInstanceSelector refuses an instance-addressed mutate whose
 // selector is empty, naming the caller's graph value and the required param
@@ -43,12 +43,10 @@ func requireGraphInstanceSelector(a mutateArgs) error {
 	switch graphsel.InstanceField(gt) {
 	case graphsel.FieldRepo:
 		param, supplied = "repo", a.Repo
-	case graphsel.FieldAccount:
-		param, supplied = "account", a.Account
 	case graphsel.FieldLanguage:
 		param, supplied = "language", a.Language
 	default:
-		// FieldName and FieldNone. The name-addressed families (logs, web, pdf,
+		// FieldName and FieldNone. The name-addressed families (web, pdf,
 		// linkage) have no selector param on this surface to require, and
 		// FieldNone addresses no instance at all.
 		return nil

@@ -34,11 +34,10 @@ type repoTestDeps struct {
 	gc      GraphCaller
 }
 
-func (d *repoTestDeps) LocalLiveness() LocalLiveness          { return nil }
-func (d *repoTestDeps) Sink() collector.Sink                  { return nil }
-func (d *repoTestDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
-func (d *repoTestDeps) RootDir() string                       { return d.rootDir }
-func (d *repoTestDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
+func (d *repoTestDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d *repoTestDeps) Sink() collector.Sink            { return nil }
+func (d *repoTestDeps) RootDir() string                 { return d.rootDir }
+func (d *repoTestDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
 
 func (d *repoTestDeps) PropReady() bool     { return true }
 func (d *repoTestDeps) PipelineReady() bool { return true }

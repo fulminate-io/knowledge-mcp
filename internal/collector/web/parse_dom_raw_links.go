@@ -53,7 +53,7 @@ func seedRawLinks(w *walker, rawBody []byte, base *url.URL) bool {
 	root, err := html.Parse(bytes.NewReader(rawBody))
 	if err != nil {
 		slog.Warn("web.parse: raw-link html.Parse failed, pre-readability link pass skipped",
-			"err", err)
+			"err", logSafeErr(err))
 		return true
 	}
 	internal, external, seen := extractRawLinks(root, base)

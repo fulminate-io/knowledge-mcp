@@ -139,11 +139,10 @@ type pullDeps struct {
 	crud   GraphTypeCRUDAPI
 }
 
-func (d pullDeps) LocalLiveness() LocalLiveness          { return nil }
-func (d pullDeps) Sink() collector.Sink                  { return nil }
-func (d pullDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
-func (d pullDeps) RootDir() string                       { return "" }
-func (d pullDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
+func (d pullDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d pullDeps) Sink() collector.Sink            { return nil }
+func (d pullDeps) RootDir() string                 { return "" }
+func (d pullDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
 
 func (d pullDeps) PropReady() bool     { return true }
 func (d pullDeps) PipelineReady() bool { return true }

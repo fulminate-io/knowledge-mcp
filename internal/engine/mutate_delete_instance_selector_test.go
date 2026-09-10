@@ -15,7 +15,7 @@ import (
 
 // TestCompileDelete_InstanceSelectorRoutesToTarget asserts that a delete carries
 // the caller's graph-INSTANCE selector onto the Execute Target, so a code or
-// cloud/CICD graph is addressable rather than merely nameable.
+// an instance-keyed graph is addressable rather than merely nameable.
 //
 // THE PRACTICE CONTROL IS LOAD-BEARING. It runs through the IDENTICAL probe —
 // same compileMutate entry, same GetTarget() read — and was green while the repo
@@ -39,24 +39,38 @@ func TestCompileDelete_InstanceSelectorRoutesToTarget(t *testing.T) {
 			"a code selector consumes repo alone — no Name may ride it")
 	})
 
-	t.Run("cloud delete carries account on the Target", func(t *testing.T) {
+	t.Run("a caller-supplied account reaches no delete Target", func(t *testing.T) {
+		// THIS ROW WAS THE ACCOUNT-KEYED FAMILY'S. cloud and cicd were the two and
+		// both are retired, so graphsel projects no account onto a Target at all —
+		// the row asserts the ABSENCE rather than disappearing with the family,
+		// because an account silently riding a live family's selector is what the
+		// projection exists to prevent and is now unobserved anywhere else.
 		req, ok := compileMutate(json.RawMessage(
-			`{"operation":"delete","graph":"cloud","account":"aws-prod","ids":["i-1"]}`))
-		require.True(t, ok, "a cloud delete-by-ids must compile")
-		assert.Equal(t, "cloud", req.GetTarget().GetGraph())
-		assert.Equal(t, "aws-prod", req.GetTarget().GetAccount(),
-			"the cloud delete Target must carry the caller's account")
+			`{"operation":"delete","graph":"code","repo":"knowledge","account":"acme","ids":["i-1"]}`))
+		require.True(t, ok, "a code delete-by-ids must compile")
+		assert.Equal(t, "code", req.GetTarget().GetGraph())
+		assert.Empty(t, req.GetTarget().GetAccount(),
+			"no family consumes account, so no delete Target may carry one")
+		assert.Equal(t, "knowledge", req.GetTarget().GetRepo(),
+			"and the family's own instance key still rides, so the emptiness above is the projection acting")
 		assert.Empty(t, req.GetTarget().GetName(),
-			"a cloud selector consumes account alone — no Name may ride it")
+			"an instance-keyed selector consumes its own field alone — no Name may ride it")
 	})
 
-	t.Run("practice control still routes language", func(t *testing.T) {
+	t.Run("practice control carries no instance field", func(t *testing.T) {
+		// The control still discriminates, and what it asserts inverted: practice is
+		// a singleton, so a delete targets the one graph with no instance field.
+		// Asserting the EMPTY value rather than dropping the row is what catches a
+		// repo fix that starts routing a name here again — the server's practice
+		// policy row refuses one, so a name is a refused delete.
 		req, ok := compileMutate(json.RawMessage(
-			`{"operation":"delete","graph":"practice","language":"go","ids":["p1"]}`))
+			`{"operation":"delete","graph":"practice","ids":["p1"]}`))
 		require.True(t, ok, "a practice delete-by-ids must compile")
 		assert.Equal(t, "practice", req.GetTarget().GetGraph())
-		assert.Equal(t, "go", req.GetTarget().GetLanguage(),
-			"the practice control must keep routing language — a repo fix may not break it")
+		assert.Empty(t, req.GetTarget().GetLanguage(),
+			"a practice delete consumes no instance field")
+		assert.Empty(t, req.GetTarget().GetName(),
+			"and does not fall through to a name either")
 	})
 
 	// THE SECOND TARGET SITE. dispatchDeletePreview builds its Target on a path

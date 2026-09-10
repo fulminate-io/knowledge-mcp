@@ -299,9 +299,10 @@ func TestInterceptManage_PruneCache_Dispatches(t *testing.T) {
 //
 // The guarantee that this arm did not swallow operations belonging to another
 // claimant is NOT this test's job: it belongs to
-// TestInterceptManage_LogsOperationsFallThrough below (the four downstream
-// InterceptLogsManage operations) and TestInterceptManage_DeclaredOperationsAllKnown
-// (everything the schema advertises).
+// TestInterceptManage_DeclaredOperationsAllKnown (everything the schema
+// advertises). The fall-through test that stood beside it covered four
+// operations owned by a downstream claimant, and both went with the built-in log
+// collectors; there is no downstream manage claimant left to fall through to.
 func TestInterceptManage_UnknownOp_TerminalError(t *testing.T) {
 	handled, res := manageCall(t, &fakeIndexer{}, `{"operation":"definitely-not-an-op"}`)
 	assert.True(t, handled, "an unknown operation must be answered here, not deferred")
@@ -310,20 +311,42 @@ func TestInterceptManage_UnknownOp_TerminalError(t *testing.T) {
 		`manage: unknown operation "definitely-not-an-op" — valid operations:`)
 }
 
-// TestInterceptManage_LogsOperationsFallThrough is the named catcher for the
-// starvation trap. InterceptManage runs BEFORE InterceptLogsManage in the
-// chain, so the four log operations must still leave this intercept UNCLAIMED.
-// A terminal arm written without its decline branch breaks all four, and this
-// is the only test in the suite that would notice.
-func TestInterceptManage_LogsOperationsFallThrough(t *testing.T) {
+// TestInterceptManage_RemovedLogOperationsAreUnknown replaces the fall-through
+// row, and it asserts the OPPOSITE disposition for the same four names.
+//
+// THEY USED TO FALL THROUGH DELIBERATELY. InterceptManage ran before a logs
+// intercept that claimed list_logs, discard_logs, configure_log_backend and
+// list_log_backends, so its terminal unknown-operation arm had to recognize them
+// as known and DECLINE them rather than reject them. That intercept is gone with
+// the built-in log collectors, and nothing downstream claims them now — so a
+// decline would leave the call unanswered by anybody, which reads to a caller as
+// silence rather than as a removed operation.
+//
+// THE REFUSAL NAMES THE VALID SET, which is what makes it actionable: an
+// operator whose script still calls list_logs is told what this tool does
+// accept rather than that nothing happened.
+func TestInterceptManage_RemovedLogOperationsAreUnknown(t *testing.T) {
 	for _, op := range []string{"list_logs", "discard_logs", "configure_log_backend", "list_log_backends"} {
 		t.Run(op, func(t *testing.T) {
 			handled, res := manageCall(t, &fakeIndexer{}, `{"operation":"`+op+`"}`)
-			assert.Falsef(t, handled,
-				"%s is claimed by InterceptLogsManage downstream — InterceptManage must decline it", op)
-			assert.False(t, res.IsError)
-			assert.Empty(t, toolResultText(res))
+			assert.Truef(t, handled,
+				"%s is claimed by nobody now — InterceptManage must ANSWER it rather than decline", op)
+			assert.True(t, res.IsError, "a removed operation is an error, not a silent no-op")
+			assert.Contains(t, toolResultText(res), `manage: unknown operation "`+op+`"`,
+				"the refusal names the operation it rejected")
+			assert.Contains(t, toolResultText(res), "valid operations:",
+				"and the vocabulary that would have worked")
 		})
+	}
+
+	// AND THE ADVERTISED SCHEMA AGREES, in the same run: none of the four is in
+	// the published enum either, so a caller reading tools/list never sees an
+	// operation the dispatch refuses. A route that stops being advertised while
+	// still dispatching, or the reverse, is the cell this pair exists to catch.
+	enum := ManageToolDef().InputSchema.Properties["operation"].Enum
+	for _, op := range []string{"list_logs", "discard_logs", "configure_log_backend", "list_log_backends"} {
+		assert.NotContainsf(t, enum, op, "the manage schema must not advertise the removed operation %q", op)
+		assert.NotContainsf(t, manageOperations, op, "and manageOperations must not list it either")
 	}
 }
 

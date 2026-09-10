@@ -11,14 +11,13 @@ import (
 )
 
 // TestEnvelope_JSONRoundTrip confirms the envelope is a plain encoding/json
-// shape: a JSON object with graph_type/graph_name/nodes/edges decodes into a
-// *Result, the node's typed fields and free-form metadata land, and re-encoding
-// is stable. This is the proof that Node is a hand-written json-tagged struct
+// shape: a JSON object with nodes/edges/walk_complete decodes into a *Result,
+// the node's typed fields and free-form metadata land, and re-encoding is
+// stable. This is the proof that Node is a hand-written json-tagged struct
 // (a proto knowledgev1.Node would not round-trip cleanly through encoding/json).
 func TestEnvelope_JSONRoundTrip(t *testing.T) {
 	raw := `{
-		"graph_type": "jira",
-		"graph_name": "acme-board",
+		"walk_complete": true,
 		"nodes": [
 			{
 				"id": "ISSUE-1",
@@ -37,8 +36,7 @@ func TestEnvelope_JSONRoundTrip(t *testing.T) {
 	var r Result
 	require.NoError(t, json.Unmarshal([]byte(raw), &r))
 
-	assert.Equal(t, "jira", r.GraphType)
-	assert.Equal(t, "acme-board", r.GraphName)
+	assert.True(t, r.WalkComplete)
 	require.Len(t, r.Nodes, 1)
 	assert.Equal(t, "ISSUE-1", r.Nodes[0].ID)
 	assert.Equal(t, "issue", r.Nodes[0].Type)

@@ -44,7 +44,9 @@ func applyDerivedCollectID(a *collectArgs) error {
 	if a == nil || a.Type != "web" || a.ID != "" {
 		return nil
 	}
-	name, err := CollectGateGraphName(a.Type, a.ID, a.SeedURLs)
+	// registeredCustom is false by construction: the guard above admits only
+	// a.Type == "web", and a registration may not collide with a built-in name.
+	name, err := CollectGateGraphName(a.Type, a.ID, a.SeedURLs, false)
 	if err != nil {
 		return err
 	}
@@ -248,8 +250,8 @@ func precheckRawCollect(
 //
 // Everything here happens BEFORE the walk, so a refusal costs no crawl and no
 // parse.
-func prepareRawCollect(ctx context.Context, deps ClientDeps, a collectArgs) (string, string, error) {
-	graphName, err := CollectGateGraphName(a.Type, a.ID, a.SeedURLs)
+func prepareRawCollect(ctx context.Context, deps ClientDeps, a collectArgs, registeredCustom bool) (string, string, error) {
+	graphName, err := CollectGateGraphName(a.Type, a.ID, a.SeedURLs, registeredCustom)
 	if err != nil {
 		return "", "", err
 	}

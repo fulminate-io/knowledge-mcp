@@ -10,6 +10,10 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/profiling"
 )
 
+// manage_dispatch.go holds the arms and prelude InterceptManage delegates to,
+// lifted out of manage.go so that file's dispatch table can grow an operation
+// without the file's own length becoming what blocks it.
+
 // decodeManageCall is InterceptManage's PRELUDE: it claims the call, rejects
 // params the published schema does not declare, and decodes the arguments.
 //
@@ -58,4 +62,23 @@ func handlePprofStop() kgtools.ToolResult {
 	return textResult(fmt.Sprintf(
 		"CPU profile stopped (%d bytes). Fetch + open it:\n  go tool pprof %s\nor save a copy:\n  curl -s %s -o cpu.pprof",
 		size, url, url))
+}
+
+// handlePipelineLifecycleManage serves the three pipeline circuit-breaker
+// operations, which share one seam and differ only in which method they call.
+//
+// THEY ARE ONE ARM RATHER THAN THREE CASES because InterceptManage's dispatch is
+// bounded by a statement count, and three near-identical cases spend that budget
+// on a distinction the reader does not need: pause, resume and status are the
+// three faces of one latch. Grouping them keeps the routing visible in the
+// switch while the latch's own vocabulary stays here.
+func handlePipelineLifecycleManage(deps ClientDeps, a manageArgs) kgtools.ToolResult {
+	switch a.Operation {
+	case "pause_pipeline":
+		return handlePausePipeline(deps, a)
+	case "resume_pipeline":
+		return handleResumePipeline(deps)
+	default:
+		return handlePipelineStatus(deps, a.Format)
+	}
 }

@@ -14,7 +14,7 @@ package tools
 // armID that lost it, which is the failure a later reader can act on.
 //
 // A BIJECTION ALONE IS NOT ENOUGH, and that is why the floors are here too. A
-// degenerate registry that collapsed the cloud/cicd surface into a single arm,
+// degenerate registry that collapsed a multi-shape surface into a single arm,
 // with a single gate call, would biject perfectly and account for nothing. The
 // floors are the plan-locked MINIMA per multi-shape entry point: finding a
 // further distinct read set means ADDING an arm and staying green, never
@@ -49,30 +49,25 @@ import (
 const queryArmRegistryFilePrefix = "query_arm_registry"
 
 // queryEntryPointArmFloors is the plan-locked minimum arm count per multi-shape
-// entry point, with the arms each one owns. The floors are MINIMA: two entry
-// points legitimately exceed theirs, which is recorded per row.
+// entry point, with the arms each one owns. The floors are MINIMA: one entry
+// point legitimately exceeds its own, which is recorded on that row.
 var queryEntryPointArmFloors = []struct {
 	entryPoint string
 	floor      int
 	arms       []armID
 }{
 	{
-		// Exceeds its floor by one: the ranked-text search
-		// (composeResourceSearchClient) is a distinct read set from the browse.
-		entryPoint: "InterceptQueryCloudCICD", floor: 4,
-		arms: []armID{
-			armCloudCICDListGraphs, armCloudCICDGetNode, armCloudCICDStats,
-			armCloudCICDSearch, armCloudCICDBrowse,
-		},
-	},
-	{
-		// Exceeds its floor by two: the practice language:"all" scatter-gather
-		// fan-out is a distinct read set the floor folded into "practice search",
-		// and the text-less practice browse is a second.
+		// Exceeds its floor by TWO. The text-less practice browse is a distinct
+		// read set the floor folded into "practice search"; the style-rule index
+		// is a second, because the browse arm rejects `repo` and the index drains
+		// rather than paging, so neither arm can serve the other's payload. The
+		// scatter-gather fan-out arm that used to be the extra one retired with
+		// the language:"all" sentinel — practice is one graph, so an unselected
+		// search already reads the whole corpus and there is nothing to fan out.
 		entryPoint: "InterceptQueryPracticeLinkage", floor: 8,
 		arms: []armID{
 			armPracticeListGraphs, armPracticeStats, armPracticeBrowse,
-			armPracticeSearchFanOut, armPracticeSearch,
+			armPracticeSearch, armPracticeStyleIndex,
 			armLinkageListGraphs, armLinkageStats, armLinkageGetNode, armLinkageSearchRetired,
 			armWebPDFSearch, armWebPDFStats, armWebPDFModules,
 		},

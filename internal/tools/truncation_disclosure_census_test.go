@@ -296,18 +296,6 @@ var truncationDisclosureSites = map[string]disclosureRow{
 		carrierNA,
 		"renders the analyze view as text",
 	},
-	"intercept_query_cloud_cicd.go:resourceGetNode": {
-		disclosureCannot,
-		"a by-id read of one resource node; ceilingEngaged requires rowCount >= effective",
-		carrierNA,
-		"renders one resource node as markdown",
-	},
-	"intercept_query_cloud_cicd.go:resourceBrowse": {
-		disclosureHandles,
-		"bypasses engine.Render (it issues its own Execute and renders directly), so it calls engine.WithTruncationNotice on every return path",
-		carrierYes,
-		"its format:\"json\" arm serves the standard browse envelope through engine.BrowseJSONResult, which the node row ceiling can clamp",
-	},
 	"intercept_query_explain_timeline.go:renderExplainWithNames": {
 		disclosureHandles,
 		"bypasses engine.Render, and its endpoint hydrate is a bulk ids[] read over both endpoints of every incident edge — a set the 50,000-row edge drain can push past the 10,000-id bound, which flags on the request alone; discloses via engine.WithTruncationNoticeFor",

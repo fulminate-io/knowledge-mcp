@@ -320,8 +320,14 @@ func TestGraphSelectorMapping(t *testing.T) {
 		want *knowledgev1.GraphSelector
 	}{
 		{kgtypes.GraphCode, "r", &knowledgev1.GraphSelector{Graph: "code", Repo: "r"}},
-		{kgtypes.GraphCloud, "acct", &knowledgev1.GraphSelector{Graph: "cloud", Account: "acct"}},
-		{kgtypes.GraphCICD, "acct", &knowledgev1.GraphSelector{Graph: "cicd", Account: "acct"}},
+		{kgtypes.GraphWebRaw, "site", &knowledgev1.GraphSelector{Graph: "web", Name: "site"}},
+		// THE SINGLETON ROW, and its expectation carries NO instance field. Practice
+		// held eight per-language graphs and routed its name onto Language; it holds
+		// one now, so the caller's name is projected away and any field on the
+		// Target would be one the server refuses. The row supplies a NON-EMPTY name
+		// on purpose: with an empty one a builder that drops the instance and one
+		// that carries it agree.
+		{kgtypes.GraphPractice, "go", &knowledgev1.GraphSelector{Graph: "practice"}},
 		{kgtypes.GraphKnowledge, "kg", &knowledgev1.GraphSelector{Graph: "knowledge", Name: "kg"}},
 	}
 	for _, tc := range cases {
@@ -329,6 +335,10 @@ func TestGraphSelectorMapping(t *testing.T) {
 		require.Equal(t, tc.want.GetGraph(), got.GetGraph())
 		require.Equal(t, tc.want.GetRepo(), got.GetRepo())
 		require.Equal(t, tc.want.GetAccount(), got.GetAccount())
+		// LANGUAGE IS ASSERTED, and it was not before. Every row's expectation
+		// leaves it empty, so an omitted assertion made the singleton row vacuous:
+		// a builder that routed a language onto practice would have passed it.
+		require.Equal(t, tc.want.GetLanguage(), got.GetLanguage())
 		require.Equal(t, tc.want.GetName(), got.GetName())
 	}
 }

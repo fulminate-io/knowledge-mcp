@@ -77,15 +77,18 @@ func (f *admissionRecordingCaller) snapshot() (admitted []string, executes int) 
 //
 // BOTH tails are driven because the region grep proves only that the stamp LINE
 // is present; only this proves the stamp actually reaches the reads. The linker
-// tail matters most here: its sub-linkers read across cloud, cicd and code
-// graphs, so an unstamped RunAll would admit all three families at once.
+// tail matters most here: it reads a code graph's whole file and package sets,
+// so an unstamped pass would admit that graph off a read the user never made.
 func TestPostCollectFanoutDoesNotAdmit(t *testing.T) {
 	const tailType = "postcollect-fanout-admission-test"
 
-	// Map the test collector type onto the cloud graph type so the postpopulate
-	// tail enumerates cloud graph names; restore afterwards.
+	// Map the test collector type onto an INSTANCE-KEYED family so the
+	// postpopulate tail enumerates several graph names; restore afterwards. Code
+	// is that family: practice served here while it held eight per-language
+	// graphs, and a singleton cannot express the multi-graph fan-out this test is
+	// about.
 	prev, had := postPopulateGraphType[tailType]
-	postPopulateGraphType[tailType] = kgtypes.GraphCloud
+	postPopulateGraphType[tailType] = kgtypes.GraphCode
 	t.Cleanup(func() {
 		if had {
 			postPopulateGraphType[tailType] = prev
@@ -98,20 +101,10 @@ func TestPostCollectFanoutDoesNotAdmit(t *testing.T) {
 	// just the enumeration — are subject to the admission gate.
 	postpopulate.Register(tailType, postpopulate.BreadthFamilyBroad, func(ctx context.Context, gc postpopulate.GraphCaller, name string) error {
 		_, err := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
-			Target: &knowledgev1.GraphSelector{Graph: "cloud", Account: name},
+			Target: &knowledgev1.GraphSelector{Graph: "code", Repo: name},
 			Plan:   &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{ById: "probe"}},
 		})
 		return err
-	})
-
-	prevLink, hadLink := postCollectLinkerTypes[tailType]
-	postCollectLinkerTypes[tailType] = true
-	t.Cleanup(func() {
-		if hadLink {
-			postCollectLinkerTypes[tailType] = prevLink
-		} else {
-			delete(postCollectLinkerTypes, tailType)
-		}
 	})
 
 	// MULTI-GRAPH on purpose: a single-graph fixture cannot distinguish "the
@@ -119,9 +112,9 @@ func TestPostCollectFanoutDoesNotAdmit(t *testing.T) {
 	caller := &admissionRecordingCaller{fakeGraphCaller: &fakeGraphCaller{
 		listGraphsResult: &kgtools.ToolResult{
 			Content: []kgtools.ContentBlock{{Type: "text", Text: `{"graphs":[` +
-				`{"graph_type":"cloud","graph_name":"aws-acct-123"},` +
-				`{"graph_type":"cloud","graph_name":"aws-acct-456"},` +
-				`{"graph_type":"cloud","graph_name":"gcp-proj-789"}` +
+				`{"graph_type":"code","graph_name":"repo-a"},` +
+				`{"graph_type":"code","graph_name":"repo-b"},` +
+				`{"graph_type":"code","graph_name":"repo-c"}` +
 				`]}`}},
 		},
 	}}
@@ -136,14 +129,14 @@ func TestPostCollectFanoutDoesNotAdmit(t *testing.T) {
 	ctx := graphclient.WithOperation(context.Background(), graphclient.OpCollect)
 
 	// Admission, not enrichment success, is this test's subject — discard the error.
-	_ = runPostCollectPostPopulate(ctx, deps, tailType, "")
+	_ = runPostCollectPostPopulate(ctx, deps, tailType, "", false)
 	ppAdmitted, ppExecutes := caller.snapshot()
 	require.Positive(t, ppExecutes,
 		"the postpopulate tail must actually have issued reads — a tail that never ran admits nothing trivially")
 	assert.Empty(t, ppAdmitted,
 		"the postpopulate tail walks every graph of the family, so none of them may be admitted by it")
 
-	runPostCollectLinker(ctx, deps, tailType)
+	runPostCollectLinker(ctx, deps, postCollectLinkerType, "lang-a", false)
 	lkAdmitted, lkExecutes := caller.snapshot()
 	require.Greater(t, lkExecutes, ppExecutes,
 		"the linker tail must actually have issued reads of its own")
@@ -157,13 +150,13 @@ func TestPostCollectFanoutDoesNotAdmit(t *testing.T) {
 	_, err := caller.Execute(
 		graphclient.WithOperation(ctx, graphclient.OpCollect),
 		&knowledgev1.ExecuteRequest{
-			Target: &knowledgev1.GraphSelector{Graph: "cloud", Account: "aws-acct-123"},
+			Target: &knowledgev1.GraphSelector{Graph: "code", Repo: "acme-repo"},
 			Plan:   &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{ById: "probe"}},
 		})
 	require.NoError(t, err)
 
 	controlAdmitted, _ := caller.snapshot()
-	assert.Equal(t, []string{"cloud/aws-acct-123"}, controlAdmitted,
+	assert.Equal(t, []string{"code/acme-repo"}, controlAdmitted,
 		"control: a stamped user collect naming one graph admits exactly that graph — "+
 			"so the empty results above are a live gate, not a dead recorder")
 }

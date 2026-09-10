@@ -3,7 +3,7 @@
 // Package postpopulate holds the name-keyed registry of PostPopulate hooks
 // that collectors install at init() time. PostPopulate derives higher-level
 // cross-node / cross-graph structural edges (cloud SG/NACL rules, cross-account
-// trust, cross-VPC references, image lineage, k8s selector/cluster linkage, CICD
+// trust, cross-VPC references, image lineage, k8s selector/cluster linkage, OIDC
 // OIDC federation, codesync hierarchy) AFTER the collector's nodes have been
 // uploaded to the named per-account/per-repo graph.
 //
@@ -27,7 +27,7 @@ import (
 )
 
 // Func is the wire-shape PostPopulate hook signature. graphName is the named
-// per-account (cloud/cicd) or per-repo (code) graph the hook reads + writes;
+// per-repo (code) graph the hook reads + writes;
 // the GraphCaller's selectorArgs translation (wire.go) routes the read/write to
 // the right backing DB. A BROAD hook is fired once per graph of its family's
 // type; a SCOPED hook is fired once, against the collected graph.
@@ -46,7 +46,7 @@ const (
 	BreadthScoped Breadth = "scoped-to-collected-graph"
 	// BreadthFamilyBroad fires the hook once per enumerated graph of the
 	// family's type. A single cloud collect can cascade several provider
-	// graphs, so the cloud and cicd hooks declare this.
+	// graphs, so a family-wide hook declares this.
 	BreadthFamilyBroad Breadth = "family-broad"
 )
 

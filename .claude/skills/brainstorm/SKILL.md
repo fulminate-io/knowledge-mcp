@@ -90,7 +90,7 @@ this change now?", then edit, verify, report. No ticket.
 
 Before a validating researcher spawns, list every requirement, premise,
 scope clause and direction line of the draft that is not a quotation of the
-user. For each one, recall the graph and read the memory index for rulings on
+user. For each one, recall the graph for rulings on
 its subject, and re-read the user's messages in this conversation. A derived
 clause that contradicts either goes to the user as a call, with both
 statements quoted; never pick a reading yourself. The same check runs on

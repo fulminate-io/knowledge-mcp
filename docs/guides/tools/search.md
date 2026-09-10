@@ -3,7 +3,7 @@
 ## Overview
 
 `search` is unified search across every graph family — code, knowledge, practice,
-cloud, cicd, linkage, and logs — selected with the `graph` param. It combines BM25
+linkage, and any registered custom type — selected with the `graph` param. It combines BM25
 keyword matching with semantic vector search (the `hybrid` default), so it finds
 results by meaning as well as by exact term. Pass a single `query`, or a `queries`
 array to cover several terms in one call.
@@ -28,8 +28,9 @@ search({ "query": "cache eviction policy", "graph": "knowledge" })
 ```
 
 Code-graph results carry a staleness indicator — if the index is far behind
-HEAD, re-run `collect` before trusting them. Practice searches need `language`;
-cloud searches need `account`. For the full parameter reference, run
+HEAD, re-run `collect` before trusting them. Practice searches take no selector —
+omit `language` to search the whole combined graph, and narrow to one origin with
+`source_hub`. For the full parameter reference, run
 `help("search")`.
 
 ## Parameters
@@ -37,21 +38,21 @@ cloud searches need `account`. For the full parameter reference, run
 <!-- BEGIN GENERATED: params -->
 | Parameter | Type | Required | Enum | Description |
 | --- | --- | --- | --- | --- |
-| `account` | string |  |  | Selects which inventoried external-provider account/org's resources to search within your own graph — an AWS/GCP account for graph=cloud, or a CI provider org (e.g. GitHub/GitLab) for graph=cicd. Required for graph=cloud/cicd; omit to list your available graphs. |
+| `account` | string |  |  | NO BUILT-IN FAMILY IS KEYED BY ACCOUNT. It was the instance key of the retired cloud and cicd families; a collected inventory graph is a registered custom type now, addressed by name. Consumed by nothing today. |
 | `branch` | string |  |  | Branch name for overlay search. Code graph only. |
 | `current_head` | string |  |  | Current git HEAD SHA (auto-populated by client intercept when staleness:true). Code graph only. |
 | `fields` | array of string |  |  | Field projection (format=json only): list of fields to include per result, dramatically shrinking response size for high-volume queries. Top-level keys accepted: content, created_at, description, file_path, graph, graph_instance, id, keywords, language, line, metadata, name, score, signature, source, status, summary, symbol_name, test_kind, tombstoned_at, type, updated_at — every search read is a ranked-search read, so the three hit properties (score, graph, graph_instance) are always available here. Per-metadata-key: 'metadata.<key>' (e.g. 'metadata.dsl_pattern'). Bare 'metadata' includes the whole metadata map. Empty/absent = full hydration (current default). An unsupported key is REFUSED, naming the offending key and the accepted vocabulary. A named top-level key is ALWAYS returned when you request it — empty string for an unset text field, 0 for an unset timestamp, empty map for absent metadata — so "present and unset" stays distinguishable from "not in your projection". tombstoned_at is the ONE exception to that always-returned rule: it is OMITTED ENTIRELY for a live node rather than returned as 0, because a sentinel 0 is indistinguishable at the wire from a real tombstone stamp. created_at and updated_at project as RAW int64 unix nanos, and an unset stamp returns 0 on these projection arms — UNLIKE query's mode:"examine" and mode:"plan_tree", which omit the key entirely when the stamp is zero. A per-metadata-key projection is OMITTED ENTIRELY from any result whose node lacks that key — absent from the row, never an empty string. So zero projected values across a result set means the key is unset on those nodes; it is NOT evidence that a write failed. |
 | `fields[]` | string |  |  |  |
 | `format` | string |  |  | Output format: 'text' (default, markdown) or 'json' (structured). JSON returns {results:[{id,name,type,score,...}]} instead of markdown text. |
-| `graph` | string |  |  | Which graph to search: code (default), knowledge, practice, cloud, cicd, linkage, or logs. |
+| `graph` | string |  |  | Which graph to search: code (default), knowledge, practice, linkage, or a registered custom graph type (the name of a `collectors.json` entry). Cloud inventory, CI/CD inventory and log graphs are registered custom types now, searched by the name their collector registered. |
 | `group_by_file` | boolean |  |  | Group results by file (default: false). Code graph only. |
 | `include_comments` | boolean |  |  | Include comment nodes in code search results (default: false). Comments are excluded by default to reduce noise. |
 | `include_source` | boolean |  |  | Include full source code (default: true). Code graph only. |
 | `include_tests` | boolean |  |  | Include test code (test/benchmark/example/fuzz/setup/teardown/fixture/mock/helper) in results. Default true. Code graph only — silently ignored on other graphs (mirrors path_prefix). Set false to exclude all test code from impl-style queries. Note: until per-language predicate-population tickets land, all code nodes have is_test=false so this filter is currently a no-op. |
-| `language` | string |  |  | Practice graph selector: names ONE practice graph to search (e.g. 'go', 'go-idioms'). Omit it, or pass 'all', to fan out across every loaded practice graph — that fan-out is the default and stays the default. Practice graph only; the same spelling query uses. |
+| `language` | string |  |  | LEGACY read-only practice selector naming ONE pre-singleton practice graph (e.g. 'go', 'go-idioms'). Practice is ONE combined graph now, so OMIT this to search the whole practice corpus. The 'all' fan-out sentinel is retired and is refused. Practice graph only; the same spelling query uses. |
 | `limit` | number |  |  | Max results per query (default: 10, max: 50). |
 | `mode` | string |  |  | Search mode, honored on the knowledge and registered custom-graph arms: 'hybrid' (default — BM25 and vector fused), 'text' (BM25 only — no query embedding and no rerank), 'vector' (vector only — requires an embedder). 'recent'/'temporal' are one recency boost (knowledge graph). Not honored on the code arm, which always fuses BM25 and vector when an embedder is available. 'similar' (knowledge graph). mode:'similar' takes a node_id and returns that node's nearest corpus neighbors by searching the node's OWN STORED vector (its embedding already on disk — NOT a fresh embedding of any query text), with the node itself EXCLUDED from results. Results are ranked by the client engine's reciprocal-rank fusion over the stored-vector (HNSW) arm — with no query text the order is pure stored-vector proximity — NOT a raw cosine similarity score. |
-| `name` | string |  |  | Graph identifier. Required when graph=logs (the per-query log graph queryID). Ignored for other graph types. |
+| `name` | string |  |  | Graph identifier, for the families keyed by name. |
 | `node_id` | string |  |  | The node whose nearest stored-vector neighbors to return when mode:'similar' is set (knowledge graph). The named node is resolved to its on-disk embedding and excluded from its own results. |
 | `path_prefix` | string |  |  | Filter to files under this path. Code graph only. |
 | `queries` | array of string |  |  | Batch search: array of query strings. Results deduplicated and merged. |
@@ -62,7 +63,8 @@ cloud searches need `account`. For the full parameter reference, run
 | `repos` | array of string |  |  | Search specific repos (e.g. ["agent","knowledge"]). Alternative to repo='all'. Code graph only. |
 | `repos[]` | string |  |  |  |
 | `rerank` | boolean |  |  | Apply post-fusion rerank when configured. Default true. Set false for cheap exact-symbol-name lookups where fan-in scoring suffices. |
-| `resource_type` | string |  |  | Cloud resource type filter prefix (e.g. 'ec2', 'ec2:instance'). Cloud graph only. |
+| `resource_type` | string |  |  | Resource type filter prefix (e.g. 'ec2', 'ec2:instance'), for a graph whose nodes carry a `resource_type`. |
+| `source_hub` | string |  |  | Practice SOURCE HUB id — narrows the ranked practice search to the nodes grouped under that hub, applied during ranking so a small hub returns its full top-N. Read arms spell it `source`; this tool spells it `source_hub`. |
 | `staleness` | boolean |  |  | Include index staleness info (default: false). Code graph only. |
 | `test_kinds` | array of string |  |  | Filter set for test classification kinds: any of test, benchmark, example, fuzz, setup, teardown, fixture, mock, helper. Empty/absent means no filter (combined with include_tests=true: all results pass; with include_tests=false: tests of any kind are dropped). Code graph only. Note: until per-language predicate-population tickets land, all code nodes have test_kind="" so this filter is currently a no-op. |
 | `test_kinds[]` | string |  |  |  |

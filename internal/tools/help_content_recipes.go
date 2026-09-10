@@ -7,8 +7,9 @@ const helpRecipes = "# Recipe DSL\n" +
 	"The recipe DSL EXTRACTS structured rows out of a source graph via a\n" +
 	"declarative pipeline of rules. Zero LLM at runtime — the interpreter\n" +
 	"is pure Go. A recipe is an ephemeral body an agent writes inline for\n" +
-	"one extraction and discards; nothing is stored, and a run writes\n" +
-	"nothing. Invoked via the `collect` tool.\n" +
+	"one extraction and discards; nothing about the BODY is stored. A run\n" +
+	"either returns the rows (`extract`) or lands them in the combined\n" +
+	"practice graph (`land`). Invoked via the `collect` tool.\n" +
 	"\n" +
 	"## When to use recipes\n" +
 	"\n" +
@@ -48,8 +49,9 @@ const helpRecipes = "# Recipe DSL\n" +
 	"\n" +
 	"   No seed_urls + transformer=\"recipe\" → the crawl is skipped and\n" +
 	"   the body runs against the already-cached raw graph. Iterate\n" +
-	"   without paying fetch cost. `force` is refused on a recipe run:\n" +
-	"   an extract writes nothing, so there is nothing to bypass.\n" +
+	"   without paying fetch cost. `force` is refused on a recipe run: a\n" +
+	"   landing never overwrites — a colliding id lands a versioned twin\n" +
+	"   and both rows are kept — so there is nothing to bypass.\n" +
 	"4. **Read the rows, edit the body, run it again.** The header\n" +
 	"   reports rows returned over rows matched, and any truncation\n" +
 	"   prints a line beginning `TRUNCATED by` naming the cap that fired\n" +
@@ -74,11 +76,12 @@ const helpRecipes = "# Recipe DSL\n" +
 	"\n" +
 	"    select page where {\"not\": {\"matches\": {\"of\": \"page.name\",\n" +
 	"                                           \"regex\": \"^(TOC|Preface)\"}}}\n" +
-	"    emit pattern { type := \"pattern\", name := page.name } as $pat\n" +
+	"    emit pattern { type := \"pattern\", identity := page.id,\n" +
+	"                   name := page.name } as $pat\n" +
 	"    traverse references out as $related\n" +
 	"    filter {\"not\": {\"matches\": {\"of\": \"page.name\",\n" +
 	"                                \"regex\": \"^(TOC|Preface)\"}}}\n" +
-	"    lookup pattern by page.name as $rel\n" +
+	"    lookup pattern by page.id as $rel\n" +
 	"    link $pat --[relates-to]--> $rel\n" +
 	"\n" +
 	"- `select` establishes source rows.\n" +
@@ -97,15 +100,20 @@ const helpRecipes = "# Recipe DSL\n" +
 	"The `collect` tool passes through:\n" +
 	"- `recipe_body: \"<DSL body>\"` — the body to execute (required when\n" +
 	"  `transformer:\"recipe\"`).\n" +
-	"- `extract: true` — required. A run returns rows and writes nothing,\n" +
-	"  so there is no other mode for it to be in.\n" +
-	"- `max_rows`, `max_bytes`, `offset` — the output ceilings and the\n" +
-	"  page cursor, described under \"Extract mode\" below.\n" +
+	"- `extract: true` — return the emitted rows and write nothing.\n" +
+	"- `land: true` — WRITE the emitted nodes into the combined practice\n" +
+	"  graph under a source hub. See \"Landing\" below.\n" +
+	"  A run must pass at least one of the two; neither is refused.\n" +
+	"- `max_rows`, `max_bytes`, `offset` — the EXTRACT-mode output\n" +
+	"  ceilings and page cursor, described under \"Extract mode\" below.\n" +
 	"\n" +
-	"THREE PARAMS ARE REFUSED BY NAME rather than accepted and dropped:\n" +
+	"FIVE PARAMS ARE REFUSED BY NAME rather than accepted and dropped:\n" +
 	"`recipe` (naming a saved recipe, which no longer exists), `dry_run`\n" +
-	"(there is no write to skip) and `force` (there is nothing to\n" +
-	"overwrite). Each refusal names the param and says why.\n" +
+	"(the extract run IS the preview of what a landing would write),\n" +
+	"`force` (a landing never overwrites, so there is nothing to bypass),\n" +
+	"and `max_rows` / `offset` ON A LANDING RUN (they window what you SEE,\n" +
+	"and a landing writes the whole emitted set). Each refusal names the\n" +
+	"param and says why. Both row params stay fully live on an extract.\n" +
 	"\n" +
 	"## Stats reported after a run\n" +
 	"\n" +
@@ -130,16 +138,28 @@ const helpRecipes = "# Recipe DSL\n" +
 	"### Flat emit (no cross-refs)\n" +
 	"\n" +
 	"    select section where {\"exists\": {\"of\": \"section.name\"}}\n" +
-	"    emit idiom { type := \"idiom\", name := section.name } as $id\n" +
+	"    emit idiom { type := \"idiom\", identity := section.id,\n" +
+	"                 name := section.name } as $id\n" +
 	"\n" +
 	"### Hierarchical emit with a parent-child link\n" +
 	"\n" +
 	"    select page\n" +
-	"    emit document { type := \"document\", name := page.name } as $doc\n" +
+	"    emit document { type := \"document\", identity := page.id,\n" +
+	"                    name := page.name } as $doc\n" +
 	"    traverse CONTAINS out\n" +
 	"    filter {\"kind\": {\"of\": \"node\", \"is\": \"section\"}}\n" +
-	"    emit section { type := \"section\", name := page.name } as $sec\n" +
+	"    emit section { type := \"section\", identity := node.id,\n" +
+	"                   name := page.name } as $sec\n" +
 	"    link $doc --[contains]--> $sec\n" +
+	"\n" +
+	"A bare head names the CURRENT row rather than the type it is spelled\n" +
+	"as, so `page.name` on the post-traverse rows reads each section's own\n" +
+	"heading. After a `traverse` with no `as` alias the legal heads are\n" +
+	"`edge`, `group`, `node` and `page` — `section` is not one of them — and\n" +
+	"because a bare head names the current row, `node.id` and `page.id`\n" +
+	"produce the SAME per-row identities here. The identity is spelled\n" +
+	"`node.id` because `node` names the row that was emitted, whatever its\n" +
+	"type.\n" +
 	"\n" +
 	"### Cross-reference via lookup (see canonical shape above)\n" +
 	"\n" +
@@ -152,8 +172,11 @@ const helpRecipes = "# Recipe DSL\n" +
 	"- **Two separate selects lose earlier bindings.** The rowset is\n" +
 	"  rebuilt each select; Vars on the old rows are discarded. Use one\n" +
 	"  pipeline if you need cross-emit references.\n" +
-	"- **`name := \"\"` on some rows produces skipped emits.** Intended —\n" +
-	"  avoids hex-ID target nodes from sections/pages without headings.\n" +
+	"- **`name := \"\"` on some rows produces skipped emits WHEN NO\n" +
+	"  `identity` IS SET.** A row is skipped only when BOTH are empty, so\n" +
+	"  a body carrying an identity lands its nameless rows rather than\n" +
+	"  dropping them. The skip avoids hex-ID target nodes from\n" +
+	"  sections/pages without headings.\n" +
 	"  Add a `{\"exists\": {\"of\": \"section.symbol_name\"}}` where-tree to be\n" +
 	"  louder about it, and read `skipped=` in the extract header.\n" +
 	"- **Regex is partial-match, not full-match.** `name ~= /Pattern/`\n" +
@@ -166,9 +189,12 @@ const helpRecipes = "# Recipe DSL\n" +
 	"  link-endpoint verification this now reports Stats.LinkMisses. If\n" +
 	"  the count is surprisingly high, one of your var bindings isn't\n" +
 	"  landing on the rowset the link is iterating over.\n" +
-	"- **Re-running an edited body is free.** A run writes nothing, so\n" +
-	"  there is no prior state to collide with — edit the body and run it\n" +
-	"  again as many times as you like.\n" +
+	"- **Re-running an edited body is free on an EXTRACT.** An extract\n" +
+	"  writes nothing, so there is no prior state to collide with — edit\n" +
+	"  the body and run it as many times as you like. Re-running a LANDING\n" +
+	"  is safe but not free: every emitted id that already exists lands a\n" +
+	"  versioned twin beside the resident, so iterate with extract and\n" +
+	"  land once you are happy.\n" +
 	"\n" +
 	"## How a recipe runs (client-side dispatch)\n" +
 	"\n" +
@@ -179,10 +205,12 @@ const helpRecipes = "# Recipe DSL\n" +
 	"DSL body (AST cached in-process on a hash of the body text),\n" +
 	"materializes the source graph once into an in-memory view (two reads\n" +
 	"— all nodes, then all edges — never a per-row query), interprets the\n" +
-	"rules into an in-memory result, and returns the extracted rows.\n" +
-	"NOTHING IS SHIPPED: the run reaches no target graph and no sink.\n" +
-	"StableID and translated-from lineage are owned by the recipe package\n" +
-	"itself — recipes never see those mechanics.\n" +
+	"rules into an in-memory result, and returns the emitted set. On an\n" +
+	"extract that is where it ends — the run reaches no target graph and\n" +
+	"no sink. On a landing the collect layer takes it from there, reading\n" +
+	"the target graph and writing ONE create_batch. StableID is owned by\n" +
+	"the recipe package itself — recipes never see that mechanic — and NO\n" +
+	"edge is ever built back into the raw source graph.\n" +
 	"\n" +
 	"The collect `type` (web vs pdf) is the source graph type the body is\n" +
 	"read against; an inline body carries none of its own, so the param is\n" +
@@ -200,9 +228,9 @@ const helpRecipes = "# Recipe DSL\n" +
 	"of writing anything. Nothing reaches a target graph, so it is safe to\n" +
 	"iterate on a recipe until it says what you meant.\n" +
 	"\n" +
-	"`recipe_body:` carries the body, and `extract: true` is required —\n" +
-	"a run returns rows and writes nothing, so extract is the only mode\n" +
-	"there is.\n" +
+	"`recipe_body:` carries the body. Pass `extract: true` alone to read\n" +
+	"the rows without writing; that run is also the exact preview of what\n" +
+	"a `land: true` run would write.\n" +
 	"\n" +
 	"    collect({ type: \"web\", id: \"hohpe-eip\", transformer: \"recipe\",\n" +
 	"              extract: true, recipe_body: \"select section\\nemit ...\" })\n" +
@@ -369,6 +397,7 @@ const helpRecipes = "# Recipe DSL\n" +
 	"    filter {\"matches\": {\"of\": \"section.symbol_name\",\n" +
 	"                        \"regex\": \"^[A-Z]\"}}\n" +
 	"    emit pattern {\n" +
+	"        identity := section.id\n" +
 	"        name := section.symbol_name\n" +
 	"        path := heading_path(\"CONTAINS\", \"symbol_name\", \" > \")\n" +
 	"        body := subtree_concat(\"CONTAINS\", \"body\", \"\\n\\n\", \"4\")\n" +
@@ -378,4 +407,5 @@ const helpRecipes = "# Recipe DSL\n" +
 	"the code blocks, tables and quotes a page's own flattened description\n" +
 	"leaves out. Use max_depth \"1\" instead for just the ordered immediate\n" +
 	"children.\n" +
-	""
+	"" +
+	helpRecipesLanding

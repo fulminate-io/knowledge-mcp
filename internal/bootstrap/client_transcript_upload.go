@@ -3,7 +3,7 @@
 // client_transcript_upload.go — the daemon's background transcript-upload loop.
 //
 // The `knowledge serve` daemon ships changed local CLI transcripts (~/.claude,
-// ~/.codex) to the cloud on a fixed hourly cadence so /usage analytics stay fresh
+// ~/.codex) to the cloud on a fixed ten-minute cadence so /usage analytics stay fresh
 // WITHOUT a manual `transcript-upload` invocation (the manual-only path let a large
 // backlog accumulate un-shipped). It reuses the SAME upload engine the subcommand runs
 // via cli.RunTranscriptUploadOnce — file-level incremental over the per-file size/mtime
@@ -22,16 +22,19 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/transcriptsync"
 )
 
-// transcriptUploadInterval is the hourly cadence of runTranscriptUploadLoop — a fixed
-// default for v1 (not config-driven). One batch skips every byte-identical session
+// transcriptUploadInterval is the ten-minute cadence of runTranscriptUploadLoop — a
+// fixed default for v1 (not config-driven). One batch skips every byte-identical session
 // (the size/mtime watermark short-circuits before parse), so the steady-state cost of a
-// tick with no changed transcripts is a corpus stat walk + one consent probe.
-const transcriptUploadInterval = 1 * time.Hour
+// tick with no changed transcripts is a corpus stat walk + one consent probe, and the
+// shorter cadence re-ships nothing: it spends that walk more often so a finished lane
+// reaches the cache sooner. What the interval alone buys is bounded by the upload's own
+// quiet window: a lane that has gone idle lands within that window plus one interval.
+const transcriptUploadInterval = 10 * time.Minute
 
 // transcriptUploadBootDelay is the delay before the daemon's FIRST upload pass fires
 // after boot. It runs OFF the bind / readiness critical path (spawned with `go` from
 // wireRuntimesBackground) so a freshly-started daemon catches up on any backlog without
-// waiting a full hour, yet the delay keeps it well clear of the MCP listener bind.
+// waiting a full interval, yet the delay keeps it well clear of the MCP listener bind.
 const transcriptUploadBootDelay = 1 * time.Minute
 
 // transcriptUploadOnce is the upload-batch function the daemon's ticker invokes. It is a
@@ -126,14 +129,14 @@ func logTranscriptUploadOutcome(
 // renders the upload health as absent rather than a healthy zero snapshot.
 //
 // When enabled it ships changed local CLI transcripts (~/.claude, ~/.codex) to
-// the cloud on a fixed hourly cadence so /usage analytics stay fresh WITHOUT a
+// the cloud on a fixed ten-minute cadence so /usage analytics stay fresh WITHOUT a
 // manual `transcript-upload` invocation (the manual-only path let a large backlog
 // pile up un-shipped). Reuses the SAME upload engine the subcommand runs
 // (cli.RunTranscriptUploadOnce → transcriptsync.Run) — file-level incremental via
 // the per-file size/mtime watermark, consent-gated, best-effort. Spawned under
 // ctx (c.wireCtx) so drainOnShutdown cancels both goroutines (no leak); a
 // boot-delay one-shot catches a freshly started daemon up without waiting the
-// full hour. Independent of the LLM pipeline (it must run even under
+// full interval. Independent of the LLM pipeline (it must run even under
 // --no-llm-pipeline / no summarizer configured). The loops present the daemon's
 // SINGLE shared cloud token source (c.buildCloudSyncTransport) and are gated on
 // live cloud-auth state (c.router.LoggedIn) so an unauthenticated daemon runs

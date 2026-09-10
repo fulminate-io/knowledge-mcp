@@ -82,11 +82,17 @@ func TestInterceptManage_Prune_AllTombstones(t *testing.T) {
 }
 
 // TestInterceptManage_Prune_GenericGraphRouting asserts prune routes a non-code,
-// non-knowledge graph (practice) generically via the Language selector — no
-// allowlist gate.
+// non-knowledge graph (practice) generically through the family's own selector
+// field — no allowlist gate.
+//
+// FOR PRACTICE THAT FIELD IS NOW NONE. The family is one combined graph, so a
+// prune targets it with no instance field and the operator-supplied name is not
+// an instance selector any more. Asserting the EMPTY value rather than dropping
+// the assertion is what catches a builder that starts sending a name again — the
+// server's practice policy row refuses one, so a name here is a refused prune.
 func TestInterceptManage_Prune_GenericGraphRouting(t *testing.T) {
 	ix := &fakeIndexer{affectedCount: 2}
-	handled, res := manageCall(t, ix, `{"operation":"prune","graph":"practice","name":"go"}`)
+	handled, res := manageCall(t, ix, `{"operation":"prune","graph":"practice"}`)
 	require.True(t, handled)
 	require.False(t, res.IsError, "prune: %s", toolResultText(res))
 
@@ -94,7 +100,8 @@ func TestInterceptManage_Prune_GenericGraphRouting(t *testing.T) {
 	require.Len(t, reqs, 1)
 	assert.Equal(t, knowledgev1.IndexRequest_INDEX_OP_PRUNE, reqs[0].GetOperation())
 	assert.Equal(t, "practice", reqs[0].GetTarget().GetGraph())
-	assert.Equal(t, "go", reqs[0].GetTarget().GetLanguage(), "practice routes name via Language")
+	assert.Empty(t, reqs[0].GetTarget().GetLanguage(), "practice carries no instance field")
+	assert.Empty(t, reqs[0].GetTarget().GetName(), "and does not fall through to a name")
 }
 
 // TestInterceptManage_Prune_RelativeBefore asserts a relative window ("24h") is

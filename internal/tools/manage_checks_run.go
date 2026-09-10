@@ -16,6 +16,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -87,6 +88,22 @@ func manageChecksRun(ctx context.Context, deps ClientDeps, gc GraphCaller, a man
 		}
 		req.Extra[corpusscan.ExtraKeyIncludeTests] = strconv.FormatBool(*a.IncludeTests)
 	}
+	// A PRESENT-BUT-EMPTY LIST SURVIVES TO THE ANALYZER TOO, which is why this is
+	// a nil test and not a length test. A caller who wrote "files": [] made a
+	// mistake and the analyzer refuses it naming the param; dropping the key here
+	// instead would silently widen their scan from the files they meant to name
+	// to the whole repository, which is the largest possible reading of a value
+	// they got wrong.
+	if a.Files != nil {
+		encoded, jerr := json.Marshal(a.Files)
+		if jerr != nil {
+			return errorResult("manage_checks run: encode files: " + jerr.Error())
+		}
+		if req.Extra == nil {
+			req.Extra = map[string]string{}
+		}
+		req.Extra[corpusscan.ExtraKeyFiles] = string(encoded)
+	}
 
 	findings, err := analyzer.Run(ctx, req)
 	if err != nil {
@@ -106,11 +123,25 @@ func manageChecksRun(ctx context.Context, deps ClientDeps, gc GraphCaller, a man
 	// already been clipped away before the classifier ever saw them.
 	v := corpusscan.ClassifyRun(findings)
 	rendered := foundation.TruncateTopK(findings, a.TopK)
-	body, rerr := foundation.RenderFindings(rendered)
+	// THE COMPACT ARM IS A RENDER CHOICE AND NOTHING ELSE. It is applied here,
+	// after the fold and after the clip, so it can move neither the verdict nor
+	// the counts nor what was withheld — only how many bytes the body spends
+	// saying it. The default comes from the analyzer's own resolver rather than
+	// from a rule spelled again here, so this face and the CLI cannot disagree
+	// about what an omitted flag means.
+	body, rerr := renderChecksBody(rendered, corpusscan.CompactRenderDefault(a.Compact, a.Files))
 	if rerr != nil {
 		return errorResult("manage_checks run: render findings: " + rerr.Error())
 	}
 	return textResult(renderRunVerdict(v, len(rendered), len(findings)) + body)
+}
+
+// renderChecksBody renders the findings body in the caller's chosen form.
+func renderChecksBody(findings []foundation.Finding, compact bool) (string, error) {
+	if compact {
+		return corpusscan.RenderCompact(findings)
+	}
+	return foundation.RenderFindings(findings)
 }
 
 // The verdict tokens. They are the machine-readable half of the line, so they are
@@ -163,14 +194,44 @@ func renderRunVerdict(v corpusscan.RunVerdict, rendered, total int) string {
 	return line
 }
 
+// ParseRunVerdict reads the verdict token back off a rendered run result and
+// reports whether the text carried one. It is the READER of the line
+// renderRunVerdict WRITES, and it lives here, beside the writer, for one reason:
+// the shape of that line then has exactly ONE owner. The CLI face consumes this
+// text — it asks the daemon to perform the run, so the scan reads the routed
+// corpus rather than a local store — and a consumer that re-derived the line's
+// shape in its own package would be a second copy, rotting silently.
+//
+// IT READS THE TOKEN AND NOTHING ELSE. The counters are a display; the token is
+// the machine-readable half, which is why the three values are exported
+// constants. An unrecognized shape returns ok=false rather than a guess: a
+// caller mapping this onto an exit status must be able to refuse, because a
+// verdict it could not read is not a clean corpus.
+func ParseRunVerdict(rendered string) (token string, ok bool) {
+	line, _, _ := strings.Cut(rendered, "\n")
+	prefix := corpusscan.AnalyzerName + ":"
+	if !strings.HasPrefix(line, prefix) {
+		return "", false
+	}
+	fields := strings.Fields(strings.TrimPrefix(line, prefix))
+	if len(fields) == 0 {
+		return "", false
+	}
+	switch fields[0] {
+	case VerdictClean, VerdictFlagged, VerdictInconclusive:
+		return fields[0], true
+	}
+	return "", false
+}
+
 // RunVerdictToken maps a verdict onto its token. INCONCLUSIVE outranks FLAGGED: a run that
 // could not execute part of its corpus has not established that the sites it did
 // flag are all of them.
 //
-// EXPORTED FOR ONE CALLER: the CLI's cross-face test drives the SAME shared
-// table of findings through this token and through the subcommand's exit
-// status, which is how "one classification, two faces" is asserted
-// behaviorally rather than grepped for.
+// EXPORTED FOR TWO CALLERS: the CLI face maps this token onto its exit status,
+// and its cross-face test drives the SAME shared table of findings through this
+// token and through the subcommand's exit status, which is how "one
+// classification, two faces" is asserted behaviorally rather than grepped for.
 func RunVerdictToken(v corpusscan.RunVerdict) string {
 	switch {
 	case v.Inconclusive():

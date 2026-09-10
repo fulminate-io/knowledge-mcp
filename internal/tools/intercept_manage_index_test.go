@@ -29,18 +29,29 @@ func TestManageGraphSelector(t *testing.T) {
 		assert.Empty(t, sel.GetName())
 		assert.Empty(t, sel.GetAccount())
 	})
-	t.Run("cloud routes name to Account", func(t *testing.T) {
-		sel := manageGraphSelector("cloud", "aws-prod")
-		assert.Equal(t, "aws-prod", sel.GetAccount())
-		assert.Empty(t, sel.GetName())
+	t.Run("a retired account-keyed family routes name nowhere", func(t *testing.T) {
+		// NO FAMILY IS ACCOUNT-KEYED ANY MORE. cloud and cicd were, and both are
+		// retired, so graphsel has no FieldAccount arm to reach. The selector must
+		// therefore carry no Account at all — a builder that still set it would be
+		// composing a field the server refuses.
+		sel := manageGraphSelector("cicd", "gh-org")
+		assert.Empty(t, sel.GetAccount(), "no builder may still route a name into Account")
 	})
-	t.Run("cicd routes name to Account", func(t *testing.T) {
-		assert.Equal(t, "gh-org", manageGraphSelector("cicd", "gh-org").GetAccount())
-	})
-	t.Run("practice routes name to Language", func(t *testing.T) {
+	t.Run("practice carries no instance field", func(t *testing.T) {
+		// INVERTED WITH THE COMBINED GRAPH, and this subtest is the most direct
+		// assertion of the old routing in the tree — a green run of it in its
+		// previous shape was positive evidence that manageGraphSelector had NOT
+		// been converted to derive through graphsel.
+		//
+		// Practice is a singleton, so a name is a label rather than a selector and
+		// the server's practice policy row refuses one. The six arms this builder
+		// feeds — set_metadata_overrides, rebuild_cache, prune, drop_graph, sync
+		// push and repair_edges — all depend on that.
 		sel := manageGraphSelector("practice", "go")
-		assert.Equal(t, "go", sel.GetLanguage())
+		assert.Empty(t, sel.GetLanguage(), "practice consumes no language on the wire any more")
+		assert.Empty(t, sel.GetName(), "and the name must not fall through to the default arm either")
 		assert.Empty(t, sel.GetRepo())
+		assert.Equal(t, "practice", sel.GetGraph())
 	})
 	t.Run("knowledge default leaves instance fields empty", func(t *testing.T) {
 		sel := manageGraphSelector("knowledge", "knowledge")
@@ -169,7 +180,7 @@ func manageCallWithDeleterAndShipper(
 func TestInterceptManage_SetMetadataOverrides(t *testing.T) {
 	ix := &fakeIndexer{}
 	handled, res := manageCall(t, ix,
-		`{"operation":"set_metadata_overrides","graph":"cloud","name":"acct-1","force_scalar":["region","az"],"force_edge":["owner"]}`)
+		`{"operation":"set_metadata_overrides","graph":"code","name":"repo-1","force_scalar":["region","az"],"force_edge":["owner"]}`)
 	require.True(t, handled)
 	require.False(t, res.IsError, "overrides: %s", toolResultText(res))
 
@@ -178,15 +189,20 @@ func TestInterceptManage_SetMetadataOverrides(t *testing.T) {
 	r := reqs[0]
 	assert.Equal(t, knowledgev1.IndexRequest_INDEX_OP_SET_METADATA_OVERRIDES, r.GetOperation())
 	require.NotNil(t, r.GetTarget())
-	assert.Equal(t, "cloud", r.GetTarget().GetGraph())
-	// cloud graphs route the name to the Account selector field (graph=cloud
-	// requires account); manageGraphSelector lowers it there, not onto Name.
-	assert.Equal(t, "acct-1", r.GetTarget().GetAccount())
+	assert.Equal(t, "code", r.GetTarget().GetGraph())
+	// Code graphs route the name to the Repo selector field (graph=code requires
+	// repo); manageGraphSelector lowers it there, not onto Name. Practice served
+	// as this subject while it held eight per-language graphs; it is a singleton
+	// now and routes no instance field at all, so it can no longer carry the
+	// claim that the name reaches the family's own field.
+	assert.Equal(t, "repo-1", r.GetTarget().GetRepo())
+	assert.Empty(t, r.GetTarget().GetName(), "an instance-keyed family must NOT route by Name")
+	assert.Empty(t, r.GetTarget().GetAccount(), "no family is account-keyed, so nothing may set it")
 	assert.Equal(t, "region,az", r.GetParams()["force_scalar"])
 	assert.Equal(t, "owner", r.GetParams()["force_edge"])
 
 	body := toolResultText(res)
-	assert.Contains(t, body, "metadata override config saved for cloud/acct-1")
+	assert.Contains(t, body, "metadata override config saved for code/repo-1")
 	assert.Contains(t, body, "force_scalar: [region, az]")
 	assert.Contains(t, body, "force_edge:   [owner]")
 }
@@ -194,7 +210,7 @@ func TestInterceptManage_SetMetadataOverrides(t *testing.T) {
 func TestInterceptManage_SetMetadataOverrides_EmptyRejected(t *testing.T) {
 	ix := &fakeIndexer{}
 	handled, res := manageCall(t, ix,
-		`{"operation":"set_metadata_overrides","graph":"cloud","name":"acct-1"}`)
+		`{"operation":"set_metadata_overrides","graph":"practice","name":"acct-1"}`)
 	require.True(t, handled)
 	assert.True(t, res.IsError, "empty force lists must be rejected")
 	assert.Empty(t, ix.requests(), "no Index RPC on the empty-payload guard")

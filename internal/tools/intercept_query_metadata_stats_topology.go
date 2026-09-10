@@ -66,7 +66,11 @@ func InterceptQueryMetadataStats(ctx context.Context, deps ClientDeps, params kg
 	label := domainGraphLabel(a)
 	rows := engine.BuildMetadataStatsRows(stats, override)
 	if a.Format == "json" {
-		return true, jsonResult(engine.MetadataStatsJSONPayload(label, a.Name, a.Language, a.Account, rows))
+		// `account` IS NOT PASSED, and that is the ruling rather than an omission:
+		// it keys no surviving family, so emitting it as a payload key made the
+		// json body differ between a call with the (accepted and ignored)
+		// parameter and the same call without it.
+		return true, jsonResult(engine.MetadataStatsJSONPayload(label, a.Name, a.Language, rows))
 	}
 	if len(rows) == 0 {
 		return true, textResult(fmt.Sprintf("No metadata stats yet for %s graph. %s", label, metadataStatsCollectHintClient(a)))
@@ -78,18 +82,18 @@ func InterceptQueryMetadataStats(ctx context.Context, deps ClientDeps, params kg
 // the context-sensitive repopulation hint for the empty-stats message.
 func metadataStatsCollectHintClient(a queryArgs) string {
 	switch a.Graph {
-	case "cloud", "cicd":
-		name := a.Account
-		if name == "" {
-			name = "<account>"
-		}
-		return fmt.Sprintf("Re-run `collect type:%s id:%s` to repopulate.", a.Graph, name)
 	case "practice":
 		return "Practice graph stats refresh when the graph is repopulated."
-	case "logs":
-		return "Re-run the log query that populated this graph; stats refresh at PROMOTE."
 	case "linkage":
-		return "Linkage stats refresh whenever a code/cloud collect runs `manage(operation: \"link\")`."
+		// THE ONE SURVIVING LINKER PASS, read at linker/client.go:66 (RunAll) and
+		// linker/dockerfile.go:23 (LinkDockerfiles). It runs from
+		// manage(operation:"link"), which sweeps every code graph, and from the
+		// post-collect tail of a CODE collect, which runs the same pass scoped to
+		// the graph that was just collected — and from nothing else. THE TRIGGER
+		// MOVED HERE FROM THE CI/CD COLLECT when that family was retired: the pass
+		// reads code graphs on both sides, so it now fires where its input changes
+		// rather than where an inherited allowlist put it.
+		return "Linkage stats refresh when the cross-graph linker runs: `manage(operation: \"link\")`, or a code collect, which runs the same pass."
 	default:
 		return "Run any collect/mutate against this graph; stats refresh at PROMOTE."
 	}

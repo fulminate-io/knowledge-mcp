@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "knowledge custom-collector tool input (v1)",
+  "description": "The MINIMUM input schema a custom collector's MCP tool must advertise. The client calls the tool with the collect id (the graph instance the result lands in) and the collect params object verbatim. A tool whose advertised inputSchema does not declare at least this is REFUSED at registration and at collect.",
+  "type": "object",
+  "required": ["id"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "The collect id. It names the graph INSTANCE the result lands in; the registration name is the graph family."
+    },
+    "params": {
+      "type": "object",
+      "description": "The collect params object, passed through verbatim. The provider's own tool schema declares what it accepts inside."
+    },
+    "context": {
+      "type": "object",
+      "description": "The DECLARED FOREIGN-GRAPH CONTEXT, filled by the client from what this collector's registration entry declares it needs, and sent only when the entry declares something. It is an OBJECT KEYED BY GRAPH-TYPE NAME — `code`, or any graph type registered on the daemon — and each key holds an array of {graph_name, nodes[], edges[]}; a node carries the declared subset of {id, type, symbol_name, file_path, content, metadata} and an edge the declared subset of {from_id, to_id}. A family's declaration selects nodes either by naming node types or by setting all_node_types, which admits every node of that family whatever its type; declaring both is refused. The key set is whatever the entry declared, so it is not a fixed list: a family the entry did not name has no key at all, while a family it named that matched no graph has a key holding an empty array. Declared-only: a family, field or metadata key the entry did not name is never sent, and a collector that declares nothing receives no context key at all. It is an OPTIONAL property: a tool whose advertised inputSchema does not declare it is admitted and simply receives no block. See docs/guides/tools/custom_collector.md."
+    }
+  }
+}

@@ -5,6 +5,7 @@ package linker
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -44,6 +45,46 @@ func LinkDockerfiles(ctx context.Context, gc GraphCaller, opts LinkOptions) (int
 		linkCount += n
 	}
 	return linkCount, nil
+}
+
+// LinkDockerfilesInGraph runs the Dockerfile pass against ONE named code graph
+// and nothing else. It is the post-collect tail's entry point; LinkDockerfiles
+// above is the manual operation's, and the difference between them is breadth
+// rather than behavior.
+//
+// WHY IT EXISTS RATHER THAN THE TAIL CALLING LinkDockerfiles. The pass reads
+// code graphs on both sides, so its trigger follows its input and fires after a
+// CODE collect. LinkDockerfiles enumerates every non-overlay code graph on the
+// machine and pays two full keyset drains — NodeFile and NodePackage — per
+// graph, so wiring the tail to it would add 2N drains to every code collect on a
+// machine holding N code repos, for edges that can only ever be derived inside
+// the one graph that just changed. The collected graph's name is already known
+// at the tail, so the enumeration buys nothing there either.
+//
+// IT CARRIES THE TWO THINGS THE UNIT DOES NOT, and both were in the enumerating
+// wrapper rather than in linkDockerfilesInRepo:
+//   - the withVocabCache wrap, without which emitLink's Stats seam is read once
+//     PER EMITTED EDGE instead of once per pass;
+//   - the "@" overlay-name skip, without which a branch-overlay graph would be
+//     linked into as though it were a base repo.
+//
+// AN EMPTY NAME IS AN ERROR, NOT A SWEEP. Falling back to enumeration on a
+// missing name would silently restore the cross-graph fan-out this entry point
+// exists to prevent, and it would do so exactly when the wiring is broken. The
+// caller decides what a wiring defect costs it: the post-collect tail is
+// best-effort and warns.
+func LinkDockerfilesInGraph(ctx context.Context, gc GraphCaller, opts LinkOptions, graphName string) (int, error) {
+	if gc == nil {
+		return 0, nil
+	}
+	if graphName == "" {
+		return 0, errors.New("linker.LinkDockerfilesInGraph: a graph name is required; " +
+			"this pass links inside ONE code graph and has no all-graphs fallback")
+	}
+	if strings.Contains(graphName, "@") {
+		return 0, nil
+	}
+	return linkDockerfilesInRepo(ctx, withVocabCache(gc), opts, graphName)
 }
 
 // linkDockerfilesInRepo processes all Dockerfiles in a single code repo and

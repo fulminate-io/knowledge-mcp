@@ -34,6 +34,17 @@ import (
 // literal "format", which both render paths decode from an anonymous struct.
 var deleteToolReadKeys = []string{
 	"ids", "id", "older_than", "type", "session_id", "dry_run", "hard", "graph", "language", "repo", "account", "format",
+	// source is the practice SOURCE HUB selection axis. SIDE B of the handshake:
+	// the same key is listed in package tools, and a field added on one side and
+	// not the other fails whichever side was not updated.
+	"source",
+	// source_hub is THE SAME AXIS under the spelling the mutate arms publish, and
+	// it is read here for the same reason the delete tool's `source` is: one
+	// compiler serves both tools. It is deliberately NOT declared by the delete
+	// tool's own schema — that tool publishes `source` — so on side B it is
+	// carried as a read key credited to the mutate schema rather than as a key
+	// delete must declare.
+	"source_hub",
 }
 
 // deleteDecodeSites names every function that decodes the DELETE tool's caller

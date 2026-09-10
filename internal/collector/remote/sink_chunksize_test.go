@@ -52,6 +52,12 @@ type recordingIngest struct {
 	// chunkErr, when set, fails every CollectChunk and records none, so a test can
 	// drive the upload-failure early return.
 	chunkErr error
+	// chunkErrAfter ADMITS that many chunks before chunkErr starts firing, which
+	// is the only way to drive a MID-COLLECT failure — the state where earlier
+	// chunks have really landed and the refusal is about a later one. Zero (the
+	// default) fails from the very first chunk, which is what every test written
+	// against chunkErr alone expects.
+	chunkErrAfter int
 	// finalizeID, when non-empty, is what Finalize returns — which is what makes
 	// the sink POLL the tail at all. Empty (the default) keeps every existing test
 	// on the no-id path it was written against.
@@ -70,6 +76,9 @@ func (e *recordingIngest) CollectChunk(
 ) (*connect.Response[knowledgev1.CollectChunkResponse], error) {
 	e.mu.Lock()
 	failWith := e.chunkErr
+	if failWith != nil && len(e.chunks) < e.chunkErrAfter {
+		failWith = nil // still inside the admitted prefix
+	}
 	if failWith == nil {
 		e.chunks = append(e.chunks, proto.Clone(req.Msg).(*knowledgev1.CollectChunkRequest))
 	}
@@ -138,13 +147,6 @@ func (e *recordingIngest) FinalizeStatus(
 		st = knowledgev1.FinalizeState_FINALIZE_STATE_UNKNOWN
 	}
 	return connect.NewResponse(&knowledgev1.FinalizeStatusResponse{State: st}), nil
-}
-
-func (e *recordingIngest) FetchCloudSubgraph(
-	context.Context,
-	*connect.Request[knowledgev1.FetchCloudSubgraphRequest],
-) (*connect.Response[knowledgev1.FetchCloudSubgraphResponse], error) {
-	return connect.NewResponse(&knowledgev1.FetchCloudSubgraphResponse{}), nil
 }
 
 // startRecordingIngest stands up an h2c httptest.Server fronting a recordingIngest

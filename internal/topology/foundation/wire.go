@@ -27,7 +27,7 @@ import (
 // scopePayload seeds a Compile query payload with the graph selector keys,
 // routing the single instance name into the field the server resolver keys off
 // per graph type (tools_graph_routing.go ResolveGraphDB): code graphs scope via
-// repo, cloud/cicd via account, every other graph via name. An empty name
+// repo, practice via language, every other graph via name. An empty name
 // leaves only the graph key (knowledge / linkage need no instance). This is the
 // payload-key twin of graphTarget below; both must agree so the Compile-based
 // and raw-plan helpers scope identically.
@@ -35,7 +35,16 @@ func scopePayload(graphType kgtypes.GraphType, name string) map[string]any {
 	if name == "" {
 		return map[string]any{"graph": string(graphType)}
 	}
-	return graphsel.ScopePayload(graphType, name, false)
+	payload := graphsel.ScopePayload(graphType, name, false)
+	// PRACTICE ADDRESSES A NAMED GRAPH THROUGH THE LEGACY READ SELECTOR. The
+	// family became a singleton, so graphsel puts no instance key on it — right
+	// for a write and for an unselected read, and wrong for a helper whose whole
+	// argument is a graph NAME. Left derived, every named practice read here would
+	// silently address the combined graph instead of the one it was handed.
+	if graphType == kgtypes.GraphPractice {
+		payload["language"] = name
+	}
+	return payload
 }
 
 // graphTarget builds the envelope GraphSelector for the raw-QueryPlan helpers
@@ -50,7 +59,13 @@ func graphTarget(graphType kgtypes.GraphType, name string) *knowledgev1.GraphSel
 	if graphType == "" && name == "" {
 		return nil
 	}
-	return graphsel.GraphSelectorFor(graphType, name, false)
+	target := graphsel.GraphSelectorFor(graphType, name, false)
+	// The legacy practice read, for the reason scopePayload above records. The two
+	// must agree, which is why the exception is spelled on both.
+	if graphType == kgtypes.GraphPractice && name != "" {
+		target.Language = name
+	}
+	return target
 }
 
 // executeQuery compiles a query payload to an ExecuteRequest and runs it over
@@ -387,8 +402,8 @@ func FetchAllEdges(ctx context.Context, caller GraphCaller, graphType kgtypes.Gr
 
 // FetchGraphNames enumerates every loaded graph of graphType in ONE Execute: a
 // query(mode:modules) compiled to RETURN_MODE_GRAPH_NAMES whose graph_names
-// carrier decodes to []*knowledgev1.GraphInfo. The exposure family's
-// ListGraphsLite(GraphCloud) read becomes this call. Returns the full
+// carrier decodes to []*knowledgev1.GraphInfo. It is the wire form of a
+// ListGraphsLite read for any graph type. Returns the full
 // []*GraphInfo (callers project Name themselves). It returns pointers (not a
 // value slice) because GraphInfo embeds a proto message-state mutex — a value
 // slice would trip copylocks.

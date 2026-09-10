@@ -198,10 +198,13 @@ func TestTruncate(t *testing.T) {
 // name into the selector field the server's resolver actually keys on — practice
 // via Language, code via REPO (the code resolver rejects name-keyed selectors
 // before any lookup, so routing code through Name silently fails every
-// cross-graph code fetch and drops every born-link referent), cloud and cicd via
-// ACCOUNT (same rejection shape — resolveAccountGraph errors with "graph=cloud
-// requires account"), everything else via Name. Fails-when-absent: reverting any
-// family to the Name branch turns that family's assertion red.
+// cross-graph code fetch and drops every born-link referent), everything else
+// via Name. Fails-when-absent: reverting any family to the Name branch turns
+// that family's assertion red.
+//
+// THE ACCOUNT-KEYED ROW IS GONE WITH ITS FAMILIES. cloud and cicd were the two,
+// and both are retired; the row below asserts what a retired name does INSTEAD,
+// which is take the Name-keyed default like any unregistered string.
 func TestGraphTarget_PerFamilySelectorField(t *testing.T) {
 	assert.Nil(t, graphTarget("", "ignored"), "empty graph type targets knowledge/default")
 
@@ -215,18 +218,20 @@ func TestGraphTarget_PerFamilySelectorField(t *testing.T) {
 	assert.Empty(t, code.GetName(), "a name-keyed code selector fails server-side validation")
 	assert.Empty(t, code.GetLanguage())
 
-	cloud := graphTarget("cloud", "prod")
-	assert.Equal(t, "prod", cloud.GetAccount(), "cloud graphs are Account-keyed on the server")
-	assert.Empty(t, cloud.GetName(), "a name-keyed cloud selector fails server-side validation")
+	retired := graphTarget("cicd", "github")
+	assert.Empty(t, retired.GetAccount(),
+		"no family is Account-keyed any more, so no builder may still route a name there")
+	assert.Equal(t, "github", retired.GetName(),
+		"a retired name takes the Name-keyed default, exactly as any unregistered string does")
 
-	cicd := graphTarget("cicd", "github")
-	assert.Equal(t, "github", cicd.GetAccount(), "cicd graphs are Account-keyed on the server")
-	assert.Empty(t, cicd.GetName(), "a name-keyed cicd selector fails server-side validation")
-
-	logs := graphTarget("logs", "query-123")
-	assert.Equal(t, "query-123", logs.GetName())
-	assert.Empty(t, logs.GetRepo())
-	assert.Empty(t, logs.GetAccount())
+	// THE NAME-KEYED ROW IS A REGISTERED CUSTOM TYPE. It used to be logs, which
+	// was the builtin name-keyed family; a retired name never legitimately
+	// reaches this builder, and the default arm serves every registered type the
+	// same way, so the row keeps its subject.
+	custom := graphTarget("acme-tracker", "board-a")
+	assert.Equal(t, "board-a", custom.GetName())
+	assert.Empty(t, custom.GetRepo())
+	assert.Empty(t, custom.GetAccount())
 
 	// omitDefaultName=false: an explicit "default" name is still carried, so a
 	// name-keyed family addressed as "default" is not silently blanked.

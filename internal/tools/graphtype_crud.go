@@ -1,86 +1,42 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// graphtype_crud.go — per-op handlers for the custom_collector tool's
-// register/update/delete/list operations + the args->proto builder and the
-// list renderer. The dispatch entry point lives in graphtype.go::
-// InterceptGraphType; this file holds the per-op bodies.
+// graphtype_crud.go — the custom_collector tool's ONE operation, `list`, and the
+// two renderers over it. The dispatch entry point lives in graphtype.go::
+// InterceptGraphType; this file holds the body.
+//
+// THE WRITE HANDLERS WENT WITH THE REGISTRATION CONTRACT. register, update and
+// delete wrote a record the config file now owns, and their args-to-proto
+// builder went with them; the live half of their provider check (dial the
+// provider, assert the tool's schemas) moved to `knowledge collector add`, which
+// dials before writing the entry, and the collect path runs the same check
+// through the same verifiedTool it always did.
 
 package tools
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
 
-// handleGraphTypeRegister builds the gen record from args and creates it. The
-// CRUD client runs validateRegistration (record-shape + built-in collision)
-// before the wire call, so structural problems surface at the caller.
-func handleGraphTypeRegister(ctx context.Context, deps ClientDeps, a graphTypeArgs) kgtools.ToolResult {
-	cc := deps.GraphTypeCRUD()
-	if cc == nil {
-		return errorResult("custom_collector:register: graphTypeCRUD not wired — constructClient degraded at boot")
+// renderProvider names the provider transport a record carries, for the list
+// table. Under the config-file contract a freshly written record carries NO
+// provider and renders "-", which is the ordinary case rather than the odd one:
+// the connection half lives in the file and never reaches the server. A record
+// that does render one is a legacy record from the retired register tool.
+func renderProvider(col *knowledgev1.CollectorSpec) string {
+	switch {
+	case col.GetStdio() != nil:
+		return "stdio:" + col.GetStdio().GetCommand()
+	case col.GetHttp() != nil:
+		return "http:" + col.GetHttp().GetUrl()
+	default:
+		return "-"
 	}
-	if strings.TrimSpace(a.Name) == "" {
-		return errorResult("custom_collector:register: name is required")
-	}
-	d, err := graphTypeDefFromArgs(a)
-	if err != nil {
-		return errorResult("custom_collector:register: " + err.Error())
-	}
-	if err := cc.Create(ctx, d); err != nil {
-		return errorResult("custom_collector:register: " + err.Error())
-	}
-	return textResult(fmt.Sprintf("graph type %q registered (binary=%s transport=%s)",
-		d.GetName(), d.GetCollector().GetBinaryPath(), d.GetCollector().GetParamTransport()))
-}
-
-// handleGraphTypeUpdate re-writes an existing record. Update is a full re-write
-// (supply every field you want persisted), mirroring the worker update
-// semantics, and enforces the same validateRegistration gate as register.
-func handleGraphTypeUpdate(ctx context.Context, deps ClientDeps, a graphTypeArgs) kgtools.ToolResult {
-	cc := deps.GraphTypeCRUD()
-	if cc == nil {
-		return errorResult("custom_collector:update: graphTypeCRUD not wired — constructClient degraded at boot")
-	}
-	if strings.TrimSpace(a.Name) == "" {
-		return errorResult("custom_collector:update: name is required")
-	}
-	d, err := graphTypeDefFromArgs(a)
-	if err != nil {
-		return errorResult("custom_collector:update: " + err.Error())
-	}
-	if err := cc.Update(ctx, d); err != nil {
-		return errorResult("custom_collector:update: " + err.Error())
-	}
-	return textResult(fmt.Sprintf("graph type %q updated", d.GetName()))
-}
-
-// handleGraphTypeDelete removes a registered graph type, classifying not-found
-// via the graphclient.ErrNotFound the CRUD client maps from the wire.
-func handleGraphTypeDelete(ctx context.Context, deps ClientDeps, a graphTypeArgs) kgtools.ToolResult {
-	cc := deps.GraphTypeCRUD()
-	if cc == nil {
-		return errorResult("custom_collector:delete: graphTypeCRUD not wired — constructClient degraded at boot")
-	}
-	name := strings.TrimSpace(a.Name)
-	if name == "" {
-		return errorResult("custom_collector:delete: name is required")
-	}
-	if err := cc.Delete(ctx, name); err != nil {
-		if errors.Is(err, graphclient.ErrNotFound) {
-			return errorResult(fmt.Sprintf("custom_collector:delete: graph type %q not found (use custom_collector(operation:\"list\") to enumerate registered types)", name))
-		}
-		return errorResult("custom_collector:delete: " + err.Error())
-	}
-	return textResult(fmt.Sprintf("graph type %q deleted", name))
 }
 
 // handleGraphTypeList enumerates registered graph types, sorted by name for
@@ -102,103 +58,6 @@ func handleGraphTypeList(ctx context.Context, deps ClientDeps, a graphTypeArgs) 
 	return textResult(formatGraphTypesTable(defs))
 }
 
-// --- args -> proto ---
-
-// collectorArgs / behaviorArgs / overrideArgs mirror the nested schema objects.
-// The booleans are *bool so an omitted key stays unset (proto field presence),
-// distinguishing "inherit" from explicit false.
-type collectorArgs struct {
-	BinaryPath     string               `json:"binary_path"`
-	ParamTransport string               `json:"param_transport"`
-	ParamSchema    map[string]paramArgs `json:"param_schema"`
-}
-
-type paramArgs struct {
-	Type     string `json:"type"`
-	Required bool   `json:"required"`
-}
-
-type behaviorArgs struct {
-	Syncable        *bool             `json:"syncable"`
-	Summarizable    *bool             `json:"summarizable"`
-	Embeddable      *bool             `json:"embeddable"`
-	EmbedFields     []string          `json:"embed_fields"`
-	SummarizeFields []string          `json:"summarize_fields"`
-	Bm25Fields      []string          `json:"bm25_fields"`
-	Extra           map[string]string `json:"extra"`
-}
-
-type overrideArgs struct {
-	Summarizable    *bool    `json:"summarizable"`
-	Embeddable      *bool    `json:"embeddable"`
-	EmbedFields     []string `json:"embed_fields"`
-	SummarizeFields []string `json:"summarize_fields"`
-	Bm25Fields      []string `json:"bm25_fields"`
-}
-
-// graphTypeDefFromArgs builds the gen *knowledgev1.GraphTypeDef from the parsed
-// args, unmarshalling the collector/behavior/node_types RawMessage objects into
-// the proto sub-messages. Returns an error only when a nested object is
-// malformed JSON.
-func graphTypeDefFromArgs(a graphTypeArgs) (*knowledgev1.GraphTypeDef, error) {
-	d := &knowledgev1.GraphTypeDef{Name: strings.TrimSpace(a.Name)}
-
-	if len(a.Collector) > 0 {
-		var ca collectorArgs
-		if err := json.Unmarshal(a.Collector, &ca); err != nil {
-			return nil, fmt.Errorf("collector: %w", err)
-		}
-		col := &knowledgev1.CollectorSpec{
-			BinaryPath:     ca.BinaryPath,
-			ParamTransport: ca.ParamTransport,
-		}
-		if len(ca.ParamSchema) > 0 {
-			col.ParamSchema = make(map[string]*knowledgev1.ParamSpec, len(ca.ParamSchema))
-			for k, p := range ca.ParamSchema {
-				col.ParamSchema[k] = &knowledgev1.ParamSpec{Type: p.Type, Required: p.Required}
-			}
-		}
-		d.Collector = col
-	}
-
-	if len(a.Behavior) > 0 {
-		var ba behaviorArgs
-		if err := json.Unmarshal(a.Behavior, &ba); err != nil {
-			return nil, fmt.Errorf("behavior: %w", err)
-		}
-		d.Behavior = &knowledgev1.BehaviorDefaults{
-			Syncable:        ba.Syncable,
-			Summarizable:    ba.Summarizable,
-			Embeddable:      ba.Embeddable,
-			EmbedFields:     ba.EmbedFields,
-			SummarizeFields: ba.SummarizeFields,
-			Bm25Fields:      ba.Bm25Fields,
-			Extra:           ba.Extra,
-		}
-	}
-
-	if len(a.NodeTypes) > 0 {
-		var nts map[string]overrideArgs
-		if err := json.Unmarshal(a.NodeTypes, &nts); err != nil {
-			return nil, fmt.Errorf("node_types: %w", err)
-		}
-		if len(nts) > 0 {
-			d.NodeTypes = make(map[string]*knowledgev1.NodeTypeOverride, len(nts))
-			for nt, ov := range nts {
-				d.NodeTypes[nt] = &knowledgev1.NodeTypeOverride{
-					Summarizable:    ov.Summarizable,
-					Embeddable:      ov.Embeddable,
-					EmbedFields:     ov.EmbedFields,
-					SummarizeFields: ov.SummarizeFields,
-					Bm25Fields:      ov.Bm25Fields,
-				}
-			}
-		}
-	}
-
-	return d, nil
-}
-
 // --- render ---
 
 // graphTypesAsJSON returns a marshaling-friendly view of the record list for
@@ -208,9 +67,9 @@ func graphTypesAsJSON(defs []*knowledgev1.GraphTypeDef) []map[string]any {
 	for _, d := range defs {
 		b := d.GetBehavior() // nil-safe getter; b may be nil
 		out = append(out, map[string]any{
-			"name":        d.GetName(),
-			"binary_path": d.GetCollector().GetBinaryPath(),
-			"transport":   d.GetCollector().GetParamTransport(),
+			"name":     d.GetName(),
+			"tool":     d.GetCollector().GetTool(),
+			"provider": renderProvider(d.GetCollector()),
 			"behavior": map[string]any{
 				"syncable":         behaviorBool(b, func(x *knowledgev1.BehaviorDefaults) *bool { return x.Syncable }),
 				"summarizable":     behaviorBool(b, func(x *knowledgev1.BehaviorDefaults) *bool { return x.Summarizable }),
@@ -248,21 +107,22 @@ func emptyDash(s string) string {
 }
 
 // formatGraphTypesTable renders the list as a markdown table surfacing name +
-// collector + behavior cascade flags. Same empty-case messaging shape as
-// log_backend:list.
+// collector + behavior cascade flags. The empty case names the registration
+// path rather than reporting a bare zero, so a caller who has registered
+// nothing yet is told what to do next.
 func formatGraphTypesTable(defs []*knowledgev1.GraphTypeDef) string {
 	if len(defs) == 0 {
-		return "No graph types registered. Use custom_collector(operation: \"register\", ...) to add one."
+		return "No custom collector families are known to the server. Registration is a config file: `knowledge collector add` writes an entry, and the family's behavior record appears here after its first collect."
 	}
 	var sb strings.Builder
-	sb.WriteString("| name | binary | transport | syncable | summarizable | embeddable | overrides |\n")
-	sb.WriteString("|------|--------|-----------|----------|--------------|------------|-----------|\n")
+	sb.WriteString("| name | provider | tool | syncable | summarizable | embeddable | overrides |\n")
+	sb.WriteString("|------|----------|------|----------|--------------|------------|-----------|\n")
 	for _, d := range defs {
 		b := d.GetBehavior()
 		fmt.Fprintf(&sb, "| %s | %s | %s | %s | %s | %s | %d |\n",
 			d.GetName(),
-			emptyDash(d.GetCollector().GetBinaryPath()),
-			emptyDash(d.GetCollector().GetParamTransport()),
+			emptyDash(renderProvider(d.GetCollector())),
+			emptyDash(d.GetCollector().GetTool()),
 			triBool(b.GetSyncable, b != nil && b.Syncable != nil),
 			triBool(b.GetSummarizable, b != nil && b.Summarizable != nil),
 			triBool(b.GetEmbeddable, b != nil && b.Embeddable != nil),

@@ -4,24 +4,24 @@ package tools
 
 const helpPatterns = `# Pattern Catalog
 
-The pattern catalog lives in two roles across multiple practice graphs (the practice graph partitions by ` + "`language`" + ` slug — overloaded here for non-language slugs):
+The pattern catalog lives in two roles inside ONE practice graph. There used to be a graph per language slug; there is now a single combined graph in which each node names its origin by a ` + "`source`" + ` HUB — a node of type ` + "`source`" + ` carrying a ` + "`kind`" + ` marker (a language, a catalog, or a collected run). Every read narrows with ` + "`source:<hub id>`" + ` and every write that CREATES a node groups it with ` + "`source_hub:<hub id>`" + `. A ` + "`link`" + ` or an ` + "`unlink`" + ` may carry ` + "`source_hub`" + ` too, and it means something different there: an edge belongs to no hub, so the param does not GROUP the edge — it SCOPES the two endpoints, and both ` + "`from`" + ` and ` + "`to`" + ` must already be grouped under that hub or the call is refused naming the endpoint and its actual hub. Omit it, as the link examples below do, to address the whole graph:
 
 **Architecture patterns (PRESCRIPTIVE — wired via ` + "`pattern_ids`" + ` + ` + "`uses`" + ` edges):**
 
-- ` + "`language=\"knowledge-architecture\"`" + ` — concrete patterns instantiated in this codebase. 11 entries today (see survey).
-- ` + "`language=\"design-patterns\"`" + ` — codebase-agnostic library of generic templates. Earned bottom-up: only patterns that have ≥1 concrete instance in a project graph.
+- the ` + "`knowledge-architecture`" + ` hub — concrete patterns instantiated in this codebase. 11 entries today (see survey).
+- the ` + "`design-patterns`" + ` hub — codebase-agnostic library of generic templates. Earned bottom-up: only patterns that have ≥1 concrete instance in a project graph.
 
 **Language patterns (DEFENSIVE — wired via ` + "`language_patterns`" + ` + ` + "`audits`" + ` edges):**
 
-- ` + "`language=\"go\"`" + `, ` + "`language=\"python\"`" + `, ` + "`language=\"typescript\"`" + `, etc. — language-specific anti-patterns and best-practices, identified by ` + "`type=\"finding\"`" + ` + ` + "`metadata.dsl_pattern`" + ` set. The Go corpus has 19+ entries as of 2026-05 (e.g., http.DefaultClient, sync.Map, exec.CommandContext without LookPath). The scanner worker enumerates these via ` + "`query({graph:\"practice\", language:\"go\", type:\"finding\", meta:{dsl_pattern:\"*\"}, format:\"json\", fields:[...]})`" + `.
+- the ` + "`go`" + `, ` + "`python`" + ` and ` + "`typescript`" + ` hubs, etc. — language-specific anti-patterns and best-practices, identified by ` + "`type=\"finding\"`" + ` + ` + "`metadata.dsl_pattern`" + ` set. The Go corpus held 24 such entries when this line was last measured, 2026-09-06 (e.g., http.DefaultClient, sync.Map, exec.CommandContext without LookPath). The scanner worker enumerates these via ` + "`query({graph:\"practice\", source:\"<go hub id>\", type:\"finding\", meta:{dsl_pattern:\"*\"}, format:\"json\", fields:[...]})`" + `.
 
 The two roles are independent on tickets/plans — a ticket can carry any combination of ` + "`pattern_ids`" + ` (architecture) and ` + "`language_patterns`" + ` (language). The planner builds to architecture; the reviewer audits the plan against language smells.
 
 ## Querying the catalog
 
-  query({ "graph": "practice", "language": "knowledge-architecture" })
-  query({ "graph": "practice", "language": "knowledge-architecture", "text": "registry" })
-  query({ "id": "<pattern_id>", "graph": "practice", "language": "knowledge-architecture" })
+  query({ "graph": "practice", "source": "<knowledge-architecture hub id>" })
+  query({ "graph": "practice", "source": "<knowledge-architecture hub id>", "text": "registry" })
+  query({ "id": "<pattern_id>", "graph": "practice" })
   assemble({ "id": "<pattern_id>" })
 
 ` + "`assemble`" + ` walks the child tree and renders ` + "`## Applies when`" + ` / ` + "`## Avoid when`" + ` / ` + "`## Examples`" + ` / ` + "`## References`" + ` from the use_case, example, and reference nodes linked off the parent.
@@ -39,11 +39,11 @@ Patterns are parent nodes with typed child nodes linked via edges — not a sing
 
 A finding in a CHECKS graph becomes an EXECUTABLE CHECK when it carries check_type metadata. One node carries both halves: the prose in the body fields, the machine check in metadata. A check is a finding — there is no separate node type.
 
-WHERE CHECKS LIVE: ONE graph, addressed as graph:"checks" with no language or name — it is a singleton. Language is a LABEL on each node (the ` + "`language`" + ` contract key), not a graph selector, so a scan for one language narrows within the single graph. NOT the practice graph. Practice graphs hold prose guidance and model entries an LLM reads; checks graphs hold executable assertions and the fixture example nodes that validate them. The separation is structural, and it is what keeps fixture code — written deliberately to be wrong so a check has something to fire on — out of the ranked corpus that answers questions about good practice. CHECK nodes ARE indexed and findable by intent through ranked and semantic search; FIXTURE example nodes are excluded from every ranked corpus by the server's per-graph node-type allow-list, which is what keeps deliberately-wrong code from ever answering a question.
+WHERE CHECKS LIVE: ONE graph, addressed as graph:"checks" with no language or name — it is a singleton. Language is a LABEL on each node (the ` + "`language`" + ` contract key), not a graph selector, so a scan for one language narrows within the single graph. NOT the practice graph. The practice graph holds prose guidance and model entries an LLM reads; the checks graph holds executable assertions and the fixture example nodes that validate them. The separation is structural, and it is what keeps fixture code — written deliberately to be wrong so a check has something to fire on — out of the ranked corpus that answers questions about good practice. CHECK nodes ARE indexed and findable by intent through ranked and semantic search; FIXTURE example nodes are excluded from every ranked corpus by the server's per-graph node-type allow-list, which is what keeps deliberately-wrong code from ever answering a question.
 
 THE ADMISSION RULE, in the ticket's own words: an admitted check must FIRE on its linked bad example node and stay SILENT on the good one. No fixture, no admission.
 
-The eight contract keys:
+The nine contract keys:
 
   check_type           the execution kind — one of ast_pattern, graph_assertion, topology_threshold, flow_model
   severity             the finding severity the check emits at (info / notice / warning / critical)
@@ -52,6 +52,7 @@ The eight contract keys:
   check_where          optional ast where-tree, as JSON text
   check_fixture_bad    node id of the example the check MUST match
   check_fixture_good   node id of the example the check MUST NOT match
+  applies_to_tests     "true" when the check's defect class lives in TEST files, so a scan widens its walk for this check alone rather than needing a run-wide knob. Absent means false, and "true" is the only admitted value. It is a WALK-SCOPE CONTROL rather than a descriptive key, which is why it joins the llm_only exclusivity sweep: an llm_only check never walks a tree, so the declaration on one would be a control its executor ignores.
   llm_only             "true" on prose that has no deterministic expression; exclusive with the CHECK-BODY keys (check_type, dsl_pattern, check_where, check_fixture_bad, check_fixture_good). It still REQUIRES language: every corpus read is language-scoped, so an unlabeled llm_only node is returned to nobody and the needs-judgment lane silently empties.
 
 Six consumer rules:
@@ -64,6 +65,62 @@ Six consumer rules:
   f. WHAT ParseCheck RETURNS: Check is the machine half only — identity is Check.ID, and the prose half lives on the source node, which consumers must retain. isCheck true means EXECUTABLE CHECK; an accepted llm_only node returns isCheck FALSE with Check.LLMOnly true, so a consumer's skip branch must test LLMOnly BEFORE skipping, or the needs-LLM-judgment lane goes invisible and the honest machine-verified / needs-judgment split cannot be produced.
 
 WHY THE FIXTURE GATE EXISTS. A detector written from one incident's text matches that incident and nothing else: an alert's syntax is a fingerprint, not a population — a shape-only check narrows nothing, because the same call shape occurs on safe and unsafe arguments alike. The silent-on-the-good-example half of the gate is that lesson's mechanical form; the fire-on-the-bad-example half only proves the check is not inert.
+
+## Style rules
+
+A STYLE RULE is a practice node under a language hub whose text states a code
+style requirement the author imposes — "do not use X", "write your loops this
+way", "guidance on package shape". It is an ordinary "pattern" node, so a body
+with no name or no author-supplied summary is refused, and the metadata below is
+what makes it a style rule rather than prose.
+
+  practice_kind        "style_rule". The kind marker a browse narrows by. NOT spelled "kind": that key is already the source hub's own kind marker, and the design-patterns corpus carries it on its own nodes with unrelated values.
+  severity             the CHECK contract's ladder — info / notice / warning / critical — so a rule and its sister check agree on one scale. The practice corpus's older "high" / "medium" values are NOT admitted on a style rule.
+  style_scope_repo     OPTIONAL. Narrows the rule to one repository by name. ABSENT MEANS EVERY REPOSITORY.
+  style_scope_paths    OPTIONAL. A JSON ARRAY of repo-relative path prefixes, matched at path-segment boundaries ("pkg" admits pkg/x.go, never pkgextra/x.go). ABSENT MEANS EVERY PATH. A JSON array rather than a comma join: a path may legally contain a comma, and a join would split one legitimate path into two that do not exist.
+  linter_name          OPTIONAL. The linter a rule was derived from.
+  linter_rule_id       OPTIONAL. That linter's own rule id. Two keys rather than one packed value, because a rule id may contain whatever separator a packed value would parse on.
+  sister_check         OPTIONAL, on the PRACTICE node: the id of the check that enforces this rule.
+
+The scope keys are OPTIONAL and an absent key means "applies everywhere", so the
+narrowing is a disjunction — scope absent OR scope matches — which metadata
+predicates cannot express. That is why the style-rule index narrows by hub and
+kind server-side and by scope CLIENT-side; a predicate on a scope key would drop
+exactly the rules that apply everywhere.
+
+A STYLE RULE IN AN ASSEMBLY IS A REFERENCE, NEVER A HYDRATED BODY. A rule
+attached to a ticket or a plan renders as ONE line — its id, its severity, its
+scope when it carries one, and its summary capped — and never its prose, its
+check shape, its where-tree or its two fixture bodies. Each assembly emits ONE
+bulk-read instruction naming every rule it referenced: read the bodies you want
+with query(graph:"practice", ids:["<rule id>", ...]) in a single call —
+never one call per rule, which is what hits the tool's response limits.
+
+### The sister-check cross-link
+
+A rule with a SHAPE a checker can see gets a sister check in the checks graph,
+and the two are cross-linked by METADATA rather than by an edge — a check's only
+edges are its display-only fixture bindings, and nothing links a practice node to
+a check:
+
+  sister_check         on the practice node, the check's id
+  sister_practice      on the check node, the practice node's id
+
+The check may also carry the SAME style_scope_repo and style_scope_paths
+keys, so a scan can narrow by them. Both ride as non-contract metadata, which a
+check node accepts; note that only a mutate write into graph:"checks" can carry
+them, because manage_checks(create) builds a check's metadata as a closed literal
+with no caller pass-through.
+
+A CHECK IS AUTHORED BY ITS OWN TOOL CALL, after an LLM has passed on the practice
+node to establish the rule is correct. No import, batch, landing or migration
+creates one, and nothing fills the cross-link automatically. A rule may carry
+dsl_pattern, check_where, check_fixture_bad and check_fixture_good on the
+practice node as INERT data for that later step: nothing in the tree compiles or
+executes a practice-graph pattern.
+
+Import a rule list with manage(operation:"import_style_rules"); read the rules
+back with query(graph:"practice", mode:"style_index", source:"<hub id>").
 
 ## Corpus models
 
@@ -108,7 +165,7 @@ THE SHARPEST INSTANCE, and the most exploitable trap in the Go catalog: the clea
 
 ### Resolving models for a language
 
-Models for language L live in the practice graph whose instance name is that language's slug. The read is a type-scoped browse selecting finding nodes, DRAINED TO COMPLETION, keeping the nodes that carry model_kind. The drain is non-negotiable — an undrained read silently truncates the corpus and the scan then runs vacuously. Note that a browse supplying no limit is stamped with the LLM-facing default, so a loader in that shape reads only the first handful of models and looks like it worked. Where the model_kind filter is applied is open: a server-side metadata predicate or an in-memory filter over the drained findings both satisfy it.
+Models for language L live under the practice ` + "`source`" + ` hub whose name is that language's slug, inside the one combined practice graph. The read is a type-scoped browse selecting finding nodes, narrowed by ` + "`source:<hub id>`" + `, DRAINED TO COMPLETION, keeping the nodes that carry model_kind. The drain is non-negotiable — an undrained read silently truncates the corpus and the scan then runs vacuously. Note that a browse supplying no limit is stamped with the LLM-facing default, so a loader in that shape reads only the first handful of models and looks like it worked. Where the model_kind filter is applied is open: a server-side metadata predicate or an in-memory filter over the drained findings both satisfy it.
 
 Query-time is load-bearing: models are read when a scan runs and are never baked into collected flow facts, so adding a framework's sinks makes every already-collected graph answer immediately with no re-collect.
 
@@ -122,7 +179,7 @@ Step 1 — create the pattern parent:
 
   mutate({
     "operation": "create", "type": "pattern",
-    "graph": "practice", "language": "design-patterns",
+    "graph": "practice", "source_hub": "<design-patterns hub id>",
     "name": "fan-out-fan-in",
     "summary": "Split work across N goroutines, merge results on a single channel.",
     "description": "Producer dispatches items to a pool of worker goroutines; a merger collects their outputs into one downstream channel."
@@ -132,33 +189,33 @@ Step 2 — create each use_case and link with ` + "`applies-when`" + ` (positive
 
   mutate({
     "operation": "create", "type": "use_case",
-    "graph": "practice", "language": "design-patterns",
+    "graph": "practice", "source_hub": "<design-patterns hub id>",
     "name": "parallelizable-work",
     "description": "The same operation applies to many items independently; order of completion does not matter."
   })
   mutate({
     "operation": "link", "from": "<pattern_id>", "to": "<use_case_id>",
     "relationship": "applies-when",
-    "graph": "practice", "language": "design-patterns"
+    "graph": "practice"
   })
 
   mutate({
     "operation": "create", "type": "use_case",
-    "graph": "practice", "language": "design-patterns",
+    "graph": "practice", "source_hub": "<design-patterns hub id>",
     "name": "strict-ordering-required",
     "description": "Downstream consumers require items in submission order — fan-out breaks that contract."
   })
   mutate({
     "operation": "link", "from": "<pattern_id>", "to": "<use_case_id>",
     "relationship": "avoid-when",
-    "graph": "practice", "language": "design-patterns"
+    "graph": "practice"
   })
 
 Step 3 — create each example with language + attribution metadata, link via ` + "`contains`" + `:
 
   mutate({
     "operation": "create", "type": "example",
-    "graph": "practice", "language": "design-patterns",
+    "graph": "practice", "source_hub": "<design-patterns hub id>",
     "name": "fan-out-fan-in-basic",
     "content": "<code snippet verbatim>",
     "description": "Basic fan-out goroutine pool with channel merge.",
@@ -167,21 +224,21 @@ Step 3 — create each example with language + attribution metadata, link via ` 
   mutate({
     "operation": "link", "from": "<pattern_id>", "to": "<example_id>",
     "relationship": "contains",
-    "graph": "practice", "language": "design-patterns"
+    "graph": "practice"
   })
 
 Step 4 — create each reference (book, blog, repo) with citation metadata, link via ` + "`references`" + `:
 
   mutate({
     "operation": "create", "type": "reference",
-    "graph": "practice", "language": "design-patterns",
+    "graph": "practice", "source_hub": "<design-patterns hub id>",
     "name": "Concurrency in Go — Cox-Buday 2017",
     "metadata": { "book": "Concurrency in Go (O'Reilly, ISBN 9781491941195)", "page": "108", "url": "https://www.oreilly.com/library/view/concurrency-in-go/9781491941294/" }
   })
   mutate({
     "operation": "link", "from": "<pattern_id>", "to": "<reference_id>",
     "relationship": "references",
-    "graph": "practice", "language": "design-patterns"
+    "graph": "practice"
   })
 
 ## Cross-graph link to a library entry

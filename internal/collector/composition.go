@@ -51,6 +51,18 @@ type CollectComposition struct {
 	// degrade.
 	GithubFollowUps      int
 	GithubFollowUpSample []string
+	// Notices are one-line statements about THIS collect that the operator must
+	// see and that no count carries. They are rendered as a suffix, once per
+	// collect.
+	//
+	// THE ONE NOTICE TODAY IS THE UNDECLARED-VOCABULARY ARM. A family registered
+	// before the collector contract required a describe tool carries no type
+	// vocabulary on its record, so the server admits every type it sends — which
+	// is the right behavior (the persisted format owes one-version-back load) and
+	// is NOT the behavior the operator's other collectors have. Silence would
+	// make that widening invisible; a notice makes it a thing they can act on by
+	// re-registering the collector.
+	Notices []string
 }
 
 // NewCollectComposition censuses a collect result by node Type.
@@ -103,7 +115,7 @@ func NewCollectComposition(result *collectorwire.CollectResult) CollectCompositi
 // suffix rather than a markdown section.
 func (c CollectComposition) Render() string {
 	if len(c.NodesByType) == 0 {
-		return fmt.Sprintf("nodes %d, edges %d", c.TotalNodes, c.TotalEdges)
+		return fmt.Sprintf("nodes %d, edges %d", c.TotalNodes, c.TotalEdges) + c.renderNotices()
 	}
 
 	type row struct {
@@ -136,7 +148,17 @@ func (c CollectComposition) Render() string {
 		list += fmt.Sprintf(", +%d more types", omitted)
 	}
 	return fmt.Sprintf("nodes %d (%s), edges %d", c.TotalNodes, list, c.TotalEdges) +
-		c.renderDegraded() + c.renderGithubFollowUps()
+		c.renderDegraded() + c.renderGithubFollowUps() + c.renderNotices()
+}
+
+// renderNotices formats the per-collect notices as a suffix. A collect with
+// nothing to say renders nothing at all, on the same reasoning the degrade
+// suffix states: a line printed on every collect is a line nobody reads.
+func (c CollectComposition) renderNotices() string {
+	if len(c.Notices) == 0 {
+		return ""
+	}
+	return "; " + strings.Join(c.Notices, "; ")
 }
 
 // renderGithubFollowUps formats the follow-up inventory as a suffix:

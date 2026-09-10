@@ -4,20 +4,11 @@ package graphtypecrud
 
 import (
 	"fmt"
-	"path/filepath"
+	"net/url"
 	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
-
-// allowedParamTypes is the minimal closed set of collector-parameter types.
-// The ticket forbids a DSL — {type, required} only — so this stays small and
-// is NOT over-built.
-var allowedParamTypes = map[string]struct{}{
-	"string": {},
-	"int":    {},
-	"bool":   {},
-}
 
 // Validate enforces the record-shape invariants of a GraphTypeDef independent of
 // the built-in-name collision check. It operates on the gen proto getters
@@ -25,8 +16,21 @@ var allowedParamTypes = map[string]struct{}{
 // package-level function using sequential wrapped-error checks.
 //
 // Validate does NOT check whether the name collides with a built-in GraphType —
-// that registration concern needs kgtypes.allGraphTypes and lives in
-// validateRegistration (same package), so Create/Update layer it on top of this.
+// that is ValidateName, which validateRegistration layers on top of this.
+//
+// It also does NOT dial the provider: whether the named tool exists and
+// advertises contract-satisfying schemas is a live question the MCP host
+// answers, at `knowledge collector add` and at collect alike. This function is
+// the pure record-shape half, so it stays runnable with no network.
+//
+// A RECORD WITH NO COLLECTOR IS ADMISSIBLE, AND IS NOW THE ORDINARY CASE. Under
+// the config-file contract the persisted record carries the family NAME and its
+// BEHAVIOR only: the connection half lives in the operator's config file and
+// never crosses the wire, because no server file reads it and because the env
+// block now carries VALUES, which must never be stored in a graph-resident node.
+// The collector requirement moved to ValidateCollector, which the write path
+// runs against the FILE-derived spec before dialing. A record that does carry a
+// collector — a legacy one being re-written — is still validated whole.
 func Validate(d *knowledgev1.GraphTypeDef) error {
 	if d == nil {
 		return fmt.Errorf("graphtypecrud: nil GraphTypeDef")
@@ -35,32 +39,9 @@ func Validate(d *knowledgev1.GraphTypeDef) error {
 		return fmt.Errorf("graphtypecrud: GraphTypeDef.name is required")
 	}
 
-	col := d.GetCollector()
-	if col == nil {
-		return fmt.Errorf("graphtypecrud: GraphTypeDef.collector is required")
-	}
-	bp := col.GetBinaryPath()
-	if strings.TrimSpace(bp) == "" {
-		return fmt.Errorf("graphtypecrud: collector.binary_path is required")
-	}
-	if !filepath.IsAbs(bp) {
-		return fmt.Errorf("graphtypecrud: collector.binary_path %q must be absolute", bp)
-	}
-
-	if _, _, err := ParseParamTransport(col.GetParamTransport()); err != nil {
-		return fmt.Errorf("graphtypecrud: collector.param_transport: %w", err)
-	}
-
-	for name, spec := range col.GetParamSchema() {
-		if strings.TrimSpace(name) == "" {
-			return fmt.Errorf("graphtypecrud: collector.param_schema has an empty param name")
-		}
-		t := spec.GetType()
-		if strings.TrimSpace(t) == "" {
-			return fmt.Errorf("graphtypecrud: collector.param_schema[%q].type is required", name)
-		}
-		if _, ok := allowedParamTypes[t]; !ok {
-			return fmt.Errorf("graphtypecrud: collector.param_schema[%q].type %q is not one of string/int/bool", name, t)
+	if col := d.GetCollector(); col != nil {
+		if err := ValidateCollector(col); err != nil {
+			return err
 		}
 	}
 
@@ -93,6 +74,86 @@ func Validate(d *knowledgev1.GraphTypeDef) error {
 	return nil
 }
 
+// ValidateCollector enforces the MCP collector spec: a tool to call and EXACTLY
+// ONE provider transport, each with its own shape rules.
+//
+// IT IS EXPORTED BECAUSE THE SPEC NO LONGER LIVES IN THE PERSISTED RECORD. The
+// spec is synthesized from a config-file entry for one collect, so the caller
+// that has one to check is the write path, not this package's own upsert.
+func ValidateCollector(col *knowledgev1.CollectorSpec) error {
+	if col == nil {
+		return fmt.Errorf("graphtypecrud: collector is required")
+	}
+	if strings.TrimSpace(col.GetTool()) == "" {
+		return fmt.Errorf("graphtypecrud: collector.tool is required — it names the MCP tool to call on the provider")
+	}
+	stdio, http := col.GetStdio(), col.GetHttp()
+	switch {
+	case stdio == nil && http == nil:
+		return fmt.Errorf("graphtypecrud: collector must name exactly one provider — supply either stdio{command,args,env} or http{url}")
+	case stdio != nil && http != nil:
+		return fmt.Errorf("graphtypecrud: collector names both a stdio and an http provider — exactly one is allowed")
+	case stdio != nil:
+		return validateStdio(stdio)
+	default:
+		return validateHTTP(http)
+	}
+}
+
+// validateStdio enforces the stdio provider's shape.
+//
+// THE ENV LIST CARRIES NAME=value PAIRS, AND THAT REVERSED WITH THE CONTRACT.
+// It used to carry NAMES ONLY, because the record was persisted and the daemon
+// looked each name up in its own environment — so a pair carrying a value was
+// refused as a secret in a stored record. Under the config-file contract this
+// spec is SYNTHESIZED FROM THE OPERATOR'S ENTRY FOR ONE COLLECT and is never
+// persisted, the block IS the child's whole environment, and os/exec wants
+// NAME=value. So a bare name is now the refusal: it would reach the child as a
+// variable named after the whole element with no value, which is not what
+// anybody who wrote one meant.
+func validateStdio(s *knowledgev1.StdioProvider) error {
+	if strings.TrimSpace(s.GetCommand()) == "" {
+		return fmt.Errorf("graphtypecrud: collector.stdio.command is required")
+	}
+	seen := make(map[string]struct{}, len(s.GetEnv()))
+	for i, pair := range s.GetEnv() {
+		name, _, ok := strings.Cut(pair, "=")
+		if !ok {
+			return fmt.Errorf(
+				"graphtypecrud: collector.stdio.env[%d] %q is not a NAME=value pair — the env block IS the child's whole environment, so every entry carries the value the provider will see", i, pair)
+		}
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("graphtypecrud: collector.stdio.env[%d] has an empty variable name", i)
+		}
+		if _, dup := seen[name]; dup {
+			return fmt.Errorf("graphtypecrud: collector.stdio.env sets %q twice", name)
+		}
+		seen[name] = struct{}{}
+	}
+	return nil
+}
+
+// validateHTTP enforces the http provider's shape. There is no credential field
+// to validate — the operator's headers ride beside the record, and the daemon
+// composes none of its own — so this is the endpoint alone.
+func validateHTTP(h *knowledgev1.HttpProvider) error {
+	raw := strings.TrimSpace(h.GetUrl())
+	if raw == "" {
+		return fmt.Errorf("graphtypecrud: collector.http.url is required")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("graphtypecrud: collector.http.url %q does not parse: %w", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("graphtypecrud: collector.http.url %q must be an http or https URL", raw)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("graphtypecrud: collector.http.url %q names no host", raw)
+	}
+	return nil
+}
+
 // validateFieldList rejects empty entries and intra-list duplicates.
 func validateFieldList(label string, fields []string) error {
 	seen := make(map[string]struct{}, len(fields))
@@ -106,28 +167,4 @@ func validateFieldList(label string, fields []string) error {
 		seen[f] = struct{}{}
 	}
 	return nil
-}
-
-// ParseParamTransport parses a collector param_transport string. Valid forms:
-//
-//	"stdin"        -> kind="stdin", flagName=""
-//	"flag:<name>"  -> kind="flag",  flagName="<name>" (non-empty)
-//
-// It is exported so T3 (the collector dispatch) reuses the same parse instead of
-// re-implementing transport parsing.
-func ParseParamTransport(s string) (kind, flagName string, err error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return "", "", fmt.Errorf("param_transport is required")
-	}
-	if s == "stdin" {
-		return "stdin", "", nil
-	}
-	if rest, ok := strings.CutPrefix(s, "flag:"); ok {
-		if strings.TrimSpace(rest) == "" {
-			return "", "", fmt.Errorf("param_transport %q has an empty flag name", s)
-		}
-		return "flag", rest, nil
-	}
-	return "", "", fmt.Errorf("param_transport %q must be \"stdin\" or \"flag:<name>\"", s)
 }

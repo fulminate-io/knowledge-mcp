@@ -17,6 +17,24 @@ import (
 // top-k. The liveDocs accept filter excludes deleted ids. The only
 // synchronization is the atomic load + the fan-out WaitGroup/semaphore.
 func (e *SegmentedIndex[Q, S]) Search(q Q, k int) []Hit {
+	return e.SearchAccepting(q, k, nil)
+}
+
+// SearchAccepting is Search with a CALLER-SUPPLIED accept predicate composed on
+// top of the liveness one. A nil predicate is exactly Search.
+//
+// IT IS APPLIED INSIDE TOP-K COLLECTION, WHICH IS THE WHOLE POINT. The predicate
+// reaches each format's own collection loop through the same accept parameter
+// the liveness filter rides, so a rejected candidate never consumes a slot in k
+// and a narrow subset returns its full top-N rather than whatever survived a
+// post-rank trim of a corpus-wide ranking. A caller that filtered the RESULT
+// would get a short list and no way to tell a small subset from a deep one.
+//
+// THE COMPOSITION ORDER IS liveness FIRST. A deleted document is not a candidate
+// at all, so the caller's predicate is never asked about one; that keeps the
+// caller's predicate a pure membership question and stops it having to know
+// about liveness to be correct.
+func (e *SegmentedIndex[Q, S]) SearchAccepting(q Q, k int, accepts func(ExternalID) bool) []Hit {
 	set := e.set.Load()
 	if len(set.entries) == 0 || k <= 0 {
 		return nil
@@ -60,7 +78,10 @@ func (e *SegmentedIndex[Q, S]) Search(q Q, k int) []Hit {
 			// in exactly one place.
 			accept := func(id ExternalID) bool {
 				ord, ok := entry.members[id]
-				return ok && entry.live.Live(ord)
+				if !ok || !entry.live.Live(ord) {
+					return false
+				}
+				return accepts == nil || accepts(id)
 			}
 			_ = e.containCorrupt(entry.meta.ID, func() error {
 				results[i] = entry.payload.Search(q, set.stats, k, accept)

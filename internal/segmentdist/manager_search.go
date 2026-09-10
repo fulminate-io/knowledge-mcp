@@ -48,11 +48,36 @@ func (m *Manager) Search(
 	queryVec []byte,
 	k int,
 ) ([]searchengine.Hit, error) {
+	return m.SearchAccepting(ctx, gt, name, queryText, queryVec, k, nil)
+}
+
+// SearchAccepting is Search with a caller-supplied membership predicate applied
+// DURING top-k collection in both engines. A nil predicate is exactly Search.
+//
+// IT MUST REACH BOTH ARMS OR NEITHER, and that is correctness rather than
+// symmetry. The two arms are fused by RRF, which ranks by AGREEMENT between the
+// two orderings; giving the predicate to one of them makes the halves disagree
+// about which documents exist, and the fusion then blends a filtered ranking
+// with an unfiltered one and reports the blend as a subset search. There is no
+// error that surfaces from that — just a result set quietly containing rows the
+// caller excluded and missing rows it asked for.
+//
+// The predicate receives a node's external id, which is what the segment index
+// carries; a caller narrowing by anything the segments do not store resolves its
+// id set BEFORE calling and closes over it here.
+func (m *Manager) SearchAccepting(
+	ctx context.Context,
+	gt kgtypes.GraphType,
+	name, queryText string,
+	queryVec []byte,
+	k int,
+	accepts func(searchengine.ExternalID) bool,
+) ([]searchengine.Hit, error) {
 	if k <= 0 {
 		return nil, nil
 	}
 
-	hnswHits, bm25Hits, err := m.searchPoolArms(ctx, gt, name, queryText, queryVec, k)
+	hnswHits, bm25Hits, err := m.searchPoolArms(ctx, gt, name, queryText, queryVec, k, accepts)
 	if err != nil {
 		return nil, err
 	}
@@ -135,6 +160,7 @@ func (m *Manager) searchPoolArms(
 	name, queryText string,
 	queryVec []byte,
 	k int,
+	accepts func(searchengine.ExternalID) bool,
 ) ([]searchengine.Hit, []searchengine.Hit, error) {
 	// Fail closed on an in-session account switch: this Manager's cacheDir and
 	// per-graph sources belong to the account it was built under, so serving
@@ -198,7 +224,7 @@ func (m *Manager) searchPoolArms(
 	}
 
 	// Run the two engine searches concurrently — each is independent and
-	// internally per-segment parallel. Mirrors runRebuildFanOut's bounded
+	// internally per-segment parallel. Mirrors the rebuild path's bounded
 	// fan-out, scaled to the two fixed arms here.
 	var (
 		hnswHits []searchengine.Hit
@@ -219,7 +245,7 @@ func (m *Manager) searchPoolArms(
 					hnswHits = nil
 				}
 			}()
-			hnswHits = dm.engine.Search(queryVec, k)
+			hnswHits = dm.engine.SearchAccepting(queryVec, k, accepts)
 		})
 	}
 	wg.Go(func() {
@@ -231,7 +257,7 @@ func (m *Manager) searchPoolArms(
 				bm25Hits = nil
 			}
 		}()
-		bm25Hits = bm.engine.Search(bm25.NewQuery(queryText), k)
+		bm25Hits = bm.engine.SearchAccepting(bm25.NewQuery(queryText), k, accepts)
 	})
 	wg.Wait()
 

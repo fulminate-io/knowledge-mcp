@@ -131,9 +131,28 @@ func sharedTestdataPath(t *testing.T, name string) string {
 	}
 }
 
+// parityVectorPath is the path every parity read goes through: this package's
+// OWN testdata entry, which is a SYMLINK to the root fixture.
+//
+// THE INDIRECTION IS WHAT MAKES THE SEAM CACHE-VISIBLE, and it is a correctness
+// requirement rather than tidiness. Reading the root fixture by a walked-up
+// relative path left the test cache blind to it: MEASURED — corrupting a digest
+// in the root file and re-running with NO forcing flag reported `(cached) ok`,
+// twice, in both modules. A parity seam that cannot notice its own fixture
+// changing is not a seam. Read through the package's own testdata and the cache
+// tracks the file, so a corrupted vector re-runs and goes red.
+//
+// THE SYMLINK IS THE SHAPE BECAUSE THE FIXTURE MUST STAY ONE FILE. Two copies
+// would be two things to drift, and the whole point of the vector is that both
+// modules answer against the SAME authored bytes.
+// TestParityVectorTestdataIsASymlinkToTheRootFixture pins that the entry is a
+// link and where it points; a copy landing here would pass every hash assertion
+// while proving nothing about the other module.
+const parityVectorPath = "testdata/contribution_hash_vector.json"
+
 func loadVector(t *testing.T) vecDoc {
 	t.Helper()
-	raw, err := os.ReadFile(sharedTestdataPath(t, "contribution_hash_vector.json"))
+	raw, err := os.ReadFile(parityVectorPath)
 	require.NoError(t, err)
 	var doc vecDoc
 	require.NoError(t, json.Unmarshal(raw, &doc))
@@ -218,4 +237,41 @@ func TestContributionHash_ParityVector(t *testing.T) {
 	// that silently skipped every row, would leave this at zero and every
 	// assertion above unexecuted.
 	require.Positive(t, checked, "control: no vector row was actually hashed")
+}
+
+// TestParityVectorTestdataIsASymlinkToTheRootFixture pins the indirection the
+// cache visibility rests on: the package's testdata entry is a LINK to the root
+// fixture, not a copy of it.
+//
+// A COPY WOULD PASS EVERY OTHER ASSERTION IN THIS FILE while quietly ending the
+// parity property — this module would be checking its own private bytes and the
+// server module would be checking different ones, and the two could drift
+// indefinitely with both suites green. That is the failure this one assertion
+// exists to make impossible.
+func TestParityVectorTestdataIsASymlinkToTheRootFixture(t *testing.T) {
+	info, err := os.Lstat(parityVectorPath)
+	require.NoError(t, err)
+	require.NotZero(t, info.Mode()&os.ModeSymlink,
+		"%s must be a SYMLINK to the root fixture, not a copy: a copy makes this module's parity check private",
+		parityVectorPath)
+
+	// BOTH SIDES ARE MADE ABSOLUTE FIRST AND RESOLVED SECOND, and the ORDER is
+	// what makes this comparison portable. EvalSymlinks preserves the
+	// relative-ness of its input, so resolving a relative path never walks the
+	// symlinks in the directories ABOVE the working directory — while the other
+	// side, built from an already-absolute path, does. On macOS that alone fails
+	// the comparison, because a tree staged under /tmp resolves to /private/tmp on
+	// one side and not the other. Absolute first, resolve second, and both sides
+	// are the same real path.
+	resolved, err := filepath.Abs(parityVectorPath)
+	require.NoError(t, err)
+	resolved, err = filepath.EvalSymlinks(resolved)
+	require.NoError(t, err, "the symlink must resolve — a dangling one fails every parity read")
+
+	root, err := filepath.Abs(sharedTestdataPath(t, "contribution_hash_vector.json"))
+	require.NoError(t, err)
+	root, err = filepath.EvalSymlinks(root)
+	require.NoError(t, err)
+	require.Equal(t, root, resolved,
+		"the link must resolve to the REPO-ROOT fixture, which is the one file both modules read")
 }

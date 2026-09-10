@@ -11,7 +11,6 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
-	"github.com/fulminate-io/knowledge-mcp/internal/collector/remote"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphtypecrud"
@@ -76,15 +75,6 @@ type client struct {
 
 	mcpClient *graphclient.MCPClient // MCP dispatch client (built by the serve daemon, daemon.go)
 	sink      collector.Sink         // remote upload sink for client-side collection
-
-	// subgraphFetcher is the INNER ingest sink c.sink wraps, retained so the
-	// logs collector's cloud-subgraph read is reached BY NAME through the
-	// SubgraphFetcher accessor instead of by downcasting the wrapped sink —
-	// which fails the moment anything decorates the sink. ONE instance, shared
-	// with c.sink: constructClient hoists the uploader and assigns both, so the
-	// fetch and the writes ride the same picker and the same epoch sequence.
-	// nil in a test harness that builds *client directly.
-	subgraphFetcher *remote.UploadSink
 
 	// propReady / pipelineReady are the per-subsystem readiness
 	// flags that distinguish the background-wiring window (Bind-first startup: the daemon

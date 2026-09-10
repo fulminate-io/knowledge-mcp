@@ -4,7 +4,7 @@ package tools
 
 // query_arm_parity_fixtures_test.go holds the parity harness's shared drive
 // machinery — the fixture shape, the seeded fake, the deps wrapper — plus the
-// per-arm fixtures for the GRAPH-FAMILY half of the registry (cloud/cicd,
+// per-arm fixtures for the GRAPH-FAMILY half of the registry (
 // practice/linkage/web-pdf, the two knowledge search arms, and the four
 // single-arm per-graph entry points). The composite-mode, code, rendering and
 // reflect fixtures live in query_arm_parity_fixtures_modes_test.go; the harness
@@ -152,62 +152,18 @@ func queryParityGraphFixtures() map[armID]queryParityFixture {
 	return map[armID]queryParityFixture{
 		// list-graphs fires only when account, id and text are all absent, so the
 		// arm-preserving probe for each of those three is the EMPTY value.
-		armCloudCICDListGraphs: {
-			entry: InterceptQueryCloudCICD,
-			base:  map[string]any{"graph": "cloud"},
-			discriminants: map[string]any{
-				"graph": "cloud", "mode": "", "account": "", "id": "", "text": "",
-			},
-		},
-
-		armCloudCICDGetNode: {
-			entry: InterceptQueryCloudCICD,
-			base:  map[string]any{"graph": "cloud", "account": qpParityAccount, "id": qpSeedResource},
-			discriminants: map[string]any{
-				"graph": "cloud", "mode": "", "id": qpSeedResource,
-			},
-		},
-
-		armCloudCICDStats: {
-			entry: InterceptQueryCloudCICD,
-			base: map[string]any{
-				"graph": "cloud", "account": qpParityAccount, "mode": "stats",
-			},
-			discriminants: map[string]any{"graph": "cloud", "mode": "stats", "id": ""},
-		},
-
-		armCloudCICDSearch: {
-			entry: InterceptQueryCloudCICD,
-			base: map[string]any{
-				"graph": "cloud", "account": qpParityAccount, "text": "probe-text",
-			},
-			discriminants: map[string]any{"graph": "cloud", "mode": "", "id": ""},
-			// resourceQueryText picks text FIRST, so a queries[] probe is shadowed by
-			// the base's text and cannot appear downstream.
-			opaque: map[string]bool{"queries": true},
-		},
-
-		armCloudCICDBrowse: {
-			entry: InterceptQueryCloudCICD,
-			base:  map[string]any{"graph": "cloud", "account": qpParityAccount},
-			discriminants: map[string]any{
-				"graph": "cloud", "mode": "", "id": "", "text": "", "queries": []any{},
-			},
-		},
-
-		// routePracticeClient checks Language FIRST, so an empty language reaches
-		// list-graphs before mode is ever read.
-		// THE ONE PRACTICE ARM THAT DOES NOT DESELECT ON id/ids, and the reason is
-		// its base: it is the only practice fixture carrying NO language. A by-id
-		// read with no language names no graph and can resolve nowhere — not here
-		// and not on the engineDispatch path either, whose resolver refuses it — so
-		// the entry point CLAIMS it to say which call works instead of handing it on
-		// to a worse refusal. The other four practice arms pin a language, so their
-		// id/ids rows still re-route and keep the shared deselect set.
 		armPracticeListGraphs: {
-			entry:         InterceptQueryPracticeLinkage,
-			base:          map[string]any{"graph": "practice"},
-			discriminants: map[string]any{"graph": "practice", "language": ""},
+			entry: InterceptQueryPracticeLinkage,
+			// mode:"modules" IS the discriminant now. An empty selector used to
+			// select this arm; it browses the one combined graph today, so the
+			// enumeration of the pre-singleton graphs is asked for by name.
+			base:          map[string]any{"graph": "practice", "mode": "modules"},
+			discriminants: map[string]any{"graph": "practice", "mode": "modules"},
+			// id/ids DESELECT this arm rather than being rejected by it. A
+			// language-less by-id practice read used to be refused here because it
+			// named no graph; it resolves the one combined graph now, so the entry
+			// point declines an id-bearing payload to the by-id arm that serves it.
+			deselecting: queryParityPracticeForeignDeselects(),
 		},
 
 		armPracticeStats: {
@@ -228,17 +184,23 @@ func queryParityGraphFixtures() map[armID]queryParityFixture {
 			opaque: map[string]bool{"fields": true},
 		},
 
-		armPracticeSearchFanOut: {
-			entry: InterceptQueryPracticeLinkage,
-			base: map[string]any{
-				"graph": "practice", "language": "all", "text": "probe-text",
-			},
-			discriminants: map[string]any{"graph": "practice", "mode": "", "language": "all"},
+		// The style-rule index. `mode` is its discriminant, so the base pins it;
+		// the base carries NO language, because a language addresses a legacy
+		// pre-singleton graph and the probe should measure the combined-graph
+		// read every other caller takes.
+		armPracticeStyleIndex: {
+			entry:         InterceptQueryPracticeLinkage,
+			base:          map[string]any{"graph": "practice", "mode": "style_index"},
+			discriminants: map[string]any{"graph": "practice", "mode": "style_index"},
 			deselecting:   queryParityPracticeForeignDeselects(),
-			// `limit` rides mgr.Search — a segment searcher, not a GraphCaller read —
-			// so the probe value lands in no captured request; `fields` projects only
-			// on the json render path this probe does not take.
-			opaque: map[string]bool{"queries": true, "text": true, "limit": true, "fields": true},
+			// `fields` projects only on the json render path this probe does not
+			// take. `repo`, `path_prefix` and `path_prefixes` are the CLIENT-SIDE
+			// scope filter: they are read after the wire read has already been
+			// issued, so their probe values land in no captured request even
+			// though the arm genuinely consumes them.
+			opaque: map[string]bool{
+				"fields": true, "repo": true, "path_prefix": true, "path_prefixes": true,
+			},
 		},
 
 		armPracticeSearch: {
@@ -248,7 +210,7 @@ func queryParityGraphFixtures() map[armID]queryParityFixture {
 			},
 			discriminants: map[string]any{"graph": "practice", "mode": ""},
 			deselecting:   queryParityPracticeForeignDeselects(),
-			// resourceQueryText-style precedence: the base's text shadows a queries[]
+			// text-over-queries precedence: the base's text shadows a queries[]
 			// probe, so that probe cannot reach the search downstream. `limit` rides
 			// mgr.Search — a segment searcher, not a GraphCaller read — so the probe
 			// value lands in no captured request; `fields` projects only on the json
@@ -314,24 +276,6 @@ func queryParityGraphFixtures() map[armID]queryParityFixture {
 				"type": true, "types": true, "meta": true,
 				"limit": true, "fields": true,
 			},
-		},
-
-		// PRECONDITION CLASS (e). handleLogsQuery serves from a pre-fetched log
-		// state, and getOrFetchLogState builds it by reading templates, streams and
-		// chunks over the wire; with none of them the arm returns
-		// "no engine and no persisted graph" and every non-rejected row would
-		// measure that error instead. The seed supplies a log-template node under
-		// the (logs, <name>) key, which is why the fixture's `name` probe needs its
-		// own seeded graph — `name` IS the log graph selector here.
-		armLogsQuery: {
-			entry:         InterceptLogsQuery,
-			base:          map[string]any{"graph": "logs", "name": qpParityLogGraph},
-			discriminants: map[string]any{"graph": "logs", "mode": "", "id": "", "text": ""},
-			// The pivot axes and the extra map are read BY KEY off the log state, and
-			// samples is a boolean flag on the stats body: none of them lands in a
-			// graph read or is echoed by the overview render.
-			opaque:       map[string]bool{"rows": true, "cols": true, "extra": true},
-			precondition: "class (e): the logs arm needs a seeded log graph before it can serve",
 		},
 
 		// POST-FIX. `graph` is no longer a discriminant here: the arm REJECTS it, so

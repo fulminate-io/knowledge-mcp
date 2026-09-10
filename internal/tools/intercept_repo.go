@@ -110,7 +110,7 @@ var manageCodeGraphOps = map[string]bool{
 //
 //  2. Graph-selector gate (for search / query / traverse): only proceed when
 //     args["graph"] is missing OR equals "code". Knowledge / cloud /
-//     cicd / practice / linkage variants pass through.
+//     practice / linkage variants pass through.
 //
 //  3. Repo injection: missing/empty args["repo"] → ResolveCwd. Hit
 //     populates args["repo"]; miss returns typed error.

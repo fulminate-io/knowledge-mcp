@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package tools — graph_names.go holds the client-side graph-catalog
-// enumeration helper the cross-graph locator, repo resolver, and cloud/cicd
-// overview share. It reduces the bespoke pipeline_list_graphs RPC to the generic
-// Execute seam (RETURN_MODE_GRAPH_NAMES), mirroring linker.fetchGraphNames but
-// living in package tools and returning the full []*knowledgev1.GraphInfo (callers
-// project Name themselves; the D2 list_logs caller needs the full
-// FilePath/FileSize/Nodes/Edges/Loaded fields).
+// enumeration helper the cross-graph locator, repo resolver, and the
+// per-account resource overview share. It reduces the bespoke
+// pipeline_list_graphs RPC to the generic Execute seam
+// (RETURN_MODE_GRAPH_NAMES), mirroring linker.fetchGraphNames but living in
+// package tools and returning the full []*knowledgev1.GraphInfo (callers
+// project Name themselves; the catalog's size projection and the manage(index)
+// branch table need the full FilePath/FileSize/Nodes/Edges/Loaded fields).
 
 package tools
 
@@ -27,8 +28,8 @@ import (
 // no fan-out.
 //
 // Returns the FULL []*knowledgev1.GraphInfo (NOT []string) so callers project Name
-// themselves and the list_logs caller can reuse the FilePath/FileSize/Nodes/
-// Edges/Loaded fields buildLogGraphSummary needs. A missing-seam / decode failure
+// themselves and a caller rendering per-graph size and load state can reuse the
+// FilePath/FileSize/Nodes/Edges/Loaded fields. A missing-seam / decode failure
 // surfaces as an error so the OBJECT-shape mismatch is loud (mirroring the linker
 // helper's non-masking contract).
 //
@@ -116,4 +117,65 @@ func catalogNames(entries []catalogEntry) []string {
 		names = append(names, e.name)
 	}
 	return names
+}
+
+// listGraphNamesOfType enumerates the loaded graph names of the given type via
+// the generic Execute seam (RETURN_MODE_GRAPH_NAMES, the fetchGraphNamesOfType
+// helper) — the client graph-overview source. Empty names are dropped.
+func listGraphNamesOfType(ctx context.Context, deps ClientDeps, graphType string) ([]string, error) {
+	gc := deps.GraphCaller()
+	if gc == nil {
+		return nil, fmt.Errorf("graph client unavailable")
+	}
+	infos, err := fetchGraphNamesOfType(ctx, gc, graphType)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, gi := range infos {
+		if gi.Name != "" {
+			names = append(names, gi.Name)
+		}
+	}
+	return names, nil
+}
+
+// ListGraphNamesOfType is the exported cross-package seam over listGraphNamesOfType
+// (the same RETURN_MODE_GRAPH_NAMES enumeration the status coverage table uses):
+// the bootstrap segment-coverage reconcile enumerates code repos through it so it
+// probes exactly the graph set manage(status) reports. Empty names are dropped.
+func ListGraphNamesOfType(ctx context.Context, deps ClientDeps, graphType string) ([]string, error) {
+	return listGraphNamesOfType(ctx, deps, graphType)
+}
+
+// listOverlayKeysOfBase enumerates the OVERLAY keys of a single base graph via
+// the same Execute seam (RETURN_MODE_GRAPH_NAMES) with overlay_of set to the base.
+//
+// THE RETURNED NAME FORM IS BACKEND-DEPENDENT: the returned GraphInfo.Name values
+// are the FULL "base@overlay" key on the CLOUD backend and the BARE overlay name on the OSS/local backend, whose registry_lookup.go listOverlays sets gi.Name to the overlay with the base prefix already stripped.
+// CALLERS MUST THEREFORE NORMALIZE WITH bareOverlayName rather than assuming
+// either form — assuming the composed one drops every OSS overlay, assuming the
+// bare one composes a doubled base prefix.
+//
+// What holds on BOTH backends: this returns ONLY the overlay keys — NOT the base
+// graph itself and NOT every graph (the base name comes from the separate
+// listGraphNamesOfType enumeration) — and empty names are dropped. It is a
+// distinct call shape from listGraphNamesOfType (which returns base names and
+// filters @-keys), hence a sibling rather than an extension.
+func listOverlayKeysOfBase(ctx context.Context, deps ClientDeps, graphType, base string) ([]string, error) {
+	gc := deps.GraphCaller()
+	if gc == nil {
+		return nil, fmt.Errorf("graph client unavailable")
+	}
+	infos, err := fetchGraphNamesOfType(ctx, gc, graphType, base)
+	if err != nil {
+		return nil, err
+	}
+	var keys []string
+	for _, gi := range infos {
+		if gi.Name != "" {
+			keys = append(keys, gi.Name)
+		}
+	}
+	return keys, nil
 }

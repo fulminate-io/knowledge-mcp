@@ -127,7 +127,7 @@ func (detachStubCollector) Name() string { return detachFullPathType }
 func (detachStubCollector) Collect(_ context.Context, _ string, _ collector.CollectOptions) (*collectorwire.CollectResult, error) {
 	close(detachStubStarted)
 	<-detachStubRelease
-	return &collectorwire.CollectResult{GraphType: kgtypes.GraphCloud, GraphName: "detach-smoke"}, nil
+	return &collectorwire.CollectResult{GraphType: kgtypes.GraphPractice, GraphName: "detach-smoke"}, nil
 }
 
 func registerDetachStub() {
@@ -149,7 +149,6 @@ func (d *detachFullDeps) CollectRunSnapshot() []CollectRunStatus { return d.rt.S
 func (d *detachFullDeps) WakePipeline()                          { d.wake.Add(1) }
 func (d *detachFullDeps) LocalLiveness() LocalLiveness           { return nil }
 func (d *detachFullDeps) Sink() collector.Sink                   { return noopSink{} }
-func (d *detachFullDeps) SubgraphFetcher() CloudSubgraphFetcher  { return nil }
 func (d *detachFullDeps) RootDir() string                        { return "" }
 func (d *detachFullDeps) UsageAnalyzer() UsageAnalyzerAPI        { return nil }
 
@@ -186,26 +185,26 @@ func (d *detachFullDeps) TensionsProvider() TensionsProvider       { return nil 
 // snapshot transitions running -> completed. Because WakePipeline is the LAST tail
 // step in builtinCollectWork — strictly after runPostCollectLinker and
 // runPostCollectPostPopulate in straight-line code — observing it fire proves the
-// whole tail (including the linker) executed on the detached path.
+// whole tail executed on the detached path.
 func TestInterceptCollect_DetachedCompletionRunsTail(t *testing.T) {
 	registerDetachStub()
 
-	// Map the stub type into the postpopulate + linker gates so both tail helpers
-	// execute on the detached goroutine; restore afterwards.
+	// Map the stub type into the postpopulate gate so that tail helper executes on
+	// the detached goroutine; restore afterwards.
+	//
+	// THE LINKER GATE IS NO LONGER A MAP A TEST CAN JOIN. Its trigger is one
+	// collector type, `code`, so a stub type reaches runPostCollectLinker and is
+	// declined there. That is fine for this test's claim: WakePipeline is still
+	// the LAST tail step in straight-line code, strictly after both tail helpers
+	// have been CALLED, so observing it fire still proves the detached goroutine
+	// ran the tail to completion rather than returning at the collector.
 	prevPP, hadPP := postPopulateGraphType[detachFullPathType]
-	postPopulateGraphType[detachFullPathType] = kgtypes.GraphCloud
-	prevLink, hadLink := postCollectLinkerTypes[detachFullPathType]
-	postCollectLinkerTypes[detachFullPathType] = true
+	postPopulateGraphType[detachFullPathType] = kgtypes.GraphPractice
 	t.Cleanup(func() {
 		if hadPP {
 			postPopulateGraphType[detachFullPathType] = prevPP
 		} else {
 			delete(postPopulateGraphType, detachFullPathType)
-		}
-		if hadLink {
-			postCollectLinkerTypes[detachFullPathType] = prevLink
-		} else {
-			delete(postCollectLinkerTypes, detachFullPathType)
 		}
 	})
 
@@ -222,7 +221,7 @@ func TestInterceptCollect_DetachedCompletionRunsTail(t *testing.T) {
 	rt.detachAfter = 50 * time.Millisecond
 	fc := &fakeGraphCaller{
 		listGraphsResult: &kgtools.ToolResult{
-			Content: []kgtools.ContentBlock{{Type: "text", Text: `{"graphs":[{"graph_type":"cloud","graph_name":"aws-acct-1"}]}`}},
+			Content: []kgtools.ContentBlock{{Type: "text", Text: `{"graphs":[{"graph_type":"practice","graph_name":"aws-acct-1"}]}`}},
 		},
 	}
 	deps := &detachFullDeps{rt: rt, gc: fc}
@@ -281,7 +280,7 @@ func (compositionStubCollector) Name() string { return compositionStubType }
 
 func (compositionStubCollector) Collect(_ context.Context, _ string, _ collector.CollectOptions) (*collectorwire.CollectResult, error) {
 	return &collectorwire.CollectResult{
-		GraphType: kgtypes.GraphCloud,
+		GraphType: kgtypes.GraphPractice,
 		GraphName: "composition-smoke",
 		Nodes: []*knowledgev1.Node{
 			{Type: "page"},

@@ -49,18 +49,21 @@ type ForeignGraph struct {
 
 // foreignScanGraphTypes is the client mirror of the server's proxyScanGraphTypes
 // precedence (cmd/knowledge-server/internal/codegraph/routing.go): code, then
-// practice, then cloud, then cicd. listForeignGraphs orders by this precedence so
+// practice. listForeignGraphs orders by this precedence so
 // the client's first-hit foreign graph matches the server's.
+//
+// THE cicd ENTRY WENT WITH THE FAMILY. A retired family is refused at every
+// route ahead of the registry, so scanning for one could only ever spend a
+// per-type read that comes back refused or empty — and a located endpoint in a
+// family nothing can address is a proxy nobody can follow.
 var foreignScanGraphTypes = []string{
 	string(kgtypes.GraphCode),
 	string(kgtypes.GraphPractice),
-	string(kgtypes.GraphCloud),
-	string(kgtypes.GraphCICD),
 }
 
-// ListForeignGraphs enumerates every loaded foreign (code/practice/cloud/cicd)
-// graph as a (GraphType, GraphName) pair via FOUR per-type RETURN_MODE_GRAPH_NAMES
-// reads (one per foreignScanGraphTypes entry, in precedence order). It does its
+// ListForeignGraphs enumerates every loaded foreign (code/practice)
+// graph as a (GraphType, GraphName) pair via one per-type RETURN_MODE_GRAPH_NAMES
+// read (one per foreignScanGraphTypes entry, in precedence order). It does its
 // OWN per-type graph-name enumeration via the engine primitives — crossgraph must
 // NOT import package tools, so this is the third thin engine.DecodeGraphNames
 // wrapper (alongside linker.fetchGraphNames + tools.fetchGraphNamesOfType), kept
@@ -161,7 +164,7 @@ func LocateForeignNode(ctx context.Context, gc GraphCaller, graphs []ForeignGrap
 			// tolerate a missing proxy today (born-linking drops an unresolvable
 			// referent rather than failing the write), so the scan still degrades
 			// to not-found. But a SILENT skip once hid a whole broken family — a
-			// wrongly-keyed selector made every cloud/cicd probe error and the
+			// wrongly-keyed selector made every account-keyed probe error and the
 			// location feature no-op'd with no operator-visible signal — so the
 			// failure is logged loudly instead of dropped on the floor.
 			slog.Warn("crossgraph locate: foreign-graph probe failed",

@@ -12,14 +12,14 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
-// TestToCollectResult_RoundTrip drives the full envelope path: a JSON envelope
+// TestToCollectResult_RoundTrip drives the full envelope path: a JSON result
 // round-trips through encoding/json into a *Result, then ToCollectResult yields
-// a *collectorwire.CollectResult whose node/edge fields and GraphType/GraphName
-// carry the envelope's values.
+// a *collectorwire.CollectResult whose node/edge fields carry the provider's
+// values and whose GraphType/GraphName carry the CLIENT-supplied family and
+// instance.
 func TestToCollectResult_RoundTrip(t *testing.T) {
 	raw := `{
-		"graph_type": "jira",
-		"graph_name": "acme-board",
+		"walk_complete": true,
 		"nodes": [
 			{
 				"id": "ISSUE-1",
@@ -39,12 +39,13 @@ func TestToCollectResult_RoundTrip(t *testing.T) {
 	var r Result
 	require.NoError(t, json.Unmarshal([]byte(raw), &r))
 
-	cr, err := r.ToCollectResult()
+	cr, err := r.ToCollectResult("jira", "acme-board")
 	require.NoError(t, err)
 	require.NotNil(t, cr)
 
 	assert.Equal(t, kgtypes.GraphType("jira"), cr.GraphType)
 	assert.Equal(t, "acme-board", cr.GraphName)
+	assert.True(t, cr.WalkComplete, "the provider's completeness assertion must ride through to the wire's walk_complete")
 
 	require.Len(t, cr.Nodes, 1)
 	n := cr.Nodes[0]
@@ -68,33 +69,49 @@ func TestToCollectResult_RoundTrip(t *testing.T) {
 	assert.Equal(t, "linker", e.Method)
 }
 
-// TestToCollectResult_FailsLoud confirms a malformed envelope returns a non-nil
-// error and a nil result: empty graph_type, empty graph_name, or a node with an
-// empty type each fail loud rather than shipping a degenerate CollectResult.
+// TestToCollectResult_FailsLoud confirms a malformed conversion returns a
+// non-nil error and a nil result: an empty family, an empty instance, or a node
+// with an empty type each fail loud rather than shipping a degenerate
+// CollectResult.
 func TestToCollectResult_FailsLoud(t *testing.T) {
-	cases := map[string]Result{
-		"empty graph_type": {
-			GraphType: "",
-			GraphName: "n",
-			Nodes:     []Node{{ID: "a", Type: "issue"}},
+	cases := map[string]struct {
+		graphType string
+		graphName string
+		result    Result
+	}{
+		"empty graph family": {
+			graphType: "",
+			graphName: "n",
+			result:    Result{Nodes: []Node{{ID: "a", Type: "issue"}}},
 		},
-		"empty graph_name": {
-			GraphType: "jira",
-			GraphName: "",
-			Nodes:     []Node{{ID: "a", Type: "issue"}},
+		"empty graph instance": {
+			graphType: "jira",
+			graphName: "",
+			result:    Result{Nodes: []Node{{ID: "a", Type: "issue"}}},
 		},
 		"empty node type": {
-			GraphType: "jira",
-			GraphName: "n",
-			Nodes:     []Node{{ID: "a", Type: ""}},
+			graphType: "jira",
+			graphName: "n",
+			result:    Result{Nodes: []Node{{ID: "a", Type: ""}}},
 		},
 	}
-	for name, r := range cases {
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			r := r
-			cr, err := r.ToCollectResult()
+			r := tc.result
+			cr, err := r.ToCollectResult(tc.graphType, tc.graphName)
 			require.Error(t, err)
 			assert.Nil(t, cr)
 		})
 	}
+}
+
+// TestToCollectResult_IncompleteWalkRidesThrough pins the OTHER value of the
+// completeness assertion: false is carried, not smoothed to true. It is the
+// signal that disables the deletion phase, so a conversion that dropped it would
+// silently enable deletion on an unverified walk.
+func TestToCollectResult_IncompleteWalkRidesThrough(t *testing.T) {
+	r := Result{Nodes: []Node{{ID: "a", Type: "issue"}}, WalkComplete: false}
+	cr, err := r.ToCollectResult("jira", "board")
+	require.NoError(t, err)
+	assert.False(t, cr.WalkComplete)
 }

@@ -18,8 +18,8 @@ package tools
 // They build their Execute Target through domainTarget
 // (intercept_query_correlations_pivot.go:412-419), which copies Name for every
 // graph family — but the families these arms can actually serve are the ones
-// whose resolver discards it (logs is excluded upstream by InterceptLogsQuery,
-// and the knowledge case is the passthrough the Phase-1 reproduction traced).
+// whose resolver discards it — the knowledge case is the passthrough the
+// Phase-1 reproduction traced).
 // domainTarget also omits Branch entirely, so `branch` is dropped by the client
 // before the resolver is reached, which is why it is rejected here rather than
 // treated as a resolver-discarded selector.
@@ -37,7 +37,7 @@ var queryModeArmSpecs = map[armID]armSpec{
 			"graph", "mode", "repo", "account", "language",
 			"edge_type", "include_tombstones", "limit",
 		)),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgCode, qgThought, qgSimulate, qgTopology, qgStats, qgCloud, qgRules,
 			qkeys(
 				"name", "branch",
@@ -62,7 +62,7 @@ var queryModeArmSpecs = map[armID]armSpec{
 			"graph", "mode", "repo", "account", "language",
 			"rows", "cols", "type", "text", "include_tombstones",
 		)),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgPaging, qgCode, qgThought, qgSimulate, qgTopology, qgStats, qgCloud, qgRules,
 			qkeys(
 				"name", "branch",
@@ -84,7 +84,7 @@ var queryModeArmSpecs = map[armID]armSpec{
 			"graph", "mode", "repo", "account", "language",
 			"id", "extra", "edge_type",
 		)),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgPaging, qgCode, qgThought, qgSimulate, qgStats, qgCloud, qgRules,
 			qkeys(
 				"name", "branch",
@@ -109,7 +109,7 @@ var queryModeArmSpecs = map[armID]armSpec{
 			"graph", "mode", "repo", "account", "language",
 			"time_field", "limit", "extra", "type", "text", "include_tombstones",
 		)),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgCode, qgThought, qgSimulate, qgStats, qgCloud, qgRules,
 			qkeys(
 				"name", "branch",
@@ -131,7 +131,7 @@ var queryModeArmSpecs = map[armID]armSpec{
 		operation: "query",
 		handler:   "InterceptQueryModulesCodeStats composeListModules",
 		consumed:  qparams(qkeys("graph", "mode", "repo", "repos", "path_prefix")),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgIdentity, qgPaging, qgThought, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys(
 				"name", "account", "language", "branch",
@@ -151,7 +151,7 @@ var queryModeArmSpecs = map[armID]armSpec{
 		operation: "query",
 		handler:   "InterceptQueryModulesCodeStats composeCodeStats",
 		consumed:  qparams(qkeys("graph", "mode", "repo", "branch", "format", "samples")),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgIdentity, qgPaging, qgCode, qgThought, qgSimulate, qgTopology, qgPivot, qgCloud, qgRules,
 			qkeys("name", "account", "language", "text", "queries", "query_vector"),
 		),
@@ -167,7 +167,7 @@ var queryModeArmSpecs = map[armID]armSpec{
 			"graph", "mode", "id", "repo", "branch",
 			"caller_depth", "callee_depth", "include_source",
 		)),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgPaging, qgThought, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys(
 				"name", "account", "language",
@@ -197,7 +197,7 @@ var queryModeArmSpecs = map[armID]armSpec{
 				"path_prefix", "group_by_file", "include_source",
 				"include_comments", "include_tests", "test_kinds",
 			)),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgThought, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys(
 				"name", "account", "language",
@@ -227,7 +227,7 @@ var queryModeArmSpecs = map[armID]armSpec{
 			"file_path", "file_paths", "path_prefix", "path_prefixes",
 			"include_source", "include_tombstones",
 		)),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgThought, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys(
 				"name", "account", "language", "offset",
@@ -243,15 +243,14 @@ var queryModeArmSpecs = map[armID]armSpec{
 
 	// metadata_stats is a server-side aggregate over the MetadataStats RPC with
 	// no node enumeration. `name` IS consumed here, unlike on the four composite
-	// arms above: this intercept runs ahead of InterceptLogsQuery in the chain,
-	// so it is the claimant for query(graph:"logs", mode:"metadata_stats",
-	// name:<query_id>) — the shape the tool description documents — and
-	// resolveLogs refuses without the name.
+	// arms above, because this arm addresses a graph INSTANCE: a name-keyed
+	// family (web, pdf, or a family a contrib collector registered) selects its
+	// instance by name, and the server's resolver refuses the read without one.
 	armMetadataStats: {
 		operation: "query",
 		handler:   "InterceptQueryMetadataStats",
 		consumed:  qparams(qkeys("graph", "mode", "name", "repo", "account", "language", "format")),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgIdentity, qgPaging, qgCode, qgThought, qgSimulate,
 			qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys("branch", "text", "queries", "query_vector"),
@@ -272,9 +271,16 @@ var queryModeArmSpecs = map[armID]armSpec{
 	armTopology: {
 		operation: "query",
 		handler:   "InterceptTopology",
+		// `account` LEFT THE CONSUMED SET when topologyInstanceName's account arm
+		// was removed. It was consumed in the literal sense — it reached
+		// foundation.Request.Name and selected which graph instance the analyzer
+		// fetched — and that is exactly what made it a defect: this arm builds no
+		// wire GraphSelector, so the value never met the server gate that ignores
+		// it. With the arm gone nothing here reads the param, so it falls to the
+		// ruling's ignored class like every other arm that does not route it.
 		consumed: qparams(qgTopology,
-			qkeys("graph", "mode", "name", "repo", "account", "language", "path_prefix")),
-		rejected: qparams(
+			qkeys("graph", "mode", "name", "repo", "language", "path_prefix")),
+		rejected: qparams(qgPracticeHub,
 			qgIdentity, qgPaging, qgThought, qgSimulate, qgPivot, qgStats, qgCloud, qgRules,
 			// qgCode cannot be named as a whole set here: it is a frozen
 			// twelve-member group and path_prefix is now CONSUMED, so the
@@ -315,7 +321,7 @@ var queryModeArmSpecs = map[armID]armSpec{
 				"id", "ids", "text", "type", "types", "status", "mode", "meta",
 				"include_edges", "include_cross_links", "include_tombstones", "query_vector",
 			)),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgCode, qgThought, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys("since", "queries"),
 		),
@@ -337,7 +343,7 @@ var queryModeArmSpecs = map[armID]armSpec{
 		operation: "query",
 		handler:   "InterceptQueryPlanTree",
 		consumed:  qparams(qkeys("graph", "mode", "id", "limit", "edge_type", "format", "fields")),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgCode, qgThought, qgSimulate, qgTopology, qgStats, qgCloud, qgRules,
 			qkeys(
 				"name", "repo", "account", "language", "branch",
@@ -355,7 +361,7 @@ var queryModeArmSpecs = map[armID]armSpec{
 		operation: "query",
 		handler:   "InterceptQueryEvidence",
 		consumed:  qparams(qkeys("graph", "mode", "id", "format")),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgPaging, qgCode, qgThought, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys(
 				"name", "repo", "account", "language", "branch",
@@ -374,7 +380,7 @@ var queryModeArmSpecs = map[armID]armSpec{
 		operation: "query",
 		handler:   "InterceptQueryLineage",
 		consumed:  qparams(qkeys("graph", "mode", "id", "format")),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgPaging, qgCode, qgThought, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys(
 				"name", "repo", "account", "language", "branch",
@@ -392,7 +398,7 @@ var queryModeArmSpecs = map[armID]armSpec{
 		operation: "query",
 		handler:   "InterceptQueryExamineProjects",
 		consumed:  qparams(qkeys("graph", "mode", "id", "format")),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgPaging, qgCode, qgThought, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys(
 				"name", "repo", "account", "language", "branch",
@@ -410,7 +416,7 @@ var queryModeArmSpecs = map[armID]armSpec{
 		operation: "query",
 		handler:   "InterceptQueryExamine composeInspectData",
 		consumed:  qparams(qkeys("graph", "mode", "id", "format")),
-		rejected: qparams(
+		rejected: qparams(qgPracticeHub,
 			qgPaging, qgCode, qgThought, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys(
 				"name", "repo", "account", "language", "branch",

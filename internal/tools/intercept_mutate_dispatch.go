@@ -46,6 +46,32 @@ func handleGraphPassthroughMutate(
 	if err := accountMutateParams(armGraphPassthrough, a); err != nil {
 		return true, errorResult(err.Error())
 	}
+	// REQUIREMENT 4, ON THE ARM EVERY PRACTICE WRITE PASSES THROUGH. create,
+	// create_batch, update and delete on graph:"practice" all land here, so one
+	// gate covers four arms; the link and unlink arms are gated at their own
+	// entry points because they are claimed upstream of this one. The server's
+	// resolvePractice ForWrite fence refuses the same shape again, so a client
+	// that skipped this cannot write into a pre-singleton graph either.
+	if err := refusePracticeLanguageOnWrite(a.Graph, a.Language, practiceHubParamOnWrites); err != nil {
+		return true, errorResult("mutate(" + a.Operation + "): " + err.Error())
+	}
+	// THE HUB SELECTOR ON THE UPDATE ARM, which is this arm's half of the target
+	// class. It is scoped to `update` because the hub means three different things
+	// across this one arm's four operations: create and create_batch GROUP the
+	// node they write (the engine's create lowering stamps the key and emits the
+	// sourced-from edge), delete uses it as a SELECTION axis (compileDelete lowers
+	// it to a metadata predicate), and only update names existing targets for it
+	// to scope. Running it on the other three would refuse a create for not
+	// already being under the hub it is being grouped into.
+	//
+	// It sits AFTER the two payload-decidable refusals above because it pays a
+	// READ: a call malformed on its face should hear so for free rather than after
+	// a round trip.
+	if a.Operation == "update" {
+		if err := guardPracticeHubScopesTargets(ctx, gc, a); err != nil {
+			return true, errorResult("mutate(update): " + err.Error())
+		}
+	}
 	// No fixture, no admission: a check-carrying CHECKS-graph write is validated
 	// against its own examples before anything reaches the store. Covers create,
 	// create_batch and update here; delete carries no metadata and skips.
@@ -312,4 +338,113 @@ func handleBackendMutateUpdate(
 	// only that both halves landed.
 	_ = params // reserved for future passthrough use
 	return true, textResult(fmt.Sprintf("mutate(update): backend %q + local update succeeded for %s", backendName, a.ID))
+}
+
+// guardNonKnowledgeMutate is the FOREIGN-GRAPH GUARD: every mutate whose graph
+// is neither empty nor knowledge passes through it, and it either refuses the
+// call or declines it to the engine.
+//
+// LIFTED OUT OF InterceptMutate rather than inlined, on that function's own
+// precedent: it holds a decision tree the cognitive-complexity gate bounds, and
+// the file's rule is to move a branch out rather than raise the limit. The four
+// gates below run in a fixed order and each one's position is load-bearing, so
+// they are read together here instead of interleaved with the knowledge-graph
+// routing they have nothing to do with.
+//
+// The (false, empty) return is the DECLINE, and it is the common case: a foreign
+// graph the client has no model of routes on to the engine unchanged.
+func guardNonKnowledgeMutate(
+	ctx context.Context, gc GraphCaller, a mutateArgs,
+) (bool, kgtools.ToolResult) {
+	// REQUIREMENT 4 ON THE ARMS THAT DECLINE RATHER THAN CLAIM. Every practice
+	// write that is not a passthrough CRUD op or an intra-practice link arrives
+	// here — upsert, unlink, update_batch, bulk_update_metadata, and a link the
+	// cross-graph composer declined. Without this gate they were accounted as
+	// consumed and then compiled into a target with no language on it at all, so
+	// the write landed in the combined graph while the caller believed it had
+	// addressed practice/go. It runs BEFORE the accounting call because a dropped
+	// selector is a more specific fault than an unconsumed param, and this arm's
+	// spec consumes the whole schema so accounting would never speak.
+	if err := refusePracticeLanguageOnWrite(a.Graph, a.Language, practiceHubParamOnWrites); err != nil {
+		return true, errorResult("mutate(" + a.Operation + "): " + err.Error())
+	}
+	// Backend-backed nodes only live in the knowledge graph.
+	//
+	// The link conjunct is load-bearing: the link block upstream does NOT return
+	// when the cross-graph composer declines, so a declined link carrying a
+	// non-knowledge graph reaches here too. It was already accounted upstream
+	// under its own arm, and accounting it a second time under a different spec
+	// would reject a call neither arm rejects on its own.
+	if err := accountNonKnowledgeMutate(a); err != nil {
+		return true, errorResult(err.Error())
+	}
+	// THE HUB SELECTOR ON THE UNLINK ARM, which is the other half of requirement
+	// 3's edge pair. An unlink never reaches an unlink-specific client arm at
+	// all: handleGraphPassthroughMutate serves create/create_batch/update/delete
+	// only, so every practice unlink declines to here — and this arm's spec
+	// consumes the whole schema, which is exactly why `source_hub` was accepted
+	// and then dropped on this path before the gate below existed.
+	//
+	// IT IS SCOPED TO unlink BECAUSE IT SCOPES ENDPOINTS. upsert, update_batch
+	// and bulk_update_metadata name no endpoints for it to resolve, and running
+	// this gate on them would refuse a hub against a pair of empty ids. They are
+	// NOT left ungated: they name TARGETS instead, and the target gate below is
+	// the same rule applied to the ids they do name.
+	//
+	// It sits AFTER the accounting, unlike the language refusal above, because it
+	// pays a READ: a call carrying a param no arm routes should hear that for
+	// free rather than after a round trip.
+	if a.Operation == "unlink" {
+		if err := guardPracticeHubScopesEndpoints(ctx, gc, a); err != nil {
+			return true, errorResult("mutate(unlink): " + err.Error())
+		}
+	}
+	// THE HUB SELECTOR ON THE THREE TARGET ARMS THAT DECLINE HERE, which is the
+	// other half of the class the update arm above closes at the passthrough.
+	// update_batch, bulk_update_metadata and upsert all name EXISTING nodes by id
+	// and all reach this arm, whose spec consumes the whole schema — which is
+	// exactly why `source_hub` was accepted and then dropped on all three before
+	// these gates existed. They are gated here rather than at the passthrough
+	// because the passthrough never claims them.
+	//
+	// UPSERT IS A GUARD LIKE THE OTHER TWO, and this arm issues no write of its
+	// own for it. An upsert whose key resolves is scoped and declines to the
+	// engine exactly as it always has; an upsert whose key does NOT resolve is
+	// refused naming mutate(create) as the arm that groups, because only a create
+	// plan can carry the hub key and the sourced-from edge together and a create
+	// re-dispatched here would REPLACE the node whole if the id appeared between
+	// the guard read and the write. See practiceHubUpsertUnresolvedRefusal.
+	if err := guardPracticeHubScopesTargets(ctx, gc, a); err != nil {
+		return true, errorResult("mutate(" + a.Operation + "): " + err.Error())
+	}
+	// Param accounting keeps FIRST refusal above, so a rejected param keeps its
+	// own specific message; this one claims only the calls accounting let
+	// through. It refuses an instance-addressed graph whose selector is empty,
+	// naming the value and the vocabulary rather than spending a server round
+	// trip on "graph selector invalid". Singleton families return nil, so the
+	// corpus-check guard below still runs for checks.
+	if err := requireGraphInstanceSelector(a); err != nil {
+		return true, errorResult(err.Error())
+	}
+	// The check gate's second call site, and the one that closes the upsert
+	// bypass plus the two batch-update shapes — none of which reach the
+	// passthrough arm upstream. It self-filters on graph=="checks", so practice
+	// and every foreign graph pass straight through.
+	if err := guardCorpusCheckWrite(ctx, gc, a); err != nil {
+		return true, errorResult(err.Error())
+	}
+	// THE MEMBERSHIP AN UPSERT WOULD OTHERWISE STRIP, and the one thing on this
+	// arm that is about the hub param's ABSENCE rather than its use. An upsert
+	// WRITES the body's metadata whole, so a hub-less one of a grouped node used
+	// to drop its `source_hub` key while the `sourced-from` edge survived. This
+	// carries the stored value forward onto the body.
+	//
+	// IT RUNS LAST, below every refusal above it: what reaches this line is a call
+	// that is going to the engine, and claiming it here re-dispatches it through
+	// the same engine.Dispatch the decline would have reached, with one metadata
+	// key added. See practice_hub_upsert_carry.go.
+	if claimed, res := claimPracticeHubUpsertCarry(ctx, gc, a); claimed {
+		return true, res
+	}
+	return false, kgtools.ToolResult{}
 }

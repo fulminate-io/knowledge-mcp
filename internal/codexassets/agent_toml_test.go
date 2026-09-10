@@ -23,8 +23,8 @@ const probeSkillsRoot = "/probe/skills-root"
 // non-empty description, developer_instructions containing the body,
 // and NO model key.
 func TestEmitAgentTOML_PlannerRoundTrip(t *testing.T) {
-	root := repoRoot(t)
-	data, err := os.ReadFile(filepath.Join(root, ".claude", "agents", "planner.md"))
+	root := repoRoot(t) // the in-module link at testdata/dotclaude, not an ancestor found by walking
+	data, err := os.ReadFile(filepath.Join(root, "agents", "planner.md"))
 	if err != nil {
 		t.Fatalf("read planner.md: %v", err)
 	}

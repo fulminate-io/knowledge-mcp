@@ -33,6 +33,35 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
+// queryParams wraps a raw args map as a `query` CallToolParams.
+//
+// IT MOVED HERE with the deletion of the per-account resource reader's search
+// test, which declared it. Like textBodyTools beside it, it is a package-wide
+// fixture rather than that file's own: several suites drive a query intercept
+// through it.
+func queryParams(t *testing.T, args map[string]any) kgtools.CallToolParams {
+	t.Helper()
+	raw, err := json.Marshal(args)
+	require.NoError(t, err)
+	return kgtools.CallToolParams{Name: "query", Arguments: raw}
+}
+
+// textBodyTools concatenates a ToolResult's text content for assertions.
+//
+// IT MOVED HERE with the deletion of the per-account resource reader's test file,
+// which declared it. It is a package-wide assertion helper rather than that
+// file's own, which is why it survived the file: several suites read a tool
+// result's text body this way.
+func textBodyTools(r kgtools.ToolResult) string {
+	var sb []byte
+	for _, c := range r.Content {
+		if c.Type == "text" {
+			sb = append(sb, c.Text...)
+		}
+	}
+	return string(sb)
+}
+
 // projectedRows decodes a rendered json body into the projected envelope, whose
 // rows stay map[string]any so a key the arm emitted but the caller never asked
 // for is VISIBLE to the assertion. Mirrors renderJSONProjected's own envelope

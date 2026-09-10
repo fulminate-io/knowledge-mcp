@@ -6,7 +6,7 @@
 // in the project-domain set AND the graph is unset / "knowledge".
 //
 // Non-knowledge graphs fall through (return false). Non-project-domain
-// types (e.g. NodeFile, NodeCloudResource, NodeThought) also fall
+// types (e.g. NodeFile, NodeSymbol, NodeThought) also fall
 // through to InterceptQueryExamine, the general client arm that renders
 // the generic header/ancestry/edges view. Nothing falls through to the
 // server: examine is a specialized mode with no server-side handler.
@@ -66,7 +66,7 @@ func InterceptQueryExamineProjects(ctx context.Context, deps ClientDeps, params 
 	//
 	// The decline no longer preserves a server fall-through — there is no
 	// routeQueryByMode and no handleGenericGraphQuery left to fall through to.
-	// Nor does it decide much: cloud, cicd, linkage, code and logs are claimed
+	// Nor does it decide much: practice, linkage and code are claimed
 	// EARLIER in the chain than this cluster, so an examine naming one of those
 	// never reaches this line. The values that do reach it and are declined here
 	// (practice, web, pdf, a registered custom graph, an unrecognized one) go on

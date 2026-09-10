@@ -14,20 +14,23 @@ import (
 // evalEmit records a target-graph node per current row into the in-memory
 // Result. The node's ID is computed via StableID so re-runs against the same
 // source produce identical IDs — which is what makes a re-run idempotent, and
-// equally what makes the write guard's id-scoped pre-read able to recognize a
-// resident row as this recipe's own. Each emit also stamps a translated-from
-// edge back to the source row's node (or the env.SourceRef override), recording
-// provenance.
+// equally what lets the landing's collision read recognize a resident row as
+// this recipe's own.
 //
-// On the client, EVERY run accumulates Nodes + TranslatedFrom edges into
-// result.Nodes / result.Lineage and records the new ID in the in-run emitted
-// set. There is no target DB write here and none afterwards: a recipe run
-// returns rows and ships nothing.
+// NO PROVENANCE EDGE BACK TO THE SOURCE GRAPH IS BUILT, and the absence is a
+// decision rather than an omission. The emitter used to stamp a translated-from
+// edge from every emitted node to the raw source row it came from. Cross-graph
+// lineage into a raw graph is retired outright: the raw graph is scratch that its
+// owner drops once the curated set exists, so the edge pointed at rows that stop
+// existing, and nothing in this binary ever read it. The only succession a landed
+// node records is next-version, old → new, INSIDE the combined practice graph,
+// and the landing composes that from the emitted set rather than the emitter
+// building it per row.
 //
-// EXTRACT MODE CHANGES NOTHING ABOUT EMIT. Nodes, Lineage and every Stats
-// counter accumulate exactly as they always have; extract only ALSO captures
-// each row for the caller to read, and only RunRecipe's decision not to write
-// differs.
+// EXTRACT MODE CHANGES NOTHING ABOUT EMIT. Nodes and every Stats counter
+// accumulate exactly as they always have; extract only ALSO captures each row for
+// the caller to read, and only what the CALLER does with the Result differs
+// between an extract and a landing.
 func evalEmit(
 	ctx context.Context,
 	env *Env,
@@ -87,14 +90,17 @@ func evalEmit(
 		}
 		node := assembleEmittedNode(nodeID, r.NodeType, fields, sourceSlug)
 
+		// The anchor is the SOURCE row this emission was derived from, with the
+		// recipe's own source_ref override taking precedence. It is reported to
+		// the caller on the extract row and is not stored on the node: an extract
+		// reader needs to know which passage produced a row, and no edge into the
+		// raw graph is built from it (see the header).
 		anchor := env.SourceRef
 		if anchor == "" {
 			anchor = row.NodeID
 		}
-		edge := TranslatedFromEdge(nodeID, anchor, sourceSlug)
 
 		result.Nodes = append(result.Nodes, node)
-		result.Lineage = append(result.Lineage, edge)
 		emitted[nodeID] = true
 
 		if opts.Extract {
@@ -103,9 +109,6 @@ func evalEmit(
 			// exactly the state the disclosure exists to reveal: a run whose every
 			// row was skipped above never reached this line, so the renderer's
 			// nil branch printed rows=0/0 and the skipped count vanished.
-			//
-			// The SAME anchor the lineage edge above uses, so an extract row and
-			// the translated-from edge a real run would write name one source node.
 			recordExtractRow(result.Extract, rowOffset, rowCap, r.NodeType, anchor, fields)
 		}
 
@@ -219,10 +222,14 @@ func evalLink(
 	return nil
 }
 
-// evalSourceRef overrides the default translated-from target for
-// subsequent emits. Evaluates the Ref expression against the first
-// row (source_ref is recipe-scope, not row-scope) and stashes the
-// result on env.SourceRef.
+// evalSourceRef overrides the ANCHOR every subsequent emit reports —
+// the source node an emission is attributed to. Evaluates the Ref
+// expression against the first row (source_ref is recipe-scope, not
+// row-scope) and stashes the result on env.SourceRef.
+//
+// The anchor used to be the target of a translated-from edge; that edge
+// is retired, and the anchor is now carried to the caller on the extract
+// row alone.
 func evalSourceRef(
 	ctx context.Context,
 	env *Env,

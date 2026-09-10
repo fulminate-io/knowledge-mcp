@@ -198,8 +198,8 @@ func validateCriterionArgs(ctx context.Context, gc GraphCaller, a criterionCreat
 // WHY THIS CLIENT CLAMP IS THE ONLY ENFORCEMENT ON THIS PATH: this arm writes
 // through mutate(upsert), and upsert is on the server's create-validation
 // BYPASS ALLOWLIST (cmd/knowledge-server/internal/bootstrap/
-// engine_mutate_upsert_allowlist.go lists proxy, graph_type_def, log-backend
-// and criterion). The server's !Summarizable non-empty-summary rule therefore
+// engine_mutate_upsert_allowlist.go lists proxy, graph_type_def and
+// criterion). The server's !Summarizable non-empty-summary rule therefore
 // never runs for a criterion created this way. The create_plan and
 // create_test_plan paths DO reach that rule because they go through
 // create_batch; this one does not. Remove the clamp and a summary-less

@@ -323,3 +323,17 @@ func mergeWalkStats(dst *ast.WalkStats, w ast.WalkStats) {
 	// recorded it. Delegated to ast because the hint element type is unexported.
 	ast.MergeCleanHint(dst, w)
 }
+
+// parsedPatterns projects the compiled member set down to the parsed patterns
+// ValidateWhereCaptureRefs needs. EVERY member is handed over, not the first:
+// one where-tree is evaluated against every member's matches, so a capture
+// reference undeclared in ANY member is a run-time error the moment that member
+// matches, and validating one would leave the silence the refusal exists to
+// remove.
+func parsedPatterns(patterns []indexedPattern) []ast.Pattern {
+	out := make([]ast.Pattern, 0, len(patterns))
+	for _, p := range patterns {
+		out = append(out, p.pattern)
+	}
+	return out
+}

@@ -28,9 +28,7 @@ func manifestOf(entries map[string][32]byte) *knowledgev1.CollectManifestRespons
 	resp := &knowledgev1.CollectManifestResponse{ManifestId: "mid"}
 	for path, h := range entries {
 		hh := h
-		resp.Entries = append(resp.Entries, &knowledgev1.ManifestEntry{
-			FilePath: path, ContributionHash: hh[:],
-		})
+		resp.Entries = append(resp.Entries, newManifestEntry(diffKeyFile, path, hh[:]))
 	}
 	return resp
 }
@@ -45,13 +43,13 @@ func TestDeletions_UnchangedFilesAreNotNamed(t *testing.T) {
 	present := map[string][32]byte{
 		"pkg/a.go": hashOf(1), "pkg/b.go": hashOf(2), "cmd/main.go": hashOf(3),
 	}
-	d := computeCollectDiff(manifestOf(present), present)
-	require.Empty(t, d.changedFiles, "precondition: nothing changed")
-	require.Len(t, d.unchangedFiles, 3, "precondition: every file is verified present")
+	d := computeCollectDiff(manifestOf(present), present, diffKeyFile)
+	require.Empty(t, d.changedKeys, "precondition: nothing changed")
+	require.Len(t, d.unchangedKeys, 3, "precondition: every file is verified present")
 
 	// Nothing was chunked, because nothing changed — which is exactly the shape
 	// the naive manifest-minus-chunked formula would read as "everything deleted".
-	got := deletionSet(d.manifestFiles, nil, d.unchangedFiles)
+	got := deletionSet(d.manifestKeys, nil, d.unchangedKeys, diffKeyFile)
 	require.Empty(t, got,
 		"an unchanged re-collect must name ZERO deletions: unchanged files are verified present, "+
 			"they are simply not re-uploaded")
@@ -67,7 +65,7 @@ func TestDeletions_DeletedFileIsNamedExactly(t *testing.T) {
 	// gone/only.go is removed; the other two are unchanged.
 	unchanged := []string{"pkg/a.go", "pkg/b.go"}
 
-	got := deletionSet(manifest, nil, unchanged)
+	got := deletionSet(manifest, nil, unchanged, diffKeyFile)
 	require.Contains(t, got, "gone/only.go", "the removed file must be named")
 	require.Contains(t, got, "gone",
 		"the directory that lost its LAST file must be named too — its package node is otherwise immortal")
@@ -102,8 +100,8 @@ func TestDirsOf_SegmentBoundaries(t *testing.T) {
 func TestShadowMode_UploadsFullSetAndNoDeletions(t *testing.T) {
 	present := map[string][32]byte{"pkg/a.go": hashOf(1), "pkg/b.go": hashOf(9)}
 	manifest := manifestOf(map[string][32]byte{"pkg/a.go": hashOf(1), "gone.go": hashOf(4)})
-	d := computeCollectDiff(manifest, present)
-	deletions := deletionSet(d.manifestFiles, d.changedFiles, d.unchangedFiles)
+	d := computeCollectDiff(manifest, present, diffKeyFile)
+	deletions := deletionSet(d.manifestKeys, d.changedKeys, d.unchangedKeys, diffKeyFile)
 	require.NotEmpty(t, deletions, "precondition: this fixture DOES produce a deletion")
 
 	// filelessChanged is passed FALSE throughout, which is the value that could
@@ -166,7 +164,7 @@ func TestShadowMode_DivergenceClasses(t *testing.T) {
 
 	emit := func(present map[string][32]byte, manifest map[string][32]byte) string {
 		return captureErrorLogs(t, func() {
-			d := computeCollectDiff(manifestOf(manifest), present)
+			d := computeCollectDiff(manifestOf(manifest), present, diffKeyFile)
 			for class, paths := range shadowDivergences(d) {
 				logShadowDivergence(class, paths)
 			}

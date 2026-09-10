@@ -44,7 +44,7 @@ func neverLoggedIn(context.Context) bool  { return false }
 // is spawned, c.transcriptHealth stays nil, and the upload seam is never invoked.
 // With it clear, the loops spawn and c.transcriptHealth is wired. The seam counter
 // proves no upload fires inside the observation window in EITHER case (the boot
-// delay is 1m and the interval 1h — far outside the test window), so the
+// delay is 1m and the interval 10m — far outside the test window), so the
 // nil-vs-wired transcriptHealth is the spawn-decision observable.
 func TestMaybeStartTranscriptUpload_GatedByNoTranscriptUpload(t *testing.T) {
 	var calls atomic.Int64
@@ -70,7 +70,7 @@ func TestMaybeStartTranscriptUpload_GatedByNoTranscriptUpload(t *testing.T) {
 	t.Run("normal_spawns", func(t *testing.T) {
 		c := newClient()
 		// t.Context() is canceled when this subtest ends, unwinding the two spawned
-		// goroutines (bootDelay 1m / interval 1h keep them parked on their timers).
+		// goroutines (bootDelay 1m / interval 10m keep them parked on their timers).
 		c.maybeStartTranscriptUpload(t.Context(), Config{NoTranscriptUpload: false})
 		if c.transcriptHealth == nil {
 			t.Fatal("transcriptHealth must be wired when NoTranscriptUpload is false — the loops did not spawn")
@@ -78,7 +78,7 @@ func TestMaybeStartTranscriptUpload_GatedByNoTranscriptUpload(t *testing.T) {
 	})
 
 	if got := calls.Load(); got != 0 {
-		t.Fatalf("upload seam invoked %d times in-window; expected 0 (boot delay 1m / interval 1h are outside the window)", got)
+		t.Fatalf("upload seam invoked %d times in-window; expected 0 (boot delay 1m / interval 10m are outside the window)", got)
 	}
 }
 

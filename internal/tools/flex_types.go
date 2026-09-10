@@ -165,3 +165,29 @@ func rawFieldValue(raw json.RawMessage, field string) string {
 	}
 	return s
 }
+
+// flexFloat unmarshals both JSON numbers (0.5) and JSON strings ("0.5") into
+// a float64, on the same argument as flexInt above. It sat in the log-tool
+// mirror file for as long as that file existed, on the reasoning that the
+// mirror block should stay colocated with the moved handlers; those handlers
+// are gone and the type's only remaining caller is the query args' weight
+// field, so it belongs with the other flex coercions.
+type flexFloat float64
+
+func (f *flexFloat) UnmarshalJSON(data []byte) error {
+	var n float64
+	if err := json.Unmarshal(data, &n); err == nil {
+		*f = flexFloat(n)
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		parsed, perr := strconv.ParseFloat(s, 64)
+		if perr != nil {
+			return fmt.Errorf("flexFloat: cannot parse %q as float64", s)
+		}
+		*f = flexFloat(parsed)
+		return nil
+	}
+	return fmt.Errorf("flexFloat: cannot unmarshal %s", string(data))
+}

@@ -72,12 +72,11 @@
   <params>
     <param name="query">single search string</param>
     <param name="queries">array of strings — PREFERRED, one call covers more</param>
-    <param name="graph">code (default) | knowledge | practice | cloud | cicd | linkage | logs</param>
+    <param name="graph">code (default) | knowledge | practice | linkage | a registered custom graph type</param>
     <param name="mode">hybrid (default) | text (BM25 only) | vector (semantic only); also ppr/graph_reach + recent/temporal for knowledge</param>
     <param name="repo">repo name, or "all" for cross-repo</param>
     <param name="branch">branch overlay (auto-detected from current branch if omitted)</param>
-    <param name="account">cloud account key — required for graph:"cloud" (omit to list available cloud graphs)</param>
-    <param name="name">query_id — required for graph:"logs"</param>
+    <param name="name">graph instance name, for the families keyed by name</param>
     <param name="limit">max results (default 10, max 50)</param>
   </params>
   <note>Results carry a staleness indicator (e.g. "Indexed 2h ago, 3 commits behind HEAD"). If stale, re-collect.</note>
@@ -90,14 +89,14 @@
   </summary>
   <params>
     <param name="start">node ID — e.g. "path/file.go:FunctionName"</param>
-    <param name="graph">'' or knowledge (default) | code | cloud | cicd | practice | logs | linkage</param>
+    <param name="graph">'' or knowledge (default) | code | practice | linkage | a registered custom graph type</param>
     <param name="edge_types">array, e.g. ["calls"] (case-insensitive)</param>
     <param name="direction">in | out | both (default out)</param>
     <param name="depth">max traversal depth (default 1)</param>
     <param name="repo">code graph name</param>
     <param name="include_edge_metadata">surface Weight/Confidence/Method/Evidence/LastValidated on every edge</param>
   </params>
-  <note>Cross-graph traversal auto-resolves via linkage proxies — pass a knowledge node ID as `start` with graph:"code"|"cloud"|"practice".</note>
+  <note>Cross-graph traversal auto-resolves via linkage proxies — pass a knowledge node ID as `start` with graph:"code"|"practice"|a registered custom type.</note>
 </tool>
 
 <tool name="ast" purpose="structural search-and-replace via tree-sitter">
@@ -128,7 +127,7 @@
   <where-tree note="optional JSON boolean filter on captures">
     <composers>all (AND) | any (OR) | not (negation)</composers>
     <leaves>kind (node-kind) | matches (regex) | equals (literal) | same_node (AST identity) | same_text (same source text) | inside_pattern (ancestor matches sub-pattern) | contains_pattern (descendant matches sub-pattern) | flows_to (intra-declaration dataflow)</leaves>
-    <capture-refs>"X" local capture | "$match" outermost matched node (built-in) | "$outer.X" parent scope (chain "$outer.outer." to go deeper)</capture-refs>
+    <capture-refs>"X" local capture | "$match" outermost matched node (built-in) | "$outer.X" parent scope (repeat the whole token to go deeper: "$outer.$outer.X" is two levels) | "&lt;as&gt;.&lt;capture&gt;" a sub-pattern leaf's own capture, exported under its declared `as` name</capture-refs>
   </where-tree>
 
   <params>
@@ -200,8 +199,8 @@
     <param name="id">fetch one node by ID (or `ids` array for bulk hydrate)</param>
     <param name="type">browse by node type (decision | finding | rule | plan | project | ticket | test_plan | agent | skill)</param>
     <param name="text">text search across knowledge</param>
-    <param name="graph">knowledge (default) | code | cloud | cicd | practice | linkage | logs | all</param>
-    <param name="mode">hybrid | text | stats | examine | file_symbols | modules | personality | influence | tensions | blind_spots | evolution | summary | simulate | timeline | charges | clusters | graph_reach | recent | topology | pivot | correlations | explain | resolver | lineage | evidence | plan_tree | metadata_stats</param>
+    <param name="graph">knowledge (default) | code | practice | linkage | a registered custom graph type</param>
+    <param name="mode">hybrid | text | stats | examine | file_symbols | modules | personality | influence | tensions | blind_spots | evolution | summary | simulate | timeline | charges | clusters | graph_reach | recent | topology | pivot | correlations | explain | lineage | evidence | plan_tree | metadata_stats</param>
     <param name="include_edges">include edges in node results</param>
     <param name="format">text (default) | json</param>
   </params>

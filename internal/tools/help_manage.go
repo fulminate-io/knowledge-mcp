@@ -42,8 +42,8 @@ const helpManage = `# manage — Server operations
 
   Note: There is no operator-driven manage(reindex) command. The pipeline picks
   up changed nodes automatically.
-  Re-run the appropriate collector (collect type:code / collect type:cloud /
-  collect type:cicd) to refresh source nodes; the per-graph collector inside
+  Re-run the appropriate collector (collect type:code, or a registered
+  type) to refresh source nodes; the per-graph collector inside
   the server discovers gaps (missing summary, missing vector) and the worker
   pool drains them on the next tick.
 
@@ -75,8 +75,8 @@ const helpManage = `# manage — Server operations
   manage({ "operation": "prune", "graph": "code", "name": "myrepo" })          — GC tombstoned code nodes for one repo
   manage({ "operation": "prune", "graph": "practice", "name": "go", "before": "30d" })  — GC tombstones older than 30 days
 
-  prune works GENERICALLY on any graph type (knowledge, code, cloud, cicd,
-  practice, logs, web, pdf, linkage, checks) — it deletes tombstoned
+  prune works GENERICALLY on any graph type (knowledge, code,
+  practice, web, pdf, linkage, checks) — it deletes tombstoned
   nodes and nothing else. There is no graph-type allowlist; just name the graph.
   before accepts a relative window ("24h"/"2d") or an absolute RFC3339 timestamp;
   only tombstones tombstoned before it are pruned. Omit before to prune all.
@@ -85,22 +85,21 @@ const helpManage = `# manage — Server operations
   manage({ "operation": "drop_graph", "graph": "code", "name": "myrepo", "dry_run": true })  — PREVIEW
   manage({ "operation": "drop_graph", "graph": "code", "name": "myrepo" })                   — DROPS IT
 
-  drop_graph tears down a WHOLE non-logs graph — the persisted store plus its
-  loaded state — via one DROP_GRAPH mutation, the same wire teardown discard_logs
-  uses for log graphs. Requires graph=<knowledge|code|cloud|cicd|practice|web|pdf|
-  checks|linkage or a registered custom type> plus the instance field that
-  family needs (code→name as repo, cloud/cicd→name as account, practice→name as
-  language, the rest→name; knowledge needs no name). graph=logs is rejected — use
-  discard_logs for a log graph.
+  drop_graph tears down a WHOLE graph — the persisted store plus its loaded
+  state — via one DROP_GRAPH mutation. Requires
+  graph=<knowledge|code|practice|web|pdf|checks|linkage or a registered
+  custom type> plus the instance field that family needs (code→name as repo,
+  practice→name as language, the rest→name; knowledge
+  needs no name). A RETIRED family name is refused, naming the removal.
   DESTRUCTIVE, AND THE DEFAULT EXECUTES. dry_run:true issues ZERO mutations and
   renders a "would drop" preview so the target can be confirmed first. Note this
   is the OPPOSITE polarity from prune-cache, which previews by default and acts
   only on execute:true.
 
 ## Metadata representation
-  manage({ "operation": "set_metadata_overrides", "graph": "cloud", "name": "aws-prod",
+  manage({ "operation": "set_metadata_overrides", "graph": "<registered type>", "name": "acme",
            "force_scalar": ["region"], "force_edge": ["owner"] })
-  manage({ "operation": "promote_metadata", "graph": "cloud", "name": "aws-prod", "dry_run": true })
+  manage({ "operation": "promote_metadata", "graph": "<registered type>", "name": "acme", "dry_run": true })
 
   set_metadata_overrides REPLACES a graph's per-key OverrideConfig: force_scalar
   pins keys to the inline scalar map, force_edge pins them to value-node edges.
@@ -111,8 +110,8 @@ const helpManage = `# manage — Server operations
   promote_metadata refreshes the per-graph metadata cardinality stats, then walks
   every key and dispatches PromoteKey/DemoteKey through ApplyDecision using the
   current hysteresis bands — or, with force=true, the simple distinct<1000 rule
-  that bypasses hysteresis (an operator one-shot). Requires graph=<cloud|cicd|
-  practice|logs or a registered custom graph type> + name=<graph identifier>.
+  that bypasses hysteresis (an operator one-shot). Requires graph=<practice
+  or a registered custom graph type> + name=<graph identifier>.
   dry_run=true runs the decision pass and reports the intended actions without
   writing. keys=<comma-separated> narrows it to the named keys; empty considers
   every key the stats snapshot observed.
@@ -163,8 +162,8 @@ const helpManage = `# manage — Server operations
   corrupted cache), manual invalidation (the model/prompt-change lever), or
   backfill/migration (graphs populated before the feature shipped). Builtin-graph
   only: requires graph=code (name=repo) or graph=knowledge (name defaults to
-  "default" — BASE layer only, no "@"-overlay names in v1); practice/cloud/cicd are
-  not supported.
+  "default" — BASE layer only, no "@"-overlay names in v1); practice and
+  registered custom types are not supported.
   ASYNC: the server drops + re-derives on a background goroutine and returns a
   STARTED acknowledgement immediately (a large repo's walk would otherwise exceed
   the edge timeout); confirm completion via the server logs ("rebuild_cache.complete").
@@ -211,6 +210,45 @@ const helpManage = `# manage — Server operations
   live set would condemn every segment there is — which is why the reload is not an
   optimization but the precondition. Honors format=json for the structured report.
 
+## Style-rule import
+  manage({ "operation": "import_style_rules", "source": "hub_id", "path": "/abs/path/rules.json" })
+  manage({ "operation": "import_style_rules", "source": "hub_id", "path": "/abs/path/rules.json", "dry_run": true })
+
+  import_style_rules reads a generic RULE-LIST file and writes its rules as
+  PRACTICE NODES under one language hub. The file is JSON — a top-level object
+  with a "rules" array — and each rule carries:
+
+    name        required, the rule's short name
+    summary     required, the author-supplied one-line summary
+    text        required, the rule itself, stored as the node description
+    severity    required, one of info | notice | warning | critical
+    scope       optional { "repo": "...", "paths": ["..."] }
+    linter      optional { "name": "...", "rule_id": "..." }
+    check       optional { "dsl_pattern", "check_where", "fixture_bad", "fixture_good" }
+    id          optional; supply it to UPDATE an existing rule
+
+  IT WRITES PRACTICE NODES AND NOTHING ELSE. No check node, no fixture node and
+  no sister_check cross-link is ever created by an import. A sister check is
+  authored later by its own manage_checks(create) call, after an LLM has passed
+  on the practice node; a rule's "check" block rides the practice node as inert
+  data until then and is never compiled or executed.
+
+  The whole list lands in ONE create_batch, so every rule gets its hub metadata
+  key and its sourced-from edge atomically. A rule whose id already exists is
+  UPDATED per field rather than re-created — a create would store the body whole
+  and clear the fields the file omitted — so re-importing the same list produces
+  no duplicate and clears no field.
+
+  EVERY REFUSAL NAMES THE RULE'S INDEX IN YOUR FILE, and nothing is written when
+  any rule is refused: a missing name, summary or text; a severity off the
+  ladder; a scope path that is absolute, carries a ".." segment, or is not the
+  repo-relative spelling; an unknown key at any level; a duplicate id within one
+  file; an unreadable or unparseable file. dry_run=true validates and reports
+  what it would write, writing nothing.
+
+  Read the imported rules back with the style-rule index:
+  query({ "graph": "practice", "mode": "style_index", "source": "hub_id" })
+
 ## Repo manifest registration
   manage({ "operation": "register_repo", "name": "myrepo", "root": "/abs/path/to/myrepo" })  — record a repo name → checkout dir
 
@@ -226,25 +264,10 @@ const helpManage = `# manage — Server operations
   existing absolute directory; name is the repo name to record.
 
 ## Cross-graph linking
-  manage({ "operation": "link" })  — run image, Helm, and Dockerfile linkers to create code-to-cloud edges
-
-## Log backend + graph management
-  manage({ "operation": "configure_log_backend", "name": "prod-loki",
-           "provider": "loki", "url": "https://loki.example.com",
-           "auth_type": "bearer", "credential": "$LOKI_TOKEN" })
-  manage({ "operation": "list_log_backends" })
-  manage({ "operation": "list_logs" })
-  manage({ "operation": "discard_logs", "name": "<query_id>" })  — drop one log graph
-  manage({ "operation": "discard_logs" })                          — drop all log graphs
-
-  credential accepts a raw value (bearer token, API key, service account JSON, ...)
-  OR a $ENV_VAR reference resolved at query time. Raw values are stored encrypted
-  at rest and redacted in tool responses. Use whichever is convenient.
-  See help("logs") for the full collect → query → search → traverse workflow.
+  manage({ "operation": "link" })  — run the Dockerfile linker to create code-to-code edges
 
 ## Gotchas
   - clear_llm_failures clears markers but does NOT re-discover; the pipeline picks the node up on its next tick (default 250ms)
   - a circuit-break trip (auto-pause) does NOT self-heal — diagnose the cause (quota/auth/timeouts), then run resume_pipeline to re-enable; pause state is lost on restart
-  - log graphs are ephemeral; they live under ~/.knowledge/logs/ and are not LLM-summarized/embedded
   - prune requires an explicit graph (it never defaults to knowledge); without before it hard-deletes EVERY tombstoned node in that graph
 `

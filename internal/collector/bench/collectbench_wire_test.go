@@ -79,12 +79,6 @@ func (c *recordingIngestClient) CollectManifest(
 	return c.inner.CollectManifest(ctx, req)
 }
 
-func (c *recordingIngestClient) FetchCloudSubgraph(
-	ctx context.Context, req *connect.Request[knowledgev1.FetchCloudSubgraphRequest],
-) (*connect.Response[knowledgev1.FetchCloudSubgraphResponse], error) {
-	return c.inner.FetchCloudSubgraph(ctx, req)
-}
-
 // observed returns what this client saw. Copied under the lock so a caller
 // cannot race the transport.
 func (c *recordingIngestClient) observed() (manifestRPCs, finalizes int, deleted []string) {

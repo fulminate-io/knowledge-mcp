@@ -1,6 +1,6 @@
 ---
 name: propose
-description: Propose net-new projects — new features or gap-fills in existing features — by mining past tickets and thoughts, walking the target repo for feature seams that stop short, and running web research including market/competitor analysis. Mostly non-interactive; presents 3-5 evidence-backed proposals and offers /brainstorm to dig into any of them. Distinct from /improve (optimizations and testing fixes) and /research (documents what exists).
+description: Propose net-new projects — new features or gap-fills in existing features — by mining past tickets and thoughts, walking the target repo for feature seams that stop short, and running web research including market/competitor analysis. Mostly non-interactive; presents 3-5 evidence-backed proposals and offers /brainstorm to dig into any of them. Distinct from /research, which documents what exists; a proposal is a net-new capability, never an optimization or a test fix.
 argument-hint: <optional repo or subsystem focus; omit to use the session's focused repo or the current working directory>
 ---
 
@@ -14,12 +14,12 @@ reference /orchestrate. This skill is proposal-discovery-specific.
 </precedence>
 
 <mental-model>
-/research = WHAT exists. /explore = WHY it exists. /improve = what's WRONG
-(optimizations, testing fixes). /propose = what's NEXT (net-new capability).
+/research = WHAT exists. /explore = WHY it exists. /propose = what's NEXT
+(net-new capability); optimizations and test fixes are neither.
 
 The discriminator for every candidate: **"does this create a capability that
 doesn't exist?"** Yes → it belongs here. Makes an existing capability faster,
-safer, or better-tested → it belongs to /improve; exclude it (note it in one
+safer, or better-tested → it is not a proposal; exclude it (note it in one
 line so the signal isn't lost).
 
 Output feeds /brainstorm. Proposals are INPUTS to a future brainstorm, never
@@ -104,7 +104,7 @@ When the lenses return:
 
 1. **Merge + dedup** across lenses and against the Step 0.5 dedup set.
 2. **Apply the discriminator** — anything optimization/testing-shaped is cut
-   (keep a one-line "belongs to /improve" list).
+   (keep a one-line "optimization, not a proposal" list).
 3. **Verify load-bearing claims.** A researcher's "the product lacks X" is a
    signpost, not an answer. Before a proposal is presented, verify its central
    existence/absence claim yourself against current source (search + ast +
@@ -148,7 +148,7 @@ Name for retrieval: the node name and first description sentence are what
 ### 2. ...
 
 ---
-Filtered: <N> candidates dropped (<n> already ticketed, <n> belong to /improve, <n> weak evidence).
+Filtered: <N> candidates dropped (<n> already ticketed, <n> optimizations rather than net-new capability, <n> weak evidence).
 
 To dig into any of these: `/brainstorm <proposal name>` — the proposal node and
 its evidence will surface in the brainstorm's recall automatically.
@@ -176,7 +176,7 @@ thoughts({
 
   <anti-patterns>
     <pattern>Creating tickets or projects from proposals — tickets come out of /brainstorm, never out of /propose; an unvetted proposal ticketed is an aspirational ticket</pattern>
-    <pattern>Proposing optimizations, refactors, or test fixes — that's /improve; apply the discriminator</pattern>
+    <pattern>Proposing optimizations, refactors, or test fixes — apply the discriminator; those are not net-new capability</pattern>
     <pattern>Proposing what's already ticketed, planned, or previously rejected — build the dedup set first</pattern>
     <pattern>Asserting "the product lacks X" from a single search miss — absence claims need ≥2 phrasings + ast shape-match, verified in the main loop, not just by the lens agent</pattern>
     <pattern>Market claims without URLs — uncited trend prose is speculation, not research</pattern>

@@ -127,6 +127,13 @@ type syncArgs struct {
 // gated on its GraphTypeDef syncable flag (syncableGateRejection) before any RPC
 // fires; a BUILTIN goes through the SAME gate, which admits it iff
 // kgtypes.SyncEligible does — so web, pdf and logs are refused there by name.
+//
+// A PRACTICE NAME ADDRESSES A LEGACY GRAPH ON BOTH DIRECTIONS. The practice
+// family is a singleton for node reads and writes, but the eight pre-singleton
+// graph IMAGES still exist on this machine and in the account until the migration
+// moves them, so push and pull take a non-empty name as one of the eight and only
+// an absent name as the combined graph. The rule, and the canonical-name refusal
+// that goes with it, are in sync_practice_legacy_name.go.
 func InterceptSync(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "sync" {
 		return false, kgtools.ToolResult{}
@@ -179,6 +186,12 @@ func InterceptSync(ctx context.Context, deps ClientDeps, params kgtools.CallTool
 			[]string{"push", "pull", "list"}) + " (promote was removed)")
 	}
 
+	// The legacy practice name is fenced BEFORE the seams: a name this push can
+	// never address should not cost a whole-graph serialize and an upload first.
+	if err := refusePracticeSyncName("sync push", graph, name); err != nil {
+		return true, errorResult(err.Error())
+	}
+
 	exp, err := exporterSeam(deps)
 	if err != nil {
 		return true, errorResult("sync: " + err.Error())
@@ -202,6 +215,13 @@ func InterceptSync(ctx context.Context, deps ClientDeps, params kgtools.CallTool
 // at overwriterSeam (pull requires a local server because its destination is the
 // local .bin).
 func handlePull(ctx context.Context, deps ClientDeps, graph, name string) kgtools.ToolResult {
+	// The legacy practice name is fenced BEFORE the seams, and pull is the
+	// direction that needs it: the apply CREATES the (graph_type, name) it is
+	// handed, so an admitted non-canonical name would leave a local practice graph
+	// no read of the family can open.
+	if err := refusePracticeSyncName("sync pull", graph, name); err != nil {
+		return errorResult(err.Error())
+	}
 	ov, err := overwriterSeam(deps)
 	if err != nil {
 		return errorResult("sync pull: " + err.Error())
@@ -311,7 +331,8 @@ func pullGraph(
 // (custom) graph proceeds ONLY when a registered GraphTypeDef resolves
 // (crud.ByName found) AND its behavior cascade declares syncable=true; an
 // unregistered type, a missing registry (degraded client), or a syncable
-// false/unset def is rejected. Mirrors the collect.go:192 ByName gate.
+// false/unset def is rejected. Mirrors collect's own ByName gate (collect.go:340
+// at the time of writing; the citation was :192 and had rotted).
 //
 // THE BUILTIN ARM USED TO ADMIT EVERYTHING, and that was the gap this closes.
 // SyncEligible governed only what sync(operation:"list") DISPLAYS, so an operator

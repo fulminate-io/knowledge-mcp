@@ -114,7 +114,7 @@ func TestManageChecks_RunIncludeTestsRefusesAnUnsupportedLanguage(t *testing.T) 
 // with no struct field is accepted and dropped.
 func TestManageChecks_NewParamsAreDeclaredAndRead(t *testing.T) {
 	props := ManageChecksToolDef().InputSchema.Properties
-	for _, name := range []string{"include_tests", "applies_to_tests"} {
+	for _, name := range []string{"include_tests", "applies_to_tests", "files", "compact"} {
 		prop, ok := props[name]
 		require.True(t, ok, "the schema must declare %s", name)
 		assert.NotEmpty(t, prop.Description, "%s must carry a description", name)

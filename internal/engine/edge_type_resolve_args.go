@@ -50,7 +50,7 @@ func resolveTraverseArgs(ctx context.Context, stats StatsFn, args json.RawMessag
 	if err := json.Unmarshal(args, &a); err != nil {
 		return args, "", nil //nolint:nilerr // malformed JSON is surfaced by Compile's deny, not here
 	}
-	if len(a.EdgeTypes) == 0 || a.Graph == "logs" {
+	if len(a.EdgeTypes) == 0 {
 		return args, "", nil
 	}
 	target := buildTarget(a.Graph, a.Repo, a.Account, a.Name, a.Language, a.Branch)
@@ -85,7 +85,7 @@ func resolveMutateArgs(ctx context.Context, stats StatsFn, args json.RawMessage)
 	if a.From == "" || a.To == "" || a.Relationship == "" || a.LinkGraph != "" {
 		return args, "", nil
 	}
-	target := mutateTarget(a.Graph, a.Repo, a.Account, a.Name, a.Language, "")
+	target := mutateTarget(a.Graph, a.Repo, a.Name, a.Language, "")
 	res, err := ResolveEdgeTypeDeclaration(ctx, stats, target, []string{a.Relationship})
 	if err != nil {
 		return nil, "", err

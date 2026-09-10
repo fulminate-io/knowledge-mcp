@@ -42,11 +42,11 @@ with `--seed` to backfill the cache before analyzing.
 <!-- BEGIN GENERATED: params -->
 | Parameter | Type | Required | Enum | Description |
 | --- | --- | --- | --- | --- |
-| `agent` | string |  |  | Agent id selecting one subagent lane, for scope single. |
+| `agent` | string |  |  | Selects one subagent lane, for scope single. Accepts EITHER the lane's cache id (the a<name>-<16 hex> spelling the report's corpus selector shows) OR the name the lane was spawned under. A name is resolved against the cache within session when one is given and across the whole cache otherwise, and both forms return the same report. An ambiguous name — one matching more than one lane, which happens because a name is reused across sessions — is refused with every candidate id and session listed, never resolved to one of them. |
 | `format` | string |  |  | Output format: 'json' (default). |
 | `operation` | string | yes | run-detectors, recommend | Operation to perform: run-detectors (deterministic metrics only) or recommend (detectors + LLM-synthesized recommendations) |
-| `scope` | string |  | all, session-tree, single, time-range | Population to analyze. all: the whole retained cache (default). session-tree: one main session plus every subagent lane it spawned — requires session. single: one lane on its own, which additionally returns a lane_detail breakdown — requires exactly one of session or agent. time-range: records bounded by since/until — requires at least one of them. |
-| `session` | string |  |  | Session id selecting the population, for scope session-tree or single. |
+| `scope` | string |  | all, session-tree, single, time-range | Population to analyze. all: the whole retained cache (default). session-tree: one main session plus every subagent lane it spawned — requires session. single: one lane on its own, which additionally returns a lane_detail breakdown — requires session or agent; a lane NAME in agent may be given together with session, which is then the scope the name is resolved within. time-range: records bounded by since/until — requires at least one of them. |
+| `session` | string |  |  | Session id selecting the population, for scope session-tree or single. For scope single with a lane NAME in agent it is instead the scope that name is resolved within. |
 | `since` | string |  |  | RFC3339 timestamp; records at or after it are included (inclusive). For scope time-range. |
 | `until` | string |  |  | RFC3339 timestamp; records before it are included (exclusive). For scope time-range. |
 <!-- END GENERATED: params -->

@@ -116,8 +116,9 @@ func TestSegmentCacheDirCoLocation(t *testing.T) {
 
 // TestBuildHealFactoryShape is the auto-heal wiring criterion: with a
 // segment manager wired, buildHealFactory returns a non-nil factory that produces
-// a NON-NIL heal closure for every graph kgtypes.HasRebuildableSegments admits (the
-// embeddable builtins — code, knowledge, cloud, cicd, practice) and a NIL closure
+// a NON-NIL heal closure for every graph kgtypes.HasRebuildableSegments admits —
+// read that predicate rather than a list here, because a list of families is what
+// rots when one is added or retired — and a NIL closure
 // for a graph with no rebuildable segments (e.g. linkage — the
 // HasRebuildableSegments gate). This is the SAME predicate the manual
 // rebuild_segments op gates on, so the auto-heal arm and the manual rebuild gate
@@ -141,11 +142,8 @@ func TestBuildHealFactoryShape(t *testing.T) {
 	practiceClosure := factory(kgtypes.GraphPractice, "go")
 	require.NotNil(t, practiceClosure, "practice carries rebuildable segments — gets a non-nil heal closure")
 
-	cloudClosure := factory(kgtypes.GraphCloud, "acct")
-	require.NotNil(t, cloudClosure, "cloud carries rebuildable segments — gets a non-nil heal closure")
-
-	cicdClosure := factory(kgtypes.GraphCICD, "org")
-	require.NotNil(t, cicdClosure, "cicd carries rebuildable segments — gets a non-nil heal closure")
+	webClosure := factory(kgtypes.GraphWebRaw, "some-source")
+	require.NotNil(t, webClosure, "the raw web graph carries rebuildable segments — gets a non-nil heal closure")
 
 	linkageClosure := factory(kgtypes.GraphLinkage, "lk")
 	require.Nil(t, linkageClosure, "linkage has no rebuildable segments — gets a nil closure (closed-gate side stays pinned)")

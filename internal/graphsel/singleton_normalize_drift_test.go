@@ -73,10 +73,17 @@ func TestNoInstanceFieldFamiliesNormalizeTheirEmptyName(t *testing.T) {
 
 	// THE OTHER DIRECTION, which is what keeps the collapse from widening. A
 	// family that DOES carry an instance field must still refuse an empty name:
-	// there it means the caller named no repo, account or language, and admitting
-	// a catalog enumeration is the failure the structural half of the admission
-	// gate exists to prevent.
-	for _, gt := range []kgtypes.GraphType{kgtypes.GraphCode, kgtypes.GraphCloud, kgtypes.GraphCICD, kgtypes.GraphPractice} {
+	// there it means the caller named no repo, and admitting a catalog
+	// enumeration is the failure the structural half of the admission gate exists
+	// to prevent.
+	//
+	// PRACTICE LEFT THIS LIST when the eight per-language graphs became one. It is
+	// a FieldNone family now, so the walk above covers it and the interesting
+	// assertion inverted: its empty name must be ADMITTED as the one instance
+	// rather than refused as an absent selector. This edit and the graphsel move
+	// that caused it land in one commit; the require below is what fails the build
+	// if they ever come apart.
+	for _, gt := range []kgtypes.GraphType{kgtypes.GraphCode} {
 		require.NotEqual(t, graphsel.FieldNone, graphsel.InstanceField(gt),
 			"control: %q must carry an instance field for the next assertion to mean anything", gt)
 		_, ok := workingset.Normalize(gt, "")

@@ -229,7 +229,7 @@ const helpRecordDecision = `# record_decision — Record a design decision with 
   informed_by  — comma-separated node IDs of findings/research that informed this
   ticket_id    — born-link the decision under its work item (ticket--contains-->decision)
   session      — born-link it under a working session (creates the session if new)
-  links        — node IDs to relate it to (decision--relates-to-->target); code/cloud
+  links        — node IDs to relate it to (decision--relates-to-->target); code
                  IDs are linked post-create via the cross-graph linkage
   format       — "text" (default) or "json" ({id, name, warnings})
 
@@ -246,10 +246,11 @@ const helpRecordDecision = `# record_decision — Record a design decision with 
   })
 `
 
-const helpSearchCode = `# search — Unified search across code, knowledge, practice, cloud, linkage, and log graphs
+const helpSearchCode = `# search — Unified search across code, knowledge, practice, linkage and registered custom graphs
 
 ## Graph routing
-  graph          — "code" (default) | "knowledge" | "practice" | "cloud" | "cicd" | "linkage" | "logs"
+  graph          — "code" (default) | "knowledge" | "practice" | "linkage"
+                   | a registered custom graph type
 
 ## Parameters (all graphs)
   query          — single search query
@@ -303,20 +304,19 @@ const helpSearchCode = `# search — Unified search across code, knowledge, prac
 ## Practice graph parameters
   language       — language slug (e.g. "go", "python"). Required for search, omit to list graphs.
 
-## Cloud graph parameters
-  account        — selects a collected external-provider account/org within your own graph (e.g. an AWS/GCP account, or a CI provider org). Required for search, omit to list cloud graphs.
-  resource_type  — resource type prefix filter (e.g. "ec2", "ec2:instance")
+## Registered custom graph parameters
+  name           — the instance of a graph type a contrib collector registered.
+                   Infrastructure inventory and log collection live here now:
+                   install a collector with the knowledge collector add
+                   command, which writes its entry into collectors.json, then
+                   collect it by name.
+                   custom_collector(operation:"list") enumerates what is
+                   registered; registration itself is the config file, not a
+                   tool call.
 
 ## Linkage graph
-  Searches cross-graph proxy nodes (code-to-cloud relationships).
+  Searches cross-graph proxy nodes (the derived cross-graph relationships).
   No additional parameters required beyond query.
-
-## Log graph parameters
-  name           — query_id of the log graph (required). List active graphs with manage list_logs.
-
-  BM25-only: log graphs are excluded from LLM summarization/embedding, so HNSW
-  is never populated for them. Results are filtered to log-template nodes —
-  chunks hold compressed payloads and streams are label buckets.
 
 ## Examples
   search({ "query": "cache invalidation" })
@@ -326,11 +326,9 @@ const helpSearchCode = `# search — Unified search across code, knowledge, prac
   search({ "query": "auth", "graph": "knowledge" })
   search({ "graph": "knowledge", "mode": "similar", "node_id": "<node_id>" })  — nearest stored-vector neighbors of a node
   search({ "query": "concurrency", "graph": "practice" })
-  search({ "query": "web server", "graph": "cloud", "account": "aws-prod" })
-  search({ "query": "bucket", "graph": "cloud", "account": "aws-prod", "resource_type": "s3" })
-  search({ "graph": "cloud" })  — list available cloud graphs (no account)
+  search({ "query": "pipeline", "graph": "<registered type>", "name": "acme" })
   search({ "query": "deploy", "graph": "linkage" })  — search cross-graph linkage proxies
-  search({ "graph": "logs", "name": "<query_id>", "query": "connection refused" })  — BM25 over log templates
+  search({ "query": "bucket", "graph": "<registered type>", "name": "<graph>", "resource_type": "s3" })
 `
 
 const helpFileSymbols = `# file_symbols — List all symbols in a file
@@ -361,12 +359,12 @@ const helpHelp = `# help — Get documentation about tools, node types, edge typ
 ## Available topics
 
   Reference: overview, node_types, edge_types, statuses, workflows,
-  logs, patterns, recipes, topology
+  patterns, recipes, topology
 
   Per-tool: query, traverse, mutate, delete, manage, manage_checks, ast,
   thoughts, create_project, create_ticket, create_plan, create_research,
   create_test_plan, record_decision, search, file_symbols,
-  help, assemble, sync
+  help, assemble, sync, analyze_usage
 
   That is the complete set. An unrecognized topic is refused naming the topic
   and pointing at help() with no args for the list. There is no per-operation
@@ -450,12 +448,33 @@ Requires the "sync" license scope. Three operations:
 
 ## Parameters
   operation — push | pull | list (required)
-  graph     — graph type (knowledge, code, cloud, ...); defaults to 'knowledge'
+  graph     — graph type (knowledge, code, practice, ...); defaults to 'knowledge'
   name      — graph name; defaults to 'default'
+
+## Practice graphs
+The combined practice graph is named 'default', so a push or pull with no name
+addresses it. A NAME on push or pull addresses one of the LEGACY per-language
+practice graphs — the ones that existed before they were combined — for as long
+as they are still around; the migration moves them, and a cleanup ticket retires
+the addressing. The name must be the graph's canonical spelling (lowercase, with
+'/' and ' ' as '-' and '+' as 'plus'); a display spelling such as
+"Design Patterns" is refused naming "design-patterns" rather than rewritten,
+because a rewritten name would move bytes to a graph you did not ask for.
+
+Whether a legacy name is ACCEPTED at the far end is the destination server's own
+rule rather than this client's: a server from before the practice graphs were
+combined accepts a canonical legacy name, a newer one may refuse it, and its
+refusal comes back verbatim.
+
+Every OTHER practice arm is unaffected: query, search, traverse and assemble take
+the combined graph by default and the legacy language selector when one is given,
+and a practice write carrying a language is refused.
 
 ## Examples
   sync({ "operation": "push" })
   sync({ "operation": "pull", "graph": "knowledge", "name": "default" })
+  sync({ "operation": "push", "graph": "practice" })
+  sync({ "operation": "push", "graph": "practice", "name": "go" })
   sync({ "operation": "list" })
 
 ## Result shape

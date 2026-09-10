@@ -38,7 +38,7 @@ const ppFailureSentinel = "postpopulate-hook-exploded-sentinel"
 // also fails.
 //
 // The fixture graph is a CLOUD graph deliberately. The failure-surfacing rule is
-// uniform across collector families — a cloud or CI/CD collect fails visibly
+// uniform across collector families — a non-code collect fails visibly
 // where it used to warn and succeed — so driving it through a cloud-mapped
 // collector type exercises exactly that breadth. Do not "simplify" this to a
 // code graph.
@@ -48,7 +48,7 @@ func TestPostCollectPostPopulate_HookFailureSurfacesInCollectResult(t *testing.T
 	// Map the stub collector type into the postpopulate gate so the tail fires;
 	// restore afterwards.
 	prevPP, hadPP := postPopulateGraphType[detachFullPathType]
-	postPopulateGraphType[detachFullPathType] = kgtypes.GraphCloud
+	postPopulateGraphType[detachFullPathType] = kgtypes.GraphPractice
 	t.Cleanup(func() {
 		if hadPP {
 			postPopulateGraphType[detachFullPathType] = prevPP
@@ -62,7 +62,7 @@ func TestPostCollectPostPopulate_HookFailureSurfacesInCollectResult(t *testing.T
 	// own start, so the two do not interfere in either order.
 	//
 	// BreadthFamilyBroad is load-bearing, not incidental: it is what every cloud
-	// and CI/CD hook declares, and it is the arm that enumerates the family's
+	// hook declares, and it is the arm that enumerates the family's
 	// graphs — which is where the "aws-acct-1" the assertion greps for comes
 	// from. A BreadthScoped registration would take the scoped arm, find no
 	// collected graph name (CollectGateGraphName yields "" for every non-code
@@ -82,7 +82,7 @@ func TestPostCollectPostPopulate_HookFailureSurfacesInCollectResult(t *testing.T
 	rt := NewCollectRuntime()
 	fc := &fakeGraphCaller{
 		listGraphsResult: &kgtools.ToolResult{
-			Content: []kgtools.ContentBlock{{Type: "text", Text: `{"graphs":[{"graph_type":"cloud","graph_name":"aws-acct-1"}]}`}},
+			Content: []kgtools.ContentBlock{{Type: "text", Text: `{"graphs":[{"graph_type":"practice","graph_name":"aws-acct-1"}]}`}},
 		},
 	}
 	deps := &detachFullDeps{rt: rt, gc: fc}

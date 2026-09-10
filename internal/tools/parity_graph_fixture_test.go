@@ -334,12 +334,12 @@ func (g *parityCaller) renderEdges(nodeID string) kgtools.ToolResult {
 	return kgtools.TextResult(string(body))
 }
 
-// parityDeps reuses logE2EDeps (intercept_logs_e2e_test.go) — a
+// parityDeps reuses graphCallerDeps (intercept_logs_e2e_test.go) — a
 // minimal ClientDeps that exposes only GraphCaller. All other
 // accessors return nil/empty; the plan-tree intercept does not
 // exercise them. Defined as a type alias here so the per-test
 // constructor stays local.
-type parityDeps = logE2EDeps
+type parityDeps = graphCallerDeps
 
 // seedPlanTreeFixture builds the same plan→2 phases × 3 steps shape
 // the goldengen capture used. The IDs use a deterministic prefix so

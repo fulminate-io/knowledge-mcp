@@ -86,9 +86,9 @@ func TestTranslateAgent_ResolvedPathsPreamble(t *testing.T) {
 // generator used to prove — install-codex-assets now translates these
 // same files at install time, so every one MUST translate cleanly.
 func TestTranslateAgent_AllClaudeAgents(t *testing.T) {
-	root := repoRoot(t)
+	root := repoRoot(t) // the in-module link at testdata/dotclaude, not an ancestor found by walking
 	const skillsRoot = "/probe/all-agents/skills"
-	agentsDir := filepath.Join(root, ".claude", "agents")
+	agentsDir := filepath.Join(root, "agents")
 	entries, err := os.ReadDir(agentsDir)
 	if err != nil {
 		t.Fatalf("read agents dir: %v", err)
@@ -169,8 +169,8 @@ func TestTranslateAgent_NoFrontmatter(t *testing.T) {
 // The NESTED layout is the one the repo ships and the one this asserts:
 // .claude/skills/<name>/SKILL.md, not a flat .claude/skills/*.md.
 func TestParseFrontmatter_AllClaudeSkills(t *testing.T) {
-	root := repoRoot(t)
-	skillsDir := filepath.Join(root, ".claude", "skills")
+	root := repoRoot(t) // the in-module link at testdata/dotclaude, not an ancestor found by walking
+	skillsDir := filepath.Join(root, "skills")
 	entries, err := os.ReadDir(skillsDir)
 	if err != nil {
 		t.Fatalf("read skills dir: %v", err)

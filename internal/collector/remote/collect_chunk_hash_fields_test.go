@@ -51,10 +51,11 @@ func TestCollectChunkRequests_PopulateHashFields(t *testing.T) {
 	}}
 
 	reqs := collectChunkRequests(999, result, nodeChunks, edgeChunks, diffModeOn, chunkHashFields{
-		manifestID:    "mf-live-1",
-		nodeHashes:    nodeHashes,
-		perFileHashes: perFile,
-		fileByNodeID:  map[string]string{"a.go:Alpha": "a.go", "a.go:Beta": "a.go", "b.go:Gamma": "b.go"},
+		manifestID:   "mf-live-1",
+		nodeHashes:   nodeHashes,
+		perKeyHashes: perFile,
+		kind:         diffKeyFile,
+		fileByNodeID: map[string]string{"a.go:Alpha": "a.go", "a.go:Beta": "a.go", "b.go:Gamma": "b.go"},
 	})
 	require.Len(t, reqs, 3, "two node chunks and one edge chunk")
 

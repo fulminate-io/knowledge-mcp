@@ -35,6 +35,27 @@ type LinkRequest struct {
 	// resolution exists to remove. A nil Stats makes the link REFUSE loudly
 	// rather than fall back to writing the caller's spelling unchecked.
 	Stats engine.StatsFn
+
+	// ScanGraphs is the PRE-ENUMERATED foreign-graph list the endpoints are
+	// resolved against. EMPTY IS THE DEFAULT AND IS UNCHANGED: the composer
+	// enumerates code and practice itself, which is what both
+	// interactive-link callers and the post-collect linker do.
+	//
+	// IT EXISTS BECAUSE THE FIXED SCAN LIST IS NOT THE BOUND ON WHAT AN EDGE MAY
+	// NAME. foreignScanGraphTypes carries four families; an endpoint in a logs
+	// graph or in any registered custom family is found by no probe, and on the
+	// linkage path the best-effort arm then links it BY ITS RAW ID with no proxy
+	// and no error. A caller that knows which family it is resolving against —
+	// the custom-collect pass, which enumerates that one family itself — supplies
+	// the list and gets a real proxy.
+	//
+	// SUPPLYING IT REPLACES THE ENUMERATION, it does not extend it. The caller
+	// has already paid for the read, so a second one would be waste; and the
+	// composer's own enumeration failure is a SILENT fall-through to legacy
+	// (below), which a caller that must treat an enumeration failure as an error
+	// cannot use. Widening the list back to the four builtins is the caller's
+	// choice to make by putting them in this slice.
+	ScanGraphs []ForeignGraph
 }
 
 // ResolveAndLink is the SINGLE owner of the generic cross-graph resolve+link tail:
@@ -68,10 +89,16 @@ func ResolveAndLink(ctx context.Context, gc GraphCaller, ex render.Executor, req
 	// id with no node behind it).
 	bestEffort := target != "knowledge"
 
-	graphs, gerr := ListForeignGraphs(ctx, ex)
-	if gerr != nil {
-		// Enumeration failed → fall through to legacy (no partial proxy work).
-		return false, kgtools.ToolResult{}, nil //nolint:nilerr // enumeration failure → legacy path
+	// A caller-supplied graph list is used AS-IS and no enumeration is issued;
+	// see LinkRequest.ScanGraphs for why it replaces rather than extends.
+	graphs := req.ScanGraphs
+	if len(graphs) == 0 {
+		var gerr error
+		graphs, gerr = ListForeignGraphs(ctx, ex)
+		if gerr != nil {
+			// Enumeration failed → fall through to legacy (no partial proxy work).
+			return false, kgtools.ToolResult{}, nil //nolint:nilerr // enumeration failure → legacy path
+		}
 	}
 
 	// Resolve FROM (knowledge raw-id or foreign-proxy id).

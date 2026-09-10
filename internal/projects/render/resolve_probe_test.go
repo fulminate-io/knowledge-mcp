@@ -110,7 +110,7 @@ func TestResolveAssembleNode_KnowledgeHit_OneExecuteNoPracticeList(t *testing.T)
 		knowledgeHas: true,
 		resolvesIn:   map[string]bool{},
 	}
-	node, graphType, graphName, err := resolveAssembleNode(context.Background(), gc, "known")
+	node, graphType, graphName, err := resolveAssembleNode(context.Background(), gc, "known", "")
 	require.NoError(t, err)
 	require.NotNil(t, node)
 
@@ -142,7 +142,7 @@ func TestResolveAssembleNode_PracticeProbesConcurrentAndIndexDeterministic(t *te
 
 	t.Run("the probes overlap", func(t *testing.T) {
 		gc := newGc()
-		_, _, _, err := resolveAssembleNode(context.Background(), gc, "shared")
+		_, _, _, err := resolveAssembleNode(context.Background(), gc, "shared", "")
 		require.NoError(t, err)
 
 		assert.Equal(t, 1, gc.listedGraphs, "the practice list is read once")
@@ -159,7 +159,7 @@ func TestResolveAssembleNode_PracticeProbesConcurrentAndIndexDeterministic(t *te
 		// index 2; both resolve.
 		for range 25 {
 			gc := newGc()
-			node, graphType, graphName, err := resolveAssembleNode(context.Background(), gc, "shared")
+			node, graphType, graphName, err := resolveAssembleNode(context.Background(), gc, "shared", "")
 			require.NoError(t, err)
 			require.NotNil(t, node)
 			assert.Equal(t, "practice", graphType)
@@ -174,7 +174,7 @@ func TestResolveAssembleNode_PracticeProbesConcurrentAndIndexDeterministic(t *te
 		// erroring earlier probe cancel the group would report not-found.
 		gc := newGc()
 		gc.resolvesIn = map[string]bool{"typescript": true}
-		node, graphType, graphName, err := resolveAssembleNode(context.Background(), gc, "shared")
+		node, graphType, graphName, err := resolveAssembleNode(context.Background(), gc, "shared", "")
 		require.NoError(t, err)
 		require.NotNil(t, node)
 		assert.Equal(t, "practice", graphType)
@@ -184,7 +184,7 @@ func TestResolveAssembleNode_PracticeProbesConcurrentAndIndexDeterministic(t *te
 	t.Run("resolving nowhere still reports the documented not-found", func(t *testing.T) {
 		gc := newGc()
 		gc.resolvesIn = map[string]bool{}
-		_, _, _, err := resolveAssembleNode(context.Background(), gc, "shared")
+		_, _, _, err := resolveAssembleNode(context.Background(), gc, "shared", "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), `no node with id "shared" in knowledge or any practice graph`)
 	})

@@ -124,6 +124,21 @@ func HasTestFilePredicate(lang treesitter.Language) bool {
 	return ok && cfg.IsTestFile != nil
 }
 
+// IsTestFile reports whether rel is a test file by lang's OWN convention — the
+// same predicate the walk filters by, read from the same registry, so a caller
+// deciding what a path is cannot disagree with the walk about it.
+//
+// FALSE FOR A LANGUAGE WITH NO CONVENTION, which is the honest answer rather
+// than a guess: there is nothing to filter by, and HasTestFilePredicate is how a
+// caller tells that case from a genuine "this is not a test file".
+func IsTestFile(lang treesitter.Language, rel string) bool {
+	cfg, ok := langConfigFor(lang)
+	if !ok || cfg.IsTestFile == nil {
+		return false
+	}
+	return cfg.IsTestFile(rel)
+}
+
 // TestFilePredicateLanguages names every registered language that carries a
 // test-file convention, sorted. It exists so the refusal message for a language
 // without one can say which languages DO support the flag, rather than leaving

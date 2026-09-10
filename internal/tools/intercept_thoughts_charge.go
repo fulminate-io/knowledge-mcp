@@ -192,7 +192,7 @@ func validateChargeArgs(a chargeArgs) string {
 // resolveChargeEvidence resolves each evidence id to the id the EdgeEvidencedBy
 // edge should target, reproducing the server ResolveOrProxy's 3 outcomes
 // (routing.go:234-250): (a) in knowledge → the RESOLVED node id; (b) in a scan-eligible
-// foreign graph (code/practice/cloud/cicd) → build+upsert proxy, use proxy id;
+// foreign graph (code/practice) → build+upsert proxy, use proxy id;
 // (c) NOT found anywhere → raw id AS-IS (best-effort dangling, NOT dropped —
 // this composer has no legacy fall-through). The foreign graph list is
 // enumerated ONCE and reused across all evidence ids.

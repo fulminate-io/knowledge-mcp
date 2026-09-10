@@ -24,6 +24,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -71,7 +72,7 @@ type promoteMetadataCounters struct {
 // server's indexPromoteMetadata loop (engine_index.go) but with the decision +
 // graph-type policy held client-side.
 func handleManagePromoteMetadata(ctx context.Context, deps ClientDeps, a manageArgs, rawParams json.RawMessage) kgtools.ToolResult {
-	// (1) Graph-type policy, CLIENT-SIDE. cloud|cicd|practice|logs and any
+	// (1) Graph-type policy, CLIENT-SIDE. practice and any
 	// registered custom graph type accepted — code/knowledge/linkage/empty and
 	// unregistered typos rejected with the operator-facing message, BEFORE any
 	// stats read or dispatch touches the server.
@@ -189,7 +190,7 @@ func migrateDirectionForRecommendation(rec engine.Recommendation) (toEdge, dispa
 // dispatchMigrateMetaRepr issues one MIGRATE_META_REPR Execute (N2) for the key
 // in the given direction, over the per-graph Target. The plan is built directly
 // (NOT via engine.Compile — the client compiler has no migrate_meta_repr arm),
-// mirroring dropLogGraph's explicit-plan dispatch.
+// mirroring the explicit-plan dispatch every non-compiled mutation kind uses.
 func dispatchMigrateMetaRepr(ctx context.Context, gc GraphCaller, target *knowledgev1.GraphSelector, key string, toEdge bool) error {
 	ex, err := persistExecutor(gc)
 	if err != nil {
@@ -253,35 +254,47 @@ func splitTrimCSV(s string) []string {
 }
 
 // metadataBackfillTarget builds the GraphSelector for a promote_metadata target,
-// placing name in the per-type instance-key field resolveTargetDB reads:
-// practice → Language, cloud/cicd → Account, logs (and the rest) → Name.
+// placing name in the per-type instance-key field resolveTargetDB reads.
+//
+// WHICH FIELD THAT IS IS graphsel.InstanceField's ANSWER, not this function's.
+// It used to switch on BARE STRING LITERALS — "practice" → Language, the
+// account-keyed families → Account, everything else → Name — naming no kgtypes
+// constant at all, which is why a typed-constant census could not see it and why
+// it survived several rounds of one. A singleton family lands no instance field
+// here at all, which is what practice became when the per-language graphs were
+// combined, and the composite-literal spelling of a hand-built selector is what
+// the corpus check on keyed GraphSelector literals fires on. One builder, one
+// partition.
+//
+// EVERY ACCOUNT-KEYED ARM IS GONE with the built-in collectors that produced
+// those graphs, and their removal is behaviour-identical rather than a
+// narrowing: every caller reaches this through handleManagePromoteMetadata,
+// which runs parseMetadataGraphTypeForBackfill first, and that refuses every
+// name but practice and a registered custom family. The arms were unreachable
+// before they were deleted.
 func metadataBackfillTarget(graph, name string) *knowledgev1.GraphSelector {
-	switch graph {
-	case "practice":
-		return &knowledgev1.GraphSelector{Graph: graph, Language: name}
-	case "cloud", "cicd":
-		return &knowledgev1.GraphSelector{Graph: graph, Account: name}
-	default:
-		return &knowledgev1.GraphSelector{Graph: graph, Name: name}
-	}
+	return graphsel.GraphSelectorFor(kgtypes.GraphType(graph), name, false)
 }
 
 // parseMetadataGraphTypeForBackfill ports the server graph-type policy
 // (tools_manage_promote_metadata.go) CLIENT-SIDE: promote_metadata accepts the
-// builtin cloud|cicd|practice|logs graphs AND any REGISTERED custom graph type.
+// builtin practice graph AND any REGISTERED custom graph type. The cloud, logs
+// and CI-inventory names were accepted here until the built-in collectors that
+// produced them were removed; all now fall to the registry default and are
+// refused as an unregistered graph, which is what the refusal strings say.
 // code (T6 path), knowledge (out of scope), and linkage (no promotable proxy
 // metadata) are rejected — as is an empty graph, so an operator must always
 // supply an explicit one. An unregistered typo (no GraphTypeDef record) is
 // rejected as 'unsupported graph'. The default arm registry-gates via
-// crud.ByName, the SAME found-gate idiom collect.go:192 (tryRegisteredCollect)
-// uses; a nil crud (degraded client) means no custom type can be confirmed, so
+// crud.ByName, the SAME found-gate idiom the collect tool's own registered-type
+// probe uses; a nil crud (degraded client) means no custom type can be confirmed, so
 // the typo error stands. The rejection is the operator-facing message returned
 // without touching the server.
 func parseMetadataGraphTypeForBackfill(ctx context.Context, crud GraphTypeCRUDAPI, s string) (kgtypes.GraphType, error) {
 	switch strings.TrimSpace(strings.ToLower(s)) {
 	case "":
 		return "", errors.New(
-			"promote_metadata: empty graph parameter — expected one of cloud|cicd|practice|logs or a registered custom graph type (knowledge/code/linkage are not supported here)")
+			"promote_metadata: empty graph parameter — expected practice or a registered custom graph type (knowledge/code/linkage are not supported here)")
 	case "code":
 		return "", errors.New(
 			"promote_metadata: code graphs use the T6 path; not supported here")
@@ -291,26 +304,22 @@ func parseMetadataGraphTypeForBackfill(ctx context.Context, crud GraphTypeCRUDAP
 	case "linkage":
 		return "", errors.New(
 			"promote_metadata: linkage graph carries no promotable metadata on its cross-graph proxies; not supported here")
-	case "cloud":
-		return kgtypes.GraphCloud, nil
-	case "cicd":
-		return kgtypes.GraphCICD, nil
 	case "practice":
 		return kgtypes.GraphPractice, nil
-	case "logs":
-		return kgtypes.GraphLogs, nil
 	default:
 		// Registered custom graph type: accept it when a GraphTypeDef record
-		// resolves (crud.ByName found), mirroring collect.go:192. The explicit
-		// cases above already consume every builtin that can reach here, so a
-		// builtin never falls to this registry default.
+		// resolves (crud.ByName found), mirroring the collect tool's own
+		// registered-type probe. The explicit cases above consume every builtin
+		// this arm supports or names a reason for; a RETIRED builtin name reaches
+		// here instead and is refused as unregistered, which is the honest answer
+		// for a name that was valid one release ago.
 		if crud != nil {
 			if _, found, _ := crud.ByName(ctx, strings.TrimSpace(s)); found {
 				return kgtypes.GraphType(strings.TrimSpace(s)), nil
 			}
 		}
 		return "", fmt.Errorf(
-			"promote_metadata: unsupported graph %q — expected one of cloud|cicd|practice|logs or a registered custom graph type", s)
+			"promote_metadata: unsupported graph %q — expected practice or a registered custom graph type", s)
 	}
 }
 

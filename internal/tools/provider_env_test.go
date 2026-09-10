@@ -67,12 +67,20 @@ var providerKeyEnv = []string{
 // goleak.VerifyTestMain replaces the os.Exit(m.Run()) that used to end this
 // function: it runs the suite, checks for leaked goroutines and exits itself. The
 // allowlist is deliberately EMPTY.
+// THE COLLECTOR USER SCOPE IS NEUTRALIZED FOR THE WHOLE SUITE, for the same
+// reason and by the same argument as the credentials above: the user-scope
+// custom-collector config path is resolved from the home directory at package
+// init, and a test that reached it would read — and, through a write verb, could
+// write — the operator's real ~/.knowledge/collectors.json. Every test that
+// needs entries repoints it again at its own t.TempDir().
 func TestMain(m *testing.M) {
 	for _, k := range providerKeyEnv {
 		if err := os.Unsetenv(k); err != nil {
 			panic("clearing " + k + " for the test suite: " + err.Error())
 		}
 	}
+	restore := neutralizeCollectorUserScope()
+	defer restore()
 	goleak.VerifyTestMain(m)
 }
 

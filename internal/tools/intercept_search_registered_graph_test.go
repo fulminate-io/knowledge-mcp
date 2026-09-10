@@ -94,20 +94,23 @@ func TestRegisteredGraphSearch_BuiltinGraphNotClaimed(t *testing.T) {
 	mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{}}
 	deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
 
-	// practice is a builtin reducible graph: it must be served by its OWN fan-out
-	// arm, never the custom-graph default branch. The custom branch would key
-	// Manager.Search on the RAW GraphType("practice"); the practice fan-out keys it
-	// on GraphPractice (a per-language scatter, which with no loaded practice graphs
-	// may not call Search at all, leaving lastGT zero). Either way, the custom branch
-	// must NOT be what claimed it — so lastGT is never the raw custom-keyed
-	// GraphType("practice").
+	// practice is a builtin reducible graph: it must be served by its OWN arm,
+	// never the custom-graph default branch.
+	//
+	// THE DISCRIMINANT IS THE INSTANCE NAME, NOT THE GRAPH TYPE. Both branches key
+	// Manager.Search on GraphType("practice"), so the type alone stopped
+	// separating them the moment the practice arm became a single-pool search. The
+	// custom branch keys the pool on the CALLER'S name — empty on this payload —
+	// while the practice arm keys it on the combined graph's canonical instance,
+	// which is what this asserts.
 	handled, _ := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
 		"graph": "practice",
 		"query": "x",
 	}))
 	require.True(t, handled, "practice is claimed by its own reducible arm")
-	require.NotEqual(t, kgtypes.GraphType("practice"), mgr.lastGT,
-		"practice must NOT be claimed by the custom-graph branch")
+	require.Equal(t, "default", mgr.lastName,
+		"the practice arm keys the pool on the combined graph's canonical instance; "+
+			"the custom-graph branch would key it on the caller's (empty) name")
 }
 
 // TestInterceptQueryRegisteredGraphSearch proves the QUERY-tool arm: a custom-graph

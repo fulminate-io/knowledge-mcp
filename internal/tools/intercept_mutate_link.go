@@ -13,17 +13,20 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/projects/render"
 )
 
-// handleClientCrossGraphLink implements the CLIENT-COMPOSABLE half of the
-// server handleCrossGraphLink decision tree (tools_mutate_link.go), now covering
+// handleClientCrossGraphLink is the client-side cross-graph link composer. It
+// owns the decision tree a retired server-side link tool once held — the server
+// is a generic single-graph mutator and holds no domain knowledge — and covers
 // TWO branches:
 //
-//   - INTRA-PRACTICE direct link: when BOTH from and to resolve in the same
-//     practice/<language> graph, it issues one LINK MutationPlan targeting that
-//     practice graph via the Execute seam (the engine routes cross-graph for
-//     free). The authoring path for a pattern tree that lives entirely inside
-//     one practice graph (pattern → use_case / example).
+//   - INTRA-PRACTICE direct link: when BOTH from and to resolve in the ONE
+//     combined practice graph, it issues one LINK MutationPlan targeting it via
+//     the Execute seam (the engine routes cross-graph for free). The authoring
+//     path for a pattern tree that lives entirely inside the practice graph
+//     (pattern → use_case / example). A `language` on this write is refused by
+//     name rather than dropped, and a `source_hub` SCOPES it: both endpoints
+//     must be grouped under the hub it names.
 //   - KNOWLEDGE-FROM to PRACTICE-TO proxy: when the FROM resolves in the
-//     KNOWLEDGE graph and the TO resolves in practice/<language>, it materializes
+//     KNOWLEDGE graph and the TO resolves in the practice graph, it materializes
 //     the deterministic practice proxy (store.BuildCrossGraphProxy) and writes
 //     it plus the from->proxy edge into the knowledge graph via the Execute
 //     seam: the proxy UPSERT rides the engine MUTATION_KIND_UPSERT arm, on whose
@@ -32,26 +35,38 @@ import (
 //     guard rejects type=proxy outright). The LINK rides MUTATION_KIND_LINK.
 //
 // FROM-GRAPH GUARD (dangling-edge fix): the proxy branch claims ONLY when a.From
-// resolves in KNOWLEDGE. A code/cloud/cicd FROM (e.g. a documented
+// resolves in KNOWLEDGE. A code FROM (e.g. a documented
 // code→pattern `uses` edge) is "not in practice" too, but the server resolves
 // such a FROM through h.Code.ResolveOrProxy (auto-creating a CODE proxy) — out of
 // scope for this ticket. Firing the proxy branch on a code FROM would emit
 // link(raw-code-id → practice-proxy) into knowledge, where the raw code id has no
 // node → a DANGLING edge. So a non-knowledge / unresolved FROM falls through to
-// the LIVE legacy handleCrossGraphLink, which owns the ResolveOrProxy path.
+// the generic engine LINK dispatch in InterceptMutate, which owns that path.
 //
 // It returns (false, _) — fall through to legacy — for every shape it cannot
 // fully handle: link_graph, the FROM-in-practice/TO-elsewhere direction (the
 // symmetric ResolveOrProxy-on-FROM case), and a non-knowledge/unresolved FROM.
-// The server's best-effort RefreshProxyKeywords is INTENTIONALLY omitted — it
-// operates on the linkage graph and is not needed for link correctness; the
-// interactive proxy lands in knowledge.
+// The retired server path's best-effort proxy-keyword refresh is INTENTIONALLY
+// not reproduced here — it operated on the linkage graph and is not needed for
+// link correctness; the interactive proxy lands in knowledge.
 // gateCrossGraphLink runs the cross-graph composer's param accounting. It is
 // the arm's SINGLE gate call site, deliberately invoked from each point where
 // the composer has COMMITTED to claiming the call rather than once at the top:
 // this arm's surface is narrower than the engine LINK arm's, so gating before
 // the claim decision would reject shapes the composer never handles and the
 // engine routes correctly.
+//
+// THE HUB'S OFF-FAMILY REFUSAL NO LONGER RIDES HERE, and its removal is the
+// point rather than an omission. It used to, because `source_hub` is CONSUMED on
+// this arm so the accounting does not speak for it, and a foreign-graph link is
+// composed by crossgraph.ResolveAndLink, which has no hub concept. That reasoning
+// held for every OTHER arm too, and the per-arm spelling is what left the update,
+// batch and upsert arms of a foreign family accepting the param and reaching
+// nothing. The refusal now runs ONCE at the head of InterceptMutate, above every
+// routing branch, so this gate cannot be reached off the practice family with a
+// hub set and a second call here would be a guard no test could turn red. The
+// endpoint scoping still sits on the practice arm, which is the only arm that can
+// pay its READ.
 func gateCrossGraphLink(a mutateArgs) error {
 	return accountMutateParams(armLinkCrossGraph, a)
 }
@@ -124,8 +139,8 @@ func handleClientCrossGraphLink(ctx context.Context, deps ClientDeps, a mutateAr
 	}
 
 	// Run the slug-less→slug-ful practice-proxy migration
-	// once per session (lazy-on-first-cross-graph-link, mirroring RepoResolver's
-	// lazy-on-first-use shape). Best-effort: never blocks the link being composed.
+	// once per session (lazy on the first cross-graph link, the same
+	// lazy-on-first-use shape the repo resolution path uses). Best-effort: never blocks the link being composed.
 	migratePracticeProxiesOnce(ctx, gc)
 
 	// INTRA-PRACTICE fast path — see intraPracticeLinkArm. done=false means the
@@ -201,25 +216,61 @@ func linkGraphArm(
 }
 
 // intraPracticeLinkArm is the INTRA-PRACTICE fast path: a pattern tree living
-// entirely in one practice graph (e.g. pattern → use_case / example). When the
-// caller named the practice graph (graph:practice, language set) AND both
-// endpoints resolve in practice/<language>, it issues a single direct
-// in-practice LINK with no proxy — no foreign-graph enumeration needed.
+// entirely in the practice graph (e.g. pattern → use_case / example). When the
+// caller named the practice family (graph:practice) AND both endpoints resolve
+// in the one combined graph, it issues a single direct in-practice LINK with no
+// proxy — no foreign-graph enumeration needed. A `language` on this write is
+// refused by name rather than dropped: it would link in the combined graph while
+// the caller believed it had written to a pre-singleton one.
+//
+// A `source_hub` NARROWS THE GRAPH THIS ARM ADDRESSES, and is the one param that
+// changes which calls the arm claims. Omitted, the arm reads the whole combined
+// graph exactly as before. Named, both endpoints must be grouped under that hub
+// — checked before anything else this arm does — and the arm then CLAIMS the
+// call whatever the outcome, because the paths past it read no hub and would
+// serve an unnarrowed write the caller did not ask for.
 //
 // The third return is done: false means this is NOT an intra-practice link —
-// the caller did not name practice/<language>, or an endpoint does not resolve
-// there — and the caller continues to the generic cross-graph composer. That is
-// the same fall-through the inline form had, where neither `if` matching simply
-// ran on past the block.
+// the caller did not name practice, or (with no hub named) an endpoint does not
+// resolve there — and the caller continues to the generic cross-graph composer.
+// That is the same fall-through the inline form had, where neither `if` matching
+// simply ran on past the block.
 func intraPracticeLinkArm(
 	ctx context.Context, gc GraphCaller, ex render.Executor, a mutateArgs,
 ) (handled bool, res kgtools.ToolResult, done bool) {
-	if a.Graph != "practice" || a.Language == "" {
+	if a.Graph != "practice" {
 		return false, kgtools.ToolResult{}, false
+	}
+	// A LANGUAGE-LESS PRACTICE LINK IS THE NORMAL CASE NOW, not the fall-through.
+	// This arm used to require one, because a link needed to know WHICH practice
+	// graph held both endpoints; there is one, so both endpoints are in it and the
+	// arm claims the link. A language is a WRITE carrying the legacy selector and
+	// is refused by name rather than dropped — dropping it would link in the
+	// combined graph while the caller believed it had written to practice/go.
+	if err := refusePracticeLanguageOnWrite(a.Graph, a.Language, practiceHubParamOnWrites); err != nil {
+		return true, errorResult("mutate(link): " + err.Error()), true
+	}
+	// THE HUB SELECTOR, on the arm that owns the practice link. It runs BEFORE
+	// the endpoint probe below rather than after, because a hub-scoped link whose
+	// endpoints do not resolve must be REFUSED rather than fall through: the
+	// generic composer past this arm does not read the hub, so a fall-through
+	// would silently drop it. Passing the guard also proves both endpoints exist
+	// in the combined graph, so the probe below cannot then miss them — the only
+	// way from here to the fall-through with a hub named is a read that failed
+	// after the guard's read succeeded, which the conjunct below refuses.
+	if err := guardPracticeHubScopesEndpoints(ctx, gc, a); err != nil {
+		return true, errorResult("mutate(link): " + err.Error()), true
 	}
 	fromNode, ferr := render.FetchNodeIn(ctx, gc, a.From, "practice", a.Language)
 	toNode, terr := render.FetchNodeIn(ctx, gc, a.To, "practice", a.Language)
 	if ferr != nil || terr != nil || fromNode == nil || toNode == nil || fromNode.Id == "" || toNode.Id == "" {
+		if a.SourceHub != "" {
+			return true, errorResult(fmt.Sprintf(
+				"mutate(link): %s=%q resolved both endpoints under that hub, but this arm's own probe could not "+
+					"read %q and %q back from the combined practice graph, so the link was not attempted and "+
+					"nothing was written. Retry the call",
+				practiceHubParamOnWrites, a.SourceHub, a.From, a.To)), true
+		}
 		return false, kgtools.ToolResult{}, false
 	}
 	// The relationship is RESOLVED against this practice graph's own edge
@@ -232,12 +283,24 @@ func intraPracticeLinkArm(
 		return true, errorResult("intra-practice link: " + serr.Error()), true
 	}
 	resolved, rerr := engine.ResolveEdgeTypeDeclaration(ctx, linkStatsFn,
-		&knowledgev1.GraphSelector{Graph: "practice", Language: a.Language},
+		practiceWriteTarget(),
 		[]string{a.Relationship})
 	if rerr != nil {
 		return true, errorResult("intra-practice link: " + rerr.Error()), true
 	}
 	rel := resolved.Types[0]
+	// THE MEMBERSHIP RELATION, refused on the CANONICALISED spelling. This arm
+	// CLAIMS the intra-practice link, so it never reaches the engine dispatch
+	// where the same rule is stated on canonicalised args — and it does its own
+	// resolution two lines up, which is what turns a caller's `SOURCED-FROM` into
+	// the stored spelling. Comparing here, after that resolve, is what lets every
+	// position compare EXACTLY: folding an edge type merges two stored families,
+	// so the rule is restated where the spelling is already the graph's own
+	// rather than guessed at where it is not. Same sentence as the other two
+	// positions, rendered from the package that owns the rule.
+	if engine.IsPracticeMembershipEdge(rel) {
+		return true, errorResult("mutate(link): " + engine.PracticeMembershipEdgeRefusal(rel).Error()), true
+	}
 	plan := &knowledgev1.MutationPlan{
 		Kind:      knowledgev1.MutationPlan_MUTATION_KIND_LINK,
 		Selection: &knowledgev1.Selection{Ids: []string{a.From}},
@@ -249,9 +312,9 @@ func intraPracticeLinkArm(
 	}
 	if _, eerr := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-		Target: &knowledgev1.GraphSelector{Graph: "practice", Language: a.Language},
+		Target: practiceWriteTarget(),
 	}); eerr != nil {
 		return true, errorResult("intra-practice link failed: " + eerr.Error()), true
 	}
-	return true, textResult(fmt.Sprintf("Linked in practice/%s: %s -[%s]-> %s", a.Language, a.From, rel, a.To)), true
+	return true, textResult(fmt.Sprintf("Linked in practice: %s -[%s]-> %s", a.From, rel, a.To)), true
 }

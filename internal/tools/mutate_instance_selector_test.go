@@ -63,7 +63,14 @@ func TestMutateSurface_DeclaresInstanceSelectors(t *testing.T) {
 		}
 	})
 
-	t.Run("both schemas carry the collected-graph caution on both selectors", func(t *testing.T) {
+	// THE CAUTION IS OWED BY EVERY SELECTOR THAT ADDRESSES A COLLECTED GRAPH, and
+	// `account` is no longer one. cloud and cicd were the account-keyed families
+	// and both are retired, so the field selects nothing: stating "a later collect
+	// reconciles that graph" on it would describe a graph a caller cannot address
+	// through it. The duty follows the capability rather than the field name, and
+	// the arm below asserts what account's description must say INSTEAD, so the
+	// row is narrowed rather than dropped.
+	t.Run("both schemas carry the collected-graph caution on repo", func(t *testing.T) {
 		mutateProps := mutateProperties()
 		deleteProps := DeleteToolDef().InputSchema.Properties
 		for _, tc := range []struct {
@@ -72,9 +79,7 @@ func TestMutateSurface_DeclaresInstanceSelectors(t *testing.T) {
 			param string
 		}{
 			{"mutate", mutateProps, "repo"},
-			{"mutate", mutateProps, "account"},
 			{"delete", deleteProps, "repo"},
-			{"delete", deleteProps, "account"},
 		} {
 			p, ok := tc.props[tc.param]
 			require.Truef(t, ok, "%s.%s must be declared before its caution can be asserted", tc.tool, tc.param)
@@ -82,6 +87,52 @@ func TestMutateSurface_DeclaresInstanceSelectors(t *testing.T) {
 				"%s.%s must state the accepted trade: writes to a collected graph are caller-owned and %s",
 				tc.tool, tc.param, collectedGraphCaution)
 		}
+	})
+
+	// AND account SAYS SO, ON EVERY SURFACE THAT DECLARES IT. A param that is
+	// still advertised and consumed by nothing is the silent-coercion shape the
+	// repo's bad-input rule exists to prevent; the description is the ONLY guard
+	// the parameter has, so a drift back to the old text is a silent regression
+	// of the whole mitigation.
+	//
+	// FIVE SURFACES, NOT TWO, and the widening is the point rather than tidiness.
+	// The first version of this row pinned mutate and delete — the two tools this
+	// file is named for — leaving query, search and traverse carrying the same
+	// sentence with nothing asserting it. A wording pin that covers two fifths of
+	// a wording-only mitigation is a pin that reports green while three surfaces
+	// drift. The list is DERIVED from the declaring schemas rather than restated:
+	// every tool whose properties carry an `account` key is required to say it.
+	//
+	// THE REMOVAL OF THE PARAMETER IS THE OWNER'S and is pending; until it is
+	// decided, this row is what keeps the interim mitigation honest.
+	t.Run("every schema declaring account says it keys no family", func(t *testing.T) {
+		surfaces := []struct {
+			tool  string
+			props map[string]kgtools.Property
+		}{
+			{"mutate", mutateProperties()},
+			{"delete", DeleteToolDef().InputSchema.Properties},
+			{"query", QueryToolDef().InputSchema.Properties},
+			{"search", SearchToolDef().InputSchema.Properties},
+			{"traverse", TraverseToolDef().InputSchema.Properties},
+		}
+		declaring := 0
+		for _, tc := range surfaces {
+			p, ok := tc.props["account"]
+			require.Truef(t, ok,
+				"%s.account must still be declared: the wire field survives the families that used it, "+
+					"and a surface that dropped it silently would slip past this row", tc.tool)
+			declaring++
+			assert.Containsf(t, p.Description, "NO BUILT-IN FAMILY IS KEYED BY ACCOUNT",
+				"%s.account must say it selects nothing, or a caller sends it and is silently ignored", tc.tool)
+			assert.NotContainsf(t, p.Description, collectedGraphCaution,
+				"%s.account must NOT claim to address a collected graph it cannot select", tc.tool)
+			assert.NotContainsf(t, p.Description, "Required for graph",
+				"%s.account must not still require itself for a family that no longer exists", tc.tool)
+		}
+		require.Equal(t, 5, declaring,
+			"all five published surfaces declare account; a count that fell would mean a surface was "+
+				"dropped from this list rather than from the schemas")
 	})
 }
 
@@ -102,8 +153,19 @@ func TestMutateInstanceSelector_RefusalNamesValueAndVocabulary(t *testing.T) {
 		assert.Contains(t, msg, "requires repo", "the refusal must name the param the caller owes")
 		assert.Contains(t, msg, "accepted graph-instance selectors",
 			"the refusal must lead into the vocabulary, not merely name the missing param")
-		assert.Contains(t, msg, "account (cloud, cicd)", "the vocabulary must carry the cloud/cicd spelling")
 		assert.Contains(t, msg, "language (practice)", "the vocabulary must carry the practice spelling")
+
+		// THE RETIRED NAMES ARE ASSERTED ABSENT, not merely dropped from the
+		// positive list above. This vocabulary is INTERPOLATED INTO EVERY
+		// instance-selector refusal, so a name it carries is a name the product
+		// recommends to a caller — and cloud and logs are refused at the door by
+		// kgtypes.RetiredGraphTypeReason. Recommending one is worse than saying
+		// nothing: the caller follows the advice and is refused a second time.
+		// A positive list alone would let the old wording return unnoticed.
+		for _, retired := range []string{"cloud", "logs", "cicd"} {
+			assert.NotContains(t, msg, retired,
+				"the refusal vocabulary must not offer the retired %q family — the caller would be refused for taking its advice", retired)
+		}
 	})
 
 	t.Run("the same call with repo declines to the engine", func(t *testing.T) {

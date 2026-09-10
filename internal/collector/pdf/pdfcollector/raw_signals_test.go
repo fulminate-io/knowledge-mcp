@@ -240,7 +240,7 @@ func TestContentConvention_PdfSectionAndDocumentRootCarryTheirTextInContent(t *t
 
 	t.Run("schema_version_stamp", func(t *testing.T) {
 		t.Parallel()
-		// THE LITERAL IS THE POINT. collectorSchemaVersion documents
+		// THE LITERAL IS THE POINT. CollectorSchemaVersion documents
 		// itself as bumped in the same change as any alteration to what
 		// this collector emits, and nothing else in the tree pins the
 		// pdf value: the corpus fixtures carry synthetic versions, and

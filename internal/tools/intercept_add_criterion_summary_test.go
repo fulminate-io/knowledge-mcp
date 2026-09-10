@@ -30,7 +30,7 @@ func TestInterceptAddCriterion_ExplicitSummary(t *testing.T) {
 			"operation": "create", "type": "criterion", "step_id": testStepID,
 			"description": "Test that the thing works",
 		})
-		handled, res := InterceptAddCriterion(opCtx(), &logE2EDeps{gc: gc}, kgtools.CallToolParams{
+		handled, res := InterceptAddCriterion(opCtx(), &graphCallerDeps{gc: gc}, kgtools.CallToolParams{
 			Name: "mutate", Arguments: args,
 		})
 		require.True(t, handled)
@@ -48,7 +48,7 @@ func TestInterceptAddCriterion_ExplicitSummary(t *testing.T) {
 			"description": "Test that the thing works", "command": "go test ./...",
 			"summary": authored,
 		})
-		handled, res := InterceptAddCriterion(opCtx(), &logE2EDeps{gc: gc}, kgtools.CallToolParams{
+		handled, res := InterceptAddCriterion(opCtx(), &graphCallerDeps{gc: gc}, kgtools.CallToolParams{
 			Name: "mutate", Arguments: args,
 		})
 		require.True(t, handled)
@@ -69,7 +69,7 @@ func TestInterceptAddCriterion_ExplicitSummary(t *testing.T) {
 			"description": "Test that the thing works",
 			"summary":     strings.Repeat("word ", 120), // 600 runes
 		})
-		handled, res := InterceptAddCriterion(opCtx(), &logE2EDeps{gc: gc}, kgtools.CallToolParams{
+		handled, res := InterceptAddCriterion(opCtx(), &graphCallerDeps{gc: gc}, kgtools.CallToolParams{
 			Name: "mutate", Arguments: args,
 		})
 		require.True(t, handled)
@@ -88,7 +88,7 @@ func TestInterceptAddCriterion_ExplicitSummary(t *testing.T) {
 			"description": "Test that the thing works", "summary": "the thing works",
 			"name": "caller supplied",
 		})
-		handled, res := InterceptAddCriterion(opCtx(), &logE2EDeps{gc: gc}, kgtools.CallToolParams{
+		handled, res := InterceptAddCriterion(opCtx(), &graphCallerDeps{gc: gc}, kgtools.CallToolParams{
 			Name: "mutate", Arguments: args,
 		})
 		require.True(t, handled)

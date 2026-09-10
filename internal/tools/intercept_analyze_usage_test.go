@@ -17,8 +17,9 @@ import (
 
 // fakeUsageAnalyzer is a UsageAnalyzerAPI stub returning canned reports.
 type fakeUsageAnalyzer struct {
-	report *transcriptanalytics.DetectorReport
-	recs   transcriptanalytics.SynthesisResult
+	report     *transcriptanalytics.DetectorReport
+	recs       transcriptanalytics.SynthesisResult
+	resolution transcriptanalytics.LaneNameResolution
 }
 
 func (f fakeUsageAnalyzer) RunDetectors(context.Context, transcriptanalytics.Filters) (*transcriptanalytics.DetectorReport, error) {
@@ -27,6 +28,14 @@ func (f fakeUsageAnalyzer) RunDetectors(context.Context, transcriptanalytics.Fil
 
 func (f fakeUsageAnalyzer) Recommend(context.Context, transcriptanalytics.Filters) (*transcriptanalytics.DetectorReport, transcriptanalytics.SynthesisResult, error) {
 	return f.report, f.recs, nil
+}
+
+// ResolveLaneName satisfies the widened UsageAnalyzerAPI. The fake serves canned reports and
+// holds no cache, so it resolves nothing; the name arm is driven against a REAL analyzer over
+// a real parquet cache in intercept_analyze_usage_lane_test.go, where resolution is a
+// property of the cache rather than of the fixture.
+func (f fakeUsageAnalyzer) ResolveLaneName(context.Context, string, string) (transcriptanalytics.LaneNameResolution, error) {
+	return f.resolution, nil
 }
 
 // analyzeUsageTestDeps is a minimal ClientDeps carrying only a UsageAnalyzer; the

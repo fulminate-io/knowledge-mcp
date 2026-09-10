@@ -1,0 +1,74 @@
+{
+  "aws": {
+    "all_node_types": true,
+    "node_fields": [
+      "id",
+      "type"
+    ],
+    "metadata_keys": [
+      "namespace",
+      "cluster_name",
+      "resource_type",
+      "region",
+      "provider"
+    ],
+    "edge_fields": [
+      "from_id",
+      "to_id"
+    ]
+  },
+  "azure": {
+    "all_node_types": true,
+    "node_fields": [
+      "id",
+      "type"
+    ],
+    "metadata_keys": [
+      "namespace",
+      "cluster_name",
+      "resource_type",
+      "region",
+      "provider"
+    ],
+    "edge_fields": [
+      "from_id",
+      "to_id"
+    ]
+  },
+  "gcp": {
+    "all_node_types": true,
+    "node_fields": [
+      "id",
+      "type"
+    ],
+    "metadata_keys": [
+      "namespace",
+      "cluster_name",
+      "resource_type",
+      "region",
+      "provider"
+    ],
+    "edge_fields": [
+      "from_id",
+      "to_id"
+    ]
+  },
+  "k8s": {
+    "all_node_types": true,
+    "node_fields": [
+      "id",
+      "type"
+    ],
+    "metadata_keys": [
+      "namespace",
+      "cluster_name",
+      "resource_type",
+      "region",
+      "provider"
+    ],
+    "edge_fields": [
+      "from_id",
+      "to_id"
+    ]
+  }
+}

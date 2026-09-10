@@ -28,7 +28,7 @@ import (
 //     naming the value AND the accepted vocabulary, per BAD INPUT ALWAYS ERRORS.
 //
 // A real graph belonging to another arm is DECLINED, not refused: the per-graph
-// stats arms (knowledge, practice, cloud/cicd, code, web/pdf) own their own
+// stats arms (knowledge, practice, code, web/pdf) own their own
 // shapes and this arm must never shadow them.
 
 // InterceptQueryBuiltinStats claims query(mode:"stats") for checks, and refuses

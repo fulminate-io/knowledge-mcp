@@ -1,0 +1,88 @@
+{
+  "spec": "Which selector field addresses a graph when a WHOLE GRAPH IMAGE is moved — a sync push, a sync pull, or a bench corpus transfer. Three modules compose this selector and none of them can import the others (the only shared contract is generated protobuf), so the rule is written here once and read by a test in EACH module: cmd/knowledge (the sync arms, through tools.syncGraphSelector), cmd/server-bench (the corpus transfer, through bench.graphRef.selector()). A drift on either side reds on that side rather than showing up as a transfer that quietly moved the wrong graph. PRACTICE IS THE ROW THAT MOVED AND THE REASON THIS FILE EXISTS: the family is a singleton for node reads and writes, so an unselected address is the combined graph named 'default' and carries no instance field at all — but the eight pre-singleton graph IMAGES still exist on both sides until the migration moves them, so an image move that names one of them addresses it, and the field it addresses it by is `language`, the legacy selector the server's practice policy row consumes. It is NOT `name`: the practice policy carries no instance field, so a set name is refused before routing. Deleting practice's case from a switch is therefore not a fix — it drops practice into the default arm, which sends exactly that refused name. CHECKS IS THE SECOND FAMILY THAT CARRIES NOTHING, for the same reason practice's combined graph does: it holds one graph and its per-language grouping is a metadata key inside it. NO FAMILY IS ACCOUNT-KEYED AND THE FIELD IS GONE FROM THE VOCABULARY: the account-keyed inventory families retired with their built-in collectors, and a collected inventory graph is a registered custom type now, which keys by name like every other registered type. The wire field survives on GraphSelector because removing a proto field is its own change; no image move composes one. THE ROWS THAT AGREE ARE HERE ON PURPOSE — linkage, web, pdf and a registered custom type all key by name on every side, and a confirmatory row costs nothing while its absence would leave a reader guessing whether the family was considered. WHAT THIS TABLE CANNOT CARRY: a REFUSED spelling. A non-canonical practice name has no (field, value) answer at all, because the arm refuses before composing a selector; that half of the rule is pinned by the canonical-fence tests beside the client's slug rule, not here.",
+  "field_vocabulary": {
+    "repo": "GraphSelector.repo",
+    "name": "GraphSelector.name",
+    "language": "GraphSelector.language — the LEGACY practice selector, image moves only",
+    "none": "no instance field at all: the family holds one graph and its resolver consumes nothing"
+  },
+  "cases": [
+    {
+      "label": "code keys by repo",
+      "graph_type": "code",
+      "instance_name": "knowledge-repo",
+      "field": "repo",
+      "value": "knowledge-repo"
+    },
+    {
+      "label": "knowledge is a singleton",
+      "graph_type": "knowledge",
+      "instance_name": "default",
+      "field": "none",
+      "value": ""
+    },
+    {
+      "label": "the combined practice graph named explicitly",
+      "graph_type": "practice",
+      "instance_name": "default",
+      "field": "none",
+      "value": ""
+    },
+    {
+      "label": "the combined practice graph unselected",
+      "graph_type": "practice",
+      "instance_name": "",
+      "field": "none",
+      "value": ""
+    },
+    {
+      "label": "a legacy practice graph",
+      "graph_type": "practice",
+      "instance_name": "go",
+      "field": "language",
+      "value": "go"
+    },
+    {
+      "label": "checks is a singleton with no instance field",
+      "graph_type": "checks",
+      "instance_name": "checks",
+      "field": "none",
+      "value": ""
+    },
+    {
+      "label": "linkage keys by name",
+      "graph_type": "linkage",
+      "instance_name": "default",
+      "field": "name",
+      "value": "default"
+    },
+    {
+      "label": "a raw web graph keys by name",
+      "graph_type": "web",
+      "instance_name": "docs-site",
+      "field": "name",
+      "value": "docs-site"
+    },
+    {
+      "label": "a raw pdf graph keys by name",
+      "graph_type": "pdf",
+      "instance_name": "handbook",
+      "field": "name",
+      "value": "handbook"
+    },
+    {
+      "label": "a registered custom graph type keys by name",
+      "graph_type": "incidents",
+      "instance_name": "prod",
+      "field": "name",
+      "value": "prod"
+    },
+    {
+      "label": "a legacy practice graph whose slug carries a hyphen",
+      "graph_type": "practice",
+      "instance_name": "design-patterns",
+      "field": "language",
+      "value": "design-patterns"
+    }
+  ]
+}

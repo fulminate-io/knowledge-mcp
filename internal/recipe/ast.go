@@ -15,9 +15,12 @@
 //   - interpret*.go — evaluator that walks the AST against the in-memory
 //     sourceView and accumulates emissions into an in-memory Result.
 //   - run_recipe.go — the single RunRecipe entry point the `collect`
-//     tool dispatches to: load recipe → interpret → write via the Sink.
+//     tool dispatches to: parse the inline body → load the source view →
+//     interpret → hand the Result back to the collect layer, which renders
+//     it (extract) or lands it (collect_recipe_land.go in tools).
 //
-// Recipe bodies are stored in GraphTransformers as node Content. The
+// Recipe bodies are INLINE: they ride the collect call's `recipe_body` and
+// are parsed straight from it, with no stored recipe node anywhere. The
 // interpreter is zero-LLM — every decision is driven by field access,
 // regex matches, string concat/trim/lower/upper, has_edge, and var
 // bindings. No arithmetic, no control flow beyond the rule sequence.
@@ -143,7 +146,7 @@ func (r RuleGroupBy) Position() Position { return r.Pos }
 // key-expression map used to set node fields — the top-level keys
 // `type`, `name`, `summary`, `content`, `description`, `source` map to
 // the Node struct directly; any other key lands in Metadata. The As
-// binding records (sourceRowID → emittedNodeID) in the interpreter's
+// binding records (source row ID → emitted node ID) in the interpreter's
 // cross-emit map so later RuleLink rules can reference target IDs
 // emitted in earlier rules.
 type RuleEmit struct {
@@ -197,9 +200,14 @@ func (r RuleLink) isRule()            {}
 func (r RuleLink) Position() Position { return r.Pos }
 
 // RuleSourceRef declares that Ref's resolved value is the source node
-// ID every subsequent emit in this rule sequence points back to via a
-// translated-from edge. Without a RuleSourceRef, the interpreter
-// defaults to the current row's node ID.
+// ID every subsequent emit in this rule sequence REPORTS as its anchor.
+// Without a RuleSourceRef the interpreter defaults to the current row's
+// node ID.
+//
+// THE ANCHOR IS REPORTED, NOT LINKED. It used to be the endpoint of a
+// translated-from edge back into the raw graph; no run builds one now,
+// and the anchor reaches the caller on the extract row's SourceNodeID
+// instead — which is what the collect renderer prints as `src=`.
 type RuleSourceRef struct {
 	Ref Expr
 	Pos Position

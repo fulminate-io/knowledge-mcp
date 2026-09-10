@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"time"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
@@ -55,29 +54,4 @@ func logClientSideStall(i, of, bytes int, elapsed, inWrite time.Duration, writes
 		"in_write_ms", millis(inWrite),
 		"socket_writes", writes,
 		"next", "re-run the collect with GODEBUG=http2debug=2 to capture h2 frame detail on the next occurrence")
-}
-
-// edgesFromProto converts the typed proto Edge carrier into []knowledgev1.Edge —
-// the remote-package decode for the FetchCloudSubgraph slice edges (the value
-// shape cloudresolver.GraphSlice.Edges expects). Mirrors the engine package's
-// EdgesFromProto (kept local so the collector/remote package does not depend on
-// the engine decode package). Empty carrier → nil.
-func edgesFromProto(in []*knowledgev1.Edge) []knowledgev1.Edge {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]knowledgev1.Edge, len(in))
-	for i, e := range in {
-		out[i] = knowledgev1.Edge{
-			FromId:        e.GetFromId(),
-			ToId:          e.GetToId(),
-			Type:          e.GetType(),
-			Weight:        e.GetWeight(),
-			Confidence:    e.GetConfidence(),
-			Method:        e.GetMethod(),
-			Evidence:      e.GetEvidence(),
-			LastValidated: e.GetLastValidated(),
-		}
-	}
-	return out
 }

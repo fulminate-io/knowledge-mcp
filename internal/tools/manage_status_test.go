@@ -39,11 +39,10 @@ type cloudStatusDeps struct {
 	host     string
 }
 
-func (d *cloudStatusDeps) LocalLiveness() LocalLiveness          { return d.local }
-func (d *cloudStatusDeps) Sink() collector.Sink                  { return nil }
-func (d *cloudStatusDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
-func (d *cloudStatusDeps) RootDir() string                       { return "" }
-func (d *cloudStatusDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
+func (d *cloudStatusDeps) LocalLiveness() LocalLiveness    { return d.local }
+func (d *cloudStatusDeps) Sink() collector.Sink            { return nil }
+func (d *cloudStatusDeps) RootDir() string                 { return "" }
+func (d *cloudStatusDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
 
 func (d *cloudStatusDeps) PropReady() bool     { return true }
 func (d *cloudStatusDeps) PipelineReady() bool { return true }
@@ -136,7 +135,7 @@ func TestHandleServerStatus_LoggedIn(t *testing.T) {
 		require.False(t, res.IsError, textBodyTools(res))
 		var got map[string]any
 		require.NoError(t, json.Unmarshal([]byte(textBodyTools(res)), &got))
-		assert.Equal(t, "cloud", got["backend"])
+		assert.Equal(t, "cloud", got["backend"], "the backend key names FULMINATE CLOUD, the paid backend, not a graph family")
 		assert.Equal(t, "https://dev.fulminate.io", got["host"])
 		assert.EqualValues(t, 1000, got["nodes"])
 		assert.EqualValues(t, 500, got["edges"])
@@ -291,7 +290,7 @@ func TestHandleServerStatus_TranscriptHealth_CloudPath(t *testing.T) {
 
 		var got map[string]any
 		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(opCtx(), deps, "json"))), &got))
-		assert.Equal(t, "cloud", got["backend"])
+		assert.Equal(t, "cloud", got["backend"], "the backend key names FULMINATE CLOUD, the paid backend, not a graph family")
 		assert.Contains(t, got, "transcript_last_transport_ok")
 	})
 

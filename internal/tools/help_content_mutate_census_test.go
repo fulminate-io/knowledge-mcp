@@ -65,4 +65,25 @@ func TestHelpMutate_CensusRemainderPinned(t *testing.T) {
 		"helpMutate must keep the verified all-or-nothing update_batch contract")
 	assert.Contains(t, helpMutate, "decoded length must equal 32 bytes",
 		"helpMutate must keep the verified binary_vector length contract")
+
+	// THE PRACTICE LINES ARE THE ONES THAT ROTTED. Practice is ONE combined
+	// graph now: `language` is refused on every write arm, and a practice delete
+	// narrows by the source HUB instead. Both help blocks still told the reader
+	// to send the field the tool refuses, which is worse than saying nothing.
+	assert.NotContains(t, helpDelete, `"language": "go"`,
+		"helpDelete must not show a practice delete carrying the field practice writes refuse")
+	assert.NotContains(t, helpDelete, `graph:"practice" requires language param`,
+		"helpDelete must not tell the reader practice requires a language")
+	assert.NotContains(t, helpMutate, `graph:"practice" requires language param for all operations`,
+		"helpMutate must not tell the reader practice requires a language")
+
+	// AND THE BY-HUB DELETE IS DOCUMENTED WHERE IT IS PERFORMED. It is the one
+	// scoped destructive operation on a practice graph, so a reader who does not
+	// find it here reaches for by-ids over a whole collection.
+	assert.Contains(t, helpDelete, `"source": "<hub id>"`,
+		"helpDelete must show the by-hub practice delete under the spelling this tool publishes")
+	assert.Contains(t, helpDelete, "source_hub",
+		"and must name the spelling mutate publishes, since one compiler serves both")
+	assert.Contains(t, helpDelete, "the hub itself",
+		"the reader must be told the hub goes with its members rather than being left behind")
 }

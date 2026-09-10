@@ -163,7 +163,7 @@ func chasePracticeProxy(ctx context.Context, ex render.Executor, hit *knowledgev
 // the practice graph name. Practice graphs are scanned deterministically per
 // that ordering rather than failing on duplicate IDs across graphs.
 //
-// crossgraph.ListForeignGraphs enumerates code/practice/cloud/cicd over the
+// crossgraph.ListForeignGraphs enumerates code/practice over the
 // wire; we filter to GraphPractice so the lookup stays practice-scoped per the
 // legacy contract, then probe via crossgraph.LocateForeignNode (which returns
 // the wire *knowledgev1.Node directly post-retype).

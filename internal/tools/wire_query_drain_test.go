@@ -67,7 +67,7 @@ func TestDrainQueryNodes_DrainsMultiplePages(t *testing.T) {
 	for i := range wantNodes {
 		seeded = append(seeded, &knowledgev1.Node{
 			Id:   fmt.Sprintf("n%04d", i),
-			Type: string(kgtypes.NodeLogBackend),
+			Type: string(kgtypes.NodeRule),
 		})
 	}
 	if len(seeded) != wantNodes {
@@ -76,7 +76,7 @@ func TestDrainQueryNodes_DrainsMultiplePages(t *testing.T) {
 
 	pc := &drainPagingCaller{nodes: seeded}
 	got, err := drainQueryNodes(context.Background(), pc, map[string]any{
-		"type": string(kgtypes.NodeLogBackend),
+		"type": string(kgtypes.NodeRule),
 		// A caller's stale limit must not defeat the drain.
 		"limit": 0,
 	})
@@ -113,8 +113,8 @@ func TestDrainQueryNodes_RejectsPayloadWithoutSingularType(t *testing.T) {
 		// The conjunction: a naive "type is non-blank" guard passes this and
 		// hands the plural-types arm — which threads no cursor — to the drain.
 		"type plus higher-precedence types": {
-			"type":  string(kgtypes.NodeLogBackend),
-			"types": []string{string(kgtypes.NodeLogBackend)},
+			"type":  string(kgtypes.NodeRule),
+			"types": []string{string(kgtypes.NodeRule)},
 		},
 	}
 	for name, args := range cases {

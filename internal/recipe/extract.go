@@ -31,8 +31,8 @@ const (
 // under, because an inline body carries no target metadata to read one from.
 //
 // WHERE IT CAN AND CANNOT BE OBSERVED, stated so nobody looks for it in a graph:
-// a recipe run writes nothing and extract rows carry no stable id, so the
-// sentinel never reaches storage. It is confined to the in-run stable-id and
+// an EXTRACT run writes nothing (a `land` run does) and extract rows carry no
+// stable id, so the sentinel never reaches storage. It is confined to the in-run stable-id and
 // emitted-set bookkeeping that the lookup and link rules compare within a single
 // run.
 const extractSentinelGraphType = kgtypes.GraphType("extract")

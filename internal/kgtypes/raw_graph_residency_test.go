@@ -83,17 +83,18 @@ func TestRawGraphResidency_SegmentsWithoutSync(t *testing.T) {
 	if !SyncEligible(GraphKnowledge) || !HasRebuildableSegments(GraphKnowledge) {
 		t.Fatal("control: knowledge must be true on BOTH axes")
 	}
-	if SyncEligible(GraphLogs) || HasRebuildableSegments(GraphLogs) {
-		t.Fatal("control: logs must be false on BOTH axes")
+	if SyncEligible(GraphWebRaw) || !HasRebuildableSegments(GraphWebRaw) {
+		t.Fatal("control: a raw graph must be ineligible for sync and eligible for segments — " +
+			"that split is the whole point of the two predicates being independent")
 	}
 
 	// The two full sets, each compared against a fixture-authored expectation.
 	assertSet(t, "HasRebuildableSegments", setOf(HasRebuildableSegments), []GraphType{
-		GraphKnowledge, GraphCode, GraphCloud, GraphCICD,
+		GraphKnowledge, GraphCode,
 		GraphPractice, GraphChecks, GraphWebRaw, GraphPDFRaw,
 	})
 	assertSet(t, "SyncEligible", setOf(SyncEligible), []GraphType{
-		GraphKnowledge, GraphCode, GraphCloud, GraphCICD,
+		GraphKnowledge, GraphCode,
 		GraphPractice, GraphLinkage, GraphChecks,
 	})
 
@@ -104,8 +105,8 @@ func TestRawGraphResidency_SegmentsWithoutSync(t *testing.T) {
 			t.Errorf("SyncEligibleGraphTypes() lists %q — sync(list) would offer an operator a graph that must never leave the machine", gt)
 		}
 	}
-	if len(SyncEligibleGraphTypes()) != 7 {
-		t.Errorf("SyncEligibleGraphTypes() has %d members, want 7 — the enrollment must not have moved sync residency",
+	if len(SyncEligibleGraphTypes()) != 5 {
+		t.Errorf("SyncEligibleGraphTypes() has %d members, want 5 — the enrollment must not have moved sync residency",
 			len(SyncEligibleGraphTypes()))
 	}
 }

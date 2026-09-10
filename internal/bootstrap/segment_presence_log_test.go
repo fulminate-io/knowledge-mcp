@@ -27,10 +27,10 @@ import (
 // unconditionally by anything that consults the predicate.
 func TestLocalPresenceSkip_LogsOncePerGraph(t *testing.T) {
 	const (
-		absentA     = "repo-absent-a"
-		absentB     = "repo-absent-b"
-		presentRepo = "repo-present"
-		cloudAcct   = "cloud-account"
+		absentA      = "repo-absent-a"
+		absentB      = "repo-absent-b"
+		presentRepo  = "repo-present"
+		practiceLang = "practice-language"
 	)
 	const skipMsg = "code graph skipped for background work"
 
@@ -50,7 +50,7 @@ func TestLocalPresenceSkip_LogsOncePerGraph(t *testing.T) {
 		require.False(t, c.graphLocallyPresent(kgtypes.GraphCode, absentA))
 		require.False(t, c.graphLocallyPresent(kgtypes.GraphCode, absentB))
 		require.True(t, c.graphLocallyPresent(kgtypes.GraphCode, presentRepo))
-		require.True(t, c.graphLocallyPresent(kgtypes.GraphCloud, cloudAcct))
+		require.True(t, c.graphLocallyPresent(kgtypes.GraphPractice, practiceLang))
 	}
 
 	logged := buf.String()
@@ -69,6 +69,6 @@ func TestLocalPresenceSkip_LogsOncePerGraph(t *testing.T) {
 	// by a logger that fired for everything and happened to be latched.
 	assert.NotContains(t, logged, "graph="+presentRepo,
 		"a code graph WITH a local checkout is not skipped and must not be reported as one")
-	assert.NotContains(t, logged, "graph="+cloudAcct,
+	assert.NotContains(t, logged, "graph="+practiceLang,
 		"a non-code graph is not gated at all — reporting it would claim a decision never made")
 }

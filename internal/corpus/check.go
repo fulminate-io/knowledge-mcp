@@ -438,6 +438,13 @@ func validateAstBody(c Check) error {
 	if err := ast.ValidateWhereKinds(where, c.Language); err != nil {
 		return fmt.Errorf("corpus: %s names a kind the %s=%s grammar does not have: %w", MetaCheckWhere, MetaLanguage, c.Language, err)
 	}
+	// A capture reference nothing declares resolves only when some node
+	// matches, so a stored check carrying one would walk the whole corpus to
+	// the same clean zero a correct check that found nothing returns. Refusing
+	// it at admission keeps that check out of the graph in the first place.
+	if err := ast.ValidateWhereCaptureRefs(where, pat); err != nil {
+		return fmt.Errorf("corpus: %s names a capture nothing declares: %w", MetaCheckWhere, err)
+	}
 	return nil
 }
 

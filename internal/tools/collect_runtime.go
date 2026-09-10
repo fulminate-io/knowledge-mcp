@@ -322,7 +322,7 @@ func (r *CollectRuntime) Start(key, label string, gt kgtypes.GraphType, graph st
 //
 // IT ANSWERS FOR THE (FAMILY, NAME) PAIR A COLLECT RECORDED, for every family
 // whose identity the collect dispatch can derive — code, pdf, web, the three
-// cicd providers and gcp, azure and k8s. The pair is the identity because two
+// provider names that filled a differently-named family. The pair is the identity because two
 // families can carry the same name and the pipeline registers one collector per
 // (family, name): a code collect must not gate a knowledge graph that happens to
 // share its name, and matching on the name alone would do exactly that.

@@ -4,6 +4,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
@@ -35,6 +36,28 @@ func InterceptDeleteGuard(_ context.Context, _ ClientDeps, params kgtools.CallTo
 	}
 	if err := rejectUndeclaredParams("delete", "", DeleteToolDef().InputSchema.Properties, params.Arguments); err != nil {
 		return true, errorResult(err.Error())
+	}
+	// REQUIREMENT 4 ON THE TENTH WRITE ARM. `delete` is the one write the mutate
+	// interceptors never see, so the refusal every mutate arm carries has to be
+	// stated again here or the field is accepted, dropped by the compiler, and
+	// the delete runs against the combined graph while the caller believed it had
+	// scoped itself to practice/go — on a DESTRUCTIVE op, which is the worst
+	// place in the tool surface for a silent redirect. The schema already
+	// documents the refusal; this is what performs it.
+	//
+	// The selector is decoded locally rather than through the engine's delete
+	// args: engine imports nothing from this package and this package imports
+	// engine, so reaching for its decoder is the cycle this file's header
+	// records. Two fields is a smaller duplication than a second accounting
+	// mechanism, and an unparseable payload is left to the compiler to report.
+	var sel struct {
+		Graph    string `json:"graph"`
+		Language string `json:"language"`
+	}
+	if err := json.Unmarshal(params.Arguments, &sel); err == nil {
+		if err := refusePracticeLanguageOnWrite(sel.Graph, sel.Language, practiceHubParamFree); err != nil {
+			return true, errorResult("delete: " + err.Error())
+		}
 	}
 	return false, kgtools.ToolResult{}
 }

@@ -36,10 +36,16 @@ type mutateArgs struct {
 	Relationship string            `json:"relationship"`
 	Graph        string            `json:"graph"`
 	Language     string            `json:"language"`
-	LinkGraph    string            `json:"link_graph"`
-	Format       string            `json:"format"`
+	// SourceHub names the practice SOURCE HUB a write is grouped under. It is
+	// DELIBERATELY NOT `source`: that param is the node's provenance and has been
+	// since before the practice graphs were combined, and a param whose meaning
+	// depends on which graph is named is the silent coercion this repo refuses.
+	// The spelling matches the metadata key it lands in.
+	SourceHub string `json:"source_hub"`
+	LinkGraph string `json:"link_graph"`
+	Format    string `json:"format"`
 	// Repo/Account/Name route a batch write to the per-graph backing (code by
-	// repo, cloud/cicd by account, logs/etc. by name). The update_batch arm
+	// repo, practice by language, everything else by name). The update_batch arm
 	// threads them onto the Execute Target so a code/cloud-graph write-back lands
 	// in the right graph (the pipeline write-back's cross-graph routing).
 	Repo    string `json:"repo"`
@@ -61,8 +67,8 @@ type mutateArgs struct {
 	Updates []bulkUpdateItem `json:"updates"`
 
 	// BundleID is an optional caller-supplied bundle identifier on create_batch,
-	// mirroring the legacy mutateCreateBatchArgs.BundleID (tools_mutate_create_
-	// batch.go:44) field name + semantics. It rides the MutationPlan.bundle_id
+	// keeping the field name and semantics a retired server-side create_batch
+	// arg carrier used. It rides the MutationPlan.bundle_id
 	// carrier so the engine wraps the mutation ctx via ContextWithBundleID (a
 	// no-op when empty). Whether a create_batch routes through Execute or legacy,
 	// the same bundle_id reaches the same ContextWithBundleID wrap.
@@ -92,9 +98,9 @@ type mutateArgs struct {
 
 // nodeBody mirrors the create_batch nodes[] item MutateToolDef declares
 // — the seven body fields plus id + source (the proto NodeBody field-8/field-9
-// carriers the engine now honors). Keywords stays deliberately omitted (matching
-// engine.proto's NodeBody, which mirrors nodeCreateItem — the client builds the
-// set_fields / NodeBody JSON directly, never the server-side write-field type).
+// carriers the engine now honors). Keywords stays deliberately omitted, matching
+// engine.proto's NodeBody: the client builds the set_fields / NodeBody JSON
+// directly and there is no server-side write-field type to mirror.
 type nodeBody struct {
 	Type        string            `json:"type"`
 	Name        string            `json:"name"`
@@ -123,8 +129,8 @@ type edgeBody struct {
 	Type    string `json:"type"`
 	// Edge-metadata carriers (additive). Client-supplied INPUTS the engine stores
 	// verbatim onto the batch edge (generic-litmus). last_validated arrives as an
-	// RFC3339 string and rides the wire as int64 unix-nanos (parseLastValidated-
-	// Nanos), matching the LINK-arm EdgeSpec carriers.
+	// RFC3339 string and rides the wire as int64 unix-nanos, parsed by
+	// parseLastValidatedNanos, matching the LINK-arm EdgeSpec carriers.
 	Weight        float64 `json:"weight"`
 	Confidence    float64 `json:"confidence"`
 	Method        string  `json:"method"`
@@ -194,9 +200,16 @@ type batchItem struct {
 }
 
 // compileMutate translates a reducible `mutate` op into a MutationPlan. Returns
-// ok=false (default-deny → legacy) for graph=practice/checks, cross-graph
-// practice link, thought/charge creates, heterogeneous update_batch, and the
-// non-reducible ops (upsert/bulk_update_metadata/answer/prune-by-age).
+// ok=false (default-deny → legacy) for the cross-graph practice link, an empty
+// or type-less create, a heterogeneous update_batch, and the non-reducible ops
+// (answer / prune-by-age).
+//
+// GRAPH=PRACTICE AND GRAPH=CHECKS ARE REDUCIBLE, and this comment used to say
+// the opposite. They were the residual deny before the engine became a generic
+// single-graph parametric mutator; today a practice or checks create / update /
+// delete / link carrying NO link_graph compiles to a Target-routed MutationPlan
+// through the switch below, exactly as the block inside the function has said
+// since that change. The switch tests no graph at all — only link_graph.
 func compileMutate(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 	var a mutateArgs
 	if err := json.Unmarshal(args, &a); err != nil {
@@ -344,6 +357,12 @@ func compileMutateCreate(a mutateArgs) (*knowledgev1.ExecuteRequest, bool) {
 		return nil, false // empty batch / missing type / unparseable last_validated → legacy.
 	}
 
+	// THE HUB'S SELF-KEY, stamped here because this is the one lowering every
+	// practice create passes through. A `source` node carries its OWN id under the
+	// hub key, which is what makes the by-hub delete's single predicate sweep the
+	// hub with its members; see practice_hub_selfkey.go.
+	stampPracticeHubSelfKeys(a.Graph, bodies)
+
 	plan := &knowledgev1.MutationPlan{
 		Kind:       knowledgev1.MutationPlan_MUTATION_KIND_CREATE,
 		NodeBodies: bodies,
@@ -375,6 +394,31 @@ func derefStatus(s *string) string {
 	return *s
 }
 
+// THE HUB KEY RIDES THE BODY, AND IT HAS TO. An upsert WRITES the body's metadata
+// rather than merging into what is stored, so an upsert whose payload omitted the
+// key would strip the membership of the node it edits — the node would silently
+// leave its collection on an ordinary field edit. The stamper withSourceHub is
+// the create lowering's own, and it leaves an explicit caller-supplied key alone
+// (guardPracticeHubBodyHubs refuses a body whose key disagrees with the call's hub
+// before the payload reaches here — the upsert body is one of the carriers it
+// reads).
+//
+// THAT HOLDS ON BOTH COORDINATES, and the stamp below is only one of them. A
+// hub-SCOPED upsert is stamped here, from the call's own parameter. A hub-LESS
+// upsert has no parameter to stamp from, so the tools layer reads the node's
+// STORED hub and puts it on the body before this lowering ever sees the payload
+// (practice_hub_upsert_carry.go) — which is why an omitted `source_hub` cannot
+// un-group a member either, and why the sentence above says "an upsert" rather
+// than "a hub-scoped upsert".
+//
+// THE node→hub `sourced-from` EDGE CANNOT RIDE THIS PLAN: the server's UPSERT
+// decode refuses a plan carrying edges, because upsert is node-only. So this arm
+// carries HALF of what grouping means and can never GROUP a node — which is why
+// the tools layer REFUSES a hub-carrying upsert whose key resolves to nothing,
+// naming mutate(create) as the arm that groups, rather than re-dispatching it as
+// a create (a create on an id that appeared meanwhile replaces the node whole).
+// This lowering therefore serves only the case where the node already exists and
+// its hub edge with it, and all it has to do is preserve the key.
 func compileMutateUpsert(a mutateArgs) (*knowledgev1.ExecuteRequest, bool) {
 	if a.ID == "" || a.Type == "" {
 		return nil, false // missing upsert key or type → deny.
@@ -388,7 +432,7 @@ func compileMutateUpsert(a mutateArgs) (*knowledgev1.ExecuteRequest, bool) {
 			Summary:     a.Summary,
 			Content:     a.Content,
 			Status:      derefStatus(a.Status),
-			Metadata:    a.Metadata,
+			Metadata:    withSourceHub(a.Metadata, a.SourceHub),
 			ID:          a.ID,
 			Source:      a.Source,
 		})},
@@ -419,13 +463,13 @@ func nodeBodyToProto(n nodeBody) *knowledgev1.NodeBody {
 // case upstream, so practice/checks ops reach here Target-routed).
 //
 // Repo/Account are threaded onto the Target so a named-graph write routes to the
-// right per-graph backing: the server resolves graph=code by Target.Repo and
-// graph=cloud/cicd by Target.Account (ResolveGraphDB, tools_graph_routing.go).
-// Without these a mutate(create_batch, graph:"cloud", account:"aws-123") would
-// land Account-less and the server would reject it with "graph=cloud requires
+// right per-graph backing: the server resolves graph=code by Target.Repo and an
+// account-keyed family by Target.Account (ResolveGraphDB, tools_graph_routing.go).
+// Without these a mutate(create_batch, graph:"practice", language:"go") would
+// land Language-less and the server would reject it with "graph=practice requires
 // account" — the postpopulate wire writes depend on this.
 //
-// The `name` param is threaded PER FAMILY (mutateTargetName) rather than
+// The `name` param is threaded PER FAMILY (mutateTarget) rather than
 // verbatim, because on the mutate surface one JSON key carries two meanings. For
 // an LLM caller `name` is the NODE name ("Node name or title", mutate_schema.go);
 // for the pipeline write-back it is the graph INSTANCE key that
@@ -443,6 +487,6 @@ func nodeBodyToProto(n nodeBody) *knowledgev1.NodeBody {
 func mutationRequest(plan *knowledgev1.MutationPlan, a mutateArgs) *knowledgev1.ExecuteRequest {
 	return &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-		Target: mutateTarget(a.Graph, a.Repo, a.Account, a.Name, a.Language, ""),
+		Target: mutateTarget(a.Graph, a.Repo, a.Name, a.Language, ""),
 	}
 }

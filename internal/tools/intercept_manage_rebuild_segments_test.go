@@ -340,11 +340,10 @@ type rebuildClientDeps struct {
 	pipelineNotReady bool
 }
 
-func (rebuildClientDeps) LocalLiveness() LocalLiveness          { return nil }
-func (rebuildClientDeps) Sink() collector.Sink                  { return nil }
-func (rebuildClientDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
-func (rebuildClientDeps) RootDir() string                       { return "" }
-func (rebuildClientDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
+func (rebuildClientDeps) LocalLiveness() LocalLiveness    { return nil }
+func (rebuildClientDeps) Sink() collector.Sink            { return nil }
+func (rebuildClientDeps) RootDir() string                 { return "" }
+func (rebuildClientDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
 
 func (rebuildClientDeps) PropReady() bool       { return true }
 func (d rebuildClientDeps) PipelineReady() bool { return !d.pipelineNotReady }

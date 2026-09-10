@@ -60,10 +60,13 @@ import (
 // constraint; they are governed by the private tree's own review, and the walk
 // skips them by reading their build line.
 //
-// THE CENSUS IS SPLIT BY MODULE, and this half walks THIS module alone. Measured
-// over both internal trees at the time of writing: 56 non-test Weight readers,
-// 7 of them behind the constraint, leaving 34 in this module and 15 in the
-// server's. The 34 are the rows of chunker_edge_weight_census_data_test.go, next
+// THE CENSUS IS SPLIT BY MODULE, and this half walks THIS module alone. Re-measured
+// over both internal trees when the FetchCloudSubgraph decode arm was removed:
+// 57 non-test Weight readers, 7 of them behind the constraint, leaving 35 in this
+// module and 15 in the server's. (The prose previously read 56/34/15 and was
+// stale by one on this side before that removal — the numbers here are a reading
+// aid, and the executed set agreement below is what actually holds the line.)
+// The 35 are the rows of chunker_edge_weight_census_data_test.go, next
 // door; the 15 are the rows of chunker_edge_weight_census_server_test.go, which
 // the sync script removes from the published tree because the mirror is the
 // client module alone. Each half asserts set agreement in BOTH directions over
@@ -94,13 +97,18 @@ var privateBuildConstraint = regexp.MustCompile(`(?m)^//go:build internal$`)
 // detector that regressed to the narrow pattern while some unrelated files
 // drifted in would still pass.
 //
-// FOUR MORE OF THE SIX LIVE IN THE SERVER MODULE, including the state digest —
+// FOUR MORE OF THE FIVE LIVE IN THE SERVER MODULE, including the state digest —
 // the load-bearing one, the only member that is not plumbing. They are named by
 // accessorOnlyWeightReadersServer in chunker_edge_weight_census_server_test.go,
 // which walks that tree; the under-match class the widened detector exists for
 // is therefore still asserted by name on both sides of the split.
+//
+// THIS HALF NAMES ONE FILE, DOWN FROM TWO. The collector's sink_metrics arm was
+// the second: an accessor decode for the FetchCloudSubgraph edge slice, removed
+// with that RPC. One named file still asserts the property by name rather than
+// by count, which is what this list is for; the require.NotEmpty control below
+// is what keeps a future removal of the last one from passing vacuously.
 var accessorOnlyWeightReaders = []string{
-	"internal/collector/remote/sink_metrics.go",
 	"internal/engine/engine_decode.go",
 }
 
@@ -206,7 +214,8 @@ func TestEdgeWeightConsumerCensus(t *testing.T) {
 		// stayed green.
 		//
 		// THE SERVER HALF ASSERTS ITS OWN FOUR, the state digest among them, by
-		// the same rule and for the same reason.
+		// the same rule and for the same reason. This half names one; the
+		// require.NotEmpty below is therefore load-bearing, not ceremony.
 		require.NotEmpty(t, accessorOnlyWeightReaders,
 			"control: the named-file list is not empty, or this subtest asserts nothing")
 		for _, p := range accessorOnlyWeightReaders {

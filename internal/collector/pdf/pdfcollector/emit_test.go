@@ -413,8 +413,8 @@ func TestEmit_StableIDs(t *testing.T) {
 // cannot be told from unstamped, independently of what the literal says.
 func TestEmit_StampsCollectorSchemaVersion(t *testing.T) {
 	t.Parallel()
-	if collectorSchemaVersion <= 0 {
-		t.Fatalf("collectorSchemaVersion = %d, want > 0 — zero cannot be told from unstamped", collectorSchemaVersion)
+	if CollectorSchemaVersion <= 0 {
+		t.Fatalf("CollectorSchemaVersion = %d, want > 0 — zero cannot be told from unstamped", CollectorSchemaVersion)
 	}
 	chunks := []pdf.Chunk{
 		{Kind: pdf.BlockHeading, Text: "H", HeadingLevel: 1, PageRange: [2]int{0, 0},

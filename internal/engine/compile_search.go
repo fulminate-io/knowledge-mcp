@@ -37,12 +37,12 @@ type searchArgs struct {
 }
 
 // compileSearch translates a reducible `search` call (graph in
-// knowledge/practice/cloud/cicd/linkage/web/pdf) into a QueryPlan QSearch.
+// knowledge/practice/linkage/web/pdf) into a QueryPlan QSearch.
 // Returns ok=false (default-deny → legacy) for:
 //   - graph=code (SPECIALIZED: HandleSearchCode)
 //   - an empty query set (nothing to search)
 //
-// Multi-type and resource_type-filtered cloud/cicd searches ARE reducible:
+// Multi-type and resource_type-filtered registered-custom searches ARE reducible:
 // multi-type rides the node_types carrier (the engine post-filters + trims).
 // resource_type is CLIENT POST-FILTERED on the rendered result set:
 // an OP_PREFIX metadata predicate does NOT compose with a

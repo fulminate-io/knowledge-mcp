@@ -42,6 +42,17 @@ const justifyUnlinkLinkGraph = "unlink addresses the linkage graph through `grap
 	"mutate(unlink, from:<id>, to:\"proxy:knowledge:<code-id>\", relationship:\"...\", graph:\"linkage\"). " +
 	"The endpoint must be the PROXY id — unlike link, unlink resolves no raw foreign id"
 
+// justifyEdgeArmSourceHub names the call that DOES read `source_hub` on an edge
+// write, which the generic "issue a separate call that does" leaves the caller
+// to guess at. The two arms carrying this reason serve families that have no
+// source hubs — the knowledge family for both, plus the name-addressed foreign
+// graphs the link fallthrough also runs on — so the param reaches nothing HERE
+// while being routed one family over.
+const justifyEdgeArmSourceHub = "`source_hub` scopes the endpoints of a PRACTICE edge write to the nodes " +
+	"grouped under one hub, and this arm serves families that have no hubs; the call that reads it is " +
+	"mutate(link|unlink, graph:\"practice\", source_hub:\"<hub id>\", from/to/relationship), where BOTH endpoints " +
+	"must already be grouped under that hub"
+
 // justifyUnlinkName names the shape that DOES route `name` on an unlink, which
 // the generic "issue a separate call that does" leaves the caller to guess at.
 // This arm is reached only on the knowledge family (the non-knowledge guard
@@ -70,6 +81,19 @@ var linkArmSpecs = map[armID]armSpec{
 		operation: "link",
 		handler:   "handleClientCrossGraphLink",
 		consumed: paramSet(
+			// source_hub SCOPES THE ENDPOINTS' RESOLUTION on a practice link, which
+			// is not what it does on a create: there it GROUPS the written node, and
+			// an edge belongs to no hub. Here both from and to must be practice
+			// nodes grouped under the named hub or the write is refused naming the
+			// endpoint and its actual hub — the same shape `source` takes on
+			// assemble, where it scopes a by-id resolve rather than grouping
+			// anything. IT IS ONLY EVER READ ON PRACTICE: every other family is
+			// refused by name at the head of InterceptMutate
+			// (refusePracticeHubOffFamily), above this arm and every other, so a
+			// call that reaches this gate carrying a hub is a practice call. The
+			// refusal used to ride this arm's own gate, and moving it up is what
+			// closed the same hole on the arms that had no such gate.
+			"source_hub",
 			"operation", "from", "to", "relationship", "link_graph", "graph", "language",
 			"weight", "confidence", "method", "edge_evidence", "last_validated",
 			"verified_quote", "cited_range",
@@ -114,6 +138,7 @@ var linkArmSpecs = map[armID]armSpec{
 			"verified_quote", "cited_range",
 		),
 		rejected: paramSet(
+			"source_hub",
 			"repo", "account",
 			"supports",
 			"type", "id", "ids", "description", "summary", "content", "status",
@@ -123,7 +148,10 @@ var linkArmSpecs = map[armID]armSpec{
 			"session", "ticket_id", "polarity", "reasoning", "charge_evidence", "thought_parent",
 			"references", "items", "nodes", "edges", "updates",
 		),
-		rejectionReasons:    map[string]string{"link_graph": justifyFallthroughLinkGraph},
+		rejectionReasons: map[string]string{
+			"link_graph": justifyFallthroughLinkGraph,
+			"source_hub": justifyEdgeArmSourceHub,
+		},
 		deliberatelyIgnored: map[string]string{},
 	},
 
@@ -143,6 +171,7 @@ var linkArmSpecs = map[armID]armSpec{
 		handler:   "engine compileMutateByIDLinkUnlink",
 		consumed:  paramSet("operation", "from", "to", "relationship", "graph", "format"),
 		rejected: paramSet(
+			"source_hub",
 			"repo", "account",
 			"supports",
 			"name",
@@ -157,6 +186,7 @@ var linkArmSpecs = map[armID]armSpec{
 		rejectionReasons: map[string]string{
 			"link_graph": justifyUnlinkLinkGraph,
 			"name":       justifyUnlinkName,
+			"source_hub": justifyEdgeArmSourceHub,
 		},
 		deliberatelyIgnored: map[string]string{
 			"language":       justifyKnowledgeSingletonSelector,
@@ -177,8 +207,35 @@ var linkArmSpecs = map[armID]armSpec{
 		operation: "create",
 		handler:   "inline engine.Dispatch in InterceptMutate",
 		consumed: paramSet(
+			// source_hub is consumed by ALL FOUR of this arm's operations, and it
+			// means a different thing on three of them — which is why one declared
+			// class here is not enough on its own to know the param is routed.
+			// create and create_batch GROUP the written node (the hub id is stamped
+			// onto its metadata AND the node→hub sourced-from edge rides the same
+			// CreateBatch); delete uses it as a SELECTION axis; update SCOPES ITS
+			// TARGETS to the hub client-side and puts nothing on the wire. The
+			// per-operation census that holds this arm to all four is
+			// mutate_arm_polymorphic_hub_test.go, because this cell cannot.
+			//
+			// AND IT IS PRACTICE-ONLY, though this arm also serves checks. A checks
+			// write carrying the param is refused at the head of InterceptMutate
+			// before it reaches here, so the create lowering below — which is
+			// family-blind and once stamped a practice hub onto a checks node —
+			// is now reachable by the practice half of this arm alone.
+			"source_hub",
 			"operation", "type", "id", "ids", "name", "description", "summary", "content", "status",
-			"metadata", "source", "keywords", "graph", "language", "format", "nodes", "edges",
+			"metadata", "source", "keywords", "graph", "format", "nodes", "edges",
+			// language IS CONSUMED HERE, AND ITS CLASS IS GRAPH-DEPENDENT — the one
+			// param on this arm whose behaviour splits by the graph it serves. This
+			// arm claims BOTH practice and checks: on a CHECKS write `language` is
+			// the check's corpus language and is read, and on a PRACTICE write it is
+			// REFUSED by name (practice is one combined graph now, so a write has no
+			// per-language graph to land in and dropping it would silently redirect
+			// the write). The registry classifies one param per arm, so it is
+			// declared for the half that reads it and the practice refusal rides its
+			// own guard; the parity fixture drives this cell against the checks half
+			// for that reason.
+			"language",
 			"verified_quote", "cited_range",
 		),
 		rejected: paramSet(
@@ -210,6 +267,19 @@ var linkArmSpecs = map[armID]armSpec{
 		operation: "upsert",
 		handler:   "declined in InterceptMutate at the knowledge-graph guard",
 		consumed: paramSet(
+			// source_hub is APPLIED on this arm's practice operations rather than
+			// merely declared consumed: unlink scopes its endpoints, and
+			// update_batch, bulk_update_metadata and upsert scope their targets —
+			// an upsert whose key does NOT resolve is refused here rather than
+			// grouped, because only a create plan can carry the hub key and the
+			// sourced-from edge together. On EVERY
+			// OTHER FAMILY this arm never sees the param at all — the head of
+			// InterceptMutate refuses it there — which is what turned this
+			// declaration from an aspiration into a fact: a whole-schema consumed
+			// set on an arm this polymorphic asserts nothing by itself, and the
+			// operation census in mutate_arm_polymorphic_hub_test.go plus the
+			// family grid in mutate_family_arm_hub_test.go are what hold it.
+			"source_hub",
 			"operation", "type", "id", "ids", "name", "description", "summary", "content", "status",
 			"expand_to_descendants", "source", "evidence", "question_id", "concludes", "scope",
 			"enforcement", "step_id", "command", "criterion_type", "from", "to", "relationship",

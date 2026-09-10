@@ -10,7 +10,7 @@ import (
 
 // Sink is the terminal destination every write path in the collector package
 // routes through. WriteResult performs a full-replace or overlay write of a
-// CollectResult, including cross-graph linker for cloud/CICD graphs. Used by
+// CollectResult, including the cross-graph linker for code graphs. Used by
 // pipeline.Collect.
 //
 // Implementations that pull in the indexer/write-path live in subpackages

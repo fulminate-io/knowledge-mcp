@@ -53,6 +53,10 @@ func TestMain(m *testing.M) {
 	// invoked with the server's own argv, which this binary's flag set would
 	// reject. The helper returns immediately in a normal run.
 	maybeRunSpawnSurvivalHelper()
+	// AND SECOND, for the same reason: the collector CLI's add verb dials a stdio
+	// provider before writing, and this binary re-execed under an argv marker IS
+	// that provider. It returns immediately in a normal run.
+	maybeRunCollectorStubProvider()
 	for _, k := range providerKeyEnv {
 		if err := os.Unsetenv(k); err != nil {
 			panic("clearing " + k + " for the test suite: " + err.Error())

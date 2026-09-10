@@ -37,8 +37,8 @@ func compileMutateUpdateBatch(a mutateArgs) (*knowledgev1.ExecuteRequest, bool) 
 	// the right per-graph backing. a.Branch threads the overlay dimension onto the
 	// Target so an overlay-resident write-back lands on the same overlay key the
 	// gap scan read from (resolveCode Scopes repo@branch); empty → base graph.
-	// The instance name goes through mutateTargetName rather than riding a.Name
-	// verbatim: on a name-blind family (knowledge/linkage/code/cloud/cicd/practice)
+	// The instance name goes through mutateTarget rather than riding a.Name
+	// verbatim: on a name-blind family (knowledge/linkage/code/practice)
 	// the param is the NODE name and the resolver would reject it, while on a
 	// name-addressed family it is the instance key graphsel.ApplyInstanceKey
 	// assigned — which is exactly what routes this arm's cross-graph write-back.
@@ -46,7 +46,7 @@ func compileMutateUpdateBatch(a mutateArgs) (*knowledgev1.ExecuteRequest, bool) 
 	// not bypass the rule.
 	return &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-		Target: mutateTarget(a.Graph, a.Repo, a.Account, a.Name, a.Language, a.Branch),
+		Target: mutateTarget(a.Graph, a.Repo, a.Name, a.Language, a.Branch),
 	}, true
 }
 
@@ -86,8 +86,8 @@ type bulkUpdateItem struct {
 // becomes a metadata-only proto UpdateItem (summary/keywords/status/vector left
 // nil/empty → untouched, per the UpdateItem "nil = untouched" contract). All N
 // items apply inside ONE Execute → one txn → one commit, and the backend-tag
-// reject the legacy handler enforced is preserved by the engine's validateUpdate-
-// Items decode. A degenerate shape (no updates, or any item missing an id or
+// reject the legacy handler enforced is preserved by the engine's
+// validateUpdateItems decode. A degenerate shape (no updates, or any item missing an id or
 // metadata) falls through to legacy, mirroring compileMutateUpdateBatch's empty
 // guard.
 func compileMutateBulkMetadata(a mutateArgs) (*knowledgev1.ExecuteRequest, bool) {
@@ -112,10 +112,10 @@ func compileMutateBulkMetadata(a mutateArgs) (*knowledgev1.ExecuteRequest, bool)
 	// (the two batch sites lower to the same UPDATE_ITEMS arm) and is empty for
 	// the current knowledge-graph callers; forward-proof for an overlay bulk write.
 	// Same rule as compileMutateUpdateBatch above: the instance name goes through
-	// mutateTargetName, which drops it on a name-blind family and passes it through
+	// mutateTarget, which drops it on a name-blind family and passes it through
 	// on a name-addressed one.
 	return &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-		Target: mutateTarget(a.Graph, a.Repo, a.Account, a.Name, a.Language, a.Branch),
+		Target: mutateTarget(a.Graph, a.Repo, a.Name, a.Language, a.Branch),
 	}, true
 }

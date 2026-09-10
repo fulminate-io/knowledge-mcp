@@ -151,9 +151,11 @@ type CollectChunkRequest struct {
 	// TOKEN for the per-file early decline: the server declines a file only
 	// against a hash IT rendered under the manifest identity it last served.
 	ManifestId string `protobuf:"bytes,12,opt,name=manifest_id,json=manifestId,proto3" json:"manifest_id,omitempty"`
-	// file_contributions carries this chunk's owning files and their
-	// client-computed per-file hashes (the same ManifestEntry shape the manifest
-	// response uses). Advisory only — absence costs work, never correctness.
+	// file_contributions carries this chunk's owning DIFF KEYS and their
+	// client-computed per-key hashes (the same ManifestEntry shape the manifest
+	// response uses, so a node-keyed collect echoes node ids here). Advisory
+	// only — absence costs work, never correctness. The field name predates the
+	// node-id key arm; the ManifestEntry doc is authoritative about what a key is.
 	FileContributions []*ManifestEntry `protobuf:"bytes,13,rep,name=file_contributions,json=fileContributions,proto3" json:"file_contributions,omitempty"`
 	// node_contribution_hashes is INDEX-ALIGNED with nodes. A length mismatch is
 	// BAD INPUT and the RPC is refused naming both lengths.
@@ -448,9 +450,11 @@ type CollectManifestResponse struct {
 	ManifestId string `protobuf:"bytes,1,opt,name=manifest_id,json=manifestId,proto3" json:"manifest_id,omitempty"`
 	// hash_scheme_version is the server's contribution-hash scheme version. A
 	// client holding a different value degrades to one full collect. This field
-	// IS the sync mechanism for a scheme that is deliberately declared three
-	// times (no package may be shared across the module boundary), so drift is
-	// fail-closed by construction rather than by discipline.
+	// IS the sync mechanism for a scheme that is deliberately declared TWICE —
+	// once in the client's contribhash package and once in the server's store
+	// package, because no package may be shared across the module boundary — so
+	// drift is fail-closed by construction rather than by discipline. The cloud
+	// render is not a third declaration: it serves the server's own const.
 	HashSchemeVersion uint32           `protobuf:"varint,2,opt,name=hash_scheme_version,json=hashSchemeVersion,proto3" json:"hash_scheme_version,omitempty"`
 	Entries           []*ManifestEntry `protobuf:"bytes,3,rep,name=entries,proto3" json:"entries,omitempty"`
 	// account-scoped freshness watermark; see engine.proto ExecuteResponse.freshness_gen for the full contract.
@@ -517,13 +521,32 @@ func (x *CollectManifestResponse) GetFreshnessGen() uint64 {
 	return 0
 }
 
-// ManifestEntry is one file's contribution hash. The hash rides as raw bytes
-// rather than hex: at 32 bytes against 64 it halves the hash half of a
+// ManifestEntry is one DIFF KEY's contribution hash. The hash rides as raw
+// bytes rather than hex: at 32 bytes against 64 it halves the hash half of a
 // response that runs to hundreds of kilobytes on a large repo.
+//
+// THE KEY IS A ONEOF BECAUSE TWO GRAPH FAMILIES DIFF ON DIFFERENT UNITS, and
+// the two are never mixed inside one manifest. A CODE graph diffs per FILE: its
+// collector emits many nodes per file, and the file is the unit a re-parse
+// re-derives. A REGISTERED CUSTOM graph diffs per NODE ID: its collector emits
+// records whose file path is optional and usually absent, so a file-keyed
+// render serves it an EMPTY manifest and every one of its nodes reads CHANGED
+// forever — the full re-upload this key exists to end.
+//
+// READ THE ARM, NEVER THE FIELD. GetFilePath() on a node-keyed entry returns
+// the EMPTY STRING rather than failing, and an empty key makes every entry
+// collide: a diff in which nothing matches, or a snapshot whose keys all
+// collapse onto one. Consumers discriminate on the arm first — the client's
+// manifestEntryKey and the server's ManifestEntryKey are the two helpers that
+// do it — and only then take the value.
 type ManifestEntry struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	FilePath         string                 `protobuf:"bytes,1,opt,name=file_path,json=filePath,proto3" json:"file_path,omitempty"`
-	ContributionHash []byte                 `protobuf:"bytes,2,opt,name=contribution_hash,json=contributionHash,proto3" json:"contribution_hash,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Key:
+	//
+	//	*ManifestEntry_FilePath
+	//	*ManifestEntry_NodeId
+	Key              isManifestEntry_Key `protobuf_oneof:"key"`
+	ContributionHash []byte              `protobuf:"bytes,2,opt,name=contribution_hash,json=contributionHash,proto3" json:"contribution_hash,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -558,9 +581,27 @@ func (*ManifestEntry) Descriptor() ([]byte, []int) {
 	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{4}
 }
 
+func (x *ManifestEntry) GetKey() isManifestEntry_Key {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
 func (x *ManifestEntry) GetFilePath() string {
 	if x != nil {
-		return x.FilePath
+		if x, ok := x.Key.(*ManifestEntry_FilePath); ok {
+			return x.FilePath
+		}
+	}
+	return ""
+}
+
+func (x *ManifestEntry) GetNodeId() string {
+	if x != nil {
+		if x, ok := x.Key.(*ManifestEntry_NodeId); ok {
+			return x.NodeId
+		}
 	}
 	return ""
 }
@@ -571,6 +612,22 @@ func (x *ManifestEntry) GetContributionHash() []byte {
 	}
 	return nil
 }
+
+type isManifestEntry_Key interface {
+	isManifestEntry_Key()
+}
+
+type ManifestEntry_FilePath struct {
+	FilePath string `protobuf:"bytes,1,opt,name=file_path,json=filePath,proto3,oneof"`
+}
+
+type ManifestEntry_NodeId struct {
+	NodeId string `protobuf:"bytes,3,opt,name=node_id,json=nodeId,proto3,oneof"`
+}
+
+func (*ManifestEntry_FilePath) isManifestEntry_Key() {}
+
+func (*ManifestEntry_NodeId) isManifestEntry_Key() {}
 
 // FinalizeRequest ends a collection. epoch matches the CollectChunk epoch;
 // the server tombstones every node whose collect_epoch differs (the
@@ -664,8 +721,27 @@ type FinalizeRequest struct {
 	// UNSET IS OFF, the opposite default from diff_mode above, deliberately: an
 	// override that armed itself would be the hack it exists to remove.
 	DeletionRatioOverride bool `protobuf:"varint,11,opt,name=deletion_ratio_override,json=deletionRatioOverride,proto3" json:"deletion_ratio_override,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// deleted_node_ids names what a NODE-KEYED collect asserts is gone: the
+	// deletion carrier of a registered custom graph, whose diff key is a node id
+	// rather than a file path.
+	//
+	// IT IS A SECOND FIELD RATHER THAN MORE ENTRY KINDS ON deleted_files, and the
+	// reason is that the server resolves the two differently. A deleted_files
+	// entry resolves against file paths and directory ids and is validated by two
+	// passes over the live set that both key on file_path; a node id resolves by
+	// primary key against a live collector-owned row. Overloading one field would
+	// put a third entry kind behind a resolver that cannot tell it from a file
+	// path named like an id, and an unresolvable entry refuses the WHOLE deletion
+	// phase — so the ambiguity would be a silent, permanent refusal.
+	//
+	// EVERY GUARD deleted_files CARRIES APPLIES UNCHANGED: nothing is inferred
+	// from a node's ABSENCE from the upload, the phase is refused unless
+	// walk_complete is asserted and the echoed manifest identity is current, each
+	// entry is validated against the server's own live set, and a single
+	// unresolvable entry refuses the whole set.
+	DeletedNodeIds []string `protobuf:"bytes,12,rep,name=deleted_node_ids,json=deletedNodeIds,proto3" json:"deleted_node_ids,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *FinalizeRequest) Reset() {
@@ -773,6 +849,13 @@ func (x *FinalizeRequest) GetDeletionRatioOverride() bool {
 		return x.DeletionRatioOverride
 	}
 	return false
+}
+
+func (x *FinalizeRequest) GetDeletedNodeIds() []string {
+	if x != nil {
+		return x.DeletedNodeIds
+	}
+	return nil
 }
 
 // FinalizeResponse acknowledges the collection. Its return means the DURABLE
@@ -1111,193 +1194,6 @@ func (x *BatchEdge) GetContributionHash() []byte {
 	return nil
 }
 
-// FetchCloudSubgraphRequest asks the server for an in-memory slice of
-// cloud graphs the client uses to drive logs.CloudResolver and
-// logs.DependencyChecker locally. Empty graph_names = every loaded
-// cloud graph; non-empty = only the listed graphs. type_prefixes is an
-// optional resource_type filter applied node-side (e.g. ["Service",
-// "Deployment", "k8s:Service"] to skip irrelevant resource types). An
-// empty type_prefixes returns every cloud-resource node.
-type FetchCloudSubgraphRequest struct {
-	state        protoimpl.MessageState `protogen:"open.v1"`
-	GraphNames   []string               `protobuf:"bytes,1,rep,name=graph_names,json=graphNames,proto3" json:"graph_names,omitempty"`
-	TypePrefixes []string               `protobuf:"bytes,2,rep,name=type_prefixes,json=typePrefixes,proto3" json:"type_prefixes,omitempty"`
-	// client_context carries the per-request client provenance. See ClientContext.
-	ClientContext *ClientContext `protobuf:"bytes,3,opt,name=client_context,json=clientContext,proto3" json:"client_context,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *FetchCloudSubgraphRequest) Reset() {
-	*x = FetchCloudSubgraphRequest{}
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[10]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *FetchCloudSubgraphRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*FetchCloudSubgraphRequest) ProtoMessage() {}
-
-func (x *FetchCloudSubgraphRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[10]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use FetchCloudSubgraphRequest.ProtoReflect.Descriptor instead.
-func (*FetchCloudSubgraphRequest) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{10}
-}
-
-func (x *FetchCloudSubgraphRequest) GetGraphNames() []string {
-	if x != nil {
-		return x.GraphNames
-	}
-	return nil
-}
-
-func (x *FetchCloudSubgraphRequest) GetTypePrefixes() []string {
-	if x != nil {
-		return x.TypePrefixes
-	}
-	return nil
-}
-
-func (x *FetchCloudSubgraphRequest) GetClientContext() *ClientContext {
-	if x != nil {
-		return x.ClientContext
-	}
-	return nil
-}
-
-// FetchCloudSubgraphResponse returns one slice per cloud graph. Node bodies ride
-// as JSON-marshaled []store.Node (the method-having store.Node boundary stays
-// bytes); edges ride as the typed Edge message. Each slice always includes
-// BOTH NodeCloudResource and NodeProxy nodes for the named graph (the
-// BFS dep-checker walks proxy edges transparently and needs proxies
-// in-slice).
-type FetchCloudSubgraphResponse struct {
-	state  protoimpl.MessageState `protogen:"open.v1"`
-	Slices []*CloudSubgraphSlice  `protobuf:"bytes,1,rep,name=slices,proto3" json:"slices,omitempty"`
-	// account-scoped freshness watermark; see engine.proto ExecuteResponse.freshness_gen for the full contract.
-	FreshnessGen  uint64 `protobuf:"varint,2,opt,name=freshness_gen,json=freshnessGen,proto3" json:"freshness_gen,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *FetchCloudSubgraphResponse) Reset() {
-	*x = FetchCloudSubgraphResponse{}
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[11]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *FetchCloudSubgraphResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*FetchCloudSubgraphResponse) ProtoMessage() {}
-
-func (x *FetchCloudSubgraphResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[11]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use FetchCloudSubgraphResponse.ProtoReflect.Descriptor instead.
-func (*FetchCloudSubgraphResponse) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{11}
-}
-
-func (x *FetchCloudSubgraphResponse) GetSlices() []*CloudSubgraphSlice {
-	if x != nil {
-		return x.Slices
-	}
-	return nil
-}
-
-func (x *FetchCloudSubgraphResponse) GetFreshnessGen() uint64 {
-	if x != nil {
-		return x.FreshnessGen
-	}
-	return 0
-}
-
-type CloudSubgraphSlice struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	GraphName     string                 `protobuf:"bytes,1,opt,name=graph_name,json=graphName,proto3" json:"graph_name,omitempty"`
-	NodesJson     []byte                 `protobuf:"bytes,2,opt,name=nodes_json,json=nodesJson,proto3" json:"nodes_json,omitempty"` // []store.Node (method-having boundary — stays opaque bytes)
-	Edges         []*Edge                `protobuf:"bytes,3,rep,name=edges,proto3" json:"edges,omitempty"`                          // []store.Edge (Edge defined in engine.proto — see the import above)
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *CloudSubgraphSlice) Reset() {
-	*x = CloudSubgraphSlice{}
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[12]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CloudSubgraphSlice) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CloudSubgraphSlice) ProtoMessage() {}
-
-func (x *CloudSubgraphSlice) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[12]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CloudSubgraphSlice.ProtoReflect.Descriptor instead.
-func (*CloudSubgraphSlice) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{12}
-}
-
-func (x *CloudSubgraphSlice) GetGraphName() string {
-	if x != nil {
-		return x.GraphName
-	}
-	return ""
-}
-
-func (x *CloudSubgraphSlice) GetNodesJson() []byte {
-	if x != nil {
-		return x.NodesJson
-	}
-	return nil
-}
-
-func (x *CloudSubgraphSlice) GetEdges() []*Edge {
-	if x != nil {
-		return x.Edges
-	}
-	return nil
-}
-
 var File_knowledge_v1_ingest_proto protoreflect.FileDescriptor
 
 const file_knowledge_v1_ingest_proto_rawDesc = "" +
@@ -1338,10 +1234,12 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"manifestId\x12.\n" +
 	"\x13hash_scheme_version\x18\x02 \x01(\rR\x11hashSchemeVersion\x125\n" +
 	"\aentries\x18\x03 \x03(\v2\x1b.knowledge.v1.ManifestEntryR\aentries\x12#\n" +
-	"\rfreshness_gen\x18\x05 \x01(\x04R\ffreshnessGen\"Y\n" +
-	"\rManifestEntry\x12\x1b\n" +
-	"\tfile_path\x18\x01 \x01(\tR\bfilePath\x12+\n" +
-	"\x11contribution_hash\x18\x02 \x01(\fR\x10contributionHash\"\xaa\x03\n" +
+	"\rfreshness_gen\x18\x05 \x01(\x04R\ffreshnessGen\"}\n" +
+	"\rManifestEntry\x12\x1d\n" +
+	"\tfile_path\x18\x01 \x01(\tH\x00R\bfilePath\x12\x19\n" +
+	"\anode_id\x18\x03 \x01(\tH\x00R\x06nodeId\x12+\n" +
+	"\x11contribution_hash\x18\x02 \x01(\fR\x10contributionHashB\x05\n" +
+	"\x03key\"\xd4\x03\n" +
 	"\x0fFinalizeRequest\x12\x14\n" +
 	"\x05epoch\x18\x01 \x01(\x04R\x05epoch\x12\x1d\n" +
 	"\n" +
@@ -1357,7 +1255,8 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"\rwalk_complete\x18\t \x01(\bR\fwalkComplete\x12\x1b\n" +
 	"\tdiff_mode\x18\n" +
 	" \x01(\bR\bdiffMode\x126\n" +
-	"\x17deletion_ratio_override\x18\v \x01(\bR\x15deletionRatioOverride\"\x90\x01\n" +
+	"\x17deletion_ratio_override\x18\v \x01(\bR\x15deletionRatioOverride\x12(\n" +
+	"\x10deleted_node_ids\x18\f \x03(\tR\x0edeletedNodeIds\"\x90\x01\n" +
 	"\x10FinalizeResponse\x12\x1f\n" +
 	"\vfinalize_id\x18\x01 \x01(\tR\n" +
 	"finalizeId\x12#\n" +
@@ -1385,33 +1284,18 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"\bevidence\x18\t \x01(\tR\bevidence\x12%\n" +
 	"\x0elast_validated\x18\n" +
 	" \x01(\x03R\rlastValidated\x12+\n" +
-	"\x11contribution_hash\x18\v \x01(\fR\x10contributionHash\"\xa5\x01\n" +
-	"\x19FetchCloudSubgraphRequest\x12\x1f\n" +
-	"\vgraph_names\x18\x01 \x03(\tR\n" +
-	"graphNames\x12#\n" +
-	"\rtype_prefixes\x18\x02 \x03(\tR\ftypePrefixes\x12B\n" +
-	"\x0eclient_context\x18\x03 \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"{\n" +
-	"\x1aFetchCloudSubgraphResponse\x128\n" +
-	"\x06slices\x18\x01 \x03(\v2 .knowledge.v1.CloudSubgraphSliceR\x06slices\x12#\n" +
-	"\rfreshness_gen\x18\x02 \x01(\x04R\ffreshnessGen\"|\n" +
-	"\x12CloudSubgraphSlice\x12\x1d\n" +
-	"\n" +
-	"graph_name\x18\x01 \x01(\tR\tgraphName\x12\x1d\n" +
-	"\n" +
-	"nodes_json\x18\x02 \x01(\fR\tnodesJson\x12(\n" +
-	"\x05edges\x18\x03 \x03(\v2\x12.knowledge.v1.EdgeR\x05edges*\x9b\x01\n" +
+	"\x11contribution_hash\x18\v \x01(\fR\x10contributionHash*\x9b\x01\n" +
 	"\rFinalizeState\x12\x1e\n" +
 	"\x1aFINALIZE_STATE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16FINALIZE_STATE_RUNNING\x10\x01\x12\x17\n" +
 	"\x13FINALIZE_STATE_DONE\x10\x02\x12\x19\n" +
 	"\x15FINALIZE_STATE_FAILED\x10\x03\x12\x1a\n" +
-	"\x16FINALIZE_STATE_UNKNOWN\x10\x042\xd7\x03\n" +
+	"\x16FINALIZE_STATE_UNKNOWN\x10\x042\xee\x02\n" +
 	"\rIngestService\x12U\n" +
 	"\fCollectChunk\x12!.knowledge.v1.CollectChunkRequest\x1a\".knowledge.v1.CollectChunkResponse\x12I\n" +
 	"\bFinalize\x12\x1d.knowledge.v1.FinalizeRequest\x1a\x1e.knowledge.v1.FinalizeResponse\x12[\n" +
 	"\x0eFinalizeStatus\x12#.knowledge.v1.FinalizeStatusRequest\x1a$.knowledge.v1.FinalizeStatusResponse\x12^\n" +
-	"\x0fCollectManifest\x12$.knowledge.v1.CollectManifestRequest\x1a%.knowledge.v1.CollectManifestResponse\x12g\n" +
-	"\x12FetchCloudSubgraph\x12'.knowledge.v1.FetchCloudSubgraphRequest\x1a(.knowledge.v1.FetchCloudSubgraphResponseB@Z>github.com/fulminate-io/knowledge/gen/knowledge/v1;knowledgev1b\x06proto3"
+	"\x0fCollectManifest\x12$.knowledge.v1.CollectManifestRequest\x1a%.knowledge.v1.CollectManifestResponseB@Z>github.com/fulminate-io/knowledge/gen/knowledge/v1;knowledgev1b\x06proto3"
 
 var (
 	file_knowledge_v1_ingest_proto_rawDescOnce sync.Once
@@ -1426,54 +1310,45 @@ func file_knowledge_v1_ingest_proto_rawDescGZIP() []byte {
 }
 
 var file_knowledge_v1_ingest_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_knowledge_v1_ingest_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_knowledge_v1_ingest_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_knowledge_v1_ingest_proto_goTypes = []any{
-	(FinalizeState)(0),                 // 0: knowledge.v1.FinalizeState
-	(*CollectChunkRequest)(nil),        // 1: knowledge.v1.CollectChunkRequest
-	(*CollectChunkResponse)(nil),       // 2: knowledge.v1.CollectChunkResponse
-	(*CollectManifestRequest)(nil),     // 3: knowledge.v1.CollectManifestRequest
-	(*CollectManifestResponse)(nil),    // 4: knowledge.v1.CollectManifestResponse
-	(*ManifestEntry)(nil),              // 5: knowledge.v1.ManifestEntry
-	(*FinalizeRequest)(nil),            // 6: knowledge.v1.FinalizeRequest
-	(*FinalizeResponse)(nil),           // 7: knowledge.v1.FinalizeResponse
-	(*FinalizeStatusRequest)(nil),      // 8: knowledge.v1.FinalizeStatusRequest
-	(*FinalizeStatusResponse)(nil),     // 9: knowledge.v1.FinalizeStatusResponse
-	(*BatchEdge)(nil),                  // 10: knowledge.v1.BatchEdge
-	(*FetchCloudSubgraphRequest)(nil),  // 11: knowledge.v1.FetchCloudSubgraphRequest
-	(*FetchCloudSubgraphResponse)(nil), // 12: knowledge.v1.FetchCloudSubgraphResponse
-	(*CloudSubgraphSlice)(nil),         // 13: knowledge.v1.CloudSubgraphSlice
-	(*Node)(nil),                       // 14: knowledge.v1.Node
-	(*ClientContext)(nil),              // 15: knowledge.v1.ClientContext
-	(*Edge)(nil),                       // 16: knowledge.v1.Edge
+	(FinalizeState)(0),              // 0: knowledge.v1.FinalizeState
+	(*CollectChunkRequest)(nil),     // 1: knowledge.v1.CollectChunkRequest
+	(*CollectChunkResponse)(nil),    // 2: knowledge.v1.CollectChunkResponse
+	(*CollectManifestRequest)(nil),  // 3: knowledge.v1.CollectManifestRequest
+	(*CollectManifestResponse)(nil), // 4: knowledge.v1.CollectManifestResponse
+	(*ManifestEntry)(nil),           // 5: knowledge.v1.ManifestEntry
+	(*FinalizeRequest)(nil),         // 6: knowledge.v1.FinalizeRequest
+	(*FinalizeResponse)(nil),        // 7: knowledge.v1.FinalizeResponse
+	(*FinalizeStatusRequest)(nil),   // 8: knowledge.v1.FinalizeStatusRequest
+	(*FinalizeStatusResponse)(nil),  // 9: knowledge.v1.FinalizeStatusResponse
+	(*BatchEdge)(nil),               // 10: knowledge.v1.BatchEdge
+	(*Node)(nil),                    // 11: knowledge.v1.Node
+	(*ClientContext)(nil),           // 12: knowledge.v1.ClientContext
 }
 var file_knowledge_v1_ingest_proto_depIdxs = []int32{
-	14, // 0: knowledge.v1.CollectChunkRequest.nodes:type_name -> knowledge.v1.Node
+	11, // 0: knowledge.v1.CollectChunkRequest.nodes:type_name -> knowledge.v1.Node
 	10, // 1: knowledge.v1.CollectChunkRequest.edges:type_name -> knowledge.v1.BatchEdge
-	15, // 2: knowledge.v1.CollectChunkRequest.client_context:type_name -> knowledge.v1.ClientContext
+	12, // 2: knowledge.v1.CollectChunkRequest.client_context:type_name -> knowledge.v1.ClientContext
 	5,  // 3: knowledge.v1.CollectChunkRequest.file_contributions:type_name -> knowledge.v1.ManifestEntry
-	15, // 4: knowledge.v1.CollectManifestRequest.client_context:type_name -> knowledge.v1.ClientContext
+	12, // 4: knowledge.v1.CollectManifestRequest.client_context:type_name -> knowledge.v1.ClientContext
 	5,  // 5: knowledge.v1.CollectManifestResponse.entries:type_name -> knowledge.v1.ManifestEntry
-	15, // 6: knowledge.v1.FinalizeRequest.client_context:type_name -> knowledge.v1.ClientContext
-	15, // 7: knowledge.v1.FinalizeStatusRequest.client_context:type_name -> knowledge.v1.ClientContext
+	12, // 6: knowledge.v1.FinalizeRequest.client_context:type_name -> knowledge.v1.ClientContext
+	12, // 7: knowledge.v1.FinalizeStatusRequest.client_context:type_name -> knowledge.v1.ClientContext
 	0,  // 8: knowledge.v1.FinalizeStatusResponse.state:type_name -> knowledge.v1.FinalizeState
-	15, // 9: knowledge.v1.FetchCloudSubgraphRequest.client_context:type_name -> knowledge.v1.ClientContext
-	13, // 10: knowledge.v1.FetchCloudSubgraphResponse.slices:type_name -> knowledge.v1.CloudSubgraphSlice
-	16, // 11: knowledge.v1.CloudSubgraphSlice.edges:type_name -> knowledge.v1.Edge
-	1,  // 12: knowledge.v1.IngestService.CollectChunk:input_type -> knowledge.v1.CollectChunkRequest
-	6,  // 13: knowledge.v1.IngestService.Finalize:input_type -> knowledge.v1.FinalizeRequest
-	8,  // 14: knowledge.v1.IngestService.FinalizeStatus:input_type -> knowledge.v1.FinalizeStatusRequest
-	3,  // 15: knowledge.v1.IngestService.CollectManifest:input_type -> knowledge.v1.CollectManifestRequest
-	11, // 16: knowledge.v1.IngestService.FetchCloudSubgraph:input_type -> knowledge.v1.FetchCloudSubgraphRequest
-	2,  // 17: knowledge.v1.IngestService.CollectChunk:output_type -> knowledge.v1.CollectChunkResponse
-	7,  // 18: knowledge.v1.IngestService.Finalize:output_type -> knowledge.v1.FinalizeResponse
-	9,  // 19: knowledge.v1.IngestService.FinalizeStatus:output_type -> knowledge.v1.FinalizeStatusResponse
-	4,  // 20: knowledge.v1.IngestService.CollectManifest:output_type -> knowledge.v1.CollectManifestResponse
-	12, // 21: knowledge.v1.IngestService.FetchCloudSubgraph:output_type -> knowledge.v1.FetchCloudSubgraphResponse
-	17, // [17:22] is the sub-list for method output_type
-	12, // [12:17] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	1,  // 9: knowledge.v1.IngestService.CollectChunk:input_type -> knowledge.v1.CollectChunkRequest
+	6,  // 10: knowledge.v1.IngestService.Finalize:input_type -> knowledge.v1.FinalizeRequest
+	8,  // 11: knowledge.v1.IngestService.FinalizeStatus:input_type -> knowledge.v1.FinalizeStatusRequest
+	3,  // 12: knowledge.v1.IngestService.CollectManifest:input_type -> knowledge.v1.CollectManifestRequest
+	2,  // 13: knowledge.v1.IngestService.CollectChunk:output_type -> knowledge.v1.CollectChunkResponse
+	7,  // 14: knowledge.v1.IngestService.Finalize:output_type -> knowledge.v1.FinalizeResponse
+	9,  // 15: knowledge.v1.IngestService.FinalizeStatus:output_type -> knowledge.v1.FinalizeStatusResponse
+	4,  // 16: knowledge.v1.IngestService.CollectManifest:output_type -> knowledge.v1.CollectManifestResponse
+	13, // [13:17] is the sub-list for method output_type
+	9,  // [9:13] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_knowledge_v1_ingest_proto_init() }
@@ -1482,13 +1357,17 @@ func file_knowledge_v1_ingest_proto_init() {
 		return
 	}
 	file_knowledge_v1_engine_proto_init()
+	file_knowledge_v1_ingest_proto_msgTypes[4].OneofWrappers = []any{
+		(*ManifestEntry_FilePath)(nil),
+		(*ManifestEntry_NodeId)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_knowledge_v1_ingest_proto_rawDesc), len(file_knowledge_v1_ingest_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   13,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

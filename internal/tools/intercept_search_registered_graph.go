@@ -25,7 +25,7 @@ import (
 
 // composeRegisteredGraphSearch runs the ranked-search arm for a registered custom
 // graph against the CLIENT segment engine — the (gt, name)-keyed mirror of
-// composeResourceSearchClient (intercept_query_cloud_cicd.go), which hardcodes the
+// the retired per-account resource search composer, which hardcoded the
 // account key, and composeKnowledgeSearch, which hardcodes knowledge/default. It
 // (1) embeds the query client-side best-effort (nil embedder / empty query → the
 // vector stays empty and Manager.Search degrades to the BM25 arm via
@@ -149,7 +149,7 @@ func InterceptQueryRegisteredGraphSearch(ctx context.Context, deps ClientDeps, p
 		return false, kgtools.ToolResult{}
 	}
 	// Only a custom graph: empty/builtin graphs are owned by the knowledge /
-	// cloud / cicd / practice / code arms upstream. This gate is SHAPE, not
+	// practice / code arms upstream. This gate is SHAPE, not
 	// registration — an unregistered string is claimed here so that
 	// composeRegisteredGraphSearch can refuse it by name instead of letting it
 	// fall through to a dispatch that renders an indistinguishable zero.

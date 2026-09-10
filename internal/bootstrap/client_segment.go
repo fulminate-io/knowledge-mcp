@@ -338,7 +338,7 @@ func (c *client) ClearHealLatch(gt kgtypes.GraphType, name string) {
 //
 // The returned factory yields, per (gt, name), a per-collector heal closure (or
 // nil for any graph with no rebuildable segments). Auto-heal is scoped to what
-// kgtypes.HasRebuildableSegments admits — knowledge, code, cloud, cicd, practice,
+// kgtypes.HasRebuildableSegments admits — knowledge, code, practice,
 // checks, and the raw graphs web and pdf, whose chunks carry vectors and BM25
 // documents and so can lose segments like any other — the SAME gate the manual
 // rebuild_segments op uses (handleClientRebuildSegments), so the auto-heal arm and
@@ -383,7 +383,7 @@ func (c *client) ClearHealLatch(gt kgtypes.GraphType, name string) {
 func (c *client) buildHealFactory() func(kgtypes.GraphType, string) func(context.Context) error {
 	return func(gt kgtypes.GraphType, name string) func(context.Context) error {
 		// Rebuildable-segments gate FIRST — the closure is built only for the graphs
-		// kgtypes.HasRebuildableSegments admits (knowledge, code, cloud, cicd,
+		// kgtypes.HasRebuildableSegments admits (knowledge, code,
 		// practice, checks, web, pdf). This is the SAME predicate
 		// handleClientRebuildSegments gates the manual rebuild_segments op on, so the
 		// auto-heal arm and the manual rebuild gate cannot drift; linkage,

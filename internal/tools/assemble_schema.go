@@ -22,6 +22,7 @@ func AssembleToolDef() kgtools.MCPTool {
 				"new_run":     {Type: "boolean", Description: "For test_plan: create a new run session with pending test_run nodes"},
 				"run_session": {Type: "string", Description: "For test_plan: filter assembled test_runs by this run session UUID"},
 				"format":      {Type: "string", Description: "Output format: 'text' (default) or 'json' (structured)"},
+				"source":      {Type: "string", Description: "Practice SOURCE HUB id — scopes the resolve to the nodes grouped under that hub, so an id that exists under a different hub is reported as not under this one rather than assembled. It is spelled `source` here because the name is free on this tool; the mutate and search tools spell the same selector `source_hub`, where `source` already means something else. A hub is a fact about the ONE combined practice graph, so a hub-scoped resolve never falls back to the pre-singleton graphs."},
 				// DECLARED HERE OR REFUSED AT THE DOOR: intercept_assemble.go runs
 				// rejectUndeclaredParams against this property set, so a param the
 				// handler reads but the schema does not declare is rejected before

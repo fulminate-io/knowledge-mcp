@@ -3,7 +3,6 @@
 package tools
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -73,29 +72,6 @@ func TestTypedUpdate_SuppliedNameStaysOffTheGraphSelector(t *testing.T) {
 	m := lastUpdatePlan(t, fc)
 	assert.Equal(t, "no unsupervised goroutines", m.GetSetFields()["name"])
 	assert.Empty(t, lastExecTarget(t, fc).GetName())
-}
-
-// TestUpsertLogBackend_NameStaysOffTheGraphSelector covers the upsert arm through
-// its real producer: configure_log_backend sends the backend's display name as the
-// node name on every call, so this path was broken for every log-backend write.
-func TestUpsertLogBackend_NameStaysOffTheGraphSelector(t *testing.T) {
-	fc := &fakeGraphCaller{}
-	res := upsertLogBackend(context.Background(), fc, "log_backend:prod-loki", manageArgs{
-		Name:     "prod-loki",
-		Provider: "loki",
-		URL:      "https://logs.example.internal",
-		AuthType: "bearer",
-	}, true)
-	require.False(t, res.IsError, "upsert must succeed: %s", toolResultText(res))
-
-	require.GreaterOrEqual(t, len(fc.execMutations), 1)
-	last := fc.execMutations[len(fc.execMutations)-1]
-	require.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_UPSERT, last.GetKind())
-	require.Len(t, last.GetNodeBodies(), 1)
-	assert.Equal(t, "prod-loki", last.GetNodeBodies()[0].GetName(),
-		"the backend name still rides the node body")
-	assert.Empty(t, lastExecTarget(t, fc).GetName(),
-		"the backend's display name must not become the requested graph instance")
 }
 
 // TestBackendBackedUpdate_NameStaysOffTheGraphSelector covers the tracker-backed

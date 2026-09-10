@@ -211,7 +211,8 @@ func TestCollectCoverageRows_ProbeWaveIsBounded(t *testing.T) {
 	}}
 	seg := &gatedSegReader{waveSize: wantProbeConcurrency, waveTimeout: 2 * time.Second}
 
-	rows := collectCoverageRows(context.Background(), &coverageDeps{gc: fake, segCov: seg})
+	rows, rowsErr := collectCoverageRows(context.Background(), &coverageDeps{gc: fake, segCov: seg})
+	require.NoError(t, rowsErr)
 	require.Len(t, rows, 24, "every programmed graph must produce a row")
 
 	maxInFlight, total := seg.peak()
@@ -304,8 +305,9 @@ func TestCollectCoverageRows_RowsLandByIndex(t *testing.T) {
 	// Repeated because a mis-ordered assembly is a RACE, not a constant: one pass
 	// could land in target order by luck, twelve in a row could not.
 	for attempt := range 12 {
-		rows := collectCoverageRows(context.Background(),
+		rows, rowsErr := collectCoverageRows(context.Background(),
 			&coverageDeps{gc: fake, segCov: &randomDelaySegReader{coveredByKey: covered}})
+		require.NoError(t, rowsErr)
 		require.Len(t, rows, len(wantLabels), "attempt %d", attempt)
 
 		gotLabels := make([]string, 0, len(rows))
@@ -340,7 +342,8 @@ func TestCollectCoverageRows_OverlayRowsIssueNoProbe(t *testing.T) {
 		residentByKey: map[string]int{"knowledge/default": 5, "code/repo00": 7},
 	}
 
-	rows := collectCoverageRows(context.Background(), &coverageDeps{gc: fake, segCov: seg})
+	rows, rowsErr := collectCoverageRows(context.Background(), &coverageDeps{gc: fake, segCov: seg})
+	require.NoError(t, rowsErr)
 
 	// The known positive: the two non-overlay rows DID probe, so an empty `probed`
 	// cannot be what makes the absence assertions below pass.

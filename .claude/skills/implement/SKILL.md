@@ -1,6 +1,6 @@
 ---
 name: implement
-description: Implement a ticket from its reviewed prefill, then audit the code. Gates on the review verdict, spawns one implementer in its own worktree, spawns a code reviewer against the ticket and the what-to-test list, routes the verdict, and lands the branch. Use after a prefill has shipped review.
+description: Implement a ticket from its reviewed prefill, then audit the code. Gates on the review verdict, spawns one implementer in its own isolated checkout, spawns a code reviewer against the ticket and the what-to-test list, routes the verdict, and lands the branch. Use after a prefill has shipped review.
 argument-hint: <ticket id or name with a reviewed prefill>
 ---
 
@@ -23,24 +23,27 @@ stops only for decisions the user owns.
 
 ## Step 0: Gate
 
-The prefill's latest review verdict is `ship`. Fetch it; no implementer spawns
-on an unreviewed or revise-verdict prefill. In the fast lane there is no
+The prefill's one review round is complete and the planner's fix pass has been
+read back against the annotations (the orchestrate gates). Fetch the review;
+no implementer spawns on an unreviewed prefill or before the fix pass is read
+back. A finding the reviewer placed under "resolvable only by" the implementer
+goes into the brief as a binding what-to-test entry. In the fast lane there is no
 prefill: the ticket carries the lane determination with its reason (the
 orchestrate skill's lane section), and the ticket's numbered requirements are
-the what-to-test list. Create the implementer's worktree on the ticket's
+the what-to-test list. Create the implementer's isolated checkout of the ticket's
 branch at the current tip; record the tip.
 
 ## Step 1: Spawn the implementer (background)
 
-One implementer, the whole ticket, one worktree, one commit. The brief opens
+One implementer, the whole ticket, one checkout, one commit. The brief opens
 with this block verbatim:
 
 ```
-EXECUTION DIRECTIVE. Ticket <id>; prefill <plan id, or "none: fast lane, the ticket's numbered requirements are the what-to-test list and the research findings are the touch points">; worktree <absolute path> on <branch> at <tip>.
-Before your first write, confirm the worktree is at that tip and carries no other lane's work.
+EXECUTION DIRECTIVE. Ticket <id>; prefill <plan id, or "none: fast lane, the ticket's numbered requirements are the what-to-test list and the research findings are the touch points">; checkout <absolute path> on <branch> at <tip>.
+Before your first write, confirm the checkout is at that tip and carries no other lane's work.
 Build every numbered requirement. For every what-to-test entry: the test, red on the tree before your change, the change, green after, both pasted. Seams run both real sides on the harness the prefill names. Corpus checks over the touched shapes, hits read. Comments and docs the change made wrong are part of the change.
 Where the prefill is silent, decide as a senior engineer on this codebase would and record the choice as a finding. Stop only for a decision the user owns: removing scope, a wire shape, a destructive operation, a security posture.
-Tests run against spawned services on picked ports with an isolated home; the operator's services and stores are never touched. Never delete or skip a test to get green. Never -count flags, never a private build cache, never a git identity change, never --no-verify.
+Tests run against spawned services on picked ports with an isolated home; the operator's services and stores are never touched. Never delete or skip a test to get green. Never a flag that forces cached tests to re-run, never a private build cache, never a git identity change, never a commit-hook bypass.
 One commit on <branch>; do not push, rebase or merge. Report what is NOT done first, then the commit, the test table with red and green output, the seams, the checks, and the choices you made.
 ```
 
@@ -66,7 +69,7 @@ Agent(subagent_type: "code-reviewer",
 ## Step 4: Route the verdict
 
 - `ship` → land the branch per /orchestrate (rebase, gates, fast-forward,
-  push, confirm the remote, then remove the worktree), reindex, and move the
+  push, confirm the remote, then remove the checkout), reindex, and move the
   ticket to the live confirmation.
 - `revise` → the same implementer, once, with the findings attached (it owns
   the bug it shipped); then a fresh code reviewer.

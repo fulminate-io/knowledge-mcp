@@ -104,7 +104,7 @@ func handleClientRebuildSegments(ctx context.Context, deps ClientDeps, a manageA
 		// Gate on HasRebuildableSegments — the client mirror of the SAME Embeddable()
 		// predicate the server's segment_rebuild scan uses — so the client gate and
 		// the server scan cannot drift. It admits the embeddable builtins (code,
-		// knowledge, cloud, cicd, practice, checks) AND the raw graphs web and pdf,
+		// knowledge, code, practice, checks) AND the raw graphs web and pdf,
 		// whose collected chunks carry vectors and BM25 documents, and still rejects
 		// linkage and logs, which have no segments to rebuild. Raw
 		// graphs becoming rebuildable is deliberate: an operator whose collected

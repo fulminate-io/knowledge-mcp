@@ -74,20 +74,29 @@ func TestGraphCountRow_ReportsTheReadFailureRatherThanEmptiness(t *testing.T) {
 	}
 	ctx := context.Background()
 
+	// THE PRACTICE ROWS DRIVE graphCountRowFor, the caller-built-target entry
+	// point, because that is what the legacy practice enumeration uses. A derived
+	// practice target carries NO instance field — practice is a singleton — so
+	// every row here would address the same graph and this fixture's per-name
+	// counts would never be reached.
+	row := func(name string) string {
+		return graphCountRowFor(ctx, fake, name, practiceReadTarget(name))
+	}
+
 	// UNREADABLE: names the graph, carries the error, and reports NO count.
-	unreadable := graphCountRow(ctx, fake, "practice", "phantom")
+	unreadable := row("phantom")
 	assert.Contains(t, unreadable, "phantom", "the row names the graph")
 	assert.Contains(t, unreadable, "not_found", "the row carries the error text a reader must act on")
 	assert.NotContains(t, unreadable, "0 nodes",
 		"an unmeasured value must NEVER be rendered as a measurement — this exact row inverted a live diagnosis")
 
 	// READABLE: still reports its counts.
-	readable := graphCountRow(ctx, fake, "practice", "readable")
+	readable := row("readable")
 	assert.Contains(t, readable, "12 nodes", "a readable graph still reports its node count")
 	assert.Contains(t, readable, "34 edges", "a readable graph still reports its edge count")
 
 	// EMPTY: still renders as the MEASUREMENT it is...
-	empty := graphCountRow(ctx, fake, "practice", "empty")
+	empty := row("empty")
 	assert.Contains(t, empty, "0 nodes",
 		"a genuinely empty graph is a measured zero and must still render as one")
 	assert.NotContains(t, empty, "not_found",

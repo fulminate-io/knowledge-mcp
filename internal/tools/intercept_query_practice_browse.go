@@ -19,10 +19,8 @@ package tools
 import (
 	"context"
 	"fmt"
-	"runtime"
 	"sort"
 	"strings"
-	"sync"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
@@ -59,9 +57,9 @@ const practiceRebuildHint = `manage({"operation":"rebuild_segments","graph":"pra
 // singular type filter, the plural types filter, the status filter and the meta
 // predicates, paged by the caller's limit/offset.
 //
-// It mirrors resourceBrowse (intercept_query_cloud_cicd.go:253) — Selection +
-// Limit/Offset + Execute + decode + render — keyed on Language instead of
-// Account, with four deliberate differences:
+// It mirrors the per-account resource browse that the retired inventory families
+// carried — Selection + Limit/Offset + Execute + decode + render — keyed on
+// Language instead of Account, with four deliberate differences:
 //
 //   - NodeType/NodeTypes ride the caller's filter rather than a pinned kind:
 //     practice graphs hold four node types (pattern / use_case / example /
@@ -83,10 +81,20 @@ func practiceBrowse(ctx context.Context, exec engine.ExecuteFn, a queryArgs) kgt
 	}
 	offset := int(a.Offset)
 
+	// THE HUB NARROWING RIDES THE PREDICATES THIS ARM ALREADY LOWERED. `source`
+	// is folded into the caller's meta map before the lowering, so a hub-scoped
+	// browse is one metadata predicate more and not a second mechanism — and
+	// LowerMetaPredicates keeps its "*" presence sentinel, so source:"*" asks
+	// "every node that has a hub at all".
+	meta, merr := practiceMetaWithHub(a.Meta, a.Source)
+	if merr != nil {
+		return errorResult("practice browse: " + merr.Error())
+	}
+
 	sel := &knowledgev1.Selection{
 		NodeType:           a.Type,
 		NodeTypes:          a.Types,
-		MetadataPredicates: engine.LowerMetaPredicates(a.Meta),
+		MetadataPredicates: engine.LowerMetaPredicates(meta),
 	}
 	if a.Status != "" {
 		sel.Statuses = []string{a.Status}
@@ -98,7 +106,7 @@ func practiceBrowse(ctx context.Context, exec engine.ExecuteFn, a queryArgs) kgt
 			Offset:            int32(offset),
 			IncludeTombstones: a.IncludeTombstones,
 		}},
-		Target: graphsel.GraphSelectorFor(kgtypes.GraphPractice, a.Language, false),
+		Target: practiceReadTarget(a.Language),
 	})
 	if err != nil {
 		return errorResult("practice browse failed: " + err.Error())
@@ -109,7 +117,7 @@ func practiceBrowse(ctx context.Context, exec engine.ExecuteFn, a queryArgs) kgt
 		Offset:   offset,
 		Format:   a.Format,
 		Fields:   a.Fields,
-		MetaKeys: sortedMetaKeys(a.Meta),
+		MetaKeys: sortedMetaKeys(meta),
 		// This arm ROUTES the opt-in into its own plan above, so it carries the
 		// caller's value through to the projection gate too. Passing false here
 		// would refuse tombstoned_at on a read that genuinely returns tombstoned
@@ -123,7 +131,18 @@ func practiceBrowse(ctx context.Context, exec engine.ExecuteFn, a queryArgs) kgt
 	// passes through engine.Render — the single place every COMPILED tool's
 	// response picks up the notice. Without this call a browse the server row
 	// ceiling clamped renders as a complete-looking list with rows missing.
-	return engine.WithTruncationNotice(res, resp)
+	res = engine.WithTruncationNotice(res, resp)
+
+	// REQUIREMENT 5'S MARKER, IN PROSE. The render header already says which
+	// corpus answered — a legacy read renders `practice:<language>` — but a header
+	// says WHICH graph without saying that the graph is a legacy one, and a caller
+	// reading rows that look normal has no reason to look at the qualifier. On the
+	// json path the header carries it and the body is a machine payload, so the
+	// sentence is appended on the text path only.
+	if a.Language != "" && a.Format != "json" {
+		res = appendNotice(res, practiceLegacyNotice(a.Language))
+	}
+	return res
 }
 
 // sortedMetaKeys returns the meta filter keys in a stable order, so the inline
@@ -150,7 +169,7 @@ func sortedMetaKeys(meta map[string]string) []string {
 // arms are unaffected.
 func practiceStatsResult(ctx context.Context, gc statsRPC, a queryArgs) kgtools.ToolResult {
 	resp, err := gc.Stats(ctx, &knowledgev1.StatsRequest{
-		Target: &knowledgev1.GraphSelector{Graph: "practice", Language: a.Language},
+		Target: practiceReadTarget(a.Language),
 	})
 	if err != nil {
 		return errorResult(fmt.Sprintf("practice %q graph stats failed: %s", a.Language, err.Error()))
@@ -192,7 +211,7 @@ func fetchPracticeSamples(ctx context.Context, exec engine.ExecuteFn, language s
 				Limit:     2,
 				SkipTotal: true,
 			}},
-			Target: &knowledgev1.GraphSelector{Graph: "practice", Language: language},
+			Target: practiceReadTarget(language),
 		})
 		if err != nil {
 			continue
@@ -324,56 +343,6 @@ func practiceZeroHitNotice(ctx context.Context, deps ClientDeps, language string
 	return strings.TrimSpace(notice + " " + degrade), false
 }
 
-// practiceFanOutProbe searches ONE graph for the fan-out and classifies the
-// outcome into the three states the caller buckets on: matched (results), could
-// not be searched (err), or searched-but-has-no-ranked-index (gapped).
-//
-// THE GAP PROBE RUNS ONLY ON A ZERO-HIT GRAPH, and it runs HERE — inside the
-// caller's bounded worker pool — rather than serially afterwards. A graph that
-// matched is never probed, so a healthy fan-out pays nothing; only the graphs that
-// returned nothing cost one Stats read each, which is exactly the set whose
-// emptiness needs explaining.
-func practiceFanOutProbe(
-	ctx context.Context, deps ClientDeps, mgr SegmentSearcher, gc GraphCaller,
-	language, query string, queryVec []byte, k int,
-) (results []engine.SearchResult, err error, gapped bool) {
-	results, err = practiceSearchOneGraph(ctx, mgr, gc, language, query, queryVec, k)
-	if err != nil || len(results) > 0 {
-		return results, err, false
-	}
-	_, gapped = practiceSegmentGapNotice(ctx, deps, language)
-	return results, nil, gapped
-}
-
-// practiceFanOutGapNotice consults practiceSegmentGapNotice for every enumerated
-// graph and joins the LOUD ones into a single message. It runs the per-graph
-// checks under the same NumCPU-bounded pool shape the fan-out search itself uses,
-// so a many-graph corpus does not serialize the probe.
-func practiceFanOutGapNotice(ctx context.Context, deps ClientDeps, names []string) string {
-	var (
-		mu    sync.Mutex
-		loud  []string
-		wg    sync.WaitGroup
-		guard = make(chan struct{}, max(1, runtime.NumCPU()))
-	)
-	for _, name := range names {
-		wg.Add(1)
-		go func(language string) {
-			defer wg.Done()
-			guard <- struct{}{}
-			defer func() { <-guard }()
-			if notice, isLoud := practiceSegmentGapNotice(ctx, deps, language); isLoud {
-				mu.Lock()
-				loud = append(loud, notice)
-				mu.Unlock()
-			}
-		}(name)
-	}
-	wg.Wait()
-	sort.Strings(loud)
-	return strings.Join(loud, "\n")
-}
-
 // appendNotice appends a caveat paragraph to an already-rendered text result, so
 // a non-loud zero still carries the reason it could not be qualified.
 func appendNotice(res kgtools.ToolResult, notice string) kgtools.ToolResult {
@@ -382,86 +351,4 @@ func appendNotice(res kgtools.ToolResult, notice string) kgtools.ToolResult {
 	}
 	res.Content[0].Text += "\n\n" + notice
 	return res
-}
-
-// practiceFanOutPartialLine names the graphs a partial fan-out could not draw
-// results from, or "" when every graph was genuinely searched. It reports the two
-// causes SEPARATELY because they need different actions from the reader: a failed
-// graph is a fault to investigate, while an un-indexed one has a known remedy.
-//
-// WHY IT IS NOT OPTIONAL. The fan-out header claims "Searched N practice graphs"
-// and names them. Without this line that sentence is false whenever any graph
-// lacked an index — and since the fan-out is the primary way the corpus is read,
-// the failure mode is a confident cross-graph ranking that quietly omits whole
-// corpora. MEASURED: a header naming eight graphs while three had zero segments,
-// which made the results look comprehensive and near-random at the same time.
-func practiceFanOutPartialLine(failed, unindexed []string) string {
-	var parts []string
-	if len(failed) > 0 {
-		parts = append(parts, "could not be searched: "+strings.Join(failed, "; "))
-	}
-	if len(unindexed) > 0 {
-		parts = append(parts, "have no ranked index yet, so they contributed nothing: "+
-			strings.Join(unindexed, ", ")+
-			" (rebuild each with "+fmt.Sprintf(practiceRebuildHint, "<graph>")+")")
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return "_Incomplete result set — these practice graphs " + strings.Join(parts, "; and these ") + "._"
-}
-
-// practiceFanOutZeroResult qualifies an EMPTY fan-out merge, returning done=false
-// when the zero needs no annotation and the caller should render it as usual.
-//
-// ORDER IS THE BEHAVIOUR: a FAILURE outranks a segment gap, because "no matches"
-// is a lie when the search did not run, and only once every graph was searched
-// successfully is the per-graph gap check meaningful.
-//
-// embErr is the fan-out's single embed failure, disclosed on the zero exactly as
-// its sibling composer discloses it — one failed embed degraded every graph here,
-// so an empty cross-graph result set must say the semantic arm never ran.
-func practiceFanOutZeroResult(
-	ctx context.Context, deps ClientDeps, names, failed []string, embErr error,
-) (kgtools.ToolResult, bool) {
-	if len(failed) > 0 {
-		return errorResult("practice fan-out: no results, and these graphs could not be searched — " +
-			strings.Join(failed, "; ")), true
-	}
-	notice := practiceFanOutGapNotice(ctx, deps, names)
-	if notice != "" {
-		return errorResult(notice), true
-	}
-	if embErr != nil {
-		return errorResult(fmt.Sprintf(
-			"practice fan-out: no results, and the semantic arm did not run: %s; "+
-				"this search was BM25-only across every practice graph.", embErr.Error())), true
-	}
-	return kgtools.ToolResult{}, false
-}
-
-// practiceGraphResult is one graph's hydrated slice of a fan-out, carried from
-// the per-graph goroutine to the merge.
-type practiceGraphResult struct {
-	graph   string
-	results []engine.SearchResult
-}
-
-// mergePracticeFanOutHits tags every per-graph result with its source graph,
-// sorts the union by score descending and caps it at the caller's resolved limit
-// (mirrors mergeMultiRepoResults). The cap is applied HERE as well as at each
-// per-graph Search: without it a caller asking for 25 would get 25 per graph and
-// then silently the default back.
-func mergePracticeFanOutHits(all []practiceGraphResult, k int) []engine.PracticeFanOutHit {
-	merged := make([]engine.PracticeFanOutHit, 0)
-	for _, gr := range all {
-		for _, r := range gr.results {
-			merged = append(merged, engine.PracticeFanOutHit{Graph: gr.graph, Result: r})
-		}
-	}
-	sort.Slice(merged, func(i, j int) bool { return merged[i].Result.Score > merged[j].Result.Score })
-	if len(merged) > k {
-		merged = merged[:k]
-	}
-	return merged
 }

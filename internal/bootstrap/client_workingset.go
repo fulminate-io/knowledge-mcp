@@ -111,10 +111,10 @@ func (c *client) SegmentStalledSince(gt kgtypes.GraphType, name string) int64 {
 //
 // THE SINK IS THE RIGHT SITE because CollectResult carries GraphType and
 // GraphName: the COLLECTOR'S OWN authored identity for the graph it produced,
-// correct for code, cloud, cicd, web, pdf, logs, practice and every registered
+// correct for code, web, pdf, practice and every registered
 // custom type, with no per-type mapping. Deriving the name at the collect
 // intercept instead would be code-only by construction — it yields "" for every
-// non-code collector — so a cloud or cicd collect would silently never admit its
+// non-code collector — so a web or pdf collect would silently never admit its
 // own graph and would then never be enriched.
 type admittingSink struct {
 	inner collector.Sink

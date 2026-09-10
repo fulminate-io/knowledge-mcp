@@ -46,7 +46,7 @@ func TestSegmentBearingGraphs_IsTheWorkingSet(t *testing.T) {
 	// walk that still enumerated would find these and return them, so their absence
 	// below is a claim about the mechanism, not about an empty backend.
 	eng.namesByType[string(kgtypes.GraphCode)] = []string{"enumeratedRepo"}
-	eng.namesByType[string(kgtypes.GraphCloud)] = []string{"enumeratedAcct"}
+	eng.namesByType[string(kgtypes.GraphPractice)] = []string{"enumeratedLang"}
 
 	c.workingSet = workingset.New() // interacted with nothing yet.
 

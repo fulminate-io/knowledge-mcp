@@ -1,0 +1,23 @@
+# Ticket: t-with-style
+
+**Status:** open
+
+style desc
+
+ID: <ID>
+
+## Patterns
+
+**No patterns reason:** fixture
+
+## Language patterns
+
+- <ID> — severity=warning — Functions do not use naked returns.
+- <ID> — lang-pattern-fixture
+
+```
+defer $DB.Close()
+```
+
+**Style rules are REFERENCES, not hydrated.** Read them in ONE bulk call — `query(graph:"practice", ids:["<ID>"])` — never one call per rule, which is what hits the tool's response limits.
+461 rendered bytes.

@@ -103,6 +103,11 @@ var queryModeDispositions = []modeDisposition{
 	{mode: "file_symbols", args: map[string]any{"graph": "knowledge", "mode": "file_symbols"},
 		kind: dispositionClaimed, marker: "file_path"},
 	{mode: "modules", args: map[string]any{"graph": "knowledge", "mode": "modules"}, kind: dispositionEngineReducible},
+	// style_index is the practice-only compact style-rule index (S1). It is a
+	// client-claimed arm: one drained hub browse, a client-side scope filter, and
+	// a render whose zero-row body is its own declared line, which is the marker.
+	{mode: "style_index", args: map[string]any{"graph": "practice", "mode": "style_index", "source": "hub-1"},
+		kind: dispositionClaimed, marker: "No style rules match."},
 	{mode: "personality", args: map[string]any{"graph": "knowledge", "mode": "personality"}, kind: dispositionClaimed},
 	{mode: "influence", args: map[string]any{"graph": "knowledge", "mode": "influence"}, kind: dispositionClaimed},
 	{mode: "tensions", args: map[string]any{"graph": "knowledge", "mode": "tensions"}, kind: dispositionClaimed},
@@ -123,8 +128,6 @@ var queryModeDispositions = []modeDisposition{
 	{mode: "correlations", args: map[string]any{"graph": "knowledge", "mode": "correlations"}, kind: dispositionClaimed},
 	{mode: "explain", args: map[string]any{"graph": "knowledge", "mode": "explain"},
 		kind: dispositionClaimed, marker: "requires id="},
-	{mode: "resolver", args: map[string]any{"graph": "knowledge", "mode": "resolver"},
-		kind: dispositionStructuredRejection, marker: `requires graph="logs"`},
 	{mode: "lineage", args: map[string]any{"graph": "knowledge", "mode": "lineage", "id": "n1"}, kind: dispositionClaimed},
 	{mode: "evidence", args: map[string]any{"graph": "knowledge", "mode": "evidence", "id": "n1"}, kind: dispositionClaimed},
 	{mode: "plan_tree", args: map[string]any{"graph": "knowledge", "mode": "plan_tree", "id": "n1"}, kind: dispositionClaimed},

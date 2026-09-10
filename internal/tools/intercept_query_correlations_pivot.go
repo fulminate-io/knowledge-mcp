@@ -14,13 +14,16 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/paging"
+	"github.com/fulminate-io/knowledge-mcp/internal/workingset"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 )
 
 // intercept_query_correlations_pivot.go is the client-side claim for the
-// composite query modes correlations + pivot on NON-logs graphs (logs is owned
-// by InterceptLogsQuery earlier in the chain). Ports the server
+// composite query modes correlations + pivot. It used to decline a graph=logs
+// call so an earlier chain step could own it; that step and the logs family are
+// gone, and a retired name now reaches the retired-graph-type gate rather than
+// this arm. Ports the server
 // handleGenericCorrelations (tools_query_correlations.go) and handleGenericPivot
 // (tools_query_pivot.go) recipes over generic Execute primitives.
 //
@@ -42,8 +45,8 @@ import (
 // edges arm only on a POSITIVE plan Limit — limit=0 still means UNLIMITED
 // (cmd/knowledge-server/internal/bootstrap/engine_edges.go
 // collectEdgesForReturnMode), which is what keeps every pre-existing whole-graph
-// edge reader — topology's full-graph load, tools_logs_wire_fetch_edges.go
-// fetchAllLogEdges — working across a rolling deploy.
+// edge reader — topology's full-graph load among them — working across a
+// rolling deploy.
 //
 // PER-MODE BOUNDEDNESS VERDICTS for the whole non-logs composite family, recorded
 // here so the sibling sweep is complete in one place:
@@ -79,9 +82,6 @@ func InterceptQueryCorrelationsPivot(ctx context.Context, deps ClientDeps, param
 	var a queryArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
 		return false, kgtools.ToolResult{}
-	}
-	if a.Graph == "logs" {
-		return false, kgtools.ToolResult{} // logs owned by InterceptLogsQuery.
 	}
 	if a.Mode != "correlations" && a.Mode != "pivot" {
 		return false, kgtools.ToolResult{}
@@ -312,7 +312,7 @@ func correlationEndpoint(id string, nameByID map[string]*knowledgev1.Node) (stri
 }
 
 // composePivot validates rows/cols, folds the candidate node set into the matrix
-// one page at a time, and renders. Port of handleGenericPivot.
+// one page at a time, and renders. Port of the retired server-side pivot recipe.
 func composePivot(ctx context.Context, deps ClientDeps, a queryArgs) kgtools.ToolResult {
 	if a.Rows == "" || a.Cols == "" {
 		return errorResult("pivot requires rows and cols when graph is not logs")
@@ -412,8 +412,19 @@ func pivotSeedSearchClient(ctx context.Context, deps ClientDeps, a queryArgs) ([
 }
 
 // pivotEngineKey resolves the (graph type, instance name) the segment engine keys
-// the pivot seed search on: knowledge→default, code→repo, cloud/cicd→account,
-// practice→language, everything else→name.
+// the pivot seed search on: code→repo, the SINGLETON
+// families→"default", everything else→name. A practice read carrying the legacy
+// `language` keys on the pre-singleton graph it names.
+//
+// THE SINGLETON ARM IS workingset.CanonicalInstanceName RATHER THAN A KNOWLEDGE
+// SPECIAL CASE, and the difference is a live one. It used to hard-code
+// knowledge→"default" and fall through to a.Name for every other family with no
+// instance field, which returned the EMPTY STRING for an unselected read of one
+// — a key the collector seals nothing under, so the seed search addressed a
+// graph that does not exist and found nothing to say so. Knowledge was the only
+// singleton reachable here when that was written; practice is one now, and
+// deriving the name from the same normalizer the collector uses is what stops
+// the next singleton finding out the same way.
 func pivotEngineKey(a queryArgs) (kgtypes.GraphType, string) {
 	gt := kgtypes.GraphType(a.Graph)
 	if a.Graph == "" {
@@ -422,21 +433,27 @@ func pivotEngineKey(a queryArgs) (kgtypes.GraphType, string) {
 	switch graphsel.InstanceField(gt) {
 	case graphsel.FieldRepo:
 		return gt, a.Repo
-	case graphsel.FieldAccount:
-		return gt, a.Account
 	default:
-		if gt == kgtypes.GraphKnowledge {
-			return gt, knowledgeDefaultName
-		}
+		// The LEGACY practice selector, which names a pre-singleton graph and is
+		// therefore an instance name even though the family declares no instance
+		// field. It is read before the normalizer for exactly that reason.
 		if a.Language != "" {
 			return gt, a.Language
 		}
-		return gt, a.Name
+		return gt, workingset.CanonicalInstanceName(gt, a.Name)
 	}
 }
 
 // pivotHydrateSelector builds the hydrate routing envelope for the pivot seed
 // search, mirroring pivotEngineKey's per-graph instance key.
+//
+// IT USED TO COPY a.Account INTO THE SELECTOR, and that was the defect: it was
+// the only composer in the package that set the field, and hydrateSelectorInstance
+// read it ahead of Name — so a pivot or correlations read carrying the (accepted
+// and ignored) `account` tool param stamped GraphInstance="<that value>" on every
+// hydrated row, in place of the instance the read actually came from. The field
+// is gone from hydrateSelector entirely; pivotEngineKey, which this mirrors, never
+// had an account arm to mirror.
 func pivotHydrateSelector(a queryArgs) hydrateSelector {
 	graph := a.Graph
 	if graph == "" {
@@ -445,7 +462,6 @@ func pivotHydrateSelector(a queryArgs) hydrateSelector {
 	return hydrateSelector{
 		Graph:    graph,
 		Repo:     a.Repo,
-		Account:  a.Account,
 		Name:     a.Name,
 		Language: a.Language,
 	}
@@ -460,27 +476,5 @@ func domainTarget(a queryArgs) *knowledgev1.GraphSelector {
 		Account:  a.Account,
 		Name:     a.Name,
 		Language: a.Language,
-	}
-}
-
-// domainGraphLabel returns a human label for the target graph used in the
-// composite-mode headers, mirroring the server's per-graph label.
-func domainGraphLabel(a queryArgs) string {
-	switch a.Graph {
-	case "", "knowledge":
-		return "knowledge"
-	case "cloud", "cicd", "practice", "linkage", "code":
-		if a.Account != "" {
-			return a.Graph + ":" + a.Account
-		}
-		if a.Repo != "" {
-			return a.Graph + ":" + a.Repo
-		}
-		if a.Language != "" {
-			return a.Graph + ":" + a.Language
-		}
-		return a.Graph
-	default:
-		return a.Graph
 	}
 }

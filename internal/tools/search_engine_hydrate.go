@@ -16,10 +16,17 @@ import (
 // hydrateSelector is the graph-routing envelope a client-engine search hydrates
 // against: the same fields buildTarget consumes, so the bulk ids[] read lands on
 // the right graph (knowledge default / code repo / practice language / ...).
+//
+// THERE IS NO Account FIELD, and its removal closed a measured defect rather than
+// trimming an unused member. It sat in the instance-precedence chain below AHEAD
+// of Name, and exactly one composer ever set it — pivotHydrateSelector, which
+// copied the caller's `account` tool param straight in. Since the account-keyed
+// families retired, that param is accepted and ignored by owner ruling, so the
+// only thing the field could still do was stamp a caller-supplied string as the
+// GraphInstance of rows that came from somewhere else.
 type hydrateSelector struct {
 	Graph    string
 	Repo     string
-	Account  string
 	Name     string
 	Language string
 	Branch   string
@@ -61,7 +68,6 @@ func hydrateEngineHits(
 		"ids":      ids,
 		"graph":    sel.Graph,
 		"repo":     sel.Repo,
-		"account":  sel.Account,
 		"name":     sel.Name,
 		"language": sel.Language,
 		"branch":   sel.Branch,
@@ -93,7 +99,7 @@ func hydrateEngineHits(
 	// The source-graph identity is the SAME for every hit in this
 	// hydrate call — they were all ranked against ONE selector — so it is derived
 	// once from the selector and stamped on each row. graph + instance feed the
-	// graph-UI's per-result traverse. Covers knowledge-search / cloud / cicd /
+	// graph-UI's per-result traverse. Covers knowledge-search /
 	// practice-single / practice-fanout (one hydrate call PER language, so each
 	// call's instance is that language) / registered / similar — every funnel that
 	// reaches hydrateEngineHits.
@@ -122,16 +128,18 @@ func hydrateEngineHits(
 
 // hydrateSelectorInstance picks the per-result instance string from the
 // hydrateSelector: the field a buildTarget consumes for this graph family — Repo
-// for code, Account for cloud/cicd, Name for logs/registered, Language for
+// for code, Name for a registered custom family, Language for
 // practice. The knowledge default has no instance (empty). When more than one is
-// set (defensive — the composers set exactly one) the code→cloud/cicd→name→
+// set (defensive — the composers set exactly one) the code→name→
 // language precedence mirrors the selector-routing order.
+//
+// AN Account ARM SAT BETWEEN Repo AND Name and is gone with the field. It
+// out-ranked Name, so a read that legitimately named its instance had that name
+// overwritten by an `account` the product no longer keys anything on.
 func hydrateSelectorInstance(sel hydrateSelector) string {
 	switch {
 	case sel.Repo != "":
 		return sel.Repo
-	case sel.Account != "":
-		return sel.Account
 	case sel.Name != "":
 		return sel.Name
 	case sel.Language != "":

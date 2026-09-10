@@ -37,7 +37,8 @@ func TestCollectCoverageRows_JSONShape(t *testing.T) {
 		coveredByKey:  map[string]int{"knowledge": 0, "code/myrepo": 6, "practice/go": 0},
 		residentByKey: map[string]int{"knowledge": 0, "code/myrepo": 2, "practice/go": 0},
 	}
-	rows := collectCoverageRows(context.Background(), &coverageDeps{gc: fake, segCov: seg})
+	rows, rowsErr := collectCoverageRows(context.Background(), &coverageDeps{gc: fake, segCov: seg})
+	require.NoError(t, rowsErr)
 	require.NotEmpty(t, rows)
 
 	raw, err := json.Marshal(rows)
@@ -139,7 +140,7 @@ func TestRenderLLMCoverage_Table(t *testing.T) {
 	// lever-3 surface: a NON-code embeddable builtin (practice/go) renders a REAL
 	// segment-coverage cell — zero coverage shown as real numbers, not "—" or an
 	// omitted row. segCoveredFor gates on HasRebuildableSegments, so
-	// practice/cloud/cicd report coverage.
+	// practice reports coverage.
 	//
 	// This asserts the WHOLE ROW rather than the cell alone, and that is load-bearing
 	// now that the embedded count lives only in its own column: the cell for a

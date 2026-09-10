@@ -187,6 +187,12 @@ def check_sample(doc, bad):
         print("%s: sampled %s of %s" % (lang, entry.get("sampled"), entry.get("total")))
 
 
+def load(path):
+    """Read one JSON artifact, closing the handle behind it."""
+    with open(path) as fh:
+        return json.load(fh)
+
+
 def main():
     if len(sys.argv) < 3:
         print(__doc__)
@@ -197,16 +203,16 @@ def main():
         if len(sys.argv) != 4:
             print(__doc__)
             return 2
-        check_r2t(json.load(open(sys.argv[2])), json.load(open(sys.argv[3])), bad)
+        check_r2t(load(sys.argv[2]), load(sys.argv[3]), bad)
     elif len(sys.argv) != 3:
         print(__doc__)
         return 2
     elif mode == "conformance":
-        check_conformance(json.load(open(sys.argv[2])), bad)
+        check_conformance(load(sys.argv[2]), bad)
     elif mode == "pins":
-        check_pins(json.load(open(sys.argv[2])), bad)
+        check_pins(load(sys.argv[2]), bad)
     elif mode == "sample":
-        check_sample(json.load(open(sys.argv[2])), bad)
+        check_sample(load(sys.argv[2]), bad)
     else:
         print("unknown mode %r" % mode)
         return 2

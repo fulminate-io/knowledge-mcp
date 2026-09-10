@@ -292,6 +292,13 @@ var goDeclKindConsumerCensus = []declKindConsumerRow{
 		Reason:      "Same as the schema: the kinds appear only as examples in help text, with no filter behind them.",
 	},
 	{
+		Path:        "internal/tools/help_content_ast_reference.go",
+		Disposition: dispositionExcluded,
+		Reason: "The second half of the SAME help topic, split out when the topic outgrew the file-size " +
+			"threshold, so it inherits the row above verbatim: the kind appears once as an example in a " +
+			"worked call, with no filter behind it. The split is why there are two rows for one topic.",
+	},
+	{
 		Path:        "internal/ast/where_json.go",
 		Disposition: dispositionExcluded,
 		Reason: "The kind appears once inside a doc comment illustrating a malformed where-leaf. The " +

@@ -85,8 +85,8 @@ func TestLinkDockerfiles_EmitsBuildsEdge(t *testing.T) {
 	}
 	// Both endpoints are code-graph nodes, so the crossgraph composer materializes
 	// their deterministic code proxies as the linkage edge endpoints.
-	gc.seedNode("code", dfNode)
-	gc.seedNode("code", srcNode)
+	gc.seedCodeNode(dfNode)
+	gc.seedCodeNode(srcNode)
 
 	n, err := LinkDockerfiles(context.Background(), gc, LinkOptions{})
 	require.NoError(t, err)

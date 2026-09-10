@@ -6,7 +6,7 @@ user-invocable: false
 
 # RUN-A-SMOKE-TEST — exercising the running system the way a caller does
 
-<!-- version: 1 -->
+<!-- version: 2 -->
 <!-- Read at: any live-behavior claim (implementer), before offering retro
      (orchestrator), and test review. Catches the defect classes invisible in a
      green build — silent acceptance, proxy divergence, lifecycle windows. -->
@@ -46,6 +46,12 @@ state the check in the result.
 **Adversarial controls:** for any check passing on a zero, an absence, or an
 equality — inject the failure, observe red, revert, observe green. A check
 never seen red has unknown discriminating power, including the battery itself.
+A control for an absence verdict is a property only a populated result can
+carry, never a token the request itself contributes or the empty render
+echoes: a query's own type name appears in "no <type> nodes" exactly as it
+appears in a hit, so matching it proves nothing. Read the result in a shape
+whose emptiness is explicit (a parsed envelope with an empty list), and treat
+an error, a refusal, or an empty body as UNCONFIRMED, never as absence.
 
 **Baseline-vs-treatment asymmetry is the signal:** run the same probe through
 two paths that SHOULD behave alike and compare. A fresh-create completing in

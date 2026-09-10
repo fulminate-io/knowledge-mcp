@@ -163,8 +163,8 @@ func repairEdgesSelector(t repairEdgesTarget) *knowledgev1.GraphSelector {
 // edges, find no fossils, and print "Repair COMPLETE" over a still-contaminated
 // overlay: the same false green this capability exists to kill, by another route.
 // Giving FetchEdges a branch would change a signature 24 callers share, so the
-// scoped read lives here instead — the same shape fetchAllLogEdges
-// (tools_logs_wire_fetch_edges.go) already uses for the same reason.
+// scoped read lives here instead, which is the same shape every other
+// selector-scoped edge drain in this package uses for the same reason.
 //
 // THE READ SHAPE IS UNCHANGED from what FetchEdges issued: the same
 // paging.DrainPivotEdges drain, the same EdgePivotPageSize page size, the same

@@ -44,7 +44,7 @@ func TestInterceptAddCriterion_StepIDMustBeRollupContainer(t *testing.T) {
 
 	t.Run("non-container is refused", func(t *testing.T) {
 		gc := gcWithTypedTarget(kgtypes.NodeFinding)
-		handled, res := InterceptAddCriterion(opCtx(), &logE2EDeps{gc: gc}, kgtools.CallToolParams{
+		handled, res := InterceptAddCriterion(opCtx(), &graphCallerDeps{gc: gc}, kgtools.CallToolParams{
 			Name: "mutate", Arguments: payload(t),
 		})
 		require.True(t, handled)
@@ -67,7 +67,7 @@ func TestInterceptAddCriterion_StepIDMustBeRollupContainer(t *testing.T) {
 	t.Run("every container type is accepted", func(t *testing.T) {
 		for _, ct := range clientRollupContainerTypes {
 			gc := gcWithTypedTarget(ct)
-			handled, res := InterceptAddCriterion(opCtx(), &logE2EDeps{gc: gc}, kgtools.CallToolParams{
+			handled, res := InterceptAddCriterion(opCtx(), &graphCallerDeps{gc: gc}, kgtools.CallToolParams{
 				Name: "mutate", Arguments: payload(t),
 			})
 			require.True(t, handled, "%s: the criterion create must be claimed", ct)

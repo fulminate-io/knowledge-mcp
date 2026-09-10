@@ -6,32 +6,39 @@
 // WHY IT EXISTS SEPARATELY FROM THE MCP TOOL. A plan criterion is a shell command
 // and reads an EXIT STATUS; an MCP tool result is text and has none. So the tool's
 // verdict line and this subcommand are two faces of ONE classification, never two
-// classifications — the exit status is computed by corpusscan.ClassifyRun, the
-// same fold the verdict line uses, and this file performs no classification of
-// its own. It does not re-read the title constants, it does not count severities,
-// and above all it does not parse the rendered verdict text: that would look like
-// reuse while coupling the exit code to a display format.
+// classifications.
+//
+// HOW THE ONE CLASSIFICATION IS KEPT ONE. This face does not run the scan and
+// does not classify: it asks the DAEMON to run manage_checks — the same tool an
+// MCP caller invokes, over the daemon's own login-aware graph caller — and maps
+// the machine-readable verdict TOKEN of that run onto an exit status. The token
+// is read through tools.ParseRunVerdict, which lives beside the renderer that
+// writes it, so the line's shape has one owner and this file re-derives nothing:
+// it does not read the title constants, it does not count severities, and it
+// does not interpret the counters or the body, which are display.
+//
+// WHY IT ROUTES RATHER THAN CONSTRUCTING A GRAPH CLIENT ITSELF. A client built
+// here would be aimed at the local file-backed knowledge-server with no Router,
+// so it could never read a cloud-backed checks corpus — and checks authored
+// through any MCP tool call live in exactly that plane. The daemon holds the
+// router, so asking it is what makes this face's answer the same corpus the
+// author wrote to. The cost is that the verb now NEEDS the daemon: an
+// unreachable one is refused by name, never answered from a local store.
 
 package bootstrap
 
 import (
-	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/tools"
 	"github.com/fulminate-io/knowledge-mcp/internal/topology/corpusscan"
-	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 )
 
 // The exit codes.
@@ -94,8 +101,14 @@ type checkRunFlags struct {
 	repo       string
 	language   string
 	pathPrefix string
-	port       int
-	ids        []string
+	// httpPort is the loopback port the `knowledge serve` daemon binds its MCP
+	// endpoint on — NOT the graph server's port. It is spelled the way
+	// `knowledge version` spells the same thing, and it is deliberately a
+	// DIFFERENT flag name from the graph-server --port this verb used to take:
+	// an invocation still naming the old flag is refused at parse time rather
+	// than speaking MCP at a Connect server and failing obscurely.
+	httpPort int
+	ids      []string
 	// includeTests is nil when the flag was not supplied. THE THREE STATES ARE
 	// NOT TWO: an omitted flag is legal for every language, while an explicit
 	// true OR false is refused for a language ast carries no test-file
@@ -104,32 +117,71 @@ type checkRunFlags struct {
 	// from "supplied as false", which is why this is a pointer and why it is set
 	// from fs.Visit rather than from comparing the value against its default.
 	includeTests *bool
+	// files is the FILE-LIST scope, one path per --files occurrence, nil when
+	// the caller named none. A file-list scope reachable from the MCP tool and
+	// not from this face would be a silent drop between two faces of one
+	// analyzer, which is the defect the parameter-accounting test exists to
+	// catch.
+	files []string
+	// compact selects the one-line-per-hit render. Nil when the flag was not
+	// supplied, which means "the default for this scope" — compact for a file
+	// list, full otherwise — and a plain bool could not tell that from an
+	// explicit false.
+	compact *bool
+}
+
+// repeatedPathFlag collects one repo-relative path per occurrence.
+//
+// A flag.Value RATHER THAN A SEPARATED LIST, for the same reason the arguments
+// travel as JSON: every separator a list flag could use is legal inside a path,
+// so splitting would silently turn one path the caller wrote into two that do
+// not exist. Repetition costs the caller a few characters and cannot lose a
+// path.
+type repeatedPathFlag struct{ values *[]string }
+
+// String renders the collected paths for flag's own usage output.
+func (r repeatedPathFlag) String() string {
+	if r.values == nil {
+		return ""
+	}
+	return strings.Join(*r.values, " ")
+}
+
+// Set appends one occurrence's value verbatim — never trimmed and never split.
+func (r repeatedPathFlag) Set(v string) error {
+	*r.values = append(*r.values, v)
+	return nil
 }
 
 // newCheckRunFlagSet registers every flag `knowledge check run` accepts against
-// f, returning the set and the pointer that records an explicitly-supplied
-// include-tests.
+// f, returning the set and the pointers that record the explicitly-supplied
+// tri-state flags.
 //
 // IT IS SEPARATE FROM THE PARSE so the registered set is READABLE without
 // running a command. The parameter-accounting test walks it to classify every
 // CLI input against the tool schema; a flag added here with no classification
 // there fails that test, which is the half a schema-only table cannot see.
-func newCheckRunFlagSet(f *checkRunFlags) (*flag.FlagSet, *bool) {
+func newCheckRunFlagSet(f *checkRunFlags) (*flag.FlagSet, *bool, *bool) {
 	fs := flag.NewFlagSet("check run", flag.ContinueOnError)
 	fs.StringVar(&f.repo, "repo", "", "code-graph name or absolute checkout path (required)")
 	fs.StringVar(&f.language, "language", "", "tree-sitter language slug selecting the checks corpus (required)")
 	fs.StringVar(&f.pathPrefix, "path-prefix", "", "repo-relative subtree to narrow the walk to")
-	fs.IntVar(&f.port, "port", graphclient.DefaultPort, "port the knowledge-server is listening on")
+	fs.Var(repeatedPathFlag{values: &f.files}, "files",
+		"a repo-relative path to scan, repeatable — the file list of a diff; mutually exclusive with --path-prefix, and every named path is scanned, disclosed by name, or refused by name")
+	fs.IntVar(&f.httpPort, "http-port", graphclient.DefaultMCPHTTPPort,
+		"loopback port the `knowledge serve` daemon binds its MCP endpoint (/mcp) on; the run is performed there, over the daemon's routed view of the checks corpus")
 	includeTests := fs.Bool("include-tests", false,
 		"walk this language's TEST files too (omitted walks non-test files only; an explicit value is refused for a language with no test-file convention)")
-	return fs, includeTests
+	compact := fs.Bool("compact", false,
+		"render one line per flagged site instead of the full finding body (defaults to on for --files and off otherwise)")
+	return fs, includeTests, compact
 }
 
 // parseCheckRunFlags parses the flag set, taking any positional arguments as
 // check ids.
 func parseCheckRunFlags(args []string) (checkRunFlags, error) {
 	var f checkRunFlags
-	fs, includeTests := newCheckRunFlagSet(&f)
+	fs, includeTests, compact := newCheckRunFlagSet(&f)
 	if err := fs.Parse(args); err != nil {
 		return checkRunFlags{}, err
 	}
@@ -137,8 +189,11 @@ func parseCheckRunFlags(args []string) (checkRunFlags, error) {
 	// one way to recover the omitted state: a value-compare against false would
 	// read an explicit --include-tests=false as an omission.
 	fs.Visit(func(fl *flag.Flag) {
-		if fl.Name == "include-tests" {
+		switch fl.Name {
+		case "include-tests":
 			f.includeTests = includeTests
+		case "compact":
+			f.compact = compact
 		}
 	})
 	f.ids = fs.Args()
@@ -151,109 +206,118 @@ func parseCheckRunFlags(args []string) (checkRunFlags, error) {
 	return f, nil
 }
 
-// runCheckRun executes the selected checks and returns the sentinel matching the
-// verdict.
+// runCheckRun asks the daemon to execute the selected checks and returns the
+// sentinel matching the verdict it answered with.
 func runCheckRun(args []string) error {
 	f, err := parseCheckRunFlags(args)
 	if err != nil {
 		return err
 	}
-	// The registered identifier carries an UNDERSCORE while the Go package does
-	// not, so it is resolved through the exported constant everywhere — a literal
-	// one character off is refused by the registry outright.
-	analyzer, ok := foundation.Get(corpusscan.AnalyzerName)
-	if !ok {
-		return fmt.Errorf("check run: analyzer %q is not registered, so no scan was performed — this is a build defect, not a clean corpus",
-			corpusscan.AnalyzerName)
-	}
+	// THE REPO IS RESOLVED ON THE CALLER'S SIDE and travels as an absolute path.
+	// The daemon resolves a BARE name against its own root or the machine-local
+	// manifest, never the shell's working directory, so a bare name sent onward
+	// would scan whichever checkout the daemon knows by that name rather than
+	// the tree the operator is standing in. Resolving here keeps this verb's
+	// answer about the caller's tree, and the daemon returns an absolute path
+	// unchanged.
 	repoRoot, err := resolveCheckRepoRoot(f.repo)
 	if err != nil {
 		return err
 	}
-
-	gc := graphclient.NewGraphClient(f.port)
-	// HEALTH-GATE FIRST. A daemon that is not up must say so; reporting a clean
-	// scan when the corpus could not even be read is the vacuous green this whole
-	// surface exists to prevent.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	healthy := gc.HealthyCtx(ctx)
-	cancel()
-	if !healthy {
-		return fmt.Errorf("check run: knowledge-server is not running on port %d, so the checks corpus could not be read", f.port)
-	}
-
-	req := foundation.Request{
-		Caller:     gc,
-		Graph:      kgtypes.GraphCode,
-		Name:       checkGraphInstanceName(f.repo),
-		RepoRoot:   repoRoot,
-		PathPrefix: f.pathPrefix,
-		Language:   f.language,
-	}
-	req.Extra = checkRunExtra(f)
-
-	findings, err := analyzer.Run(context.Background(), req)
+	rendered, err := runChecksOnDaemon(f.httpPort, checkRunToolArgs(f, repoRoot))
 	if err != nil {
-		return fmt.Errorf("check run: %w", err)
+		return err
 	}
-	return reportCheckRun(findings)
+	return reportCheckRun(rendered)
 }
 
-// checkRunExtra renders the parsed flags as the analyzer's per-run Extra map,
-// nil when the caller narrowed nothing.
+// checkRunToolArgs renders the parsed flags as the manage_checks arguments, with
+// repoRoot as the already-resolved tree.
 //
-// AN ABSENT KEY IS THE POINT IN BOTH CASES. An absent check subset means "every
-// check"; an absent test-file knob means the caller never asked, which the
-// analyzer treats differently from an explicit false. Setting either key to a
-// value the caller did not write would hand them a control they never chose.
-func checkRunExtra(f checkRunFlags) map[string]string {
-	extra := map[string]string{}
+// AN ABSENT KEY IS THE POINT in every optional case. An absent check subset
+// means "every check"; an absent test-file knob means the caller never asked,
+// which the analyzer treats differently from an explicit false; an absent
+// compact knob means "the default for this scope", which the analyzer's own
+// resolver decides. Setting any of them to a value the caller did not write
+// would hand them a control they never chose, and spelling the compact default
+// here would be a second answer to a question the tool already answers.
+func checkRunToolArgs(f checkRunFlags, repoRoot string) map[string]any {
+	args := map[string]any{
+		"operation": "run",
+		"repo":      repoRoot,
+		"language":  f.language,
+	}
 	if len(f.ids) > 0 {
-		extra[corpusscan.ExtraKeyChecks] = strings.Join(f.ids, ",")
+		args["ids"] = f.ids
+	}
+	if f.pathPrefix != "" {
+		args["path_prefix"] = f.pathPrefix
+	}
+	// A nil test rather than a length test: a present-but-empty list is a
+	// mistake the analyzer refuses by name, and dropping the key here instead
+	// would silently widen the caller's scan from the files they meant to name
+	// to the whole repository — the largest possible reading of a value they got
+	// wrong.
+	if f.files != nil {
+		args["files"] = f.files
 	}
 	if f.includeTests != nil {
-		extra[corpusscan.ExtraKeyIncludeTests] = strconv.FormatBool(*f.includeTests)
+		args["include_tests"] = *f.includeTests
 	}
-	if len(extra) == 0 {
-		return nil
+	if f.compact != nil {
+		args["compact"] = *f.compact
 	}
-	return extra
+	return args
 }
 
-// reportCheckRun prints the findings to stdout and returns the sentinel for the
-// verdict.
-func reportCheckRun(findings []foundation.Finding) error {
-	return reportCheckRunTo(os.Stdout, findings)
+// reportCheckRun prints the daemon's rendered run to stdout and returns the
+// sentinel for its verdict.
+func reportCheckRun(rendered string) error {
+	return reportCheckRunTo(os.Stdout, rendered)
 }
 
-// reportCheckRunTo writes the verdict line and the rendered findings to w, and
-// returns the sentinel for the verdict.
+// reportCheckRunTo writes the daemon's rendered run to w and returns the
+// sentinel for its verdict.
 //
-// THE WRITER IS A PARAMETER SO THE LINE IS TESTABLE. A face that prints straight
-// to a package-level stdout can be asserted on only through its exit code, which
-// is exactly the half that was already covered — the LINE, and specifically
-// whether it reports the same numbers the other face does, needs the writer.
+// THE WRITER IS A PARAMETER SO THE OUTPUT IS TESTABLE. A face that prints
+// straight to a package-level stdout can be asserted on only through its exit
+// code, which is exactly the half that was already covered.
 //
-// THE CLASSIFICATION IS NOT MADE HERE. corpusscan.ClassifyRun and the verdict's
-// own methods decide; this maps their answer onto an exit status and renders the
-// counters it is given.
-func reportCheckRunTo(w io.Writer, findings []foundation.Finding) error {
-	body, rerr := foundation.RenderFindings(findings)
-	if rerr != nil {
-		return fmt.Errorf("check run: render findings: %w", rerr)
+// AN UNREADABLE VERDICT IS AN ERROR, NEVER A CLEAN CORPUS. If the answer carries
+// no token this client recognizes, the run's outcome is unknown, and the one
+// thing it must not do is exit 0 — a gate reporting success on an answer it
+// could not read is the vacuous green this whole surface exists to prevent.
+func reportCheckRunTo(w io.Writer, rendered string) error {
+	body := rendered
+	if body != "" && !strings.HasSuffix(body, "\n") {
+		body += "\n"
 	}
-	v := corpusscan.ClassifyRun(findings)
-	fmt.Fprintf(w,
-		"%s: checks_flagged=%d sites_flagged=%d checks_refused=%d llm_only_not_executed=%d test_files_scanned=%d truncated=%t\n%s\n",
-		corpusscan.AnalyzerName, v.ChecksExecuted, v.SitesFlagged, v.ChecksRefused, v.LLMOnlyNotExecuted,
-		v.TestFilesScanned, v.Truncated, body)
-	switch {
-	case v.Inconclusive():
-		return errCheckInconclusive
-	case v.Clean():
+	if _, err := io.WriteString(w, body); err != nil {
+		return fmt.Errorf("check run: write the verdict: %w", err)
+	}
+	token, ok := tools.ParseRunVerdict(rendered)
+	if !ok {
+		return fmt.Errorf(
+			"check run: the daemon's answer carried no %s verdict token (expected %s, %s or %s on its first line), so the corpus state is unknown",
+			corpusscan.AnalyzerName, tools.VerdictClean, tools.VerdictFlagged, tools.VerdictInconclusive)
+	}
+	switch token {
+	case tools.VerdictClean:
 		return nil
-	default:
+	case tools.VerdictFlagged:
 		return errCheckFlagged
+	case tools.VerdictInconclusive:
+		return errCheckInconclusive
+	default:
+		// UNREACHABLE BY CONSTRUCTION, AND OBSERVED BY NO TEST FOR THAT REASON.
+		// ParseRunVerdict returns ok only for the three constants above, so no
+		// input to this function can select this arm and no test can drive it
+		// without replacing the parser. It is kept rather than deleted because
+		// the day a fourth token is minted, a face that fell through to nil would
+		// report a pass for a verdict it has no status for — this arm makes that
+		// drift loud instead. Deleting it would not fail any test here; that is
+		// the honest state of it, not an omission.
+		return fmt.Errorf("check run: %q is a verdict token this face has no exit status for", token)
 	}
 }
 
@@ -269,15 +333,4 @@ func resolveCheckRepoRoot(repo string) (string, error) {
 		return "", fmt.Errorf("check run: resolve the working directory: %w", err)
 	}
 	return tools.ResolveRepoDirCore(cwd, true, "", "check run", repo)
-}
-
-// checkGraphInstanceName derives the code-GRAPH instance name from the repo
-// argument, matching what the MCP path does: the argument names the graph AND is
-// the source of the walk root, and those diverge for an absolute path, where the
-// basename is the name collect recorded for that directory.
-func checkGraphInstanceName(repo string) string {
-	if filepath.IsAbs(repo) {
-		return filepath.Base(repo)
-	}
-	return repo
 }

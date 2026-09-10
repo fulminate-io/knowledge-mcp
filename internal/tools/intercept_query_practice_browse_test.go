@@ -117,23 +117,22 @@ func TestPracticeBrowse_RoutesFilters(t *testing.T) {
 	})
 
 	t.Run("lang_all", func(t *testing.T) {
-		// The browse arm's second conjunct. A text-less language:"all" must still
-		// reach the FAN-OUT arm; browsing a practice graph literally named "all"
-		// would turn a working fan-out into an empty browse.
+		// The retired sentinel is refused BEFORE the browse arm reads the payload,
+		// and the assertion is on the message rather than on IsError alone.
 		//
-		// WHAT THE FAN-OUT ARM NOW DOES WITH IT is refuse: an empty-text ranked
-		// search has nothing to rank, so it answered with a confident zero. The
-		// refusal is therefore the routing marker — only the fan-out arm emits it,
-		// exactly as "No practice graphs found." used to serve that role, and a
-		// browse of a graph named "all" would render "No nodes in practice:all"
-		// instead.
+		// THE SECOND ASSERTION IS THE DISCRIMINATING ONE. "all" is not a graph
+		// name, so a change that simply deleted the sentinel handling would browse
+		// a practice graph literally named "all" and render an empty result under a
+		// "practice:all" header — a confident zero rather than a refusal. The
+		// absence of that header is what separates the two outcomes.
 		var execHits atomic.Int64
 		gc := newInterceptHarness(t, &execHits, cannedNodesResp())
 		deps := &interceptDeps{gc: gc, segMgr: newFanOutSegmentSearcher(nil)}
 
 		res := gatedRoutePractice(opCtx(), deps, gc, queryArgs{Graph: "practice", Language: "all"})
 		body := textBodyTools(res)
-		assert.Equal(t, practiceFanOutNeedsText, body, "the text-less fan-out is refused, naming the calls that work")
+		assert.True(t, res.IsError, "the retired sentinel is refused, not browsed")
+		assert.Equal(t, practiceFanOutRetired, body, "the refusal names the call that works")
 		assert.NotContains(t, body, "practice:all")
 	})
 
@@ -165,9 +164,12 @@ func TestPracticeBrowse_RoutesFilters(t *testing.T) {
 }
 
 // gapCoverageFake is a programmable SegmentCoverageReader for the segment-gap
-// branches. It is mutex-guarded because practiceFanOutGapNotice probes every
-// enumerated graph in PARALLEL; the package's other coverage fake appends to an
-// unsynchronised slice and would race here.
+// branches. It STAYS mutex-guarded now that the parallel per-graph gap probe it
+// was written for is gone: probeCount is read by the assertions while the
+// coverage methods are called from the search path, and the package's other
+// coverage fake appends to an unsynchronised slice. Keeping the guard costs
+// nothing and the race it prevents is real whenever a caller probes off the
+// test goroutine.
 type gapCoverageFake struct {
 	mu      sync.Mutex
 	covered int
@@ -352,91 +354,39 @@ func TestPracticeSearch_LoudWhenSegmentsAbsent(t *testing.T) {
 		assert.NotContains(t, body, "rebuild_segments", "an unactionable remedy must not be offered")
 	})
 
-	t.Run("fanout_fail", func(t *testing.T) {
-		// One graph errors, the other returns nothing. merged is empty, and the
-		// response must NAME the failure rather than report a confident no-match.
-		gc, h := newFanOutHarnessWithHandler(t, []string{"go", "python"})
+	t.Run("engine_failure_is_named_not_reported_as_a_zero", func(t *testing.T) {
+		// The combined graph's engine errors. The response must NAME the failure
+		// rather than report a confident no-match — the distinction between "the
+		// search ran and found nothing" and "the search did not run" is the whole
+		// contract, and it is what the retired fan-out's per-graph failure bucket
+		// existed to preserve across N graphs. There is one graph now, so it is one
+		// error, and collapsing it into an empty result is the same lie.
+		gc, h := newFanOutHarnessWithHandler(t, []string{"default"})
 		h.stats = &knowledgev1.GraphStats{NodeCount: 3117, BinaryVectorCount: 2556}
 		mgr := newFanOutSegmentSearcher(nil)
-		mgr.errsByGr = map[string]error{"go": errors.New("segment pool unreadable")}
+		mgr.errsByGr = map[string]error{"default": errors.New("segment pool unreadable")}
 		deps := &interceptDeps{gc: gc, segMgr: mgr, segCoverage: &gapCoverageFake{covered: 7}}
 
 		res := gatedRoutePractice(opCtx(), deps, gc, queryArgs{
-			Graph: "practice", Language: "all", Text: "event",
+			Graph: "practice", Text: "event",
 		})
 		body := textBodyTools(res)
-		assert.True(t, res.IsError, "a fan-out whose graph failed is an ERROR: %s", body)
-		assert.Contains(t, body, "go", "the response names the failed graph")
-		assert.Contains(t, body, "segment pool unreadable", "and its error")
+		assert.True(t, res.IsError, "a search whose engine failed is an ERROR: %s", body)
+		assert.Contains(t, body, "segment pool unreadable", "the response names the engine error")
 		assert.NotContains(t, strings.ToLower(body), "no matches",
 			"the caller must never be told 'no matches' when the search did not run")
 	})
 }
 
-// TestPracticeFanOut_DisclosesUnindexedGraphs is the MIXED-fixture gate for the
-// partial fan-out: some graphs indexed, some dark, in the SAME call.
+// THE CROSS-GRAPH DISCLOSURE TEST RETIRED WITH THE FAN-OUT IT COVERED.
+// TestPracticeFanOut_DisclosesUnindexedGraphs asserted that a scatter-gather
+// naming N practice graphs said which of them had no ranked index, because a
+// header claiming eight graphs while three had zero segments made a partial
+// ranking look comprehensive. The corpus is ONE graph, so there is no header
+// claiming graphs and no partial set to disclose.
 //
-// A uniform fixture cannot test this. If every graph lacks an index the merge is
-// empty and the pre-existing all-empty path answers, so the third bucket is never
-// exercised; if every graph has one there is nothing to disclose. Only a mixed
-// corpus reaches the case where results ARE returned while some named graph
-// contributed nothing — which is the steady state during any heal window, and the
-// one that made a cross-graph ranking look comprehensive and near-random at once.
-func TestPracticeFanOut_DisclosesUnindexedGraphs(t *testing.T) {
-	// dark has no ranked index; lit does. Only lit returns hits.
-	fanOut := func(t *testing.T, coveredByGraph map[string]int) (string, bool) {
-		t.Helper()
-		gc, h := newFanOutHarnessWithHandler(t, []string{"lit", "dark"},
-			practiceNode("p:lit", "LitPattern", "indexed graph hit"),
-		)
-		// Non-zero embedded is what makes a zero-coverage graph LOUD (an index that
-		// is missing rather than a graph that is empty).
-		h.stats = &knowledgev1.GraphStats{NodeCount: 3117, BinaryVectorCount: 2556}
-		deps := &interceptDeps{
-			gc: gc,
-			segMgr: newFanOutSegmentSearcher(map[string][]searchengine.Hit{
-				"lit": {{ID: "p:lit", Score: 0.9}},
-			}),
-			segCoverage: &gapCoverageFake{coveredByGraph: coveredByGraph},
-		}
-		res := gatedRoutePractice(opCtx(), deps, gc, queryArgs{
-			Graph: "practice", Language: "all", Text: "pattern",
-		})
-		return textBodyTools(res), res.IsError
-	}
-
-	t.Run("names_only_the_unindexed_graph", func(t *testing.T) {
-		body, isErr := fanOut(t, map[string]int{"lit": 5, "dark": 0})
-		require.False(t, isErr, "results were returned, so this is disclosure not refusal: %s", body)
-
-		// The results still render — this is disclosure, not suppression.
-		assert.Contains(t, body, "Searched 2 practice graphs", "the fan-out header still claims both")
-		assert.Contains(t, body, "LitPattern", "the indexed graph's hit is served")
-
-		// THE FIX: the header claims two graphs, so the response must say which one
-		// contributed nothing and why.
-		assert.Contains(t, body, "Incomplete result set", "a partial ranking must say it is partial")
-		assert.Contains(t, body, "no ranked index yet", "and name the cause")
-		assert.Contains(t, body, "dark", "and name the graph that contributed nothing")
-
-		// THE DISCRIMINATING LEG. Naming every graph would be as useless as naming
-		// none: the line must single out the dark one, not list the searched set.
-		darkLine := body[strings.Index(body, "Incomplete result set"):]
-		assert.NotContains(t, darkLine, "lit",
-			"the indexed graph must NOT be named as unindexed — the line discriminates")
-	})
-
-	t.Run("silent_when_every_graph_is_indexed", func(t *testing.T) {
-		// THE KNOWN POSITIVE. Without it, a line printed unconditionally would
-		// satisfy every assertion above.
-		body, isErr := fanOut(t, map[string]int{"lit": 5, "dark": 7})
-		require.False(t, isErr, body)
-		assert.Contains(t, body, "Searched 2 practice graphs")
-		assert.NotContains(t, body, "Incomplete result set",
-			"a fully-indexed fan-out must not claim to be partial")
-		assert.NotContains(t, body, "no ranked index yet")
-	})
-}
+// The property itself did not retire: a zero-coverage graph is still LOUD, and
+// TestPracticeSearch_LoudWhenSegmentsAbsent below is where that now lives.
 
 // TestPracticeBrowse_TruncationNotice pins that the practice browse discloses the
 // SERVER'S truncation verdict. The arm issues its own Execute and renders
@@ -474,8 +424,8 @@ func TestPracticeBrowse_TruncationNotice(t *testing.T) {
 	})
 }
 
-// serverRowCeilingSentence is the fragment of engine.truncationNotice's product
-// copy the disclosure assertions anchor on. It is deliberately the SERVER-ROW-
+// serverRowCeilingSentence is the fragment of the server truncation notice
+// engine.WithTruncationNotice carries that the disclosure assertions anchor on. It is deliberately the SERVER-ROW-
 // CEILING wording rather than the shorter "may be incomplete": the client-side
 // limit-clamp notices (recallLimitClampNotice, searchLimitClampNotice) and
 // plan_tree's subtree variant all carry that shorter fragment, so an assertion

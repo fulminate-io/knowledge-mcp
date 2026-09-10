@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/collectorconfig"
 )
 
 // markdownCells counts one rendered markdown table line's cells: the segments
@@ -34,9 +35,12 @@ func markdownCells(line string) int {
 }
 
 // TestCoverageTableHeaderMatchesRowCellCount asserts the header, the separator and
-// BOTH row shapes — the populated row and the "(empty graph)" row — carry the same
-// number of cells.
+// ALL THREE row shapes — the populated row, the "(empty graph)" row and the
+// registered-family row for a family with no graph yet — carry the same number of
+// cells. Each shape has its own format string, and a column addition that updates
+// two of the three renders the third incompletely and says nothing about it.
 func TestCoverageTableHeaderMatchesRowCellCount(t *testing.T) {
+	useTempCollectorScope(t, registeredEntry("t14-shape", &collectorconfig.Behavior{Embeddable: new(true)}))
 	fake := &coverageFake{statsByKey: map[string]*knowledgev1.GraphStats{
 		// A populated graph (the wide row) and an EMPTY one, because the empty-graph
 		// row is rendered by a different format string and is exactly the site a
@@ -75,16 +79,20 @@ func TestCoverageTableHeaderMatchesRowCellCount(t *testing.T) {
 	// and that BOTH row shapes are present.
 	require.Positive(t, header, "the header row must have been rendered and recognized")
 	require.GreaterOrEqual(t, header, 8, "the table carries at least the eight columns it emits")
-	var sawEmpty, sawPopulated bool
+	var sawEmpty, sawPopulated, sawRegistered bool
 	for line := range rows {
-		if strings.Contains(line, "(empty graph)") {
+		switch {
+		case strings.Contains(line, "(empty graph)"):
 			sawEmpty = true
-			continue
+		case strings.Contains(line, "not collected (registered"):
+			sawRegistered = true
+		default:
+			sawPopulated = true
 		}
-		sawPopulated = true
 	}
 	require.True(t, sawEmpty, "the (empty graph) row shape must be among the rows measured")
 	require.True(t, sawPopulated, "the populated row shape must be among the rows measured")
+	require.True(t, sawRegistered, "and the registered-family row shape, which has a format string of its own")
 
 	require.Equal(t, header, separator, "the separator must carry the header's column count")
 	for line, n := range rows {

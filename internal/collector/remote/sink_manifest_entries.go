@@ -36,19 +36,27 @@ type chunkHashFields struct {
 	// (groupNodesAndHashesByFile), which is what keeps the lockstep true.
 	nodeHashes [][32]byte
 
-	// perFileHashes is the client's per-file aggregate. EMPTY for graph families
-	// outside the diff-eligible set, BY CONSTRUCTION rather than by oversight:
-	// FileContributionHashes is called only inside that gate, so a web or pdf
-	// collect has no map to send — and those families have no manifest either, so
-	// the server declines nothing for them. Do NOT "fix" this by hoisting the map
-	// out of the gate: the per-ROW hashes are hoisted because every family stores
-	// them, the per-FILE map is not because only the diff consumes it.
-	perFileHashes map[string][32]byte
+	// perKeyHashes is the client's per-DIFF-KEY aggregate: per file for a code
+	// collect, per node id for a registered custom one. EMPTY for graph families
+	// outside the diff-eligible set, BY CONSTRUCTION rather than by oversight: the
+	// per-key fold is computed only inside that gate, so a web or pdf collect has
+	// no map to send — and those families have no manifest either, so the server
+	// declines nothing for them. Do NOT "fix" this by hoisting the map out of the
+	// gate: the per-ROW hashes are hoisted because every family stores them, the
+	// per-KEY map is not because only the diff consumes it.
+	perKeyHashes map[string][32]byte
 
 	// fileByNodeID resolves an EDGE's owning file from its FROM node, which is how
-	// an edge chunk names the files its rows belong to — edges carry no file path
-	// of their own.
+	// a FILE-KEYED edge chunk names the files its rows belong to — edges carry no
+	// file path of their own. It is EMPTY under the node key, where an edge's
+	// owning key is its FromID itself and no projection is needed.
 	fileByNodeID map[string]string
+
+	// kind is the unit every entry this struct renders is keyed on, carried from
+	// the sink's single family gate rather than re-derived here. It decides which
+	// oneof arm the entries take, and a renderer that guessed would produce a chunk
+	// the server decodes onto the wrong key space.
+	kind diffKeyKind
 }
 
 // nodeHashesFor returns this chunk's own slice of the per-node digests, or nil
@@ -69,45 +77,74 @@ func (h chunkHashFields) nodeHashesFor(offset, n int) [][]byte {
 	return out
 }
 
-// entriesForNodes names the owning files of a NODE chunk's rows. A fileless node
-// contributes no entry — it is outside the manifest entirely and can never be
-// declined.
+// entriesForNodes names the owning DIFF KEYS of a NODE chunk's rows: each
+// node's own file path under the file key, and its own id under the node key.
+//
+// A ROW WITH NO KEY CONTRIBUTES NO ENTRY — a fileless node under the file key,
+// an id-less node under the node key. It is outside the manifest entirely and
+// can never be declined, which is the same rule under either unit.
 func (h chunkHashFields) entriesForNodes(nodes []*knowledgev1.Node) []*knowledgev1.ManifestEntry {
-	paths := make(map[string]struct{}, len(nodes))
+	keys := make(map[string]struct{}, len(nodes))
 	for _, n := range nodes {
-		if p := n.GetFilePath(); p != "" {
-			paths[p] = struct{}{}
+		if k := h.keyForNode(n); k != "" {
+			keys[k] = struct{}{}
 		}
 	}
-	return h.entriesFor(paths)
+	return h.entriesFor(keys)
 }
 
-// entriesForEdges names the owning files of an EDGE chunk's rows, resolved from
-// each edge's FROM node because an edge carries no file path of its own. This is
+// entriesForEdges names the owning DIFF KEYS of an EDGE chunk's rows, resolved
+// from each edge's FROM node because an edge carries no key of its own. This is
 // the same derivation the server's edge-side decline performs, so both sides
-// compare the same per-file hashes.
+// compare the same per-key hashes.
 func (h chunkHashFields) entriesForEdges(edges []*knowledgev1.BatchEdge) []*knowledgev1.ManifestEntry {
-	paths := make(map[string]struct{}, len(edges))
+	keys := make(map[string]struct{}, len(edges))
 	for _, e := range edges {
-		if p := h.fileByNodeID[e.GetFromId()]; p != "" {
-			paths[p] = struct{}{}
+		if k := h.keyForEdge(e); k != "" {
+			keys[k] = struct{}{}
 		}
 	}
-	return h.entriesFor(paths)
+	return h.entriesFor(keys)
 }
 
-// entriesFor renders the named files' hashes, in FILE-PATH ORDER so a chunk's
-// wire bytes are reproducible across runs rather than following Go's randomized
-// map iteration. A path the client computed no hash for is omitted: the server
-// then has nothing to compare and lands the rows, which is the fail-closed side.
-func (h chunkHashFields) entriesFor(paths map[string]struct{}) []*knowledgev1.ManifestEntry {
-	if len(h.perFileHashes) == 0 || len(paths) == 0 {
+// keyForNode is the node half of the ownership rule, in ONE place. Under the
+// file key a node is owned by its file path; under the node key it IS its own
+// owner, so the key is its id.
+func (h chunkHashFields) keyForNode(n *knowledgev1.Node) string {
+	if h.kind == diffKeyNode {
+		return n.GetId()
+	}
+	return n.GetFilePath()
+}
+
+// keyForEdge is the edge half of the same rule: spec section E says an edge is
+// owned by its FROM node, so the file key PROJECTS that node onto its file and
+// the node key takes the node itself. The projection map is empty under the node
+// key precisely because no projection is needed there.
+func (h chunkHashFields) keyForEdge(e *knowledgev1.BatchEdge) string {
+	if h.kind == diffKeyNode {
+		return e.GetFromId()
+	}
+	return h.fileByNodeID[e.GetFromId()]
+}
+
+// entriesFor renders the named keys' hashes, in KEY ORDER so a chunk's wire
+// bytes are reproducible across runs rather than following Go's randomized map
+// iteration. A key the client computed no hash for is omitted: the server then
+// has nothing to compare and lands the rows, which is the fail-closed side.
+//
+// THE ARM COMES FROM h.kind, THROUGH newManifestEntry. Spelling the file arm
+// here would silently ship a node-keyed collect's ids in the file_path field,
+// where the server's decoder either rejects the chunk or — on the persisted
+// snapshot path — accepts it and declines nothing forever.
+func (h chunkHashFields) entriesFor(keys map[string]struct{}) []*knowledgev1.ManifestEntry {
+	if len(h.perKeyHashes) == 0 || len(keys) == 0 {
 		return nil
 	}
-	ordered := make([]string, 0, len(paths))
-	for p := range paths {
-		if _, ok := h.perFileHashes[p]; ok {
-			ordered = append(ordered, p)
+	ordered := make([]string, 0, len(keys))
+	for k := range keys {
+		if _, ok := h.perKeyHashes[k]; ok {
+			ordered = append(ordered, k)
 		}
 	}
 	if len(ordered) == 0 {
@@ -115,11 +152,11 @@ func (h chunkHashFields) entriesFor(paths map[string]struct{}) []*knowledgev1.Ma
 	}
 	sort.Strings(ordered)
 	out := make([]*knowledgev1.ManifestEntry, 0, len(ordered))
-	for _, p := range ordered {
-		digest := h.perFileHashes[p]
+	for _, k := range ordered {
+		digest := h.perKeyHashes[k]
 		row := make([]byte, len(digest))
 		copy(row, digest[:])
-		out = append(out, &knowledgev1.ManifestEntry{FilePath: p, ContributionHash: row})
+		out = append(out, newManifestEntry(h.kind, k, row))
 	}
 	return out
 }

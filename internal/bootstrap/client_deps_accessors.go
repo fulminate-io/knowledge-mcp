@@ -164,23 +164,6 @@ func (c *client) CollectRunSnapshot() []tools.CollectRunStatus {
 // than opening knowledge.bin directly.
 func (c *client) Sink() collector.Sink { return c.sink }
 
-// SubgraphFetcher returns the INNER ingest sink c.Sink()'s admitting wrapper
-// delegates to — the same *remote.UploadSink instance, so the logs collector's
-// cloud-subgraph read rides the same per-call login-routed picker as its writes
-// while the admission wrapper stays in front of every WriteResult.
-//
-// The explicit nil branch is load-bearing: returning a typed-nil
-// *remote.UploadSink directly would reach the caller as a NON-nil interface
-// value and defeat the consumer's nil guard. Nil means the client was built
-// without an ingest sink (router-less / headless fixture); the logs collector
-// surfaces a loud error rather than collecting without cloud enrichment.
-func (c *client) SubgraphFetcher() tools.CloudSubgraphFetcher {
-	if c.subgraphFetcher == nil {
-		return nil
-	}
-	return c.subgraphFetcher
-}
-
 // RootDir returns the project root directory passed via --root (defaults to
 // ".") so the ast intercept can walk source files locally. Satisfies
 // tools.ClientDeps; the server has no repo (remote-server mode) so AST

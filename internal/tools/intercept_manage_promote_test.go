@@ -81,9 +81,20 @@ func TestParseMetadataGraphTypeForBackfill_RegisteredCustom(t *testing.T) {
 	})
 
 	t.Run("builtins still resolve without consulting the registry", func(t *testing.T) {
-		gt, err := parseMetadataGraphTypeForBackfill(ctx, nil, "cloud")
+		gt, err := parseMetadataGraphTypeForBackfill(ctx, nil, "practice")
 		require.NoError(t, err)
-		assert.Equal(t, kgtypes.GraphCloud, gt)
+		assert.Equal(t, kgtypes.GraphPractice, gt)
+	})
+
+	t.Run("a retired family is refused, not resolved", func(t *testing.T) {
+		// cicd was accepted here until its built-in collectors were removed. It
+		// now falls to the registry default and is refused as unregistered, which
+		// is the honest answer for a name that was valid one release ago.
+		for _, retired := range []string{"cicd", "cloud", "logs"} {
+			_, err := parseMetadataGraphTypeForBackfill(ctx, nil, retired)
+			require.Errorf(t, err, "the retired family %q must not resolve", retired)
+			assert.Containsf(t, err.Error(), retired, "and the refusal names it")
+		}
 	})
 }
 
@@ -102,8 +113,8 @@ func TestHandleManagePromoteMetadata_PromoteAndDemote(t *testing.T) {
 		}, &knowledgev1.OverrideConfig{}),
 	}
 	res := handleManagePromoteMetadata(context.Background(), interceptTestDeps{gc: fc},
-		manageArgs{Operation: "promote_metadata", Graph: "cloud", Name: "acct-1"},
-		json.RawMessage(`{"operation":"promote_metadata","graph":"cloud","name":"acct-1"}`))
+		manageArgs{Operation: "promote_metadata", Graph: "practice", Name: "acct-1"},
+		json.RawMessage(`{"operation":"promote_metadata","graph":"practice","name":"acct-1"}`))
 	require.False(t, res.IsError, "promote: %s", toolResultText(res))
 
 	// Exactly two MIGRATE_META_REPR dispatches: team→edge, trace_id→scalar. kept
@@ -131,7 +142,7 @@ func TestHandleManagePromoteMetadata_PromoteAndDemote(t *testing.T) {
 	}
 
 	body := toolResultText(res)
-	assert.Contains(t, body, "Promotion pass on cloud/acct-1")
+	assert.Contains(t, body, "Promotion pass on practice/acct-1")
 	assert.Contains(t, body, "PROMOTE: team")
 	assert.Contains(t, body, "DEMOTE: trace_id")
 }
@@ -146,8 +157,8 @@ func TestHandleManagePromoteMetadata_DryRunSkipsDispatch(t *testing.T) {
 		}, &knowledgev1.OverrideConfig{}),
 	}
 	res := handleManagePromoteMetadata(context.Background(), interceptTestDeps{gc: fc},
-		manageArgs{Operation: "promote_metadata", Graph: "cloud", Name: "x", DryRun: true},
-		json.RawMessage(`{"operation":"promote_metadata","graph":"cloud","name":"x","dry_run":true}`))
+		manageArgs{Operation: "promote_metadata", Graph: "practice", Name: "x", DryRun: true},
+		json.RawMessage(`{"operation":"promote_metadata","graph":"practice","name":"x","dry_run":true}`))
 	require.False(t, res.IsError)
 
 	assert.Empty(t, fc.execMutations, "dry_run must not dispatch MIGRATE_META_REPR or the narrative think")
@@ -166,8 +177,8 @@ func TestHandleManagePromoteMetadata_KeysFilter(t *testing.T) {
 		}, &knowledgev1.OverrideConfig{}),
 	}
 	res := handleManagePromoteMetadata(context.Background(), interceptTestDeps{gc: fc},
-		manageArgs{Operation: "promote_metadata", Graph: "cloud", Name: "x"},
-		json.RawMessage(`{"operation":"promote_metadata","graph":"cloud","name":"x","keys":"team"}`))
+		manageArgs{Operation: "promote_metadata", Graph: "practice", Name: "x"},
+		json.RawMessage(`{"operation":"promote_metadata","graph":"practice","name":"x","keys":"team"}`))
 	require.False(t, res.IsError)
 
 	// Only the keys-filtered 'team' key is migrated (the non-dry-run narrative
@@ -196,8 +207,8 @@ func TestPromoteMetadataNarrative_NoForeignTicketLink(t *testing.T) {
 		mutateIDs: []string{"sess-or-thought-id"},
 	}
 	res := handleManagePromoteMetadata(context.Background(), interceptTestDeps{gc: fc},
-		manageArgs{Operation: "promote_metadata", Graph: "cloud", Name: "x"},
-		json.RawMessage(`{"operation":"promote_metadata","graph":"cloud","name":"x"}`))
+		manageArgs{Operation: "promote_metadata", Graph: "practice", Name: "x"},
+		json.RawMessage(`{"operation":"promote_metadata","graph":"practice","name":"x"}`))
 	require.False(t, res.IsError)
 
 	// The session ("metadata-backfill") is not pre-seeded, so getOrCreateThoughtSessionClient
@@ -228,7 +239,7 @@ func TestPromoteMetadataNarrative_NoForeignTicketLink(t *testing.T) {
 		}
 	}
 	require.NotNil(t, thoughtBody, "narrative must create a type:thought node")
-	assert.Contains(t, thoughtBody.GetContent(), "Backfill on cloud/x: refreshed 1 keys")
+	assert.Contains(t, thoughtBody.GetContent(), "Backfill on practice/x: refreshed 1 keys")
 	assert.Equal(t, "metadata-backfill", thoughtBody.GetMetadata()["session"])
 	assert.True(t, sawContains, "narrative thought must join the metadata-backfill session via the EdgeKGContains batch edge on the CREATE plan")
 	assert.False(t, sawThoughtRelatesTo, "narrative thought must carry no relates-to edge out of it — a link minted here dangles in every consumer graph")
@@ -240,8 +251,8 @@ func TestPromoteMetadataNarrative_NoForeignTicketLink(t *testing.T) {
 func TestHandleManagePromoteMetadata_StatsLoadFailure(t *testing.T) {
 	fc := &fakeGraphCaller{metadataStatsErr: errors.New("connection refused")}
 	res := handleManagePromoteMetadata(context.Background(), interceptTestDeps{gc: fc},
-		manageArgs{Operation: "promote_metadata", Graph: "cloud", Name: "x"},
-		json.RawMessage(`{"operation":"promote_metadata","graph":"cloud","name":"x"}`))
+		manageArgs{Operation: "promote_metadata", Graph: "practice", Name: "x"},
+		json.RawMessage(`{"operation":"promote_metadata","graph":"practice","name":"x"}`))
 	require.True(t, res.IsError)
 	assert.Contains(t, toolResultText(res), "load stats failed")
 	assert.Empty(t, fc.execMutations, "no dispatch when the stats read fails")
@@ -263,8 +274,8 @@ func TestHandleManagePromoteMetadata_ForceOverridesDispatch(t *testing.T) {
 		}, &knowledgev1.OverrideConfig{ForceEdge: []string{"pinned_edge"}, ForceScalar: []string{"pinned_scalar"}}),
 	}
 	res := handleManagePromoteMetadata(context.Background(), interceptTestDeps{gc: fc},
-		manageArgs{Operation: "promote_metadata", Graph: "cloud", Name: "x"},
-		json.RawMessage(`{"operation":"promote_metadata","graph":"cloud","name":"x"}`))
+		manageArgs{Operation: "promote_metadata", Graph: "practice", Name: "x"},
+		json.RawMessage(`{"operation":"promote_metadata","graph":"practice","name":"x"}`))
 	require.False(t, res.IsError, "force: %s", toolResultText(res))
 
 	dir := map[string]knowledgev1.MigrateMetaReprSpec_TargetRepr{}
@@ -282,8 +293,8 @@ func TestHandleManagePromoteMetadata_ForceOverridesDispatch(t *testing.T) {
 func TestHandleManagePromoteMetadata_NameRequired(t *testing.T) {
 	fc := &fakeGraphCaller{}
 	res := handleManagePromoteMetadata(context.Background(), interceptTestDeps{gc: fc},
-		manageArgs{Operation: "promote_metadata", Graph: "cloud"},
-		json.RawMessage(`{"operation":"promote_metadata","graph":"cloud"}`))
+		manageArgs{Operation: "promote_metadata", Graph: "practice"},
+		json.RawMessage(`{"operation":"promote_metadata","graph":"practice"}`))
 	require.True(t, res.IsError)
 	assert.Contains(t, toolResultText(res), "name=<graph identifier> is required")
 	assert.Empty(t, fc.calls, "name guard fires before any server touch")

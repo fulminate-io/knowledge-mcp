@@ -47,10 +47,18 @@ func TestCapstone_RegisteredGraphEnumerateAndShip(t *testing.T) {
 	// pass registers a collector for exactly it.
 	wc := newFakeWireClient()
 	fe := &fakeEmbedder{vectors: map[string][]byte{"world-node": vec32(7)}}
-	noopSum := func(_ context.Context, _ []llmproviders.BatchChunk) (map[string]llmproviders.SummarizeResult, error) {
+	// THE SUMMARIZER IS COUNTING, not a no-op, and its record is the client half of
+	// R8's observable — see the summary axis below for what the two halves are.
+	var summarizerCalls int
+	var summarizedIDs []string
+	countingSum := func(_ context.Context, chunks []llmproviders.BatchChunk) (map[string]llmproviders.SummarizeResult, error) {
+		summarizerCalls++
+		for i := range chunks {
+			summarizedIDs = append(summarizedIDs, chunks[i].ID)
+		}
 		return nil, nil
 	}
-	p := New(Config{}, wc, noopSum, fe.call)
+	p := New(Config{}, wc, countingSum, fe.call)
 	// refreshOnce below REGISTERS a collector, and a registered collector is a
 	// running one: it spawns its summary and embed wake loops immediately. Nothing
 	// in this test's assertions needs them afterwards, so without this teardown they
@@ -75,9 +83,30 @@ func TestCapstone_RegisteredGraphEnumerateAndShip(t *testing.T) {
 
 	// Summary axis: a hellograph:demo summary work item drains through the summary
 	// worker (proves the summary axis flows for the custom graph).
+	//
+	// THE COUNT IS THE POINT, and it is the client half of R8's own observable. A
+	// collector emitting two nodes, one already summarized by the provider and one
+	// not, must produce EXACTLY ONE summarizer call. The server decides which of
+	// the two becomes a gap — that half is pinned in its own module, by
+	// TestR8_TwoNodesYieldExactlyOneSummaryGap, because neither module can import
+	// the other — and this half proves the client spends one call per gap item and
+	// no more. Together they are the ticket's sentence; separately neither is.
+	//
+	// THE RECORD IS THE FAKE SUMMARIZER'S OWN, never a metric the pipeline reports
+	// about itself; it is wired at New above.
+	//
+	// ONE work item, because the server served one: the provided-summary node is
+	// not a gap and never reaches the client at all.
 	runSummaryWorkerBatch(ctx, p, []SummaryWork{
 		{GraphType: customGT, GraphName: customName, NodeID: "world-node", SummarizeText: `{"name":"world"}`},
 	})
+
+	require.Equal(t, 1, summarizerCalls,
+		"one gap item must cost exactly one summarizer call: the LLM spend an opted-in family "+
+			"pays is one call per node the server judged still needs one")
+	require.Equal(t, []string{"world-node"}, summarizedIDs,
+		"and the call must be FOR that node — a batch that summarized something it was not "+
+			"given would spend an LLM call on text nobody asked about")
 
 	// Embed axis: a hellograph:demo embed work item drains through the embed worker
 	// → seals HNSW (AddAndMarkDirty). It no longer seals BM25: that moved to the

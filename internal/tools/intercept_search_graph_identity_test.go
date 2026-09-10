@@ -29,7 +29,7 @@ import (
 // env.Results[i].Graph field reference is undefined) — the red of red-green.
 //
 // Reuses the existing per-family fakes verbatim: knowledge/recent/code-single/
-// cloud/cicd → newInterceptHarness + cannedNodesResp + fakeSegmentSearcher;
+// registered custom → newInterceptHarness + cannedNodesResp + fakeSegmentSearcher;
 // code-multi + practice (single + fan-out) → newFanOutHarness +
 // newFanOutSegmentSearcher + practiceNode; logs → newSearchHandler +
 // testSearchQueryID.
@@ -140,36 +140,38 @@ func TestSearchJSONCarriesSourceGraph_AllFamilies(t *testing.T) {
 		assert.Equal(t, "repoB", byID["b.go:B"].GraphInstance, "repoB hit carries repoB instance")
 	})
 
-	for _, tc := range []struct {
-		graph string
-	}{
-		{"cloud"},
-		{"cicd"},
-	} {
-		t.Run(tc.graph, func(t *testing.T) {
-			var execHits, embedCalls atomic.Int64
-			gc := newInterceptHarness(t, &execHits, cannedNodesResp(
-				&knowledgev1.Node{
-					Id:         "res-1",
-					SymbolName: "my-resource",
-					Type:       "cloud_resource",
-					Metadata:   map[string]string{"resource_type": "s3:bucket"},
-				},
-			))
-			mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "res-1", Score: 0.8}}}
-			deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
+	// THE RESOURCE-GRAPH ROW MOVED TO THE REGISTERED-CUSTOM ARM. It read a cicd
+	// graph through the per-account resource composer, and both went with that
+	// family; a contrib collector's inventory graph is a registered custom type
+	// now, so the identity stamp it must carry is graph=<registration name> with
+	// the graph NAME as the instance.
+	t.Run("registered-custom", func(t *testing.T) {
+		const customFamily = "acme-ci"
+		var embedCalls atomic.Int64
+		gc := newFanOutHarness(t, []string{"acct"},
+			&knowledgev1.Node{
+				Id:         "res-1",
+				SymbolName: "my-resource",
+				Type:       "cicd-resource",
+				Metadata:   map[string]string{"resource_type": "workflow"},
+			},
+		)
+		mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "res-1", Score: 0.8}}}
+		deps := &interceptDeps{
+			gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr,
+			gtCRUD: registeredGraphTypes(customFamily),
+		}
 
-			handled, out := InterceptQueryCloudCICD(opCtx(), deps, queryParams(t, map[string]any{
-				"graph": tc.graph, "account": "acct", "text": "bucket", "format": "json",
-			}))
-			require.True(t, handled)
-			require.False(t, out.IsError, engine.FirstTextContent(out))
-			env := parseEnv(t, engine.FirstTextContent(out))
-			require.Len(t, env.Results, 1)
-			assert.Equal(t, tc.graph, env.Results[0].Graph, "%s search stamps graph=%s", tc.graph, tc.graph)
-			assert.Equal(t, "acct", env.Results[0].GraphInstance, "%s stamps the account as instance", tc.graph)
-		})
-	}
+		handled, out := InterceptQueryRegisteredGraphSearch(opCtx(), deps, queryParams(t, map[string]any{
+			"graph": customFamily, "name": "acct", "text": "bucket", "format": "json",
+		}))
+		require.True(t, handled)
+		require.False(t, out.IsError, engine.FirstTextContent(out))
+		env := parseEnv(t, engine.FirstTextContent(out))
+		require.Len(t, env.Results, 1)
+		assert.Equal(t, customFamily, env.Results[0].Graph, "a registered-custom search stamps its own family")
+		assert.Equal(t, "acct", env.Results[0].GraphInstance, "and the graph name as the instance")
+	})
 
 	t.Run("practice-single", func(t *testing.T) {
 		gc := newFanOutHarness(t, []string{"go"},
@@ -186,38 +188,28 @@ func TestSearchJSONCarriesSourceGraph_AllFamilies(t *testing.T) {
 		assert.Equal(t, "go", env.Results[0].GraphInstance, "practice single stamps the language as instance")
 	})
 
-	t.Run("practice-fanout-per-hit-varying", func(t *testing.T) {
-		// The case that was actually broken: instance VARIES per hit. Each merged
-		// fan-out result must carry its OWN source language, not a single selector.
-		gc := newFanOutHarness(t, []string{"go", "python"},
-			practiceNode("p:go", "GoWorkerPool", "bounded goroutines"),
-			practiceNode("p:py", "PyThreadPool", "thread pool executor"),
+	t.Run("practice-no-selector-stamps-the-family-alone", func(t *testing.T) {
+		// The per-hit-varying instance case retired with the fan-out that produced
+		// it: results came from N graphs and each had to carry its own. An
+		// unselected practice search reads ONE graph, so every result carries the
+		// family and no instance — and asserting the EMPTY instance is what would
+		// catch a render that started stamping a stale language onto combined-graph
+		// rows.
+		gc := newFanOutHarness(t, []string{"default"},
+			practiceNode("p:a", "GoWorkerPool", "bounded goroutines"),
+			practiceNode("p:b", "PyThreadPool", "thread pool executor"),
 		)
 		mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
-			"go":     {{ID: "p:go", Score: 0.90}},
-			"python": {{ID: "p:py", Score: 0.70}},
+			"default": {{ID: "p:a", Score: 0.90}, {ID: "p:b", Score: 0.70}},
 		})
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
-		res := gatedRoutePractice(opCtx(), deps, gc, queryArgs{Graph: "practice", Language: "all", Text: "pool", Format: "json"})
+		res := gatedRoutePractice(opCtx(), deps, gc, queryArgs{Graph: "practice", Text: "pool", Format: "json"})
 		env := parseEnv(t, textBodyTools(res))
 		require.Len(t, env.Results, 2)
-		byID := map[string]engine.SearchJSONResult{}
 		for _, r := range env.Results {
-			assert.Equal(t, "practice", r.Graph, "every fan-out result stamps graph=practice")
-			byID[r.ID] = r
+			assert.Equal(t, "practice", r.Graph, "every result stamps graph=practice")
+			assert.Empty(t, r.GraphInstance,
+				"an unselected practice read names no instance, because there is one graph")
 		}
-		assert.Equal(t, "go", byID["p:go"].GraphInstance, "go hit carries its OWN language instance")
-		assert.Equal(t, "python", byID["p:py"].GraphInstance, "python hit carries its OWN language instance")
-	})
-
-	t.Run("logs", func(t *testing.T) {
-		res := newSearchHandler(t).searchLogs(opCtx(), searchArgs{
-			Graph: "logs", Name: testSearchQueryID, Query: "connection timeout", Limit: 10, Format: "json",
-		})
-		require.False(t, res.IsError, resultText(res))
-		env := parseEnv(t, resultText(res))
-		require.NotEmpty(t, env.Results)
-		assert.Equal(t, "logs", env.Results[0].Graph, "logs search stamps graph=logs")
-		assert.Equal(t, testSearchQueryID, env.Results[0].GraphInstance, "logs stamps the queryID name as instance")
 	})
 }

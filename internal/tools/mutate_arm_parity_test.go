@@ -316,6 +316,12 @@ func parityCell(t *testing.T, arm armID, fx parityFixture, param string, prop kg
 	require.NoError(t, err)
 
 	fc := paritySeed(t)
+	// A per-param seeding hook, for the rows whose routing depends on WHICH
+	// graph an id resolves in. It runs after the shared seed so it can replace
+	// the flat answer with a graph-scoped one for this row alone.
+	if seed, ok := fx.paramSeed[param]; ok {
+		seed(fc)
+	}
 	handled, res := parityDrive(fx, fc, raw)
 
 	if fx.noAccounting {
@@ -346,7 +352,7 @@ func parityCell(t *testing.T, arm armID, fx parityFixture, param string, prop kg
 			"arm %q wrote before rejecting %q — the reject must precede every write", arm, param)
 	case classConsumed:
 		parityAssertBehaved(t, arm, fx, param, handled, res)
-		if distinctive == "" || selectionOnlyParams[param] {
+		if distinctive == "" || selectionOnlyParams[param] || fx.selectionOnly[param] {
 			return
 		}
 		observed := parityWriteText(t, fc)
@@ -358,7 +364,7 @@ func parityCell(t *testing.T, arm armID, fx parityFixture, param string, prop kg
 			arm, param, distinctive, observed)
 	case classDeliberatelyIgnored:
 		parityAssertBehaved(t, arm, fx, param, handled, res)
-		if distinctive == "" || selectionOnlyParams[param] {
+		if distinctive == "" || selectionOnlyParams[param] || fx.selectionOnly[param] {
 			return
 		}
 		assert.Falsef(t, parityContains(parityWriteText(t, fc), distinctive),

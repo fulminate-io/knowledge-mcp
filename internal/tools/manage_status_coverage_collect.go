@@ -61,6 +61,17 @@ type coverageTarget struct {
 	// carried so a DECLINED row has one true durable fact to render. It costs
 	// nothing: the enumeration already returns it on every GraphInfo.
 	imageBytes int64
+	// noInstance marks the row of a REGISTERED FAMILY WITH NO COLLECTED GRAPH:
+	// the family is on this machine's inventory because an operator registered it,
+	// and nothing has been collected under it yet. Such a row has no Stats
+	// selector and no segment pool to probe, so the assembly walk skips both reads
+	// for it rather than spending an RPC discovering that the graph is absent.
+	noInstance bool
+	// declaredSegments is the REGISTRATION's answer to whether this family embeds
+	// anything, and it is read ONLY on a noInstance row — it is what that row's
+	// segment cell renders from. Every other row learns the same thing from the
+	// probe or from the type predicate, both of which need a graph to exist.
+	declaredSegments bool
 }
 
 // coverageStatsConcurrency bounds the parallel Stats(IncludeCoverage:true)
@@ -124,22 +135,34 @@ const coverageProbeConcurrency = 6
 // and segmentStalledSinceFor are pure local map reads and stay on the serial
 // assembly loop below: they cost nothing measurable, and keeping the assembly walk
 // serial is what their seams' own contracts are written against.
-func collectCoverageRows(ctx context.Context, deps ClientDeps) []CoverageRow {
+//
+// IT RETURNS ANY WALK ERROR ALONGSIDE THE ROWS. The only one the walk produces
+// is a registration-catalog read failure, which costs the custom families and no
+// builtin row, so both callers render what they got AND name what they lost
+// rather than choosing between them.
+func collectCoverageRows(ctx context.Context, deps ClientDeps) ([]CoverageRow, error) {
 	gc := deps.GraphCaller()
 	if gc == nil {
-		return nil
+		return nil, nil
 	}
 	sc, ok := gc.(statsRPC)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
-	targets := coverageTargets(ctx, deps)
+	targets, walkErr := coverageTargets(ctx, deps)
 
 	stats := make([]*knowledgev1.GraphStats, len(targets))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, coverageStatsConcurrency)
 	for i, t := range targets {
+		if t.noInstance {
+			// NOTHING HAS BEEN COLLECTED UNDER THIS FAMILY, so there is no graph for
+			// a Stats RPC to be about. Issuing one would spend a round trip to be
+			// told the graph does not exist, and on a backend that creates on read
+			// it would be worse than wasteful.
+			continue
+		}
 		// THE STATS RPC IS ISSUED FOR EVERY ROW, MANAGED OR NOT, and that is the
 		// ruling rather than a relaxation of it (CEO 2026-08-28, verbatim: "why cant
 		// we just do a count and not consider it managed"). What the operative rule
@@ -172,6 +195,13 @@ func collectCoverageRows(ctx context.Context, deps ClientDeps) []CoverageRow {
 	now := time.Now().UnixNano()
 	rows := make([]CoverageRow, 0, len(targets))
 	for i, t := range targets {
+		if t.noInstance {
+			// FIRST, ahead of the unmanaged arm: this row's counts are absent because
+			// there is no graph, not because a backend declined to produce them, and
+			// the two say different things to an operator.
+			rows = append(rows, newRegisteredCoverageRow(t))
+			continue
+		}
 		if !t.managed {
 			// AN UNMANAGED ROW ALWAYS RENDERS, on either arm. Dropping it would silently
 			// delete the graph from the inventory manage(status) exists to show — which
@@ -230,7 +260,7 @@ func collectCoverageRows(ctx context.Context, deps ClientDeps) []CoverageRow {
 		row.Degraded = probes[i].degraded
 		rows = append(rows, row)
 	}
-	return rows
+	return rows, walkErr
 }
 
 // segProbe is one row's segment-coverage answer, carried from the concurrent probe
@@ -276,7 +306,11 @@ func collectSegProbes(
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, coverageProbeConcurrency)
 	for i, t := range targets {
-		if !t.managed || stats[i] == nil || t.overlay {
+		// A NO-INSTANCE ROW IS DECLINED FIRST AND EXPLICITLY, though its nil stats
+		// slot would also decline it: the probe constructs a per-graph engine and
+		// its cache directory for whatever key it is handed, so a status read must
+		// never hand it the name of a family that has no graph at all.
+		if t.noInstance || !t.managed || stats[i] == nil || t.overlay {
 			continue
 		}
 		wg.Go(func() {

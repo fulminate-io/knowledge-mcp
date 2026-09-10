@@ -78,15 +78,19 @@ func TestRunRecipe_ExtractOffsetWindow(t *testing.T) {
 			"the population behind the cursor is still reported — an overshoot is not an empty match")
 	})
 
-	// EMISSION IS NOT BOUNDED BY THE CURSOR. Nodes, Lineage and every Stats
-	// counter accumulate exactly as they always have; the Extract row list is
-	// the only bounded thing. An implementation that skips emission for
-	// pre-cursor rows passes every row assertion above and is rejected here.
+	// EMISSION IS NOT BOUNDED BY THE CURSOR. Nodes and every Stats counter
+	// accumulate exactly as they always have; the Extract row list is the only
+	// bounded thing. An implementation that skips emission for pre-cursor rows
+	// passes every row assertion above and is rejected here.
+	//
+	// THIS IS ALSO WHY REQUIREMENT 11 REFUSES max_rows AND offset ON A LANDING
+	// RUN: the emitted set a landing writes is the WHOLE matched population, so a
+	// cursor that bounds the render would have bounded nothing about the write and
+	// the response would have shown fewer rows than it landed.
 	t.Run("emission_is_unchanged_by_the_cursor", func(t *testing.T) {
 		res := runOffsetExtract(t, 6, 4, 2)
 		assert.Len(t, res.Extract.Rows, 2, "the page is bounded")
 		assert.Len(t, res.Nodes, 6, "every matched row still emitted a node")
-		assert.Len(t, res.Lineage, 6, "every emitted node still carries its translated-from edge")
 		assert.Equal(t, 6, res.Stats.NodesEmitted)
 	})
 }

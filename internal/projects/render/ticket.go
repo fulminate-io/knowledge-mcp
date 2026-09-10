@@ -19,8 +19,7 @@ import (
 // URL / priority / labels / description / ID) + Plans + Research +
 // Patterns + Language patterns + Linked Decisions + Linked Findings.
 //
-// Ported from cmd/knowledge-server/tools/tools_assemble_containers.go:16
-// as a free function with the store reads swapped for wire-shape
+// Ported from the retired server-side assemble tools as a free function with the store reads swapped for wire-shape
 // FetchNode + IterEdges calls. Section ordering matches server-side
 // output byte-for-byte for golden-file parity.
 func assembleTicket(ctx context.Context, gc GraphCaller, node *knowledgev1.Node) kgtools.ToolResult {
@@ -92,8 +91,14 @@ func assembleTicket(ctx context.Context, gc GraphCaller, node *knowledgev1.Node)
 		}
 	}
 
-	renderTicketPatterns(node, patterns, &sb)
-	renderLanguagePatternsSection(node, languagePatterns, &sb)
+	// ONE instruction line for the style rules BOTH pattern sections referenced,
+	// after both of them. A style rule reaches a ticket through either pattern
+	// edge, and the instruction it carries is "read these ids in one call" — so
+	// emitting it per section would name half the ids twice and teach the
+	// per-rule loop it exists to prevent.
+	styleRuleIDs := renderTicketPatterns(node, patterns, &sb)
+	styleRuleIDs = append(styleRuleIDs, renderLanguagePatternsSection(node, languagePatterns, &sb)...)
+	renderStyleRuleInstruction(&sb, styleRuleIDs)
 	sb.WriteString(renderTicketDecisions(decisions))
 	sb.WriteString(renderTicketFindings(findings))
 

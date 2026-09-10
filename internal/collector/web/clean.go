@@ -44,14 +44,14 @@ func cleanArticle(rawHTML []byte, sourceURL string) (*cleanedArticle, error) {
 	parsedURL, urlErr := url.Parse(sourceURL)
 	if urlErr != nil || parsedURL == nil || parsedURL.Host == "" {
 		slog.Warn("web.clean: invalid sourceURL — title, byline and pub_date unavailable for this page; title falls back to its first H1",
-			"url", sourceURL, "err", urlErr)
+			"url", logSafe(sourceURL), "err", logSafeErr(urlErr))
 		return rawFallback(), nil
 	}
 
 	article, err := readability.FromReader(bytes.NewReader(rawHTML), parsedURL)
 	if err != nil || article.Node == nil {
 		slog.Warn("web.clean: readability parse failed — title, byline and pub_date unavailable for this page; title falls back to its first H1",
-			"url", sourceURL, "err", err)
+			"url", logSafe(sourceURL), "err", logSafeErr(err))
 		return rawFallback(), nil
 	}
 

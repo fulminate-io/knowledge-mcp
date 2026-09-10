@@ -9,7 +9,7 @@ special operations (graph stats, deep node inspection, plan-tree walks, topology
 analyzers, reflection over the thought graph, and more).
 
 Every form respects the `graph` selector, so the same tool reads the knowledge,
-code, cloud, practice, cicd, linkage, and logs graphs — you pick the graph family
+code, practice, linkage, and registered custom graphs — you pick the graph family
 with `graph` and name the specific instance with its typed field (`repo`,
 `account`, `language`, or `name`). `query` is read-only; writes go through
 `mutate`.
@@ -32,7 +32,6 @@ required input:
 | `mode: "stats"` | — | Node-type and edge-type breakdown for the graph (the discovery primitive). |
 | `mode: "plan_tree"` | `id` | Walk a project/ticket/plan/phase/step hierarchy. |
 | `mode: "topology"` | `algorithm` + graph instance | Run a topology analyzer (e.g. `pagerank`, `scc`). |
-| `mode: "pivot"` (logs) | `name`, `rows`, `cols` | Row×column matrix of log counts. |
 | reflect modes | — | `personality`, `tensions`, `blind_spots`, `summary`, etc. over the thought graph. |
 
 Some worked examples:
@@ -54,17 +53,17 @@ query({ "type": "decision" })
 `graph` names exactly one graph — there is no cross-graph selector, and a value
 outside the accepted vocabulary (built-ins plus your registered custom graph
 types) is refused with an error naming it and the accepted set. The fan-outs that
-do exist are within a single graph: `repo: "all"` across code repos, and
-`language: "all"` across practice graphs. Practice queries require `language`;
-cloud queries require `account` (omit it to list the available cloud graphs). For
-the full mode catalog, run `help("query")`.
+do exist are within a single graph: `repo: "all"` across code repos. The practice
+counterpart, `language: "all"`, is retired and refused — practice is one combined
+graph, so omit `language` and narrow within it by `source` (a hub id) instead.
+For the full mode catalog, run `help("query")`.
 
 ## Parameters
 
 <!-- BEGIN GENERATED: params -->
 | Parameter | Type | Required | Enum | Description |
 | --- | --- | --- | --- | --- |
-| `account` | string |  |  | Selects which inventoried external-provider account/org's resources to query within your own graph — an AWS/GCP account for graph=cloud, or a CI provider org (e.g. GitHub/GitLab) for graph=cicd. Required for graph=cloud/cicd; omit to list your available graphs. |
+| `account` | string |  |  | NO BUILT-IN FAMILY IS KEYED BY ACCOUNT. It was the instance key of the retired cloud and cicd families; a collected inventory graph is a registered custom type now, addressed by name. Consumed by nothing today. |
 | `action` | string |  |  | Action for simulate mode (remove_charge, invalidate_thought, add_charge) |
 | `algorithm` | string |  |  | Topology analyzer name for mode=topology (e.g. 'pagerank', 'scc'). Use topology.All for the registered list. |
 | `branch` | string |  |  | Code-graph branch overlay to read instead of the base graph. Auto-filled from the machine-local repo manifest when the caller omits it and repo is not 'all' — the repo's recorded on-disk directory drives the branch detection, so the branch that gets read is the one that repo is actually on. Supply it explicitly to pin a specific overlay. Read by the analyze, code-search, file-symbols, modules/code-stats and topology arms. |
@@ -73,7 +72,7 @@ the full mode catalog, run `help("query")`.
 | `cluster` | string |  |  | Cluster filter for reflect personality mode |
 | `cluster_a` | string |  |  | First cluster for reflect evolution mode |
 | `cluster_b` | string |  |  | Second cluster for reflect evolution mode |
-| `cols` | string |  |  | Column label key for graph='logs' mode='pivot' (e.g. 'reason'). Defaults sniffed from the graph when omitted. |
+| `cols` | string |  |  | Column label key for mode='pivot' (e.g. 'status'). Defaults sniffed from the graph when omitted. |
 | `connected_to` | string |  |  | Filter thoughts connected to this node ID |
 | `consistency_max` | number |  |  | Maximum thought consistency (low = contested) |
 | `edge_type` | array of string |  |  | Filter correlations/explain output to edges of these types (e.g. ["relates-to"], ["CORRELATES_WITH"]). Empty = any edge type. |
@@ -86,9 +85,9 @@ the full mode catalog, run `help("query")`.
 | `file_paths[]` | string |  |  |  |
 | `format` | string |  |  | Output format: 'text' (default) or 'json' (structured). Recognized by several modes. A `fields` PROJECTION OVERRIDES IT: when fields is supplied the read emits the json projection whatever format says, on the by-id, ids-hydrate and plan_tree arms alike — a projected row is a json object, so there is no text shape to render it into. Measure format's effect on a read carrying NO fields. |
 | `granularity` | string |  | cluster, topic | Which reflect view mode='summary' and mode='personality' render: 'cluster' (default) rolls up by detected cluster, 'topic' rolls up by topic membership and displays topic summaries as the names. |
-| `graph` | string |  |  | Which graph to search: knowledge, code, cloud, cicd, practice, checks, linkage, logs, or a registered custom graph type (default: knowledge). There is no cross-graph selector — name ONE graph; a value outside this vocabulary is REFUSED with an error naming it and the accepted set. Practice graphs are per-language (use 'language' param); checks is a SINGLE graph holding every language's deterministic corpus checks and their fixtures, addressed with no language or name (language is a metadata key on each node); log graphs are per-query (use 'name' for the query_id). |
+| `graph` | string |  |  | Which graph to search: knowledge, code, practice, checks, linkage, or a registered custom graph type (default: knowledge). There is no cross-graph selector — name ONE graph; a value outside this vocabulary is REFUSED with an error naming it and the accepted set. practice is a SINGLE combined graph taking neither language nor name, narrowed within by 'source' (a hub id) and readable under the legacy read-only 'language' selector for the pre-singleton graphs; checks is a SINGLE graph holding every language's deterministic corpus checks and their fixtures, addressed with no language or name (language is a metadata key on each node). |
 | `group_by_file` | boolean |  |  | Group code search results by file |
-| `id` | string |  |  | Direct node lookup by ID. If graph=code, runs analyze_node instead. If graph=logs, returns template detail with decompressed example entries. |
+| `id` | string |  |  | Direct node lookup by ID. If graph=code, runs analyze_node instead. |
 | `ids` | array of string |  |  | Bulk hydrate-by-id: pass a list of node IDs and receive {label, nodes:[]} in one call (JSON output). Mutually exclusive with id. Used by client-side reflective code where K query(id:...) round trips would otherwise be needed. |
 | `ids[]` | string |  |  |  |
 | `include_comments` | boolean |  |  | Include comment nodes in code search results (default: false). Comments are excluded by default to reduce noise. |
@@ -97,12 +96,12 @@ the full mode catalog, run `help("query")`.
 | `include_source` | boolean |  |  | Include source code in results (code graph) |
 | `include_tests` | boolean |  |  | Include test code (test/benchmark/example/fuzz/setup/teardown/fixture/mock/helper) in results. Default true. Code graph only — silently ignored on other graphs. Note: until per-language predicate-population tickets land, all code nodes have is_test=false so this filter is currently a no-op. |
 | `include_tombstones` | boolean |  |  | Include tombstoned (deleted) nodes in results. Default false. |
-| `language` | string |  |  | Language code (e.g. 'go', 'python', 'typescript'). Two uses: (1) practice graph selector — omit to list all practice graphs; (2) topology analyzer filter — code-graph analyzers like god_object scope to a single language. Empty means no filter for topology, all-graphs for practice. |
-| `limit` | number |  |  | Max results (default: 10). The server serves EVERY read at a row ceiling — 50,000 rows for an edges read and 10,000 rows for a node browse — so omitting limit, or setting it above the ceiling, returns a result bounded at that ceiling rather than a complete one. Completeness is reported TWO WAYS, and which one you get depends on the format you asked for. JSON callers read a `truncated` boolean in the JSON payload of every query read whose ceiling can engage — type-browse, ids[] hydrate, text search, mode=examine, mode=plan_tree (on the envelope ROOT, not per row) and the cloud/cicd resource browse — emitted UNCONDITIONALLY, so `false` is a positive statement of completeness rather than a missing key. TEXT callers get an English notice in a SECOND content block instead; the payload block itself is untouched, so a JSON body stays parseable. The boolean reports SERVER CEILING ENGAGEMENT specifically: `false` means no ceiling bounded this read, not that the result is guaranteed whole by some other measure. When it is true, re-run with an explicit limit and page until a short page. ONE READ CARRIES THE KEY ONLY ON ITS JSON FORM: query(id) with include_edges / include_cross_links. Ask for format:'json' and it returns a {node, edges, cross_links, truncated} envelope carrying the key on the same unconditional terms as the rest. Leave format unset and it keeps its legacy bodies — a {node, edges} JSON body on the knowledge graph, markdown on any other — and neither carries the key, so a default-format caller's truncation reaches them ONLY as the trailing English notice, which it does append. For mode='correlations' and mode='timeline' on non-logs graphs limit widens the ranked cap instead (correlations up to 1000 rows, timeline up to 5000); an oversized value is clamped to that ceiling. |
+| `language` | string |  |  | Language code (e.g. 'go', 'python', 'typescript'). Two uses: (1) LEGACY practice READ selector naming one of the pre-singleton practice graphs — omit it to read the one combined graph, and narrow that with 'source' instead; it is REFUSED on every practice write; (2) topology analyzer filter — code-graph analyzers like god_object scope to a single language. Empty means no filter for topology, and the whole combined graph for practice. |
+| `limit` | number |  |  | Max results (default: 10). The server serves EVERY read at a row ceiling — 50,000 rows for an edges read and 10,000 rows for a node browse — so omitting limit, or setting it above the ceiling, returns a result bounded at that ceiling rather than a complete one. Completeness is reported TWO WAYS, and which one you get depends on the format you asked for. JSON callers read a `truncated` boolean in the JSON payload of every query read whose ceiling can engage — type-browse, ids[] hydrate, text search, mode=examine, mode=plan_tree (on the envelope ROOT, not per row) and the registered-custom resource browse — emitted UNCONDITIONALLY, so `false` is a positive statement of completeness rather than a missing key. TEXT callers get an English notice in a SECOND content block instead; the payload block itself is untouched, so a JSON body stays parseable. The boolean reports SERVER CEILING ENGAGEMENT specifically: `false` means no ceiling bounded this read, not that the result is guaranteed whole by some other measure. When it is true, re-run with an explicit limit and page until a short page. ONE READ CARRIES THE KEY ONLY ON ITS JSON FORM: query(id) with include_edges / include_cross_links. Ask for format:'json' and it returns a {node, edges, cross_links, truncated} envelope carrying the key on the same unconditional terms as the rest. Leave format unset and it keeps its legacy bodies — a {node, edges} JSON body on the knowledge graph, markdown on any other — and neither carries the key, so a default-format caller's truncation reaches them ONLY as the trailing English notice, which it does append. For mode='correlations' and mode='timeline' limit widens the ranked cap instead (correlations up to 1000 rows, timeline up to 5000); an oversized value is clamped to that ceiling. |
 | `magnitude_min` | number |  |  | Minimum thought magnitude |
 | `meta` | object |  |  | Metadata equality filter, applied to type-browse and text-search dispatch. Map of metadata key to required value; a value of "*" matches any non-empty value (i.e., "the key is set"). Example: {"dsl_pattern": "*"} returns every node carrying a dsl_pattern. Multiple keys are AND'd. |
-| `mode` | string |  | hybrid, text, stats, examine, file_symbols, modules, personality, influence, tensions, blind_spots, evolution, summary, simulate, timeline, charges, clusters, recent, topology, pivot, correlations, explain, resolver, lineage, evidence, plan_tree, metadata_stats | Search mode or special operation |
-| `name` | string |  |  | Graph name selector (e.g. query_id for graph='logs'). |
+| `mode` | string |  | hybrid, text, stats, examine, file_symbols, modules, personality, influence, tensions, blind_spots, evolution, summary, simulate, timeline, charges, clusters, recent, topology, pivot, correlations, explain, lineage, evidence, plan_tree, metadata_stats, style_index | Search mode or special operation |
+| `name` | string |  |  | Graph name selector, for the families keyed by name. |
 | `offset` | number |  |  | Skip first N results for pagination (default: 0). Use with limit to page through results. |
 | `path_prefix` | string |  |  | File path filter (code graph). Also used as file_path for file_symbols mode. |
 | `path_prefixes` | array of string |  |  | List form of path_prefix for file_symbols mode — query symbols across multiple files in one call. Combined with path_prefix when both supplied. |
@@ -114,19 +113,20 @@ the full mode catalog, run `help("query")`.
 | `repo` | string |  |  | Code graph name — REQUIRED for graph=code (it is never inferred from cwd). Use 'all' to query every code repo. |
 | `repos` | array of string |  |  | Search specific repos (alternative to repo='all') |
 | `repos[]` | string |  |  |  |
-| `resource_type` | string |  |  | Cloud resource type filter prefix |
-| `rows` | string |  |  | Row label key for graph='logs' mode='pivot' (e.g. 'reporting_instance'). Defaults sniffed from the graph when omitted. |
-| `samples` | boolean |  |  | Add bounded per-type sample node names to a mode='stats' render. Honored by every stats arm: knowledge, cloud/cicd, practice/linkage, code, and logs. |
+| `resource_type` | string |  |  | Resource type filter prefix, for a graph whose nodes carry a `resource_type` |
+| `rows` | string |  |  | Row label key for mode='pivot' (e.g. 'type'). Defaults sniffed from the graph when omitted. |
+| `samples` | boolean |  |  | Add bounded per-type sample node names to a mode='stats' render. Honored by every stats arm: knowledge, practice/linkage, code, and the registered custom types. |
 | `scope` | string |  |  | Substring filter applied by the query(type='rule') browse over each rule's scope metadata and its description, case-insensitively. |
 | `session` | string |  |  | Filter thoughts by session name |
 | `since` | string |  |  | Time filter for date-ranged queries (RFC3339 or relative like '24h', '7d') |
 | `sort` | string |  | influence, composite | Display ordering for the EVIDENCED section of mode=influence. Selection is evidence-aware: charged thoughts are ranked by influence×(1+chargeWeight) into the evidenced top-N, while zero-charge structural hubs are returned in a separate labeled backfill section. 'influence' (default) keeps the influence×(1+chargeWeight) selection order; 'composite' reorders the already-selected evidenced set by influence×magnitude FOR DISPLAY — a within-set reorder that does NOT change which thoughts are selected and does not touch the backfill section. |
+| `source` | string |  |  | Practice SOURCE HUB id — narrows a practice read to the nodes grouped under that hub. Omit it to read the whole combined practice graph. A hub is a node of type 'source' inside the one practice graph, so this is not a graph selector and no graph is opened by it. |
 | `status` | string |  |  | Status filter for thought recall |
 | `target` | string |  |  | Target node ID for simulate mode |
 | `test_kinds` | array of string |  |  | Filter set for test classification kinds: any of test, benchmark, example, fuzz, setup, teardown, fixture, mock, helper. Empty/absent means no filter. Code graph only. Note: until per-language predicate-population tickets land, all code nodes have test_kind="" so this filter is currently a no-op. |
 | `test_kinds[]` | string |  |  |  |
 | `text` | string |  |  | Search query text |
-| `time_field` | string |  |  | Node field or metadata key to use as timestamp for timeline mode (e.g. CreatedAt, UpdatedAt, or a metadata key). Defaults to FirstSeen for logs graphs. |
+| `time_field` | string |  |  | Node field or metadata key to use as timestamp for timeline mode (e.g. CreatedAt, UpdatedAt, or a metadata key). |
 | `top_k` | number |  |  | Cap on findings returned by topology analyzers (0 = no cap) |
 | `type` | string |  |  | Node type filter (e.g. decision, rule, plan, research, document) |
 | `types` | array of string |  |  | Filter results to these node types (e.g. ["project", "ticket", "plan", "step"]). Honored by mode='recent', by the default (mode-less) plural-type browse, by the knowledge text-search arm, and by the registered custom-graph text-search arm (both arms: mode='text', mode='hybrid', or the default mode carrying text). When both types and the singular type are supplied, types wins, mirroring the engine's browse precedence. Supplying types alongside id or ids is REFUSED with an error naming the field: a by-id read is a lookup and applies no filter. |

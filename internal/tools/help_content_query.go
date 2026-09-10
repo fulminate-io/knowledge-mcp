@@ -7,7 +7,7 @@ package tools
 
 const helpQuery = `# query — Unified search and node lookup
 
-Design: query is a generic primitive. It dispatches on params: 'id' → direct lookup, 'text' → search, 'type' → browse, 'mode' → special operations. All modes respect the 'graph' selector (knowledge|code|cloud|practice|cicd|checks|linkage|logs). Composite shortcuts ('mode: "plan_tree" | "lineage" | "evidence"') are exceptions justified by frequent use.
+Design: query is a generic primitive. It dispatches on params: 'id' → direct lookup, 'text' → search, 'type' → browse, 'mode' → special operations. All modes respect the 'graph' selector (knowledge|code|practice|checks|linkage|a registered custom graph type). Composite shortcuts ('mode: "plan_tree" | "lineage" | "evidence"') are exceptions justified by frequent use.
 
 ## Modes
 
@@ -34,7 +34,7 @@ Design: query is a generic primitive. It dispatches on params: 'id' → direct l
   query({ "mode": "timeline" })                         — thought timeline
   query({ "mode": "charges" })                          — thought charge summary
   query({ "mode": "clusters" })                         — thought cluster summary (thought-only; it takes no type/all_types filter)
-  query({ "mode": "metadata_stats", "graph": "cloud", "name": "aws-prod" })  — per-graph cardinality histogram for every metadata key
+  query({ "mode": "metadata_stats", "graph": "<registered type>", "name": "acme" })  — per-graph cardinality histogram for every metadata key
 
   For an ALL-NODE-TYPE cluster summary the spelling is the thoughts tool, not a
   query filter:
@@ -80,58 +80,69 @@ Design: query is a generic primitive. It dispatches on params: 'id' → direct l
   most-recently-touched work items.
 
 ## Practice graph queries
-  query({ "graph": "practice" })                                    — list all practice graphs
-  query({ "graph": "practice", "language": "go" })                  — browse a language's practice graph
-  query({ "graph": "practice", "language": "go", "text": "errors" }) — search within a practice graph
-  query({ "id": "node_id", "graph": "practice", "language": "go" }) — look up a specific practice node
+  Practice is ONE combined graph. It takes no instance selector: an unselected
+  read addresses the whole corpus, and 'source' narrows it to one origin hub.
+  'language' is the READ-ONLY legacy selector for the pre-singleton graphs.
 
-### Cloud graph queries
-  query({ "graph": "cloud" })                                          — list all cloud graphs
-  query({ "graph": "cloud", "account": "aws-prod" })                   — browse cloud resources
-  query({ "graph": "cloud", "account": "aws-prod", "text": "web" })    — search within a cloud graph
-  query({ "graph": "cloud", "account": "aws-prod", "resource_type": "ec2" }) — filter by resource type prefix
-  query({ "id": "arn:aws:...", "graph": "cloud" })                     — look up a specific cloud resource (scans all accounts)
-  query({ "id": "arn:aws:...", "graph": "cloud", "account": "aws-prod" }) — look up in a specific account
+  query({ "graph": "practice" })                                     — browse the combined practice graph
+  query({ "graph": "practice", "mode": "modules" })                  — list the pre-singleton practice graphs
+  query({ "graph": "practice", "source": "hub_id" })                 — browse one origin hub
+  query({ "graph": "practice", "text": "errors" })                   — search the whole practice corpus
+  query({ "id": "node_id", "graph": "practice" })                    — look up a specific practice node
+  query({ "graph": "practice", "language": "go" })                   — browse a LEGACY pre-singleton graph
+
+### Style-rule index
+  query({ "graph": "practice", "mode": "style_index", "source": "hub_id" })
+  query({ "graph": "practice", "mode": "style_index", "source": "hub_id",
+          "repo": "myrepo", "path_prefixes": ["cmd/tools"] })
+
+  "style_index" renders the code style rules under one language hub as one
+  tab-separated line each — id, severity, scope, one-line summary, sister-check
+  id — and nothing else. The prose is read on demand by id once a row looks
+  relevant; the index never inlines a rule's text, its pattern or its fixtures.
+
+  Scope narrowing is by 'repo' and 'path_prefix'/'path_prefixes'. A rule's scope
+  is OPTIONAL: a rule carrying none applies everywhere and is always listed,
+  while a rule whose scope names another repo, or no path the caller named, is
+  absent. Paths match at path-segment boundaries, so "pkg" admits "pkg/x.go" and
+  never "pkgextra/x.go".
+
+  It DRAINS every matching rule rather than paging, so it takes no limit/offset:
+  a page boundary would silently drop rules that bind to the caller's paths.
 
 ### Linkage graph queries
   query({ "graph": "linkage" })                                           — list linkage graph info
   query({ "graph": "linkage", "mode": "stats" })                         — linkage graph statistics with proxy breakdown
   query({ "graph": "linkage", "text": "deploy" })                        — search within the linkage graph
-  query({ "id": "proxy:cloud:aws-prod:arn:...", "graph": "linkage" })     — look up a specific linkage proxy
+  query({ "id": "proxy:custom/acme-ci:acme:pipeline-7", "graph": "linkage" })  — look up a specific linkage proxy
 
-### Log graph queries (ephemeral, per-query_id)
-  query({ "graph": "logs", "name": "<query_id>" })                          — label overview ranked by error count
-  query({ "graph": "logs", "name": "<query_id>", "text": "app=api severity>=WARN" }) — drill-down (AND-only label filters + severity range)
-  query({ "graph": "logs", "name": "<query_id>", "id": "<template_id>" })   — template detail with decompressed example entries
-  query({ "graph": "logs", "name": "<query_id>", "mode": "pivot",
-          "rows": "reporting_instance", "cols": "reason" })                  — row×col matrix of log counts
-  query({ "graph": "logs", "name": "<query_id>", "mode": "correlations" })   — every CORRELATES_WITH edge, sorted by score desc
-  query({ "graph": "logs", "name": "<query_id>", "mode": "timeline" })        — templates ordered by FirstSeen (T+offset, alias, count, span)
-  query({ "graph": "logs", "name": "<query_id>", "mode": "timeline",
-          "extra": { "bucket": "10s" } })                                     — histogram rollup into fixed-width windows
-  query({ "graph": "logs", "name": "<query_id>", "mode": "explain",
-          "id": "<template_alias_or_id>" })                                   — per-correlation breakdown for one template
-  query({ "graph": "logs", "name": "<query_id>", "mode": "explain",
-          "extra": { "a": "<tplA>", "b": "<tplB>" } })                         — explain a specific correlation pair
-  query({ "graph": "logs", "name": "<query_id>", "mode": "resolver" })         — per-stream cloud-resolution trace (resolved + unresolved)
+### Composite correlation modes (any graph)
+  query({ "graph": "knowledge", "mode": "correlations" })                   — every CORRELATES_WITH edge, sorted by score desc
+  query({ "graph": "code", "repo": "myrepo", "mode": "correlations",
+          "edge_type": ["CALLS"] })                                          — narrow to one edge type for an exact ranking
+  query({ "graph": "knowledge", "mode": "pivot",
+          "rows": "type", "cols": "status" })                                — row×col matrix of node counts
+  query({ "graph": "knowledge", "mode": "explain", "id": "<node_id>" })      — per-correlation breakdown for one node
 
-  See help("logs") for the drill-down grammar, pivot defaults, alias
-  conventions, and the full collect → query → traverse workflow.
+  correlations caps at 100 rows by confidence; widen with limit up to 1000.
+  Past 50,000 scanned edges the ranking is a SAMPLE and says so — narrow with
+  edge_type for an exact one.
 
 ### Topology mode (analyzer dispatch)
   query({ "mode": "topology", "graph": "code", "algorithm": "pagerank", "repo": "myrepo", "top_k": 20 })
-  query({ "mode": "topology", "graph": "cloud", "algorithm": "scc", "account": "aws-prod" })
+  query({ "mode": "topology", "graph": "<registered type>", "algorithm": "scc", "name": "acme" })
 
   Both 'graph' and 'algorithm' are REQUIRED — there is no default sweep, no
   paramless dump, and no linkage fallback. topology mode dispatches to a
   registered analyzer in the topology package: provide 'algorithm' (omit it
   to get the registered analyzer list in the error), plus the standard graph
-  instance params ('repo' for code, 'account' for cloud, none for knowledge).
+  instance params ('repo' for code, 'name' for a registered type, none for knowledge).
   'repo' is REQUIRED for the code graph — topology runs over a NAMED code graph
   and never infers one from cwd. Optional 'top_k' caps ranked findings;
   'path_prefix' is honored only by the corpus-scan analyzer and is REFUSED for
-  any other algorithm rather than ignored; for cloud, 'resource_type' restricts
-  to nodes whose 'resource_type' meta starts with the prefix. Output is
+  any other algorithm rather than ignored; for a resource-shaped graph,
+  'resource_type' restricts to nodes whose 'resource_type' meta starts with the
+  prefix. Output is
   JSON-encoded foundation.Finding objects. See help("topology").
 
 ### Cross-graph link augmentation
@@ -139,10 +150,10 @@ Design: query is a generic primitive. It dispatches on params: 'id' → direct l
   Augments any node lookup with cross-graph links from the linkage graph.
 
 ## Key parameters
-  text, id, type, mode, graph (knowledge|code|cloud|cicd|practice|checks|linkage|logs), limit, offset,
+  text, id, type, mode, graph (knowledge|code|practice|checks|linkage|custom), limit, offset,
   include_edges, include_cross_links, since, session, status, valence_min/max, magnitude_min,
   consistency_max, connected_to, language (for practice graph),
-  account (for cloud graph), resource_type (for cloud graph), name (query_id for log graph)
+  resource_type (for a resource-shaped graph), name (for a name-keyed graph)
 
 ## Gotchas
   - "examine" mode requires id
@@ -150,10 +161,12 @@ Design: query is a generic primitive. It dispatches on params: 'id' → direct l
   - There is NO cross-graph selector. graph:"all" is not a graph type and is
     REFUSED, like any other unknown value, with an error naming it and the
     accepted vocabulary. Name the graph you mean — for code, that also means
-    naming 'repo' (or repo:"all", the cross-REPO fan-out within the code graph;
-    language:"all" is its practice-graph counterpart).
-  - Practice graph queries require language param (except when listing all practice graphs)
-  - Cloud graph queries require account param for search/browse (omit to list all cloud graphs)
+    naming 'repo' (or repo:"all", the cross-REPO fan-out within the code graph).
+    language:"all" was its practice-graph counterpart and is RETIRED: practice is
+    one combined graph, so an unselected read already covers the whole corpus.
+  - Practice graph queries take NO instance selector. Omit it to read the
+    combined graph, narrow with source:"<hub id>", and use the read-only
+    'language' only to reach a pre-singleton graph.
   - include_cross_links only works with id-based queries (not browse or search)
 `
 
@@ -164,8 +177,8 @@ const helpTraverse = `# traverse — Edge-first graph traversal
 
   direction: "out" (default), "in", or "both" (union deduped by node ID)
   edge_types: filter to specific edge types (omit for any edge)
-  graph: target graph — "" or "knowledge" (default), "code", "cloud", "cicd",
-         "practice", "checks", "logs", "linkage"
+  graph: target graph — "" or "knowledge" (default), "code",
+         "practice", "checks", "linkage", or a registered custom graph type
 
 ## Discovery
   Don't memorize edge types — discover them:
@@ -180,17 +193,9 @@ const helpTraverse = `# traverse — Edge-first graph traversal
   traverse({ "start": "pkg/server.go:Handle", "graph": "code",
              "edge_types": ["calls"], "direction": "out" })
 
-  # Walk cloud resource relationships
-  traverse({ "start": "arn:aws:ec2:...", "graph": "cloud", "account": "prod",
+  # Walk a registered collector's resource relationships
+  traverse({ "start": "arn:aws:ec2:...", "graph": "aws", "name": "prod",
              "direction": "both", "include_edge_metadata": true })
-
-  # Log graph: template → chunks
-  traverse({ "graph": "logs", "name": "<query_id>",
-             "start": "<template_id>", "direction": "out" })
-
-  # Log graph: stream → labels + chunks + cloud proxies
-  traverse({ "graph": "logs", "name": "<query_id>",
-             "start": "<stream_id>", "direction": "both" })
 
   # Graph-wide edge enumeration: omit start entirely
   traverse({ "graph": "knowledge" })   — node + edge totals for the whole graph
@@ -210,6 +215,5 @@ const helpTraverse = `# traverse — Edge-first graph traversal
 
 ## Gotchas
   - depth:1 gives only immediate neighbors (default)
-  - Log graph traversal starts only at NodeLogTemplate or NodeLogStream
   - Cross-graph proxies auto-resolve — no special direction needed
 `

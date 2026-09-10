@@ -6,7 +6,7 @@ user-invocable: false
 
 # PREFILL — the implementer's preloaded context
 
-<!-- version: 2 -->
+<!-- version: 5 -->
 <!-- Read at: planner, before writing; reviewer, before auditing; implementer,
      before its first read of a prefill. -->
 
@@ -48,6 +48,13 @@ traverse without opening one. The section's own body is never edited by the
 reviewer. A needed change is applied by exact replacement of the quoted text,
 never by retyping the section.
 
+Every section ends with one line headed `Depends on:` naming the sections and
+contracts whose change would invalidate it, or `none`. A change to a section
+is followed by a re-read of every section whose line names it, re-sent whole
+where it disagrees. A fix applied to the section an annotation names and
+never re-derived in the sections that rest on it is the defect this line
+exists to make visible.
+
 ## The sections
 
 1. **Tree**: the sha the prefill was resolved at, the branch it lands on, and
@@ -55,7 +62,10 @@ never by retyping the section.
 2. **Touch points**: every site the change reaches, from a census by tool
    (`ast`, `traverse`, `search`) with the command and output; per site, one
    line on what changes there. Callers come from a traverse on CALLS plus an
-   ast shape match including tests.
+   ast shape match including tests. A census the research node already
+   carries at the prefill's tree is CITED by node id and tree, never
+   re-derived; the prefill derives only what the research did not census or
+   what a tree delta since the research invalidated, and says which.
 3. **Reuse**: the exact symbol to extend or call, file and line, opened, with
    the idiom it embodies and the practice node that names the idiom where one
    exists. A new unit is justified only by a recorded miss on both a name
@@ -65,9 +75,16 @@ never by retyping the section.
    it. Informal contracts count: metadata keys read by name, derived names,
    status and reason strings, schema versions, log lines another component
    scrapes.
-5. **Performance shape**: the in-tree primitive the change rides (the batch
-   helper, the parallel primitive, the index) and the scale it will meet,
-   cited. Serial is fine for a single-call operation; say so in one line.
+5. **Performance shape**: for every unit the change adds or rewrites, the
+   shape it takes and why: the work it does per call, whether its steps are
+   independent and so run in parallel on the repository's own primitive for
+   that (the batch helper, the parallel primitive, the index), and the scale
+   it meets, cited. A sequential shape over independent work is a choice,
+   and the section states its reason. Where two shapes are plausible, the
+   alternative considered and the measurement that decides between them,
+   naming the harness in the tree that produces it; a change with no
+   measurable alternative says so in one line. Serial is fine for a
+   single-call operation; say so.
 6. **What to test**: the list the implementer writes tests from and the code
    reviewer audits against. Per ticket requirement, the observation that shows
    it met. Per changed function, the input classes the specification names,
@@ -82,17 +99,44 @@ never by retyping the section.
    the behavior each cell must hold, so a silent drop in one cell is a missing
    row rather than a discovery. Per guard or control the change adds, the
    mutation that must turn a named test red. The list names tests; it never
-   runs them.
-7. **Harnesses**: the repository's test harnesses that reach this change: make
-   targets, out-of-process harnesses that drive the real binaries,
-   container-backed suites, fixture libraries, and the CI legs that run each.
+   runs them. Every entry says which of two things it is: OBSERVED, a
+   behavior of the current tree that a run on that tree shows, with the run;
+   or EXPECTED, a behavior the change will introduce, which no run on the
+   current tree can show and which the implementer proves red then green.
+   An expected entry is never written as if measured, and its pre-change
+   arm, where one exists, is stated beside it as the observed half. Six rows
+   are never left implicit, because each was measured as a miss that reached
+   code review: wherever the change touches credentials, secrets or tokens, a
+   credential-handling row naming the allowlist of what may reach a stored
+   node and every encoding the object carries; for every pending pin (a test
+   that exists to turn red when a sibling lands), the red it will show, with
+   the pin observing the contract by reflection or schema, never a hand-written
+   literal; a test list that mirrors a parity target is derived from that
+   target's own suite, never hand-enumerated; every derived id or time value
+   gets an expectation independent of the producer (a literal, or a value the
+   test computes from the raw fixture); every outcome of a read (denied,
+   unreachable, partial, failed mid-page, empty) reaches the completeness
+   verdict truthfully; and every premise is checked against the rulings
+   recorded since the citations were resolved.
+7. **Harnesses**: the repository's test harnesses that reach this change: the
+   repository's own test targets, out-of-process harnesses that drive the real
+   binaries, container-backed suites, fixture libraries, and the CI legs that
+   run each.
    Two modules that cannot import each other are never a reason to leave a
    seam untested when a harness spawns both.
 8. **Landing constraints**: rebase order, files the ticket puts out of scope,
    sibling work in flight on the same branch and the shared files it touches,
    and anything the change must not break that no test covers, named.
 9. **Style**: the conventions the touched packages already follow, cited to a
-   neighboring file, and the language patterns the ticket marks as defensive.
+   neighboring file; and the style-rule INDEX for the touched languages, repo
+   and paths — one line per rule carrying its id, its severity, its scope, a
+   one-line summary, and the id of its sister check where it has one. Never
+   the rule bodies: the implementer reads a rule's full text by its id on
+   demand, and a rule whose scope excludes every touched path is absent from
+   the index. Style rules attached to the ticket or the plan arrive in the
+   assembled render the same way, as references the implementer reads in one
+   by-ids call. The language patterns the ticket marks as defensive belong
+   here too.
 10. **Checks**: the existing corpus checks that cover the touched shapes, with
     the `manage_checks(run)` output over the current tree pasted (hits read,
     not counted); and, for every structural requirement on the ticket, the

@@ -125,6 +125,7 @@ const helpRecipesGrammar = "## Grammar (EBNF-ish)\n" +
 	"        {\"compare\": {\"of\": \"edge.position\", \"op\": \"lte\", \"value\": \"3\"}}\n" +
 	"    ]}\n" +
 	"    emit heading {\n" +
+	"        identity := node.id\n" +
 	"        name := node.symbol_name\n" +
 	"        position := edge.position\n" +
 	"    }\n" +
@@ -172,11 +173,20 @@ const helpRecipesGrammar = "## Grammar (EBNF-ish)\n" +
 	"\n" +
 	"    select document\n" +
 	"    walk CONTAINS\n" +
+	"    filter {\"kind\": {\"of\": \"node\", \"is\": \"section\"}}\n" +
 	"    emit outline {\n" +
+	"        identity := node.id\n" +
 	"        name := node.symbol_name\n" +
 	"        level := walk.depth\n" +
 	"        page := node.page_first\n" +
 	"    }\n" +
+	"\n" +
+	"THE KIND FILTER IS WHAT MAKES THIS AN OUTLINE. The walk returns\n" +
+	"paragraphs, code blocks and tables as well as headings, and none of\n" +
+	"those carries a SymbolName; with an identity set they are emitted\n" +
+	"NAMELESS rather than skipped, because a row is dropped only when its\n" +
+	"name AND its identity are both empty. Drop the filter to read every\n" +
+	"level, which is what a walk is for.\n" +
 	"\n" +
 	"### filter\n" +
 	"`filter {\"matches\": {\"of\": \"section.name\", \"regex\": \"Problem|Solution\"}}`\n" +
@@ -195,8 +205,15 @@ const helpRecipesGrammar = "## Grammar (EBNF-ish)\n" +
 	"that need to enumerate the group.\n" +
 	"\n" +
 	"### emit\n" +
-	"`emit pattern { type := \"pattern\", name := page.name, summary :=\n" +
-	"page.name } as $pat` — write a target-graph node per row.\n" +
+	"`emit pattern { type := \"pattern\", identity := page.id, name :=\n" +
+	"page.name, summary := page.name } as $pat` — write a target-graph\n" +
+	"node per row.\n" +
+	"\n" +
+	"`identity` is what the emitted node's stable id is hashed on, and it\n" +
+	"must be UNIQUE PER ROW: two rows resolving to one identity refuse\n" +
+	"the whole run at the first collision. It defaults to `name`, which\n" +
+	"is a heading on most documents and is therefore not unique — key it\n" +
+	"on the row's own `id` unless you have a better unique field.\n" +
 	"\n" +
 	"- Well-known field names land on Node struct fields: `type`, `name`\n" +
 	"  (SymbolName), `summary`, `description`, `content`, `source`,\n" +
@@ -212,21 +229,25 @@ const helpRecipesGrammar = "## Grammar (EBNF-ish)\n" +
 	"  identity). Same identity + same sourceSlug → same target ID across\n" +
 	"  runs (idempotent). Same identity + different sourceSlug → distinct\n" +
 	"  IDs (source-scoped emissions don't collide).\n" +
-	"- A `translated-from` edge is stamped from the emitted node back to\n" +
-	"  the source row's NodeID (or `source_ref` override), carrying the\n" +
-	"  sourceSlug in Evidence so lineage stays attributable per source.\n" +
+	"- The emitted node REPORTS an anchor — the source row's NodeID, or\n" +
+	"  the `source_ref` override — on the extract row, which the collect\n" +
+	"  renderer prints as `src=`. NO EDGE IS BUILT: an emit used to stamp\n" +
+	"  a `translated-from` edge back into the raw graph and that is\n" +
+	"  RETIRED, because the raw graph is scratch its owner drops. The only\n" +
+	"  succession a landed node records is next-version, old to new,\n" +
+	"  inside the combined practice graph, composed by the landing.\n" +
 	"- `as $var` binds the emitted node's ID into the current row's Vars\n" +
 	"  AND the env-wide EmitMap. The binding survives into later rules\n" +
 	"  and through traverse (via cloneRowVars).\n" +
 	"\n" +
 	"### lookup\n" +
-	"`lookup pattern by page.name as $rel` — compute the StableID that a\n" +
+	"`lookup pattern by page.id as $rel` — compute the StableID that a\n" +
 	"prior emit WOULD have produced for the same (target, sourceSlug,\n" +
 	"NodeType, identity) tuple, verify that node was EMITTED EARLIER IN\n" +
 	"THIS RUN (an in-run emitted-set check, never a target-graph read),\n" +
 	"and bind the resulting ID to $rel.\n" +
 	"\n" +
-	"- No write. No translated-from edge. No NodesEmitted increment.\n" +
+	"- No write. No anchor reported. No NodesEmitted increment.\n" +
 	"- If the identity expression resolves to empty OR the node is\n" +
 	"  absent: no binding, Stats.LookupMisses increments, downstream\n" +
 	"  `link` rules for that row silently skip.\n" +
@@ -250,8 +271,8 @@ const helpRecipesGrammar = "## Grammar (EBNF-ish)\n" +
 	"  checked against the source graph's edge vocabulary.\n" +
 	"\n" +
 	"### source_ref\n" +
-	"`source_ref $explicit_origin` — override the default translated-from\n" +
-	"target for subsequent emits in this recipe. Evaluated once against\n" +
+	"`source_ref $explicit_origin` — override the anchor subsequent emits\n" +
+	"in this recipe REPORT. Evaluated once against\n" +
 	"the first row (recipe-scope, not row-scope). Rarely needed; default\n" +
 	"(current row's NodeID) is usually right.\n" +
 	"\n" +

@@ -16,7 +16,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 )
 
-// collectorSchemaVersion identifies the SHAPE this web collector emits — which
+// CollectorSchemaVersion identifies the SHAPE this web collector emits — which
 // node types it produces, which fields carry what, and which metadata keys it
 // stamps. It is stamped on the page root under `collector_schema_version` and
 // is BUMPED in the same change as any alteration to what this collector emits.
@@ -39,7 +39,13 @@ import (
 // retained when they hold nothing but links, and THE PAGE NODE CARRIES NO
 // BODY — a page is its chunks.
 // 1 — the shape before that.
-const collectorSchemaVersion = 3
+//
+// IT IS EXPORTED so a reader outside this package can cite it rather than
+// mirror it: a fixture that hard-codes the version is a second declaration
+// free to drift, and one did — the recipe help's fixture graph in
+// cmd/knowledge/internal/tools carried "1" against this constant's 3 until a
+// reader caught it by hand. That fixture now compares against this name.
+const CollectorSchemaVersion = 3
 
 // emitFromPage converts a *pageRecord into flat slices of *knowledgev1.Node
 // and kgwire.BatchEdge suitable for handing to a batch create. The root
@@ -171,7 +177,7 @@ func (e *emitter) emitPageNode() {
 		"http_status":              strconv.Itoa(e.page.HTTPStatus),
 		"content_hash":             e.page.ContentHash,
 		"uri":                      e.pageURI,
-		"collector_schema_version": strconv.Itoa(collectorSchemaVersion),
+		"collector_schema_version": strconv.Itoa(CollectorSchemaVersion),
 	}
 	if e.page.Title != "" {
 		md["title"] = e.page.Title

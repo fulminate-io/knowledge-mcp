@@ -28,7 +28,7 @@ import (
 // the uniform "daemon still starting" not-ready error instead of panicking. The
 // fails-when-absent property: drop the PipelineReady gate and these calls panic on
 // the nil deref (the test crashes) instead of returning the error result. The
-// cloud/cicd + registered arms (already nil-safe) must emit the SAME window
+// the registered arm (already nil-safe) must emit the SAME window
 // message rather than the permanent-degrade string. segMgr is left nil
 // deliberately — that is the exact window state the gate must intercept.
 func TestSegmentSearchArms_NotReadyGate(t *testing.T) {
@@ -71,14 +71,12 @@ func TestSegmentSearchArms_NotReadyGate(t *testing.T) {
 		h, res := InterceptQueryPracticeLinkage(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
 		expectNotReady(t, h, res)
 	})
-	t.Run("query-practice-fanout", func(t *testing.T) {
-		raw, _ := json.Marshal(map[string]any{"graph": "practice", "language": "all", "text": "x"})
+	t.Run("query-practice-no-selector", func(t *testing.T) {
+		// The UNSELECTED practice search — the corpus-wide read that replaced the
+		// language:"all" fan-out. It reaches the same composer and must meet the
+		// same startup gate before the segment Manager is dereferenced.
+		raw, _ := json.Marshal(map[string]any{"graph": "practice", "text": "x"})
 		h, res := InterceptQueryPracticeLinkage(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
-		expectNotReady(t, h, res)
-	})
-	t.Run("query-cloud", func(t *testing.T) {
-		raw, _ := json.Marshal(map[string]any{"graph": "cloud", "account": "acct", "text": "x"})
-		h, res := InterceptQueryCloudCICD(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
 		expectNotReady(t, h, res)
 	})
 	t.Run("query-registered", func(t *testing.T) {
@@ -125,8 +123,11 @@ func TestSegmentSearchArms_DegradedNilManager(t *testing.T) {
 		h, res := InterceptQueryPracticeLinkage(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
 		expectDegraded(t, h, res)
 	})
-	t.Run("query-practice-fanout", func(t *testing.T) {
-		raw, _ := json.Marshal(map[string]any{"graph": "practice", "language": "all", "text": "x"})
+	t.Run("query-practice-no-selector", func(t *testing.T) {
+		// The UNSELECTED practice search — the corpus-wide read that replaced the
+		// language:"all" fan-out. It reaches the same composer and must meet the
+		// same startup gate before the segment Manager is dereferenced.
+		raw, _ := json.Marshal(map[string]any{"graph": "practice", "text": "x"})
 		h, res := InterceptQueryPracticeLinkage(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
 		expectDegraded(t, h, res)
 	})

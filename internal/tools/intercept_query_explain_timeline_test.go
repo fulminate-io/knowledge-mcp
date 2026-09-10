@@ -100,8 +100,13 @@ func TestInterceptQueryExplainTimeline(t *testing.T) {
 	t.Run("gate: claims explain+timeline, falls through otherwise", func(t *testing.T) {
 		handled, _ := InterceptQueryExplainTimeline(opCtx(), nil, kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"mode":"stats"}`)})
 		assert.False(t, handled, "non explain/timeline mode not claimed")
-		handled, _ = InterceptQueryExplainTimeline(opCtx(), nil, kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"graph":"logs","mode":"explain"}`)})
-		assert.False(t, handled, "logs explain owned by InterceptLogsQuery")
+		// A RETIRED FAMILY IS NOT DECLINED HERE ANY MORE, and that is the change
+		// rather than a gap. This arm used to decline graph=logs so an earlier
+		// chain step could own it; that step is gone, so `logs` is claimed here
+		// like any other graph name and refused downstream by the retired-family
+		// gate — declining it now would leave the call answered by nobody.
+		handled, _ = InterceptQueryExplainTimeline(opCtx(), newETFakeDeps(&etFake{}), kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"graph":"logs","mode":"explain"}`)})
+		assert.True(t, handled, "an explain call is claimed here whatever graph it names")
 	})
 
 	t.Run("explain single-node renders edges with resolved names", func(t *testing.T) {

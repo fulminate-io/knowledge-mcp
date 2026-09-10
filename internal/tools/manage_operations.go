@@ -8,16 +8,14 @@ package tools
 
 import "slices"
 
-// manageOperations is every operation a `manage` call may legitimately name:
-// InterceptManage's own switch cases PLUS the four operations
-// InterceptLogsManage claims later in the chain (list_logs, discard_logs,
-// configure_log_backend, list_log_backends).
+// manageOperations is every operation a `manage` call may legitimately name.
 //
-// Those four live here, away from the intercept that answers them, for the
-// reason that makes this list necessary at all: InterceptManage runs FIRST, so
-// its terminal unknown-operation arm has to recognize them as known and DECLINE
-// them. A list of only its own cases would reject all four before their
-// claimant ever saw the call.
+// IT USED TO CARRY FOUR OPERATIONS NO SWITCH CASE HERE ANSWERED — list_logs,
+// discard_logs, configure_log_backend and list_log_backends, claimed by a logs
+// intercept further down the chain, which InterceptManage had to recognize as
+// known and DECLINE rather than reject. That intercept is gone with the built-in
+// log collectors, so the list is again exactly InterceptManage's own cases, and
+// a name it does not answer is a name nothing answers.
 //
 // Sorted, and sized by construction (len(manageOperations)) — never by a
 // hand-written numeral, which is the kind of claim that rots silently.
@@ -26,14 +24,11 @@ import "slices"
 // operation enum ManageToolDef() publishes.
 var manageOperations = []string{
 	"clear_llm_failures",
-	"configure_log_backend",
 	"delete_branch",
-	"discard_logs",
 	"drop_graph",
+	"import_style_rules",
 	"link",
 	"list_branches",
-	"list_log_backends",
-	"list_logs",
 	"migrate_embed_identity",
 	"pause_pipeline",
 	"pipeline_status",

@@ -24,7 +24,7 @@ package bootstrap
 // — a shared post-hydrate tail and a mirrored claim gate — because the property
 // worth pinning is that the two arms answer equivalent payloads equivalently,
 // and that is only observable with both in one harness. Still excluded, each
-// having its own claim arm and its own suites: cloud/cicd, practice/linkage,
+// having its own claim arm and its own suites: practice/linkage,
 // and code.
 //
 // TWO BLIND SPOTS, so a green run is not over-read:

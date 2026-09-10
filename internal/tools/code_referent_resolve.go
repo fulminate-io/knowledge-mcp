@@ -55,7 +55,7 @@ const codeRefMethod = "code-ref"
 //
 // Probe scope is code graphs ONLY: it enumerates with the thin
 // ListForeignGraphsOfType(GraphCode) (one graph-names read) rather than the
-// four-read ListForeignGraphs, so cloud/practice/cicd graphs are never fetched
+// two-read ListForeignGraphs, so practice graphs are never fetched
 // against. The proxy is upserted with targetGraph="knowledge" (mirroring
 // resolveCrossGraphID) because the born-link relates-to edge rides the knowledge
 // create_batch and the server resolves the edge's ToID inside the knowledge graph;

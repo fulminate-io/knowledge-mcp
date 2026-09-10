@@ -25,11 +25,10 @@ type tailRoutingDeps struct {
 	local  GraphCaller
 }
 
-func (d *tailRoutingDeps) LocalLiveness() LocalLiveness          { return nil }
-func (d *tailRoutingDeps) Sink() collector.Sink                  { return noopSink{} }
-func (d *tailRoutingDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
-func (d *tailRoutingDeps) RootDir() string                       { return "" }
-func (d *tailRoutingDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
+func (d *tailRoutingDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d *tailRoutingDeps) Sink() collector.Sink            { return noopSink{} }
+func (d *tailRoutingDeps) RootDir() string                 { return "" }
+func (d *tailRoutingDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
 
 func (d *tailRoutingDeps) PropReady() bool     { return true }
 func (d *tailRoutingDeps) PipelineReady() bool { return true }
@@ -66,9 +65,9 @@ func TestPostCollectTail_RoutesThroughGraphCaller(t *testing.T) {
 	const tailType = "postcollect-tail-routing-test"
 
 	// Map the test collector type onto the cloud graph type so postpopulate
-	// enumerates GraphCloud names; restore afterwards.
+	// enumerates GraphPractice names; restore afterwards.
 	prev, had := postPopulateGraphType[tailType]
-	postPopulateGraphType[tailType] = kgtypes.GraphCloud
+	postPopulateGraphType[tailType] = kgtypes.GraphPractice
 	t.Cleanup(func() {
 		if had {
 			postPopulateGraphType[tailType] = prev
@@ -88,21 +87,10 @@ func TestPostCollectTail_RoutesThroughGraphCaller(t *testing.T) {
 		return nil
 	})
 
-	// Add the test type to the linker-trigger set so runPostCollectLinker fires.
-	prevLink, hadLink := postCollectLinkerTypes[tailType]
-	postCollectLinkerTypes[tailType] = true
-	t.Cleanup(func() {
-		if hadLink {
-			postCollectLinkerTypes[tailType] = prevLink
-		} else {
-			delete(postCollectLinkerTypes, tailType)
-		}
-	})
-
 	seed := func() *fakeGraphCaller {
 		return &fakeGraphCaller{
 			listGraphsResult: &kgtools.ToolResult{
-				Content: []kgtools.ContentBlock{{Type: "text", Text: `{"graphs":[{"graph_type":"cloud","graph_name":"aws-acct-123"}]}`}},
+				Content: []kgtools.ContentBlock{{Type: "text", Text: `{"graphs":[{"graph_type":"practice","graph_name":"aws-acct-123"}]}`}},
 			},
 		}
 	}
@@ -112,11 +100,13 @@ func TestPostCollectTail_RoutesThroughGraphCaller(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Drive the linker tail (test type is in the linker-trigger set).
-	runPostCollectLinker(ctx, deps, tailType)
+	// Drive the linker tail. Its trigger is the CODE collector type — one string,
+	// not a map a test can join — so it is driven with that type and a collected
+	// graph name, which is the only shape that reaches the pass.
+	runPostCollectLinker(ctx, deps, postCollectLinkerType, "aws-acct-123", false)
 	// Drive the postpopulate tail. Its error is not this test's subject (routing
 	// is), and the stub hook here succeeds, so the return is discarded explicitly.
-	_ = runPostCollectPostPopulate(ctx, deps, tailType, "")
+	_ = runPostCollectPostPopulate(ctx, deps, tailType, "", false)
 
 	hookMu.Lock()
 	fired := hookFired

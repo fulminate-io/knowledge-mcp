@@ -31,30 +31,65 @@ import (
 )
 
 // executeGraphCheck runs one graph_assertion or topology_threshold check against
-// the target code graph.
-func executeGraphCheck(ctx context.Context, req foundation.Request, entry corpusEntry) ([]foundation.Finding, error) {
+// the target code graph, returning its sites and any LEAD finding it produced.
+//
+// THE SECOND RETURN IS HOW A NOT-RUN CHECK STAYS VISIBLE. THREE narrowings can
+// legitimately empty this arm's candidate set, and naming only the first was
+// what made this comment wrong: the caller's FILE LIST, the caller's
+// PATH_PREFIX, and the CHECK'S OWN declared style_scope_paths. A check that
+// evaluated nothing has established nothing about the files in question, so it
+// is recorded rather than folded into a clean verdict — and the record names
+// WHICH of the three did it, because a caller widens their call and a corpus
+// author re-scopes their check.
+//
+// THE THIRD, THE REPO SCOPE, NEVER REACHES HERE. A check naming another
+// repository is skipped before any executor runs, so this arm sees only the two
+// path-shaped narrowings and the check's own.
+//
+// A PATH_PREFIX THAT EMPTIES IT KEEPS THE ERROR rather than becoming a
+// disclosure, and that asymmetry is the landed behavior this change did not
+// touch: a prefix reaching no candidate is indistinguishable from an uncollected
+// graph, while a file list is a caller naming artifacts they already know exist.
+func executeGraphCheck(ctx context.Context, req foundation.Request, entry corpusEntry, opts scanOptions, dec checkScopeDecision) ([]foundation.Finding, []foundation.Finding, error) {
 	c := entry.Check
 	sev, err := checkSeverity(c)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	a, err := parseAssertion(c)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	nodes, edges, err := fetchGraphFacts(ctx, req, c, a)
+	nodes, edges, emptied, err := fetchGraphFacts(ctx, req, c, a, opts, dec)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	// WHICH NARROWING EMPTIED IT IS WHAT THE READER NEEDS, and it is MEASURED
+	// rather than guessed from which narrowings were in force. A caller's file
+	// list and a check's own declared paths both legitimately leave a graph check
+	// with no candidate, and the remedies are opposite — widen the call, or
+	// re-scope the check. Reading "the check carried a scope" as "the check's
+	// scope did it" blames the corpus for a caller's narrowing whenever both are
+	// in force, which is the common case this arm exists for.
+	switch emptied {
+	case emptiedByCheckScope:
+		return nil, []foundation.Finding{
+			outOfScopeDisclosure(c.ID, dec, reasonNoGraphCandidate(a.NodeType))}, nil
+	case emptiedByCallerScope:
+		return nil, []foundation.Finding{graphNotRunDisclosure(c.ID, a.NodeType, opts.files)}, nil
+	case emptiedByNothing:
 	}
 	sites := make([]foundation.Finding, 0)
 	for _, v := range evaluate(a, nodes, edges) {
 		sites = append(sites, graphSiteFinding(entry, sev, v))
 	}
 	sortSites(sites)
-	return sites, nil
+	return sites, nil, nil
 }
 
-// fetchGraphFacts reads the candidate nodes and their edges over the wire.
+// fetchGraphFacts reads the candidate nodes and their edges over the wire. The
+// bool reports that the check did NOT run because the scope narrowed its
+// candidates away — never that it ran and found nothing.
 //
 // AN EMPTY CANDIDATE SET IS AN ERROR, NOT A CLEAN RESULT. A graph check needs a
 // COLLECTED code graph, which an ast check does not — ast reads the working tree
@@ -62,15 +97,42 @@ func executeGraphCheck(ctx context.Context, req foundation.Request, entry corpus
 // naming a node type this graph does not carry, reports zero violations and is
 // indistinguishable from a repo with no problems. This is the scan-side twin of
 // the fixture-side non-empty-facts control in ValidateGraphFixtures.
-func fetchGraphFacts(ctx context.Context, req foundation.Request, c corpus.Check, a graphAssertion) ([]*knowledgev1.Node, []*knowledgev1.Edge, error) {
+//
+// THE CONTROL HAD TO LEARN ONE DIFFERENCE, and the file-list scope is what made
+// it necessary. Under a ten-file scope a legitimately-narrowed graph check will
+// routinely have zero candidates — that is the scope working, not a missing
+// graph — so the two are told apart by whether the check had candidates BEFORE
+// the narrowing. Non-empty before and empty after is a NOT-RUN disclosure; empty
+// before keeps the error, because that is still an uncollected graph or a node
+// type this graph does not carry.
+func fetchGraphFacts(ctx context.Context, req foundation.Request, c corpus.Check, a graphAssertion, opts scanOptions, dec checkScopeDecision) ([]*knowledgev1.Node, []*knowledgev1.Edge, scopeEmptier, error) {
 	nodes, err := foundation.FetchNodesByType(ctx, req.Caller, req.Graph, req.Name, kgtypes.NodeType(a.NodeType))
 	if err != nil {
-		return nil, nil, fmt.Errorf("topology/%s: check %q: read %s nodes from %s: %w", AnalyzerName, c.ID, a.NodeType, req.Name, err)
+		return nil, nil, emptiedByNothing, fmt.Errorf("topology/%s: check %q: read %s nodes from %s: %w", AnalyzerName, c.ID, a.NodeType, req.Name, err)
 	}
-	nodes = filterByPathPrefix(nodes, req.PathPrefix)
+	collected := len(nodes)
+	nodes = filterByPathPrefix(nodes, req.PathPrefix, opts.files)
+	// THE COUNT IS TAKEN BETWEEN THE TWO FILTERS, and that is the whole of how
+	// the two narrowings are told apart afterwards. Both can empty the set and
+	// their remedies are opposite, so the arm that reports it has to know WHICH,
+	// and after both have run there is nothing left to read it off.
+	afterCaller := len(nodes)
+	// THE CHECK'S OWN PATHS NARROW THIS ARM TOO. A scoped check that kept every
+	// candidate node here while its ast siblings walked a subtree would report
+	// sites in files its author declared it does not govern — the requirement is
+	// about the check, not about one executor. It is a SECOND conjunct rather
+	// than a replacement so the caller's channel keeps its own semantics, and it
+	// reads through the walk's own segment-boundary predicate.
+	nodes = filterByCheckScope(nodes, dec)
 	if len(nodes) == 0 {
-		return nil, nil, fmt.Errorf("topology/%s: check %q found no %q nodes in code graph %q%s — a graph check needs a collected code graph, so run a collect for this repo rather than reading this as a clean scan",
-			AnalyzerName, c.ID, a.NodeType, req.Name, pathPrefixClause(req.PathPrefix))
+		if afterCaller > 0 {
+			return nil, nil, emptiedByCheckScope, nil
+		}
+		if opts.files != nil && collected > 0 {
+			return nil, nil, emptiedByCallerScope, nil
+		}
+		return nil, nil, emptiedByNothing, fmt.Errorf("topology/%s: check %q found no %q nodes in code graph %q%s — a graph check needs a collected code graph, so run a collect for this repo rather than reading this as a clean scan",
+			AnalyzerName, c.ID, a.NodeType, req.Name, scopeClause(req.PathPrefix, opts.files))
 	}
 	ids := make([]string, 0, len(nodes))
 	for _, n := range nodes {
@@ -83,9 +145,9 @@ func fetchGraphFacts(ctx context.Context, req foundation.Request, c corpus.Check
 	// confidently wrong output that reads exactly like right output.
 	edges, err := foundation.FetchEdges(ctx, req.Caller, req.Graph, req.Name, ids, []kgtypes.EdgeType{kgtypes.EdgeType(a.EdgeType)})
 	if err != nil {
-		return nil, nil, fmt.Errorf("topology/%s: check %q: read %s edges from %s: %w", AnalyzerName, c.ID, a.EdgeType, req.Name, err)
+		return nil, nil, emptiedByNothing, fmt.Errorf("topology/%s: check %q: read %s edges from %s: %w", AnalyzerName, c.ID, a.EdgeType, req.Name, err)
 	}
-	return nodes, adaptEdges(edges), nil
+	return nodes, adaptEdges(edges), emptiedByNothing, nil
 }
 
 // adaptEdges converts foundation's VALUE edge slice to the pointer slice the
@@ -103,12 +165,34 @@ func adaptEdges(edges []knowledgev1.Edge) []*knowledgev1.Edge {
 	return out
 }
 
-// filterByPathPrefix narrows the candidate set to nodes under a repo-relative
-// subtree. Code-graph node ids are receiver-qualified paths of the form
-// path/file.go:Type.Method, so a prefix match is meaningful — but it matches at
-// PATH-SEGMENT boundaries so "a/b" never admits the sibling "a/bc", mirroring
-// ast's own PackagePrefixes semantics.
-func filterByPathPrefix(nodes []*knowledgev1.Node, prefix string) []*knowledgev1.Node {
+// filterByPathPrefix narrows the candidate set to the run's scope: a
+// repo-relative subtree, or the named file set. Code-graph node ids are
+// receiver-qualified paths of the form path/file.go:Type.Method, so a path match
+// is meaningful — but it matches at PATH-SEGMENT boundaries so "a/b" never
+// admits the sibling "a/bc", mirroring ast's own PackagePrefixes semantics.
+//
+// THE FILE-LIST ARM EXISTS BECAUSE A FILES SCOPE LEAVES THE PREFIX EMPTY BY
+// CONSTRUCTION, and an empty prefix here means every candidate. Without this
+// arm a graph check under a ten-file scope would evaluate the whole code graph
+// and could flag a site in a file the caller never named — the mirror image of
+// the silent drop this scope closes, and the same contradiction of "scans only
+// those files".
+//
+// IT DELEGATES BOTH THE FILE PART AND THE PREDICATE rather than re-deriving
+// either: nodeFilePath already takes the path off a node id for the finding's
+// own file metadata, and parser.MatchesPathPrefixes is the predicate the ast
+// walk narrows by, so the two arms of one scope cannot disagree about what a
+// path list means.
+func filterByPathPrefix(nodes []*knowledgev1.Node, prefix string, files *fileScope) []*knowledgev1.Node {
+	if files != nil {
+		out := make([]*knowledgev1.Node, 0, len(nodes))
+		for _, n := range nodes {
+			if parser.MatchesPathPrefixes(nodeFilePath(n.GetId()), files.named) {
+				out = append(out, n)
+			}
+		}
+		return out
+	}
 	prefix = strings.TrimSuffix(strings.TrimSpace(prefix), "/")
 	if prefix == "" {
 		return nodes
@@ -123,9 +207,56 @@ func filterByPathPrefix(nodes []*knowledgev1.Node, prefix string) []*knowledgev1
 	return out
 }
 
-// pathPrefixClause names the narrowing in an error message when one is in force,
-// so an empty result under a prefix is never mistaken for an empty graph.
-func pathPrefixClause(prefix string) string {
+// scopeEmptier names which narrowing left a graph check with no candidate node.
+//
+// IT IS A THREE-VALUED ANSWER AND NOT A BOOL because the two non-empty answers
+// produce OPPOSITE advice: a caller widens their call, a corpus author re-scopes
+// their check. The retired bool said only "something narrowed it away", and the
+// arm that read it inferred the cause from which narrowings were in force —
+// which named the check whenever a check carried any scope at all, including
+// every run where the caller's own file list was what emptied the set.
+type scopeEmptier int
+
+const (
+	// emptiedByNothing means the candidate set survived, or was empty before any
+	// narrowing ran — the second of which is the uncollected-graph error and
+	// never a disclosure.
+	emptiedByNothing scopeEmptier = iota
+	// emptiedByCallerScope means the caller's file list took the last candidate.
+	emptiedByCallerScope
+	// emptiedByCheckScope means the check's own declared paths did.
+	emptiedByCheckScope
+)
+
+// filterByCheckScope drops the candidate nodes outside a check's own declared
+// paths, through the same predicate the ast walk and the practice-side index
+// narrow by, so one scope means one thing across all three.
+//
+// A CHECK WITH NO PATH SCOPE IS UNTOUCHED, and the guard is on the DECLARATION
+// rather than on the effective prefixes: dec.prefixes carries the caller's
+// channel too, which filterByPathPrefix has already applied with its own
+// semantics, and applying it a second time here would be a second answer to a
+// question that already has one.
+func filterByCheckScope(nodes []*knowledgev1.Node, dec checkScopeDecision) []*knowledgev1.Node {
+	if !dec.scope.PathsSet {
+		return nodes
+	}
+	out := make([]*knowledgev1.Node, 0, len(nodes))
+	for _, n := range nodes {
+		if parser.MatchesPathPrefixes(nodeFilePath(n.GetId()), dec.scope.Paths) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// scopeClause names the narrowing in an error message when one is in force, so
+// an empty result under a scope is never mistaken for an empty graph. It names
+// whichever of the two channels the caller used; they are mutually exclusive.
+func scopeClause(prefix string, files *fileScope) string {
+	if files != nil {
+		return fmt.Sprintf(" under the %d named file(s)", len(files.named))
+	}
 	if strings.TrimSpace(prefix) == "" {
 		return ""
 	}

@@ -48,8 +48,11 @@ func AnalyzeUsageToolDef() kgtools.MCPTool {
 			"legitimately exceed what is currently on disk, and comparing the two directly reads as inflation when it is not. " +
 			"Every report states the exact basis it was computed over in its corpus block (lane, record, session and agent " +
 			"counts, the first and last record timestamp, and the cache root). " +
-			"COLD-CACHE NOTE: the local cache is populated on transcript upload, and unchanged sessions are skipped — so on an " +
-			"established install run the transcript upload once with --seed to backfill the cache before analyzing.",
+			"COLD-CACHE NOTE: when the cache holds no lanes at all, the response is a hint rather than a report: the cache " +
+			"is populated on transcript upload and unchanged sessions are skipped, so on an established install run the " +
+			"transcript upload once with --seed to backfill it before analyzing. A cache that DOES hold lanes never returns " +
+			"that hint — a selection matching no record is refused instead, naming the scope, what was searched and the " +
+			"corpus block, so a wrong selector, an empty time window and an unpopulated cache are three distinguishable answers.",
 		InputSchema: kgtools.InputSchema{
 			Type: "object",
 			Properties: map[string]kgtools.Property{
@@ -63,14 +66,21 @@ func AnalyzeUsageToolDef() kgtools.MCPTool {
 					Type: "string",
 					Description: "Population to analyze. all: the whole retained cache (default). " +
 						"session-tree: one main session plus every subagent lane it spawned — requires session. " +
-						"single: one lane on its own, which additionally returns a lane_detail breakdown — requires exactly one of session or agent. " +
+						"single: one lane on its own, which additionally returns a lane_detail breakdown — requires session or agent; " +
+						"a lane NAME in agent may be given together with session, which is then the scope the name is resolved within. " +
 						"time-range: records bounded by since/until — requires at least one of them.",
 					Enum: transcriptanalytics.ScopeValues(),
 				},
-				"session": {Type: "string", Description: "Session id selecting the population, for scope session-tree or single."},
-				"agent":   {Type: "string", Description: "Agent id selecting one subagent lane, for scope single."},
-				"since":   {Type: "string", Description: "RFC3339 timestamp; records at or after it are included (inclusive). For scope time-range."},
-				"until":   {Type: "string", Description: "RFC3339 timestamp; records before it are included (exclusive). For scope time-range."},
+				"session": {Type: "string", Description: "Session id selecting the population, for scope session-tree or single. " +
+					"For scope single with a lane NAME in agent it is instead the scope that name is resolved within."},
+				"agent": {Type: "string", Description: "Selects one subagent lane, for scope single. Accepts EITHER the lane's cache id " +
+					"(the a<name>-<16 hex> spelling the report's corpus selector shows) OR the name the lane was spawned under. " +
+					"A name is resolved against the cache within session when one is given and across the whole cache otherwise, " +
+					"and both forms return the same report. An ambiguous name — one matching more than one lane, which happens " +
+					"because a name is reused across sessions — is refused with every candidate id and session listed, never " +
+					"resolved to one of them."},
+				"since": {Type: "string", Description: "RFC3339 timestamp; records at or after it are included (inclusive). For scope time-range."},
+				"until": {Type: "string", Description: "RFC3339 timestamp; records before it are included (exclusive). For scope time-range."},
 			},
 			Required: []string{"operation"},
 		},

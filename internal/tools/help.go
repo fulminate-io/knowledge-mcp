@@ -21,7 +21,6 @@ var helpTopics = map[string]string{
 	"edge_types":       helpEdgeTypes,
 	"statuses":         helpStatuses,
 	"workflows":        helpWorkflows,
-	"logs":             helpLogs,
 	"patterns":         helpPatterns,
 	"recipes":          helpRecipes,
 	"topology":         helpTopology,
@@ -44,6 +43,7 @@ var helpTopics = map[string]string{
 	"sync":             helpSync,
 	"ast":              helpAst,
 	"manage_checks":    helpManageChecks,
+	"analyze_usage":    helpAnalyzeUsage,
 }
 
 // handleHelpClient returns hardcoded documentation for the requested topic.

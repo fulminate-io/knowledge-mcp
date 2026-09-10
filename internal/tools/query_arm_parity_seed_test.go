@@ -37,6 +37,32 @@ func (queryParitySearcher) Search(
 	return []searchengine.Hit{{ID: qpSeedKnowledge, Score: 1}}, nil
 }
 
+// SearchAccepting makes this fake satisfy the SUBSET seam, which the practice
+// search arm requires whenever `source` is set: that arm refuses a hub-scoped
+// search outright when the engine cannot narrow inside top-k, so a probe row
+// driving the source param would otherwise observe that refusal rather than the
+// param's declared class.
+//
+// It APPLIES the predicate rather than discarding it, so a probe id the caller
+// excluded really is excluded. The seed hit is admitted by the hub membership the
+// probe's fake resolves, which is what lets the row reach its hydrate read.
+func (queryParitySearcher) SearchAccepting(
+	_ context.Context, _ kgtypes.GraphType, _, _ string, _ []byte, _ int,
+	accepts func(searchengine.ExternalID) bool,
+) ([]searchengine.Hit, error) {
+	hits := []searchengine.Hit{{ID: qpSeedKnowledge, Score: 1}}
+	if accepts == nil {
+		return hits, nil
+	}
+	out := make([]searchengine.Hit, 0, len(hits))
+	for _, h := range hits {
+		if accepts(h.ID) {
+			out = append(out, h)
+		}
+	}
+	return out, nil
+}
+
 // SearchOverlay makes this fake satisfy the two-pool seam as well, which the code
 // search arm REQUIRES whenever a branch is set: that arm rejects a branch search
 // outright when the engine cannot serve base and overlay together, so a probe row
@@ -69,7 +95,7 @@ func queryParitySeed(t *testing.T) *fakeGraphCaller {
 	t.Helper()
 	return &fakeGraphCaller{
 		queryResponses: map[string]kgtools.ToolResult{
-			qpSeedResource:  qpNode(t, qpSeedResource, string(kgtypes.NodeCloudResource)),
+			qpSeedResource:  qpNode(t, qpSeedResource, string(kgtypes.NodePattern)),
 			qpSeedLinkage:   qpNode(t, qpSeedLinkage, string(kgtypes.NodeProxy)),
 			qpSeedKnowledge: qpNode(t, qpSeedKnowledge, "finding"),
 			qpSeedProject:   qpNode(t, qpSeedProject, "project"),
@@ -92,7 +118,7 @@ func queryParitySeed(t *testing.T) *fakeGraphCaller {
 				{Id: "parity-rule-node", Type: string(kgtypes.NodeRule), SymbolName: "parity rule"},
 			},
 			{Type: "cloud", Name: qpParityAccount}: {
-				{Id: qpSeedResource, Type: string(kgtypes.NodeCloudResource), SymbolName: "parity resource"},
+				{Id: qpSeedResource, Type: string(kgtypes.NodePattern), SymbolName: "parity resource"},
 			},
 			{Type: "linkage"}: {{Id: qpSeedLinkage, Type: string(kgtypes.NodeProxy)}},
 			// The code-graph symbol set the file_symbols arm collects per path. The
@@ -104,11 +130,6 @@ func queryParitySeed(t *testing.T) *fakeGraphCaller {
 			{Type: "code", Name: qpParityRepo}: {
 				{Id: qpSeedCodeUnit, Type: "function", SymbolName: "ParityFunc"},
 			},
-			// The log graphs the logs arm rebuilds its engine from — one under the
-			// base's query_id and one under the `name` probe's, because `name` IS the
-			// log graph selector and a probe on it targets a different graph.
-			{Type: "logs", Name: qpParityLogGraph}: qpLogNodes(),
-			{Type: "logs", Name: "probe-name"}:     qpLogNodes(),
 		},
 		edgesByID: map[string][]*knowledgev1.Edge{
 			qpSeedKnowledge: {{FromId: qpSeedKnowledge, ToId: qpSeedDecision, Type: "relates-to"}},
@@ -144,25 +165,12 @@ func queryParitySeed(t *testing.T) *fakeGraphCaller {
 	}
 }
 
-// qpParityAccount is the cloud/cicd account key every resource fixture targets;
-// the fake seeds its node set under the same key. qpParityLogGraph is the
-// query_id the logs fixture targets.
+// qpParityAccount is the account key every resource fixture targets; the fake
+// seeds its node set under the same key.
 const (
-	qpParityAccount  = "parity-account"
-	qpParityLogGraph = "parity-logs"
+	qpParityAccount = "parity-account"
 	// qpParityWebGraph is the raw-graph instance the web and pdf rows target. It
 	// was a bare literal in the row fixtures; naming it is what keeps the catalog
 	// seed above and those rows from drifting apart silently.
 	qpParityWebGraph = "parity-web-graph"
 )
-
-// qpLogNodes is the seeded log-graph node set getOrFetchLogState rebuilds its
-// engine from. The fake serves the same set for the template, stream and chunk
-// scans, which is enough to get past the empty-graph guard and onto the arm's
-// own render — the point here is to REACH the arm, not to reproduce a faithful
-// log corpus.
-func qpLogNodes() []*knowledgev1.Node {
-	return []*knowledgev1.Node{
-		{Id: "parity-log-template", Type: string(kgtypes.NodeLogTemplate), SymbolName: "parity <*> template"},
-	}
-}

@@ -204,7 +204,7 @@ func renderRawGraphHits(
 // rawGraphNotCollected reports whether the named raw graph is absent from the
 // collected-graph catalog, with the refusal to render when it is.
 //
-// DELEGATE, NOT NEW: listGraphNamesOfType (intercept_query_cloud_cicd.go) is the
+// DELEGATE, NOT NEW: listGraphNamesOfType (graph_names.go) is the
 // existing RETURN_MODE_GRAPH_NAMES catalog reader that manage(status) and the
 // coverage reconcile already use, so this asks the same source of truth about
 // which graphs exist rather than inventing a second one.

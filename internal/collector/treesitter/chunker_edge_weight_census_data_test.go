@@ -80,17 +80,12 @@ var edgeWeightConsumerCensus = []weightReaderRow{
 		Reason:      "Wire conversion: copies Weight onto the batch edge as given.",
 	},
 	{
-		Path:        "internal/collector/remote/sink_metrics.go",
-		Disposition: dispositionOptsIn,
-		Reason: "An ACCESSOR reader. Its edgesFromProto DELIBERATELY mirrors the engine's decode arm " +
-			"rather than importing it, to avoid the package dependency — see the engine row, which " +
-			"cross-references this one, before 'de-duplicating' the two into a shared helper.",
-	},
-	{
 		Path:        "internal/engine/engine_decode.go",
 		Disposition: dispositionOptsIn,
-		Reason: "An ACCESSOR reader: the client-side proto decode arm. The collector's sink_metrics " +
-			"arm is its deliberate mirror, kept separate to avoid a package dependency.",
+		Reason: "An ACCESSOR reader: the client-side proto decode arm, and now the module's ONLY one. " +
+			"It had a deliberate mirror in the collector's sink_metrics arm, kept separate to avoid a " +
+			"package dependency; that mirror decoded the removed FetchCloudSubgraph edge slice and left " +
+			"with it, so there is no longer a second copy to 'de-duplicate' this one against.",
 	},
 	{
 		Path:        "internal/crossgraph/crossgraph.go",
@@ -115,6 +110,25 @@ var edgeWeightConsumerCensus = []weightReaderRow{
 		Disposition: dispositionOptsIn,
 		Reason: "A FOURTH weight-supply surface, reaching in from outside the tree: the envelope's " +
 			"`weight` JSON field is copied verbatim onto the wire edge.",
+	},
+	{
+		Path:        "internal/externalcollector/crossgraph_edge.go",
+		Disposition: dispositionOptsIn,
+		Reason: "THE CROSS-GRAPH HALF OF THE SAME ENVELOPE, and it copies Weight for the same reason " +
+			"the convert.go row above does. An edge naming a target graph is not converted onto " +
+			"the wire batch at all; it is lifted out here and linked into the linkage graph " +
+			"instead, so this is the ONLY path its `weight` can travel. Dropping the field here " +
+			"would silently zero a collector author's deliberate weighting on exactly the edges " +
+			"they had to opt in to declare.",
+	},
+	{
+		Path:        "internal/tools/collect_crossgraph.go",
+		Disposition: dispositionOptsIn,
+		Reason: "The consumer of the row above: the collect-side resolution pass forwards the carried " +
+			"Weight onto the link request, on ANY edge type, into the linkage graph. It is the " +
+			"same user-supplied-weight path the crossgraph row records, reached from a collect " +
+			"rather than from an interactive link, so the same decline reason applies verbatim — " +
+			"scoping the weighted analyzers to CALLS would silently zero it.",
 	},
 	{
 		Path:        "internal/postpopulate/wire.go",
@@ -218,6 +232,17 @@ var edgeWeightConsumerCensus = []weightReaderRow{
 		Path:        "internal/topology/graph/pagerank_weighted.go",
 		Disposition: dispositionExcluded,
 		Reason:      "Matches the gonum weighted-graph TYPE name only; reads no edge field.",
+	},
+	{
+		Path:        "internal/tools/collect_recipe_land.go",
+		Disposition: dispositionOptsIn,
+		Reason: "landingLinkEdges copies Weight from each link edge the recipe body EMITTED onto the " +
+			"persisted batch edge, exactly as the reference and flow arms copy it onto a resolved " +
+			"edge: a pass-through, never an origination and never an aggregation. The value is " +
+			"whatever the recipe's emit body carried, which today is zero on every shipped body, " +
+			"and forwarding the field rather than omitting it keeps the landing's edge shape " +
+			"identical to the mutate route's own create_batch edges, so a later producer change " +
+			"cannot be silently dropped here.",
 	},
 	{
 		Path:        "internal/topology/graph/pagerank_weighted_iteration.go",

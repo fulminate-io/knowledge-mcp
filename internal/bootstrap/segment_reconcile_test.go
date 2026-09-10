@@ -319,22 +319,22 @@ func TestReconcileSegmentCoverage_DegenerateNonCodeRebuilds(t *testing.T) {
 	c, eng, _ := buildReconcileClientWithDir(t, 300) // no code repos — exercise the non-code path alone; embedded=300 makes the empty pool a lost cache.
 	ctx := context.Background()
 
-	// The cloud account is a graph THIS CLIENT INTERACTED WITH — that admission is
+	// The practice graph is one THIS CLIENT INTERACTED WITH — that admission is
 	// what puts it in the walk. The engine registration below is deliberately left in
 	// place: it is what the retired per-type enumeration would have discovered, so a
 	// walk that regressed to enumerating would still find it and this test would stop
 	// discriminating between the two mechanisms.
-	c.AdmitGraph(kgtypes.GraphCloud, "acct", "search")
-	eng.namesByType[string(kgtypes.GraphCloud)] = []string{"acct"}
+	c.AdmitGraph(kgtypes.GraphPractice, "acct", "search")
+	eng.namesByType[string(kgtypes.GraphPractice)] = []string{"acct"}
 
-	// NO corpus under the cloud account selector: an empty pool against 300 embedded
+	// NO corpus under the practice selector: an empty pool against 300 embedded
 	// nodes is the lost cache. PipelineScan is keyed by the instance name.
 	eng.scanItems["acct"] = makeReconcileScanPage("acct", 10)
 
 	c.reconcileSegmentCoverage(ctx)
 
 	require.GreaterOrEqual(t, eng.scanCallCount("acct"), 1,
-		"a degenerate NON-code embeddable graph (cloud/acct) is enumerated, probed, and rebuilt — PipelineScan paged")
+		"a degenerate NON-code embeddable graph (practice/acct) is enumerated, probed, and rebuilt — PipelineScan paged")
 }
 
 // TestReconcileSegmentCoverage_SkipsNonEmbeddableBuiltins is the closed-gate side:

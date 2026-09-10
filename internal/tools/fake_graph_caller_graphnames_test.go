@@ -16,7 +16,7 @@ import (
 // only the entries matching graphType, projected to the graph_names_json
 // []store.GraphInfo carrier. This bridges the old single pipeline_list_graphs
 // Call seeding to the new per-type Execute reads listForeignGraphs / repo
-// resolver / cloud-cicd overview now issue. An absent listGraphsResult → empty.
+// resolver / registered-graph overview now issue. An absent listGraphsResult → empty.
 func (f *fakeGraphCaller) execGraphNames(graphType string) (*knowledgev1.ExecuteResponse, error) {
 	var infos []*knowledgev1.GraphInfo
 	if f.listGraphsResult != nil && len(f.listGraphsResult.Content) > 0 {

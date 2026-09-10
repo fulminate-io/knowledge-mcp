@@ -16,8 +16,8 @@ import (
 
 // intercept_query_stats.go is the client-side claim for query(mode:stats) on the
 // KNOWLEDGE (default) graph — the one stats surface no other intercept owned. The
-// per-graph stats intercepts gate elsewhere: InterceptQueryCloudCICD claims
-// graph∈{cloud,cicd}, InterceptQueryModulesCodeStats claims graph==code, and
+// per-graph stats intercepts gate elsewhere: InterceptQueryModulesCodeStats
+// claims graph==code, and
 // InterceptQueryPracticeLinkage claims graph∈{practice,linkage}. A bare
 // query(mode:stats) (no graph, or graph=knowledge) matched NONE of them and fell
 // through to the post-cutover generic deny (the GAP-A regression). This intercept

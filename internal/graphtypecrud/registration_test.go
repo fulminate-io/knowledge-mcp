@@ -22,8 +22,10 @@ func TestRegistration_Rejections(t *testing.T) {
 	malformed := &knowledgev1.GraphTypeDef{
 		Name: "jira",
 		Collector: &knowledgev1.CollectorSpec{
-			BinaryPath:     "relative/path", // not absolute -> Validate rejects
-			ParamTransport: "stdin",
+			Tool: "", // no tool named -> Validate rejects
+			Provider: &knowledgev1.CollectorSpec_Stdio{Stdio: &knowledgev1.StdioProvider{
+				Command: "/usr/local/bin/jira-mcp",
+			}},
 		},
 	}
 	wellFormedNovel := sampleDef("jira")
@@ -71,8 +73,8 @@ func TestRegistration_Rejections(t *testing.T) {
 // built-in and false for a novel name.
 func TestIsBuiltinGraphType(t *testing.T) {
 	builtins := []string{
-		"knowledge", "code", "cloud", "cicd", "practice",
-		"linkage", "checks", "logs", "web", "pdf",
+		"knowledge", "code", "practice",
+		"linkage", "checks", "web", "pdf",
 	}
 	for _, b := range builtins {
 		if !kgtypes.IsBuiltinGraphType(b) {
@@ -83,6 +85,26 @@ func TestIsBuiltinGraphType(t *testing.T) {
 		if kgtypes.IsBuiltinGraphType(novel) {
 			t.Errorf("IsBuiltinGraphType(%q) = true, want false", novel)
 		}
+	}
+
+	// A RETIRED NAME IS NOT A BUILT-IN, AND IS NOT MERELY NOVEL EITHER. It sits
+	// in a third state this predicate deliberately does not report: the
+	// collision check must let it through so the RETIREMENT check can refuse it
+	// with its own sentence. A retired name reading as built-in here would be
+	// refused as a live collision instead, which tells an operator upgrading
+	// from the previous release the wrong thing.
+	for _, retired := range []string{"cloud", "logs", "transformers", "cicd"} {
+		if kgtypes.IsBuiltinGraphType(retired) {
+			t.Errorf("IsBuiltinGraphType(%q) = true, want false — a retired name is not a built-in", retired)
+		}
+		if _, ok := kgtypes.RetiredGraphTypeReason(retired); !ok {
+			t.Errorf("RetiredGraphTypeReason(%q) reports not-retired; the name would read as a plain typo", retired)
+		}
+	}
+	// THE CONTROL for the retirement half: a name that was never a builtin must
+	// report NOT retired, or the predicate above says nothing.
+	if _, ok := kgtypes.RetiredGraphTypeReason("jira"); ok {
+		t.Error("RetiredGraphTypeReason(\"jira\") reports retired; a never-existing name is not a retired one")
 	}
 }
 

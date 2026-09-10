@@ -10,15 +10,15 @@ import (
 
 // Interpret evaluates a parsed Recipe against the in-memory sourceView,
 // accumulating emissions into an in-memory Result. The caller (RunRecipe)
-// supplies the target spec and source slug so StableID + lineage edges land
-// deterministically, and ships the returned Result through the collector Sink
-// afterwards — subject to the write guard, which refuses the whole write when an
-// emitted id already names a differing row in the target.
+// supplies the target spec and source slug so StableID lands deterministically
+// under the graph key the emitted ids are meant to be resolved against.
 //
-// Unlike the former server interpreter, Interpret performs NO writes and opens
-// NO transaction: every emit/link/lookup is recorded into the Result buffers and
-// the in-run emitted set, never a target DB. Nothing downstream writes them
-// either — the Result is read back by the caller and discarded.
+// Interpret performs NO writes and opens NO transaction: every emit/link/lookup
+// is recorded into the Result buffers and the in-run emitted set, never a target
+// DB. What the CALLER does with the Result is the caller's: an extract run reads
+// the rows back and discards them, and a landing run composes the create_batch
+// the collect layer writes (cmd/knowledge/internal/tools/collect_recipe_land.go).
+// Neither decision is taken here.
 func Interpret(
 	ctx context.Context,
 	recipe *Recipe,

@@ -16,7 +16,7 @@ import (
 // reranker can score on category + identity + body in one shot.
 //
 // Dispatch is per-graph-type — every graph that flows through the search
-// fan-in gets its own branch so cloud/cicd nodes (which have empty
+// fan-in gets its own branch so resource nodes (which have empty
 // SymbolName/FilePath/Signature in the code-render shape) still produce
 // useful doc text.
 //
@@ -29,10 +29,6 @@ import (
 // The renderer is package-private — only voyageReranker.Rerank calls it.
 func renderForRerank(n *knowledgev1.Node) string {
 	switch {
-	case kgtypes.NodeType(n.Type) == kgtypes.NodeCloudResource:
-		return renderCloudForRerank(n)
-	case kgtypes.NodeType(n.Type) == kgtypes.NodeCICDResource:
-		return renderCICDForRerank(n)
 	case kgtypes.NodeType(n.Type) == kgtypes.NodePattern || kgtypes.NodeType(n.Type) == kgtypes.NodeUseCase || kgtypes.NodeType(n.Type) == kgtypes.NodeExample:
 		return renderPracticeForRerank(n)
 	case kgtypes.NodeType(n.Type).IsCodeType():
@@ -137,62 +133,6 @@ func truncateRerankBody(s string, max int) string {
 		max--
 	}
 	return s[:max]
-}
-
-// renderCloudForRerank emits Type:resource_type SymbolName in region\nSummary.
-// Cloud nodes always carry resource_type metadata (collector/cloud/node.go:24);
-// region is set when non-empty (node.go:26); Summary is populated by the
-// per-resource-type helpers in collector/cloud/Summarize. The Type+resource_type
-// prefix gives the reranker a category signal; SymbolName is the resource
-// name; region disambiguates same-name resources across regions.
-func renderCloudForRerank(n *knowledgev1.Node) string {
-	var b strings.Builder
-	b.WriteString(n.Type)
-	if rt := kgtypes.Value(n, "resource_type"); rt != "" {
-		b.WriteByte(':')
-		b.WriteString(rt)
-	}
-	if n.SymbolName != "" {
-		b.WriteByte(' ')
-		b.WriteString(n.SymbolName)
-	}
-	if region := kgtypes.Value(n, "region"); region != "" {
-		b.WriteString(" in ")
-		b.WriteString(region)
-	}
-	if n.Summary != "" {
-		b.WriteByte('\n')
-		b.WriteString(n.Summary)
-	}
-	return b.String()
-}
-
-// renderCICDForRerank emits Type:resource_type SymbolName (provider)\nSummary.
-// Mirrors the cloud branch with provider substituted for region. CI/CD
-// nodes always carry resource_type (collector/cicd/node.go:24); provider
-// is set when non-empty (node.go:26); Summary is populated by
-// collector/cicd/Summarize.
-func renderCICDForRerank(n *knowledgev1.Node) string {
-	var b strings.Builder
-	b.WriteString(n.Type)
-	if rt := kgtypes.Value(n, "resource_type"); rt != "" {
-		b.WriteByte(':')
-		b.WriteString(rt)
-	}
-	if n.SymbolName != "" {
-		b.WriteByte(' ')
-		b.WriteString(n.SymbolName)
-	}
-	if provider := kgtypes.Value(n, "provider"); provider != "" {
-		b.WriteString(" (")
-		b.WriteString(provider)
-		b.WriteByte(')')
-	}
-	if n.Summary != "" {
-		b.WriteByte('\n')
-		b.WriteString(n.Summary)
-	}
-	return b.String()
 }
 
 // renderPracticeForRerank packs SymbolName + Description + Summary for

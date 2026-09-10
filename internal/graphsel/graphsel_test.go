@@ -25,9 +25,6 @@ func TestInstanceKeyOf_RoundTripsEveryFamily(t *testing.T) {
 		name string
 	}{
 		{kgtypes.GraphCode, "repoA"},
-		{kgtypes.GraphCloud, "acct-1"},
-		{kgtypes.GraphCICD, "org-1"},
-		{kgtypes.GraphPractice, "go"},
 	} {
 		t.Run(string(tc.gt), func(t *testing.T) {
 			t.Parallel()
@@ -46,13 +43,19 @@ func TestInstanceKeyOf_RoundTripsEveryFamily(t *testing.T) {
 	// identity for client-internal routing — segmentdist names knowledge graphs
 	// and routes on that name — so their round trip keeps the name. That
 	// distinction is AddressesOneGraph's, not InstanceField's.
-	t.Run("singleton checks carries no instance identity", func(t *testing.T) {
-		t.Parallel()
-		gotGT, gotName, ok := InstanceKeyOf(GraphSelectorFor(kgtypes.GraphChecks, "default", false))
-		require.True(t, ok)
-		assert.Equal(t, kgtypes.GraphChecks, gotGT, "the family must still round-trip")
-		assert.Empty(t, gotName, "checks holds ONE graph and has no named consumer, so it carries no instance name")
-	})
+	// PRACTICE JOINED CHECKS on this arm when the eight per-language graphs became
+	// one, which is why it left the round-trip table above: a family with no
+	// instance identity cannot round-trip a name, and asserting that it does is
+	// the assertion the combined graph exists to remove.
+	for _, gt := range []kgtypes.GraphType{kgtypes.GraphChecks, kgtypes.GraphPractice} {
+		t.Run("singleton "+string(gt)+" carries no instance identity", func(t *testing.T) {
+			t.Parallel()
+			gotGT, gotName, ok := InstanceKeyOf(GraphSelectorFor(gt, "default", false))
+			require.True(t, ok)
+			assert.Equal(t, gt, gotGT, "the family must still round-trip")
+			assert.Empty(t, gotName, "%s holds ONE graph and has no named consumer, so it carries no instance name", gt)
+		})
+	}
 
 	t.Run("an empty Graph is the knowledge default", func(t *testing.T) {
 		t.Parallel()
@@ -100,10 +103,9 @@ func TestInstanceKeyOf_RoundTripsEveryFamily(t *testing.T) {
 // string that could be mistaken for a correct singleton answer.
 func TestInstanceField_EveryBuiltinFamilyPinned(t *testing.T) {
 	const (
-		repo    = "sentinel-repo"
-		account = "sentinel-account"
-		name    = "sentinel-name"
-		lang    = "sentinel-language"
+		repo = "sentinel-repo"
+		name = "sentinel-name"
+		lang = "sentinel-language"
 	)
 
 	cases := []struct {
@@ -119,17 +121,19 @@ func TestInstanceField_EveryBuiltinFamilyPinned(t *testing.T) {
 		{"", FieldName, ""},
 		{kgtypes.GraphKnowledge, FieldName, ""},
 		{kgtypes.GraphLinkage, FieldName, ""},
-		// checks alone has no identity anywhere.
+		// checks and practice have no identity anywhere. Practice joined this row
+		// when the eight per-language graphs became one combined graph: its
+		// per-source grouping is a `source_hub` metadata key on every node, exactly
+		// as checks' language is, so there is no instance for a selector to carry.
 		{kgtypes.GraphChecks, FieldNone, ""},
+		{kgtypes.GraphPractice, FieldNone, ""},
 
-		// Instance-addressed families, one field each.
+		// Instance-addressed families. CODE IS THE ONLY ONE LEFT: the account-keyed
+		// inventory families retired with their built-in collectors, and practice
+		// moved onto the no-identity rows above when it became one combined graph.
 		{kgtypes.GraphCode, FieldRepo, repo},
-		{kgtypes.GraphCloud, FieldAccount, account},
-		{kgtypes.GraphCICD, FieldAccount, account},
-		{kgtypes.GraphPractice, FieldLanguage, lang},
 
 		// Name-addressed families.
-		{kgtypes.GraphLogs, FieldName, name},
 		{kgtypes.GraphWebRaw, FieldName, name},
 		{kgtypes.GraphPDFRaw, FieldName, name},
 
@@ -142,7 +146,7 @@ func TestInstanceField_EveryBuiltinFamilyPinned(t *testing.T) {
 		t.Run(string(c.gt), func(t *testing.T) {
 			assert.Equalf(t, c.wantField, InstanceField(c.gt),
 				"family %q addresses its instance by a different field than pinned", c.gt)
-			assert.Equalf(t, c.wantValue, InstanceValueOf(c.gt, repo, account, name, lang),
+			assert.Equalf(t, c.wantValue, InstanceValueOf(c.gt, repo, name, lang),
 				"family %q projected the wrong caller value; the projection and the field must agree", c.gt)
 		})
 		seen[c.gt] = true
@@ -154,7 +158,7 @@ func TestInstanceField_EveryBuiltinFamilyPinned(t *testing.T) {
 	for _, gt := range kgtypes.SyncEligibleGraphTypes() {
 		assert.Truef(t, seen[gt], "builtin family %q has no row in this table", gt)
 	}
-	for _, gt := range []kgtypes.GraphType{kgtypes.GraphLogs, kgtypes.GraphWebRaw, kgtypes.GraphPDFRaw} {
+	for _, gt := range []kgtypes.GraphType{kgtypes.GraphWebRaw, kgtypes.GraphPDFRaw} {
 		assert.Truef(t, seen[gt], "builtin family %q has no row in this table", gt)
 	}
 }

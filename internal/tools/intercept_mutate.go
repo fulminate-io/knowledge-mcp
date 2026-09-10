@@ -19,7 +19,7 @@ import (
 // not silently flip this constant inside this file.
 const linearArchiveRetryGuidance = "Re-running the delete will safely re-issue the Linear archive (Linear treats re-archive of already-archived issues as a no-op success — locked in-tree at cmd/knowledge/internal/backends/linear/backend_write_ticket.go:124-125)."
 
-// mutateArgs mirrors the subset of server-side mutateRequestArgs this
+// mutateArgs mirrors the subset of the mutate tool's declared schema this
 // intercept reads. Unknown fields pass through via the raw
 // params.Arguments forward — we never strip a field by omitting it
 // from this struct.
@@ -36,6 +36,12 @@ type mutateArgs struct {
 	Metadata    map[string]string `json:"metadata,omitempty"`
 	Graph       string            `json:"graph,omitempty"`
 	Language    string            `json:"language,omitempty"`
+	// SourceHub names the practice SOURCE HUB a write is grouped under: a create
+	// stamps it onto the node's `source_hub` metadata and links the node to the
+	// hub. It is the replacement for `language` on every practice write arm, and
+	// it is not spelled `source` because that param is the node's PROVENANCE and
+	// keeps that meaning on practice writes as on every other graph.
+	SourceHub string `json:"source_hub,omitempty"`
 	// Repo and Account are read ONLY by requireGraphInstanceSelector. No write
 	// path threads them: on the non-knowledge path the client declines and the
 	// engine's own mutateArgs decodes the same verbatim payload.
@@ -228,6 +234,23 @@ func InterceptMutate(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 		return true, errorResult(err.Error())
 	}
 
+	// `source_hub` OFF THE PRACTICE FAMILY, refused HERE and nowhere else. This is
+	// the whole off-family rule for every arm and every family: the param means
+	// something only in the combined practice graph, so every other family gets
+	// one refusal from one line rather than a per-arm check that a new arm would
+	// eventually be added without.
+	//
+	// THE POSITION IS THE CONTRACT. It sits above the cross-graph link block,
+	// above handleGraphPassthroughMutate (which serves checks as well as practice,
+	// and whose create lowering is family-blind) and above the knowledge-graph
+	// guard, so no arm can be reached by a foreign family carrying a hub. It is
+	// payload-decidable and needs no GraphCaller, so it sits with the two refusals
+	// above it rather than below the degraded-mode return: a call that is wrong on
+	// its face is wrong on a degraded client too.
+	if err := refusePracticeHubOffFamily(a); err != nil {
+		return true, errorResult("mutate(" + a.Operation + "): " + err.Error())
+	}
+
 	gc := deps.GraphCaller()
 	if gc == nil {
 		return false, kgtools.ToolResult{}
@@ -247,14 +270,27 @@ func InterceptMutate(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 		return true, res
 	}
 
+	// THE PRACTICE-HUB HEAD GATES, above the whole dispatch tree for
+	// refusePracticeHubOffFamily's reason: the arms are the population a reviewer
+	// would otherwise have to enumerate, and a rule spelled once per arm is a rule
+	// with one arm missing. They are ONE call because they are ordered — two
+	// payload-decidable refusals, then the resolution that pays the read, then the
+	// body rule that reads its cache — and an ordering split across four call
+	// sites is one an edit can silently reorder. See guardPracticeHubHead.
+	hubbed, herr := guardPracticeHubHead(ctx, gc, a)
+	if herr != nil {
+		return true, errorResult("mutate(" + a.Operation + "): " + herr.Error())
+	}
+	a = hubbed
+
 	// Cross-graph link: the universal composer is reachable for ANY
 	// mutate(link), so a plain link whose FROM or TO is in a foreign graph (e.g.
 	// from=code-id to=knowledge-id, no graph/link_graph set) materializes the
 	// proxy client-side. handleClientCrossGraphLink is the single decision point:
 	// it returns (false,_) for everything it cannot fully resolve — link_graph,
 	// both-endpoints-in-knowledge bare links (its FROM-first early skip runs
-	// BEFORE any listForeignGraphs Call, so a knowledge↔knowledge link costs zero
-	// extra RPCs and returns (false,_) for the cloud-aware engine dispatch to
+	// BEFORE any crossgraph.ListForeignGraphs Call, so a knowledge↔knowledge link
+	// costs zero extra RPCs and returns (false,_) for the cloud-aware dispatch to
 	// handle as a generic bare link), and unresolvable
 	// endpoints. Checked BEFORE the knowledge-graph guard below because a
 	// cross-graph link may carry graph:practice / a foreign endpoint.
@@ -299,33 +335,7 @@ func InterceptMutate(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 	}
 
 	if a.Graph != "" && a.Graph != "knowledge" {
-		// Backend-backed nodes only live in the knowledge graph.
-		//
-		// The link conjunct is load-bearing: the link block above does NOT return
-		// when the cross-graph composer declines, so a declined link carrying a
-		// non-knowledge graph reaches here too. It was already accounted upstream
-		// under its own arm, and accounting it a second time under a different
-		// spec would reject a call neither arm rejects on its own.
-		if err := accountNonKnowledgeMutate(a); err != nil {
-			return true, errorResult(err.Error())
-		}
-		// Param accounting keeps FIRST refusal above, so a rejected param keeps
-		// its own specific message; this one claims only the calls accounting
-		// let through. It refuses an instance-addressed graph whose selector is
-		// empty, naming the value and the vocabulary rather than spending a
-		// server round trip on "graph selector invalid". Singleton families
-		// return nil, so the corpus-check guard below still runs for checks.
-		if err := requireGraphInstanceSelector(a); err != nil {
-			return true, errorResult(err.Error())
-		}
-		// The check gate's second call site, and the one that closes the upsert
-		// bypass plus the two batch-update shapes — none of which reach the
-		// passthrough arm above. It self-filters on graph=="checks", so practice
-		// and every foreign graph pass straight through.
-		if err := guardCorpusCheckWrite(ctx, gc, a); err != nil {
-			return true, errorResult(err.Error())
-		}
-		return false, kgtools.ToolResult{}
+		return guardNonKnowledgeMutate(ctx, gc, a)
 	}
 	switch a.Operation {
 	case "update":
@@ -414,49 +424,4 @@ func handleInterceptMutateUpdate(
 		return handleLocalOnlyMutateUpdate(ctx, deps, gc, a, node)
 	}
 	return handleBackendMutateUpdate(ctx, deps, gc, a, node, backendName, params)
-}
-
-// marshalForwardedMutateUpdateArgs builds a fresh JSON payload for the
-// forwarded local-only mutate(update). Strips backend-private metadata
-// keys from a copy of a.Metadata so the caller's struct is untouched
-// (caller-arg-safety for retry idempotency). Typed (vs map[string]any)
-// so errchkjson is satisfied.
-func marshalForwardedMutateUpdateArgs(a mutateArgs, backendName string) json.RawMessage {
-	payload := forwardedMutateUpdatePayload{
-		Operation:   "update",
-		ID:          a.ID,
-		Name:        a.Name,
-		Description: a.Description,
-		Summary:     a.Summary,
-		Content:     a.Content,
-		Status:      a.Status,
-		Keywords:    a.Keywords,
-		// Top-level source is correct HERE even though the per-type router strips
-		// it for findings (whose source lives in metadata): a backend-backed node
-		// is a tracker-backed work item, never a finding.
-		Source:   a.Source,
-		Metadata: stripBackendPrivateMetadata(a.Metadata, backendName),
-	}
-	b, err := json.Marshal(payload)
-	if err != nil {
-		// Cannot fail: typed struct of strings + a string-string map.
-		// Defensive return for errchkjson.
-		return json.RawMessage("{}")
-	}
-	return b
-}
-
-// forwardedMutateUpdatePayload is the typed wire shape sent to the
-// server's handleMutate after a successful Linear update.
-type forwardedMutateUpdatePayload struct {
-	Operation   string            `json:"operation"`
-	ID          string            `json:"id"`
-	Name        string            `json:"name,omitempty"`
-	Description string            `json:"description,omitempty"`
-	Summary     string            `json:"summary,omitempty"`
-	Content     string            `json:"content,omitempty"`
-	Status      string            `json:"status,omitempty"`
-	Keywords    string            `json:"keywords,omitempty"`
-	Source      string            `json:"source,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
 }

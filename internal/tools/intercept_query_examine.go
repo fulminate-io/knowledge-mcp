@@ -63,9 +63,9 @@ func InterceptQueryExamine(ctx context.Context, deps ClientDeps, params kgtools.
 	// the graphs examine serves, nor a way forward.
 	//
 	// WHICH GRAPHS REACH THIS LINE is narrower than the condition reads, and the
-	// message is worded for them. cloud, cicd and linkage are claimed by
-	// InterceptQueryCloudCICD / InterceptQueryPracticeLinkage, code by
-	// InjectRepoIfCodeGraph, and logs by InterceptLogsQuery — all of which run
+	// message is worded for them. practice and linkage are claimed by
+	// InterceptQueryPracticeLinkage, code by
+	// InjectRepoIfCodeGraph — all of which run
 	// EARLIER in bootstrap/dream.go than the rendering cluster that holds this
 	// arm, so an examine naming one of those never arrives. What does arrive is
 	// practice, web, pdf, and any other graph string — a custom graph name or an
@@ -131,7 +131,7 @@ func examineGraphRefusal(graph string) string {
 			"edge neighborhood of a KNOWLEDGE-graph node only (graph unset or \"knowledge\"). "+
 			"To read a node in another graph, drop the mode and ask for it by id: "+
 			"query({\"graph\":%q,\"id\":\"<id>\"}) — adding that graph's own selector where it "+
-			"takes one (language for practice, name for web/pdf/logs, account for cloud/cicd) — "+
+			"takes one (repo for code, language for practice, name for web/pdf) — "+
 			"and traverse({\"graph\":%q,\"start\":\"<id>\"}) for its edges.",
 		graph, graph, graph)
 }

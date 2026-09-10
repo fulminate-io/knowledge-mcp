@@ -12,21 +12,21 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
-// TestWriteBatchUpdates_PassesGraphContext mirrors the fetchNodes test
-// for the write side. Same selector shape, same incident class: without
+// TestWriteBatchUpdates_PassesGraphContext covers the WRITE side of the
+// selector contract. Same selector shape, same incident class: without
 // these fields the server's mutate handler defaulted to the knowledge
 // graph and code-graph summary/embed writes silently produced
 // "update: version-forward ... not found" with no visible error to the
 // pipeline.
 func TestWriteBatchUpdates_PassesGraphContext(t *testing.T) {
 	cases := []struct {
-		name        string
-		gt          kgtypes.GraphType
-		graphName   string
-		wantGraph   string
-		wantRepo    string
-		wantAccount string
-		wantName    string
+		name         string
+		gt           kgtypes.GraphType
+		graphName    string
+		wantGraph    string
+		wantRepo     string
+		wantLanguage string
+		wantName     string
 	}{
 		{
 			name:      "code routes via repo",
@@ -36,11 +36,16 @@ func TestWriteBatchUpdates_PassesGraphContext(t *testing.T) {
 			wantRepo:  "knowledge",
 		},
 		{
-			name:        "cloud routes via account",
-			gt:          kgtypes.GraphCloud,
-			graphName:   "acct-42",
-			wantGraph:   "cloud",
-			wantAccount: "acct-42",
+			// PRACTICE CARRIES NOTHING. This row read "practice routes via
+			// language" while the family held eight per-language graphs; it holds
+			// one now, so graphsel projects no instance field at all and a language
+			// on a WRITE is refused by the server outright. The row is inverted
+			// rather than deleted, because a selector that silently regained a
+			// language would address a graph the write path refuses.
+			name:      "practice carries no instance field — the family is a singleton",
+			gt:        kgtypes.GraphPractice,
+			graphName: "go",
+			wantGraph: "practice",
 		},
 		{
 			// The knowledge family is a SINGLETON: it holds one graph, so its
@@ -81,7 +86,8 @@ func TestWriteBatchUpdates_PassesGraphContext(t *testing.T) {
 			require.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_UPDATE_ITEMS, m.GetKind())
 			require.Equal(t, tc.wantGraph, req.GetTarget().GetGraph(), "graph selector")
 			require.Equal(t, tc.wantRepo, req.GetTarget().GetRepo(), "repo selector")
-			require.Equal(t, tc.wantAccount, req.GetTarget().GetAccount(), "account selector")
+			require.Equal(t, tc.wantLanguage, req.GetTarget().GetLanguage(), "language selector")
+			require.Empty(t, req.GetTarget().GetAccount(), "no family is account-keyed any more, so nothing may set it")
 			require.Equal(t, tc.wantName, req.GetTarget().GetName(), "name selector")
 			require.Len(t, m.GetUpdateItems(), 1)
 			require.Equal(t, "n1", m.GetUpdateItems()[0].GetId())
@@ -219,7 +225,7 @@ func TestPipelineDrainsType_ChecksIsDrainedDeliberately(t *testing.T) {
 	// Controls: the builtins that genuinely enrich nothing stay out — a fix that
 	// widened the filter to every builtin would erase the distinction the list
 	// encodes, and these two are what still separate a filter from a pass-through.
-	for _, gt := range []kgtypes.GraphType{kgtypes.GraphLogs, kgtypes.GraphLinkage} {
+	for _, gt := range []kgtypes.GraphType{kgtypes.GraphLinkage} {
 		require.False(t, pipelineDrainsType(gt), "builtin %q must stay un-drained", gt)
 	}
 }

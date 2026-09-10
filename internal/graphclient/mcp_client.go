@@ -168,10 +168,18 @@ func (m *MCPClient) handleMCPRequestCtx(ctx context.Context, req kgtools.JSONRPC
 // the original byte length when elided. Keeps panic/debug logs from dumping
 // large payloads (e.g. mutate batches).
 func clipArgs(s string, max int) string {
-	if len(s) <= max {
-		return s
+	if len(s) > max {
+		s = fmt.Sprintf("%s…(%dB total)", s[:max], len(s))
 	}
-	return fmt.Sprintf("%s…(%dB total)", s[:max], len(s))
+	// THE PEER'S RAW JSON BYTES ARE THE INPUT, and they are free to contain
+	// literal newlines between tokens — a pretty-printed request body does
+	// exactly that. Sanitizing here rather than at each call site is what makes
+	// this helper's ONE purpose, producing a log-safe rendering of the
+	// arguments, hold for every caller that will ever be added.
+	//
+	// THE CLIP RUNS FIRST so the byte budget is spent on the peer's bytes, not
+	// on escapes, and the reported total stays the true wire length.
+	return logSafe(s)
 }
 
 // handleMCPToolCall handles a tools/call JSON-RPC request with a background
@@ -207,9 +215,9 @@ func (m *MCPClient) dispatchToolCall(ctx context.Context, req kgtools.JSONRPCReq
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("mcpClient: PANIC recovered in tool call",
-				"tool", params.Name,
+				"tool", logSafe(params.Name),
 				"args", clipArgs(string(params.Arguments), 400),
-				"panic", fmt.Sprintf("%v", r),
+				"panic", logSafe(fmt.Sprintf("%v", r)),
 				"stack", string(debug.Stack()))
 			resp = &kgtools.JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: kgtools.ToolResult{
 				Content: []kgtools.ContentBlock{{Type: "text", Text: fmt.Sprintf("Error: internal panic in tool %q: %v", params.Name, r)}},
@@ -218,7 +226,7 @@ func (m *MCPClient) dispatchToolCall(ctx context.Context, req kgtools.JSONRPCReq
 		}
 	}()
 
-	slog.Debug("mcpClient: tool call entry", "tool", params.Name, "args", clipArgs(string(params.Arguments), 400))
+	slog.Debug("mcpClient: tool call entry", "tool", logSafe(params.Name), "args", clipArgs(string(params.Arguments), 400))
 
 	// Stamp the query-origin operation for the whole call. This is THE tool-side
 	// entry point: every covered RPC issued while handling this call — by the
@@ -234,9 +242,9 @@ func (m *MCPClient) dispatchToolCall(ctx context.Context, req kgtools.JSONRPCReq
 	// below uses them — discarding them strips rewrites silently. ctx carries
 	// the per-session workspace cwd on the HTTP path.
 	if m.cfg.InterceptChain != nil {
-		slog.Debug("mcpClient: running intercept chain", "tool", params.Name)
+		slog.Debug("mcpClient: running intercept chain", "tool", logSafe(params.Name))
 		rewritten, intercepted, interceptResult := m.cfg.InterceptChain(ctx, params)
-		slog.Debug("mcpClient: intercept chain returned", "tool", params.Name, "intercepted", intercepted)
+		slog.Debug("mcpClient: intercept chain returned", "tool", logSafe(params.Name), "intercepted", intercepted)
 		if intercepted {
 			return &kgtools.JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: interceptResult}
 		}
@@ -252,17 +260,17 @@ func (m *MCPClient) dispatchToolCall(ctx context.Context, req kgtools.JSONRPCReq
 	// active backend is local. A logged-in user routes to cloud via Dispatch,
 	// so this gate is skipped for them (cfg.LoggedIn(ctx) == true); a nil
 	// LoggedIn always gates, preserving the logged-out / test-fixture default.
-	slog.Info("mcpClient: ensuring server for tool", "tool", params.Name)
+	slog.Info("mcpClient: ensuring server for tool", "tool", logSafe(params.Name))
 	if m.cfg.LoggedIn == nil || !m.cfg.LoggedIn(ctx) {
 		if err := m.EnsureServer(); err != nil {
-			slog.Error("mcpClient: ensureServer failed", "tool", params.Name, "error", err)
+			slog.Error("mcpClient: ensureServer failed", "tool", logSafe(params.Name), "error", logSafeErr(err))
 			return &kgtools.JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: kgtools.ToolResult{
 				Content: []kgtools.ContentBlock{{Type: "text", Text: "Error: " + err.Error()}},
 				IsError: true,
 			}}
 		}
 	}
-	slog.Info("mcpClient: server ready, proxying call", "tool", params.Name)
+	slog.Info("mcpClient: server ready, proxying call", "tool", logSafe(params.Name))
 
 	// Create a cancellable context (derived from the passed ctx) so
 	// notifications/cancelled can stop this call. The single-in-flight cancel
@@ -291,7 +299,7 @@ func (m *MCPClient) dispatchToolCall(ctx context.Context, req kgtools.JSONRPCReq
 	sink.clearCancel(reqID)
 	cancel() // release resources
 
-	slog.Info("mcpClient: call returned", "tool", params.Name, "duration", time.Since(start).Round(time.Millisecond), "error", err)
+	slog.Info("mcpClient: call returned", "tool", logSafe(params.Name), "duration", time.Since(start).Round(time.Millisecond), "error", logSafeErr(err))
 	if err != nil {
 		return &kgtools.JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: kgtools.ToolResult{
 			Content: []kgtools.ContentBlock{{Type: "text", Text: "Error: graph server unavailable: " + err.Error()}},

@@ -6,22 +6,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"runtime"
-	"sort"
 	"strings"
-	"sync"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/workingset"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 )
 
 // intercept_query_practice_linkage.go is the client-side claim for the practice
-// and linkage per-graph query shapes the server routePracticeQuery /
-// routeLinkageTarget served (cmd/knowledge-server/tools/tools_query_practice.go,
-// tools_query.go, tools_query_linkage.go), plus the web/pdf and checks arms that
-// joined it later.
+// and linkage per-graph query shapes the retired server-side query routing
+// served, plus the web/pdf and checks arms that joined it later.
 //
 // practice shapes:
 //   - list-graphs   (no language): enumerate practice graphs
@@ -29,6 +25,9 @@ import (
 //   - mode=stats    : Stats RPC → RenderStatsBreakdown ("## Practice Graph: <lang>").
 //   - browse        (language, no text): type/types/status/meta filters + paging
 //     lowered onto ONE Selection → practiceBrowse (intercept_query_practice_browse.go).
+//   - style_index   (mode): the compact style-rule index — one drained
+//     hub-and-kind browse, a client-side scope filter, one line per rule
+//     → practiceStyleIndex (style_rule_index.go).
 //   - search        (text + language): generic search Execute → RenderPracticeResults.
 //   - metadata_stats / by-id: NOT served here — practiceShapeIsForeign declines
 //     them so the intercepts that do serve them get the call.
@@ -70,19 +69,11 @@ func InterceptQueryPracticeLinkage(ctx context.Context, deps ClientDeps, params 
 	}
 	switch a.Graph {
 	case "practice":
-		// A PLAIN by-id read with NO language is claimed here ONLY to refuse it
-		// legibly: it names no graph, so neither this arm nor the server resolver
-		// can serve it. See practiceByIDNeedsLanguage.
-		//
-		// THE a.Mode == "" CONJUNCT IS LOAD-BEARING and not defensive padding. A
-		// mode carries the payload to an arm that owns it and refuses it BY NAME —
-		// mode:"examine" on a practice graph is refused by the examine arm naming
-		// the graph and the surface examine does serve, which is a better message
-		// than this one. Claiming every id-bearing practice payload stole those
-		// shapes; the bootstrap parity suite caught it.
-		if a.Language == "" && a.Mode == "" && (a.ID != "" || len(a.IDs) > 0) {
-			return true, errorResult(practiceByIDNeedsLanguage)
-		}
+		// A LANGUAGE-LESS BY-ID READ IS NOW SERVED, not refused. It used to name no
+		// graph — the family keyed its instance by language — so the only honest
+		// answer was a refusal saying which call worked. The family holds ONE graph
+		// now, so an unselected by-id read resolves it, and the arms below serve it
+		// like every other unselected practice read.
 		if practiceShapeIsForeign(a) {
 			return false, kgtools.ToolResult{} // metadata_stats / by-id -> the intercepts that already serve them.
 		}
@@ -139,56 +130,56 @@ func statsSeamFor(deps ClientDeps, graph string) (statsRPC, kgtools.ToolResult, 
 	return sc, kgtools.ToolResult{}, true
 }
 
-// routePracticeClient dispatches the four practice shapes. raw is the caller's
+// routePracticeClient dispatches the five practice shapes. raw is the caller's
 // verbatim payload, threaded explicitly (rather than stashed on queryArgs) so
 // the per-arm accounting gate cannot be forgotten at a claim point.
 func routePracticeClient(ctx context.Context, deps ClientDeps, gc statsRPC, a queryArgs, raw json.RawMessage) kgtools.ToolResult {
-	// (1) No language → list practice graphs.
-	if a.Language == "" {
-		if err := accountQueryParams(armPracticeListGraphs, raw); err != nil {
-			return errorResult(err.Error())
-		}
-		return listPracticeGraphs(ctx, deps)
+	// (0) The RETIRED fan-out sentinel is refused BEFORE anything else reads the
+	// payload, because "all" is a value the arms below would otherwise treat as a
+	// legacy graph name and resolve to a graph that does not exist. Refusing first
+	// costs no read, no embed and no wire call, and answers with the call that
+	// works rather than with a not-found.
+	if a.Language == "all" {
+		return errorResult(practiceFanOutRetired)
 	}
-	// (2) mode=stats.
+	// (1) mode=stats.
 	if a.Mode == "stats" {
 		if err := accountQueryParams(armPracticeStats, raw); err != nil {
 			return errorResult(err.Error())
 		}
 		return practiceStatsResult(ctx, gc, a)
 	}
-	// (2b) No ranked text, and not the "all" fan-out sentinel → BROWSE this
-	// practice graph. BOTH conjuncts are load-bearing: the empty text selects the
-	// browse shape, and the a.Language != "all" guard preserves the scatter-gather
-	// sentinel below — without it a text-less language:"all" would browse a
-	// practice graph literally named "all" and turn a working fan-out into an
-	// empty or erroring browse.
-	if practiceQueryText(a) == "" && a.Language != "all" {
+	// (1b) mode=modules is the LEGACY ENUMERATION of the pre-singleton graphs.
+	// It used to be what an empty selector meant; an empty selector now browses
+	// the combined graph, so the enumeration has to be asked for by name.
+	if a.Mode == "modules" {
+		if err := accountQueryParams(armPracticeListGraphs, raw); err != nil {
+			return errorResult(err.Error())
+		}
+		return listPracticeGraphs(ctx, deps)
+	}
+	// (1c) mode=style_index is the COMPACT STYLE-RULE INDEX. It sits above the
+	// browse gate because it carries no text either, so the browse would
+	// otherwise claim it — and above the text gate for the same reason
+	// mode:"modules" is: a mode this arm serves is asked for by name.
+	if a.Mode == "style_index" {
+		if err := accountQueryParams(armPracticeStyleIndex, raw); err != nil {
+			return errorResult(err.Error())
+		}
+		return practiceStyleIndex(ctx, gc.Execute, a)
+	}
+	// (2) No ranked text → BROWSE. With no language that is the combined graph,
+	// optionally narrowed to one hub by `source`; with a language it is the legacy
+	// graph, unchanged.
+	if practiceQueryText(a) == "" {
 		if err := accountQueryParams(armPracticeBrowse, raw); err != nil {
 			return errorResult(err.Error())
 		}
 		return practiceBrowse(ctx, gc.Execute, a)
 	}
 
-	// (3) search with language.
+	// (3) ranked search.
 	query := practiceQueryText(a)
-
-	// (3a) language:"all" → scatter-gather fan-out across every loaded practice
-	// graph (kills the silent-0). The empty-language list-graphs BROWSE above is
-	// preserved; only the explicit "all" sentinel fans out.
-	if a.Language == "all" {
-		if err := accountQueryParams(armPracticeSearchFanOut, raw); err != nil {
-			return errorResult(err.Error())
-		}
-		// REFUSED BEFORE THE FAN-OUT: an empty-text ranked search cannot return
-		// anything, so running it costs a scatter-gather across every loaded
-		// practice graph to produce a vacuous zero. Refusing here issues no read,
-		// no embed and no wire call.
-		if query == "" {
-			return errorResult(practiceFanOutNeedsText)
-		}
-		return composePracticeSearchFanOut(ctx, deps, deps.SegmentManager(), query, a.Format, int(a.Limit), a.Fields)
-	}
 
 	// (3b) Route a specific-language practice search through the per-language CLIENT
 	// engine (Manager.Search → RRF) + hydration. The segment Manager is wired for
@@ -201,7 +192,7 @@ func routePracticeClient(ctx context.Context, deps ClientDeps, gc statsRPC, a qu
 	if err := accountQueryParams(armPracticeSearch, raw); err != nil {
 		return errorResult(err.Error())
 	}
-	return composePracticeSearchClient(ctx, deps, deps.SegmentManager(), a.Language, query, a.Format, int(a.Limit), a.Fields)
+	return composePracticeSearchClient(ctx, deps, deps.SegmentManager(), a.Language, a.Source, query, a.Format, int(a.Limit), a.Fields)
 }
 
 // composePracticeSearchClient runs the practice ranked-search arm against the
@@ -217,12 +208,12 @@ func routePracticeClient(ctx context.Context, deps ClientDeps, gc statsRPC, a qu
 // into RenderForCaller where a literal nil used to sit.
 func composePracticeSearchClient(
 	ctx context.Context, deps ClientDeps, mgr SegmentSearcher,
-	language, query, format string, limit int, fields []string,
+	language, hub, query, format string, limit int, fields []string,
 ) kgtools.ToolResult {
 	// Readiness gate (bind-first startup): mgr.Search below dereferences the segment Manager
 	// with no nil-check; during the bind-first wiring window SegmentManager() is an
-	// untyped nil → panic. Gate before the deref. Both entry points (specific
-	// language at practice_linkage.go and the search-tool arm) funnel through here.
+	// untyped nil → panic. Gate before the deref. Both entry points (the practice
+	// browse arm in this file and the search-tool arm) funnel through here.
 	if !deps.PipelineReady() {
 		return errorResult("practice search: daemon still starting — LLM pipeline not ready yet, retry shortly")
 	}
@@ -240,9 +231,18 @@ func composePracticeSearchClient(
 	if k <= 0 {
 		k = knowledgeSearchDefaultLimit
 	}
-	hits, err := mgr.Search(ctx, kgtypes.GraphPractice, language, query, queryVec, k)
+
+	// THE SEGMENT POOL IS NAMED BY THE INTERNAL KEYING RULE, NOT BY THE WIRE ONE.
+	// An unselected practice search reads the combined graph, whose pool is sealed
+	// under the canonical instance name while every wire read of it sends an empty
+	// selector — the two namespaces diverge exactly as they do for checks, and
+	// asking the engine for "" would search an instance nothing ever wrote to and
+	// return a confident zero.
+	pool := workingset.CanonicalInstanceName(kgtypes.GraphPractice, language)
+
+	hits, err := practiceRankedHits(ctx, deps, mgr, pool, hub, query, queryVec, k)
 	if err != nil {
-		return errorResult("practice search: client engine: " + err.Error())
+		return errorResult("practice search: " + err.Error())
 	}
 	results, err := hydrateEngineHits(ctx, deps.GraphCaller(), hydrateSelector{Graph: "practice", Language: language}, hits)
 	if err != nil {
@@ -253,7 +253,10 @@ func composePracticeSearchClient(
 	// when EmbedBinary failed, and either way the search ran BM25-only.
 	modeLabel := segmentSearchModeLabel(query != "", len(queryVec) > 0)
 	if len(results) == 0 {
-		notice, loud := practiceZeroHitNotice(ctx, deps, language, embErr)
+		// THE POOL NAME, NOT THE CALLER'S LANGUAGE. The gap probe reads the graph
+		// by name; an unselected search has no language, and probing practice/""
+		// would find no graph and report a gap that is really an empty selector.
+		notice, loud := practiceZeroHitNotice(ctx, deps, pool, embErr)
 		if loud {
 			return errorResult(notice)
 		}
@@ -267,174 +270,19 @@ func composePracticeSearchClient(
 	return engine.RenderPracticeResults(language, query, results, modeLabel)
 }
 
-// composePracticeSearchFanOut is the scatter-gather practice search across ALL
-// loaded practice graphs — the prong that kills the language:"all" silent-0.
-// It mirrors composeCodeSearchMultiRepo (intercept_query_code_search.go): the
-// graph set is enumerated DYNAMICALLY via listGraphNamesOfType (no hardcoded
-// language list), the query is embedded EXACTLY ONCE up front and the vector
-// reused for every per-graph Search (no N-embed fan-out), each graph is searched
-// in PARALLEL under a NumCPU-bounded pool, then per-graph hits are score-merged
-// (sorted desc, capped at the caller's resolved row limit) and rendered with
-// per-graph attribution via RenderPracticeFanOut. An empty practice-graph set
-// renders a clean "no graphs" result rather than a silent zero.
+// THE SCATTER-GATHER FAN-OUT IS GONE, and its absence is the point rather than
+// an omission. composePracticeSearchFanOut and practiceSearchOneGraph searched
+// every loaded practice graph in parallel and merged the per-graph hits under
+// per-graph attribution, because the corpus was eight graphs and `language:"all"`
+// was how a caller reached all of it. The corpus is ONE graph now: an unselected
+// search already reads the whole of it in one engine call, so the fan-out had no
+// caller left and the sentinel that reached it is refused by name
+// (practiceFanOutRetired). Keeping the machinery would have left a second,
+// slower path to the same answer for the next reader to choose between.
 //
-// limit is the caller's row cap, resolved ONCE before the fan-out (never inside
-// the loop) and applied at BOTH ends: as the per-graph Search k and as the merge
-// cap. Applying it at only one end would give a caller who asked for 25 exactly
-// 25 per graph and then silently 10 back. fields is the caller's json projection.
-func composePracticeSearchFanOut(
-	ctx context.Context, deps ClientDeps, mgr SegmentSearcher,
-	query, format string, limit int, fields []string,
-) kgtools.ToolResult {
-	// Readiness gate (bind-first startup): the per-graph mgr.Search runs INSIDE a goroutine
-	// fan-out and dereferences the segment Manager with no nil-check — a nil
-	// Manager there panics in a goroutine and crashes the daemon. During the
-	// bind-first wiring window SegmentManager() is an untyped nil; gate before any
-	// goroutine is launched. Both entry points (language:"all" at
-	// practice_linkage.go and the search-tool practice arm) funnel through here.
-	if !deps.PipelineReady() {
-		return errorResult("practice search: daemon still starting — LLM pipeline not ready yet, retry shortly")
-	}
-	// Permanent-degrade guard (bind-first startup): PipelineReady()==true but a nil Manager
-	// when wirePipelineRuntime degraded at boot — loud-error before any goroutine
-	// fan-out dereferences it. No server RETURN_MODE_SEARCH fallback exists.
-	if mgr == nil {
-		return errorResult("practice search: client segment engine unavailable (LLM pipeline degraded at boot)")
-	}
-	names, err := listGraphNamesOfType(ctx, deps, "practice")
-	if err != nil {
-		return errorResult("practice fan-out: resolve graphs: " + err.Error())
-	}
-	if len(names) == 0 {
-		return textResult("No practice graphs found.")
-	}
-	// Resolve the row cap ONCE, outside the fan-out: the goroutines below share it
-	// as their per-graph Search k, and the merge cap after wg.Wait reuses the same
-	// number.
-	k := limit
-	if k <= 0 {
-		k = knowledgeSearchDefaultLimit
-	}
-
-	// Embed the query a SINGLE time up front; the vector is reused for every
-	// per-graph Search so the HNSW arm is exercised without an N-embed fan-out.
-	//
-	// The embed error is CAPTURED, exactly as its sibling composer captures it. This
-	// lane previously shadowed embErr inside the if-statement and dropped it, so a
-	// failed embed degraded EVERY practice graph in the fan-out to the BM25 arm with
-	// no signal at all — the widest-blast-radius instance of the discard, and the
-	// one least visible because the caller sees eight graphs' worth of results.
-	queryVec, embErr := embedQueryForArm(ctx, deps, query)
-
-	// THREE buckets, because a per-graph outcome has three meanings and collapsing
-	// any two of them is how this fan-out lies.
-	//   all      — the graph was searched and matched.
-	//   failed   — the graph could not be searched (a non-nil error).
-	//   unindexed — the graph returned zero hits with a NIL error AND has no ranked
-	//               index. Indistinguishable at the Search seam from a genuine
-	//               no-match, which is exactly why it needs its own probe.
-	//
-	// THE THIRD BUCKET IS THE ONE THAT WAS MISSING, and its absence was the quiet
-	// half of the same lie the `failed` bucket fixes. A zero-segment graph answers
-	// (nil, nil), so it was neither a result nor a failure — and because the
-	// per-graph gap check only ran when the WHOLE merge was empty, a partially
-	// healed corpus rendered "Searched 8 practice graphs" while graphs with no index
-	// contributed nothing and were never named. Measured live: that header listed
-	// eight graphs while three of them had zero segments.
-	var (
-		mu        sync.Mutex
-		all       []practiceGraphResult
-		failed    []string
-		unindexed []string
-		wg        sync.WaitGroup
-	)
-	gc := deps.GraphCaller()
-	sem := make(chan struct{}, max(1, runtime.NumCPU()))
-	for _, name := range names {
-		wg.Add(1)
-		go func(language string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			results, err, gapped := practiceFanOutProbe(ctx, deps, mgr, gc, language, query, queryVec, k)
-			mu.Lock()
-			defer mu.Unlock()
-			switch {
-			case err != nil:
-				failed = append(failed, language+": "+err.Error())
-			case len(results) > 0:
-				all = append(all, practiceGraphResult{graph: language, results: results})
-			case gapped:
-				unindexed = append(unindexed, language)
-			}
-		}(name)
-	}
-	wg.Wait()
-	sort.Strings(failed)
-	sort.Strings(unindexed)
-
-	merged := mergePracticeFanOutHits(all, k)
-
-	// The arm disclosure, computed from what actually reached the engine. One failed
-	// embed degrades EVERY graph in this fan-out, so the label covers the whole
-	// merged ranking rather than any single graph.
-	modeLabel := segmentSearchModeLabel(query != "", len(queryVec) > 0)
-
-	// Nothing merged: qualify the zero BEFORE rendering it.
-	if len(merged) == 0 {
-		if res, done := practiceFanOutZeroResult(ctx, deps, names, failed, embErr); done {
-			return res
-		}
-	}
-
-	if format == "json" {
-		// Flatten each merged hit's .Result into the flat json envelope. The
-		// per-graph identity already RIDES each h.Result: hydrateEngineHits
-		// stamps {practice, <language>} per per-graph hydrate call, so the json
-		// consumer (graph-UI) traverses each result in its own language. The .Graph
-		// markdown attribution is now redundant with the stamp; the renderJSON shape
-		// stays flat.
-		flat := make([]engine.SearchResult, len(merged))
-		for i, h := range merged {
-			flat[i] = h.Result
-		}
-		return engine.RenderForCaller(query, flat, "json", fields, modeLabel)
-	}
-
-	searched := make([]string, len(names))
-	copy(searched, names)
-	sort.Strings(searched)
-	// A PARTIAL cross-graph ranking presented as complete is the same lie in a
-	// quieter register: the caller cannot tell a graph with no matches from a graph
-	// that errored or one with no index at all, so both are named alongside the
-	// results. The header says "Searched N practice graphs" — this is what keeps
-	// that sentence true.
-	return appendNotice(engine.RenderPracticeFanOut(query, searched, merged, modeLabel),
-		practiceFanOutPartialLine(failed, unindexed))
-}
-
-// practiceSearchOneGraph searches ONE practice graph and hydrates its hits — the
-// body of the fan-out's per-graph goroutine, lifted out so the composer stays
-// inside the cognitive-complexity budget.
-//
-// IT DISTINGUISHES NO-MATCH FROM FAILURE, which is the whole point of the return
-// shape: (nil, nil) means the graph was searched successfully and simply had
-// nothing, while a non-nil error means it could NOT be searched. Collapsing the
-// two is what let the fan-out report a confident no-match over a lane where every
-// graph had errored.
-func practiceSearchOneGraph(
-	ctx context.Context, mgr SegmentSearcher, gc GraphCaller,
-	language, query string, queryVec []byte, k int,
-) ([]engine.SearchResult, error) {
-	hits, err := mgr.Search(ctx, kgtypes.GraphPractice, language, query, queryVec, k)
-	if err != nil {
-		return nil, err
-	}
-	if len(hits) == 0 {
-		return nil, nil
-	}
-	return hydrateEngineHits(ctx, gc, hydrateSelector{Graph: "practice", Language: language}, hits)
-}
+// The three-bucket outcome discipline it carried — matched, failed, unindexed,
+// never collapsed into one zero — survives in practiceZeroHitNotice, which is
+// what qualifies a zero-hit practice search now.
 
 // practiceQueryText picks the search text from the query/text fields.
 func practiceQueryText(a queryArgs) string {
@@ -486,8 +334,17 @@ func listPracticeGraphs(ctx context.Context, deps ClientDeps) kgtools.ToolResult
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Practice graphs (%d):\n\n", len(names))
 	for _, name := range names {
-		sb.WriteString(graphCountRow(ctx, sc, "practice", name))
+		// THE LEGACY TARGET, BUILT EXPLICITLY. This enumeration lists the
+		// pre-singleton graphs, and a derived practice target carries no instance
+		// field — every row would report the COMBINED graph's counts under a
+		// different graph's name.
+		sb.WriteString(graphCountRowFor(ctx, sc, name, practiceReadTarget(name)))
 	}
-	sb.WriteString("\nUse `query({ \"graph\": \"practice\", \"language\": \"go\" })` to browse a specific practice graph.")
+	// THE HINT NAMES THE SELECTOR EACH ROW ACTUALLY TAKES. The combined graph is
+	// browsed with no instance field at all and narrowed by `source`; only a
+	// PRE-SINGLETON row is reachable by `language`, which is read-only. A single
+	// `language` hint sent a reader at a graph this enumeration had just listed
+	// under a name that selector cannot resolve.
+	sb.WriteString("\nBrowse the combined graph with `query({ \"graph\": \"practice\" })`, narrowed to one origin by `source`: `query({ \"graph\": \"practice\", \"source\": \"<hub id>\" })`. A row above that names a PRE-SINGLETON graph is read with the legacy read-only selector: `query({ \"graph\": \"practice\", \"language\": \"<that name>\" })`.")
 	return textResult(sb.String())
 }

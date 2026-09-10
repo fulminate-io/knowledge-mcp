@@ -40,9 +40,9 @@ import (
 //
 // A nil Target is preserved for the all-empty case, which is how the knowledge
 // default is addressed; buildTarget's own callers rely on the same convention.
-func mutateTarget(graph, repo, account, name, language, branch string) *knowledgev1.GraphSelector {
+func mutateTarget(graph, repo, name, language, branch string) *knowledgev1.GraphSelector {
 	gt := kgtypes.GraphType(graph)
-	instance := graphsel.InstanceValueOf(gt, repo, account, name, language)
+	instance := graphsel.InstanceValueOf(gt, repo, name, language)
 	if graph == "" && instance == "" && branch == "" {
 		return nil
 	}

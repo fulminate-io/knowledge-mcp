@@ -194,9 +194,9 @@ func dockerfilePassFixture(t *testing.T, n int) *fakeGraphCaller {
 		}
 		return kgtools.ToolResult{Content: []kgtools.ContentBlock{{Type: "text", Text: `{}`}}}, nil
 	}
-	gc.seedNode("code", dfNode)
+	gc.seedCodeNode(dfNode)
 	for _, s := range srcs {
-		gc.seedNode("code", s)
+		gc.seedCodeNode(s)
 	}
 	return gc
 }

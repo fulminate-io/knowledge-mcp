@@ -1,0 +1,142 @@
+{
+  "spec": "The deterministic cross-graph proxy id convention. cmd/knowledge and cmd/knowledge-server are SEPARATE MODULES and AGENTS.md denies any hand-written package shared between them, so this data file is the only legal way to hold the two builders to one answer. Each module's test reads it through its own testdata symlink, which is also that test's cache fence. The expected ids below were authored FROM THE CONVENTION, not by running either builder: a vector produced by one implementation would make the other's agreement with it unfalsifiable.",
+  "convention": {
+    "code": "proxy:<repo>:<node_id> — no family word, historical compatibility with the server codegraph routing convention",
+    "practice": "proxy:practice:<language>:<node_id>, or proxy:practice:<node_id> with no language slug",
+    "generic": "proxy:custom/<graph_type>:<graph_name>:<node_id> — every family that is not one of the three above. The 'custom/' marker in the SECOND colon-segment is the discriminator: the code arm's second segment is a repository name, which is a filepath.Base product and cannot contain a slash, and the practice arm's second segment is the literal word practice, which registration refuses as a custom family name. So a second segment containing a slash is unreachable from every builtin arm, by construction rather than by convention."
+  },
+  "cases": [
+    {
+      "label": "code",
+      "graph_type": "code",
+      "name": "myrepo",
+      "node_id": "n1",
+      "source_type": "function",
+      "want_id": "proxy:myrepo:n1",
+      "want_source": "proxy:myrepo",
+      "want_metadata": {
+        "foreign_graph": "code",
+        "foreign_id": "n1",
+        "foreign_type": "function",
+        "repo": "myrepo"
+      }
+    },
+    {
+      "label": "practice with slug. IT IS NOW THE FIRST FAMILY-WORD ROW: the cicd row that stood above it was REMOVED rather than converted to the generic form, on the precedent the web row below records for logs \u2014 cicd is a RETIRED name, so it never legitimately reaches this builder at all and a row for it would prove the convention on an input that cannot occur. Its builder, its account metadata key and the foreign-scan entry that located a cicd endpoint all went with the family.",
+      "graph_type": "practice",
+      "name": "go",
+      "node_id": "p1",
+      "source_type": "pattern",
+      "want_id": "proxy:practice:go:p1",
+      "want_source": "proxy:practice:go",
+      "want_metadata": {
+        "foreign_graph": "practice",
+        "foreign_id": "p1",
+        "language": "go"
+      }
+    },
+    {
+      "label": "practice slug-less fallback",
+      "graph_type": "practice",
+      "name": "",
+      "node_id": "p2",
+      "source_type": "pattern",
+      "want_id": "proxy:practice:p2",
+      "want_source": "proxy:practice",
+      "want_metadata": {
+        "foreign_graph": "practice",
+        "foreign_id": "p2"
+      }
+    },
+    {
+      "label": "generic: a registered custom family",
+      "graph_type": "jira",
+      "name": "board-a",
+      "node_id": "X",
+      "source_type": "issue",
+      "want_id": "proxy:custom/jira:board-a:X",
+      "want_source": "proxy:custom/jira:board-a",
+      "want_metadata": {
+        "foreign_graph": "jira",
+        "foreign_id": "X",
+        "foreign_type": "issue"
+      }
+    },
+    {
+      "label": "generic: the web family, which is builtin but has no deterministic arm of its own. It replaces a logs row: logs was this row's builtin-with-no-arm example and is now a RETIRED name, which never legitimately reaches this builder at all, so the row would have been proving the convention on an input that cannot occur.",
+      "graph_type": "web",
+      "name": "hohpe-eip",
+      "node_id": "sec-3",
+      "source_type": "section",
+      "want_id": "proxy:custom/web:hohpe-eip:sec-3",
+      "want_source": "proxy:custom/web:hohpe-eip",
+      "want_metadata": {
+        "foreign_graph": "web",
+        "foreign_id": "sec-3",
+        "foreign_type": "section"
+      }
+    },
+    {
+      "label": "COLLISION CONTROL: a code repo named jira whose node id carries a colon. Under the pre-amendment generic form proxy:<graph_type>:<graph_name>:<node_id> this row and the 'registered custom family' row above both produced proxy:jira:board-a:X. It is the ONE input that discriminates the amended form, so a suite asserting only the generic arm's own id proves nothing about the property the custom/ segment exists to hold.",
+      "graph_type": "code",
+      "name": "jira",
+      "node_id": "board-a:X",
+      "source_type": "function",
+      "want_id": "proxy:jira:board-a:X",
+      "want_source": "proxy:jira",
+      "want_metadata": {
+        "foreign_graph": "code",
+        "foreign_id": "board-a:X",
+        "foreign_type": "function",
+        "repo": "jira"
+      }
+    },
+    {
+      "label": "REFUSAL: a knowledge target still has no deterministic id",
+      "graph_type": "knowledge",
+      "name": "",
+      "node_id": "n",
+      "source_type": "function",
+      "want_error": true
+    },
+    {
+      "label": "REFUSAL: an empty graph type names no family, so the generic arm has no second segment to build",
+      "graph_type": "",
+      "name": "acct",
+      "node_id": "n",
+      "source_type": "function",
+      "want_error": true
+    },
+    {
+      "label": "REFUSAL: a generic family with no graph name. The caller located the endpoint in a named graph, so an empty name means it located nothing.",
+      "graph_type": "jira",
+      "name": "",
+      "node_id": "X",
+      "source_type": "issue",
+      "want_error": true
+    },
+    {
+      "label": "REFUSAL: an empty node id, before the switch and for every family alike",
+      "graph_type": "jira",
+      "name": "board-a",
+      "node_id": "",
+      "source_type": "issue",
+      "want_error": true
+    },
+    {
+      "label": "REFUSAL: a code target with no repo name",
+      "graph_type": "code",
+      "name": "",
+      "node_id": "n1",
+      "source_type": "function",
+      "want_error": true
+    }
+  ],
+  "distinct_id_pairs": [
+    {
+      "why": "the amended generic form cannot collide with the code arm",
+      "a": "generic: a registered custom family",
+      "b": "COLLISION CONTROL: a code repo named jira whose node id carries a colon. Under the pre-amendment generic form proxy:<graph_type>:<graph_name>:<node_id> this row and the 'registered custom family' row above both produced proxy:jira:board-a:X. It is the ONE input that discriminates the amended form, so a suite asserting only the generic arm's own id proves nothing about the property the custom/ segment exists to hold."
+    }
+  ]
+}

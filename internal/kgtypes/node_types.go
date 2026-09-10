@@ -46,46 +46,33 @@ const (
 	// Multi-root node types.
 	NodeProxy NodeType = "proxy" // lightweight reference to a node in another graph
 
-	// Cloud graph node types — created by cloud collectors.
-	NodeCloudResource NodeType = "cloud-resource" // cloud infrastructure resource (EC2, VPC, IAM role, GCS bucket, etc.)
-
-	// CI/CD graph node types — created by CI/CD collectors.
-	NodeCICDResource NodeType = "cicd-resource" // CI/CD resource (workflow, pipeline, runner, environment, etc.)
-
-	// Log graph node types — created by log ingestion.
-	NodeLogTemplate NodeType = "log-template" // clustered log pattern with <*> wildcards
-	NodeLogStream   NodeType = "log-stream"   // unique label-set identifying a log source
-	NodeLogChunk    NodeType = "log-chunk"    // time-bounded compressed block of log entries
-	NodeLogLabel    NodeType = "log-label"    // shared low-cardinality label (e.g., namespace=prod)
-
-	// NodeLogBackend is a persistent configuration record describing how to
-	// reach a log backend (CloudWatch, Loki, Elasticsearch, ...). Unlike the
-	// other NodeLog* types it lives in the knowledge graph (GraphKnowledge),
-	// NOT in GraphLogs, because the configuration must survive log-graph
-	// discard cycles. The metadata contract is:
-	//
-	//   - name        (key used for lookup; stored in SymbolName too)
-	//   - provider    (cloudwatch | loki | stackdriver | elasticsearch | ...)
-	//   - url         (base endpoint or project identifier for the backend)
-	//   - auth_type   (bearer | basic | aws_profile | api_key | service_account | ...)
-	//   - credential  (raw credential value or $ENV_VAR reference — stored
-	//                  encrypted at rest alongside every other graph blob)
-	//
-	// No storage or BM25 wiring is required: the node piggy-backs on the
-	// existing knowledge graph infrastructure.
-	NodeLogBackend NodeType = "log-backend"
-
 	// Pattern catalog node types.
 	NodePattern    NodeType = "pattern"     // canonical design pattern (library or project instantiation)
 	NodeReuseCheck NodeType = "reuse_check" // recorded proof a planner/implementer searched before authoring new code
 	NodeUseCase    NodeType = "use_case"    // granular pattern applies-when / avoid-when condition (pattern → use_case via applies-when / avoid-when edge)
 	NodeExample    NodeType = "example"     // pattern exemplar — code snippet or reference with language/attribution metadata
 
+	// NodeSource is the HUB a practice node is grouped under in the combined
+	// practice graph. One hub per origin — a language, a catalog, or a collected
+	// run — and each practice node names exactly one of them, by a `source_hub`
+	// metadata key carrying the hub's id and by a `sourced-from` edge pointing at
+	// it. A `kind` metadata key on the hub itself says which of the three it is.
+	//
+	// IT REPLACED THE GRAPH NAME AS THE GROUPING. The practice family used to
+	// hold one graph per language and the graph name WAS the grouping; the
+	// combined graph holds one, so the grouping had to become a node.
+	//
+	// It is summarized and embedded on the same terms as every other practice
+	// node type: NEVER auto-summarized, embedded from an author-supplied summary.
+	// A hub that ranks is what lets "which sources exist" be answered by search
+	// rather than by a second enumeration API.
+	NodeSource NodeType = "source" // practice hub: the origin a set of practice nodes is grouped under
+
 	// NodeGraphTypeDef is the user-registered graph-type configuration record.
 	// It carries the combined collector + behavior definition for a
 	// new arbitrary graph type, stored as a per-account, graph-resident config
-	// node. Like NodeLogBackend it is a configuration record and
-	// opts out of LLM summarization and embedding. The record body is persisted
+	// node. It is a configuration record rather than corpus, so it opts out of
+	// LLM summarization and embedding. The record body is persisted
 	// as a single base64 serialized-proto blob under the "graph_type_def_pb"
 	// metadata key (see cmd/knowledge/internal/graphtypecrud/codec.go), so both
 	// the client and the server decode the SAME proto with one proto.Unmarshal.
@@ -142,7 +129,7 @@ var knowledgeTypes = map[NodeType]bool{
 	NodeTestPlan: true, NodeTestStep: true, NodeTestRun: true,
 	NodeAgent: true, NodeSkill: true, nodeToolGuide: true,
 	NodePattern: true, NodeReuseCheck: true,
-	NodeUseCase: true, NodeExample: true,
+	NodeUseCase: true, NodeExample: true, NodeSource: true,
 	NodeMetaValue:   true,
 	NodePlanSection: true, NodePlanAnnotation: true,
 }

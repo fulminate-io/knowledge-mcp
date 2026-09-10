@@ -8,6 +8,8 @@ package bootstrap
 // and the MCP verdict cannot disagree.
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"testing"
 
@@ -18,6 +20,22 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/topology/corpusscan"
 	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 )
+
+// renderedRunFor builds the run result the DAEMON answers with for a set of
+// findings: the machine-readable token first, then the counters the tool renders
+// beside it. THE TOKEN AND EVERY COUNTER COME FROM PRODUCTION — corpusscan's own
+// fold and the tool's own token function — so a row cannot assert a
+// classification the tool would not make. Only the line's LAYOUT is written
+// here, and TestRenderRunVerdict_RoundTripsThroughTheParser in package tools is
+// what pins that layout to the renderer the daemon actually uses: a layout
+// change there makes these rows fail to parse rather than pass wrongly.
+func renderedRunFor(findings []foundation.Finding) string {
+	v := corpusscan.ClassifyRun(findings)
+	return fmt.Sprintf(
+		"%s: %s  checks_flagged=%d sites_flagged=%d checks_refused=%d llm_only_not_executed=%d test_files_scanned=%d truncated=%t\n",
+		corpusscan.AnalyzerName, tools.RunVerdictToken(v),
+		v.ChecksExecuted, v.SitesFlagged, v.ChecksRefused, v.LLMOnlyNotExecuted, v.TestFilesScanned, v.Truncated)
+}
 
 // checkFinding builds one finding with the given title. The title is what the
 // classification keys on, so it is the only field that has to be real.
@@ -137,10 +155,11 @@ func testFilesDisclosureFindings(n int) []foundation.Finding {
 func TestCheckRun_ExitCodesMatchTheVerdictClassification(t *testing.T) {
 	for _, tc := range checkVerdictFixtures() {
 		t.Run(tc.name, func(t *testing.T) {
-			// The REAL path: reportCheckRun picks the sentinel, subcommandExit maps
-			// it. Asserting on the sentinel alone would leave the mapping untested,
-			// and the mapping is where a code collision would live.
-			code, _ := subcommandExit(reportCheckRun(tc.findings))
+			// The REAL path: reportCheckRunTo reads the daemon's verdict token and
+			// picks the sentinel, subcommandExit maps it. Asserting on the sentinel
+			// alone would leave the mapping untested, and the mapping is where a
+			// code collision would live.
+			code, _ := subcommandExit(reportCheckRunTo(io.Discard, renderedRunFor(tc.findings)))
 			assert.Equal(t, tc.wantExit, code)
 		})
 	}
@@ -183,7 +202,7 @@ func TestCheckRun_AgreesWithTheMCPVerdictOnTheSameFindings(t *testing.T) {
 	sawEachToken := map[string]bool{}
 	for _, tc := range checkVerdictFixtures() {
 		t.Run(tc.name, func(t *testing.T) {
-			code, _ := subcommandExit(reportCheckRun(tc.findings))
+			code, _ := subcommandExit(reportCheckRunTo(io.Discard, renderedRunFor(tc.findings)))
 			token := tools.RunVerdictToken(corpusscan.ClassifyRun(tc.findings))
 			sawEachToken[token] = true
 

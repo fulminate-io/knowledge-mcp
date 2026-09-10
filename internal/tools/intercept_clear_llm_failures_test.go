@@ -231,16 +231,27 @@ func TestMutateComposers_ClearLLMFailures_MultiGraphFanOut(t *testing.T) {
 	// 2 resolved graphs * 2 markers = 4 UPDATEs.
 	assert.Len(t, fc.execMutations, 4, "two markers per resolved graph")
 
-	// The practice graph routes its name via Language; code via Repo (the
-	// engine's resolveCode requires GraphSelector.Repo, not Name).
-	var sawPracticeLang, sawCodeRepo bool
-	for _, req := range fc.execRequests {
+	// THE PREDICATE UPDATES ONLY. The sweep also issues catalog QUERIES, whose
+	// practice target carries no instance field whatever clearTarget does — so a
+	// loop over every recorded ExecuteRequest is satisfied by the reads and never
+	// observes the writes this test is about. The discriminating end-to-end guard
+	// for clearTarget's practice arm lives in
+	// TestClearLLMFailures_PracticeWriteTargetsCarryNoInstanceField; this one keeps
+	// the fan-out count and the per-family routing honest beside it.
+	var sawPracticeSingleton, sawCodeRepo bool
+	for _, req := range mutationExecRequests(fc) {
 		tgt := req.GetTarget()
 		require.NotNil(t, tgt)
 		switch tgt.GetGraph() {
 		case "practice":
-			if tgt.GetLanguage() == "go" {
-				sawPracticeLang = true
+			// INVERTED WITH THE COMBINED GRAPH. This assertion used to require the
+			// practice target to carry its name on Language, and a green run of it
+			// in that shape was positive evidence that clearTarget had NOT been
+			// converted to derive through graphsel. Practice is a singleton now: the
+			// target names the family and carries NO instance field, which is what
+			// the server's practice policy row accepts.
+			if tgt.GetLanguage() == "" && tgt.GetName() == "" && tgt.GetRepo() == "" {
+				sawPracticeSingleton = true
 			}
 		case "code":
 			if tgt.GetRepo() == "knowledge" {
@@ -248,7 +259,8 @@ func TestMutateComposers_ClearLLMFailures_MultiGraphFanOut(t *testing.T) {
 			}
 		}
 	}
-	assert.True(t, sawPracticeLang, "practice target routes name via Language")
+	assert.True(t, sawPracticeSingleton,
+		"practice target carries no instance field: the family is one graph and its policy row consumes none")
 	assert.True(t, sawCodeRepo, "code target routes name via Repo")
 }
 

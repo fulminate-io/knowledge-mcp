@@ -15,7 +15,7 @@ const helpOverview = `# Knowledge Graph — Tool Reference (first-class tools + 
 | create_research   | Batch-create research with nested questions                            |
 | create_test_plan  | Create a structured test plan with steps and criteria                  |
 | record_decision   | Record a design decision with choice, rationale, alternatives          |
-| search            | Unified search across code, knowledge, practice, cloud graphs          |
+| search            | Unified search across code, knowledge and practice graphs             |
 | file_symbols      | List all symbols in a file with optional source                        |
 | assemble          | Type-aware context assembly for plans, agents, test plans              |
 | collect           | Run local collectors (client-side indexer bootstrap)                   |
@@ -44,7 +44,6 @@ const helpOverview = `# Knowledge Graph — Tool Reference (first-class tools + 
   help("edge_types")   — all edge types grouped by category
   help("statuses")     — status values per node type
   help("workflows")    — common multi-tool patterns
-  help("logs")         — ephemeral log graph workflow: configure → collect → query/search/traverse → discard
   help("patterns")     — pattern catalog (project + library practice graphs)
   help("recipes")      — recipe DSL grammar + semantics (graph→graph transformer)
   help("topology")     — analyzer registry, query(mode="topology") dispatch, adding new analyzers
@@ -136,8 +135,9 @@ const helpNodeTypes = `# Node Types
   proxy     — lightweight reference to a node in another graph
   tombstone — marks a node deleted in a branch overlay
 
-## Cloud types (created by cloud collectors)
-  cloud-resource — cloud infrastructure resource (EC2, VPC, IAM role, GCS bucket, etc.)
+## A registered collector's own types
+  A contrib collector declares its own node types in its registration; they are
+  whatever that collector emits and are not enumerated here.
 `
 
 const helpEdgeTypes = `# Edge Types
@@ -181,9 +181,13 @@ const helpEdgeTypes = `# Edge Types
 ## Thought edges
   next, branches-from, charged-by, evidenced-by, produced
 
-## Cloud edges (uppercase)
+## Infrastructure edges (uppercase) — emitted by CONTRIB collectors
+  These are not built-in vocabulary. The client carries no constants for them:
+  the aws, azure, gcp, k8s and k8s-logs contrib collectors emit them as open
+  wire strings into their own registered graph types, so you see them only for
+  the collectors you have installed.
   MOUNTS_SECRET, MOUNTS_CONFIGMAP, USES_SA, USES_PVC, SELECTS, ROUTES_TO,
-  RESTRICTS, SCALES, BINDS_ROLE, BINDS_SUBJECT, USES_STORAGE_CLASS,
+  SCALES, BINDS_ROLE, BINDS_SUBJECT, USES_STORAGE_CLASS,
   GRANTS, USES_NETWORK, USES_SUBNET, USES_SECURITY_GROUP, TARGETS,
   ASSUMES_ROLE, WORKLOAD_IDENTITY, ISSUED_BY, USES_MIDDLEWARE, SINKS_TO
 `

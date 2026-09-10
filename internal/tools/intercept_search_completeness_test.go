@@ -16,26 +16,35 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
-// TestInterceptSearch_CloudCICDClientServed is the SEARCH-tool completeness
-// criterion for the targeted-account graphs: search(graph in {cloud,cicd}) is
-// served by the CLIENT engine (Manager.Search → hydrate), never a server
-// RETURN_MODE_SEARCH. Practice is no longer a targeted single-graph search — it
-// ALWAYS fans out, so its coverage lives in TestInterceptSearch_PracticeClientServedViaFanOut.
-func TestInterceptSearch_CloudCICDClientServed(t *testing.T) {
+// TestInterceptSearch_RegisteredCustomClientServed is the SEARCH-tool
+// completeness criterion for a REGISTERED CUSTOM graph: search(graph:<family>)
+// is served by the CLIENT engine (Manager.Search → hydrate), never a server
+// RETURN_MODE_SEARCH.
+//
+// IT REPLACES THE TARGETED-ACCOUNT ROW. The account-keyed inventory families were
+// the targeted single-graph searches this criterion was written for, and they are
+// retired; a collected inventory graph is a registered custom type now, so the
+// registered arm is where the same completeness claim lands. Practice is served
+// the same way and is now a SINGLE graph again, so its coverage lives beside this
+// one in TestInterceptSearch_PracticeClientServedViaSegmentEngine.
+func TestInterceptSearch_RegisteredCustomClientServed(t *testing.T) {
+	const customFamily = "acme-ci"
 	for _, tc := range []struct {
 		name   string
 		args   map[string]any
 		wantGT kgtypes.GraphType
 		want   string
 	}{
-		{"cloud", map[string]any{"graph": "cloud", "account": "acct", "query": "x"}, kgtypes.GraphCloud, "acct"},
-		{"cicd", map[string]any{"graph": "cicd", "account": "org", "query": "x"}, kgtypes.GraphCICD, "org"},
+		{"registered custom", map[string]any{"graph": customFamily, "name": "org", "query": "x"}, kgtypes.GraphType(customFamily), "org"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var execHits atomic.Int64
-			gc, handler := newInterceptHarnessWithHandler(t, &execHits, &knowledgev1.ExecuteResponse{})
+			// THE FAN-OUT HARNESS, because the registered arm's selector gate
+			// enumerates the family's collected graphs before it searches: a
+			// harness answering an empty enumeration refuses the selector, and the
+			// completeness claim would never be reached.
+			gc, handler := newFanOutHarnessWithHandler(t, []string{"org"})
 			mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{}}
-			deps := &interceptDeps{gc: gc, segMgr: mgr}
+			deps := &interceptDeps{gc: gc, segMgr: mgr, gtCRUD: registeredGraphTypes(customFamily)}
 
 			handled, out := InterceptSearch(opCtx(), deps, searchParams(t, tc.args))
 			require.True(t, handled, "%s search must be claimed client-side", tc.name)
@@ -50,20 +59,23 @@ func TestInterceptSearch_CloudCICDClientServed(t *testing.T) {
 	}
 }
 
-// TestInterceptSearch_PracticeClientServedViaFanOut is the SEARCH-tool
+// TestInterceptSearch_PracticeClientServedViaSegmentEngine is the SEARCH-tool
 // completeness criterion for practice: search(graph:practice) is served by the
-// CLIENT engine across EVERY loaded practice graph (fan-out), never a server
-// RETURN_MODE_SEARCH. Practice always fans out, so it is driven against the
-// fan-out-aware harness (>=2 graph names enumerated, per-graph hits) rather than
-// the single-graph dispatch harness.
-func TestInterceptSearch_PracticeClientServedViaFanOut(t *testing.T) {
-	gc, handler := newFanOutHarnessWithHandler(t, []string{"go", "python"},
-		practiceNode("p:go", "GoWorkerPool", "bounded goroutines"),
-		practiceNode("p:py", "PyThreadPool", "thread pool executor"),
+// CLIENT engine, never a server RETURN_MODE_SEARCH.
+//
+// THE FIXTURE SEEDS THE LEGACY GRAPHS TOO, and that is the discriminating half.
+// This criterion used to be "the fan-out searched every practice graph"; the
+// corpus is ONE graph, so the criterion is that the client engine searched THAT
+// one and left the pre-singleton graphs alone. A fixture with only the combined
+// graph in it could not tell the two apart.
+func TestInterceptSearch_PracticeClientServedViaSegmentEngine(t *testing.T) {
+	gc, handler := newFanOutHarnessWithHandler(t, []string{"default", "go", "python"},
+		practiceNode("p:cb", "CombinedPool", "the combined graph's entry"),
 	)
 	mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
-		"go":     {{ID: "p:go", Score: 0.90}},
-		"python": {{ID: "p:py", Score: 0.70}},
+		"default": {{ID: "p:cb", Score: 0.90}},
+		"go":      {{ID: "p:go", Score: 0.99}},
+		"python":  {{ID: "p:py", Score: 0.98}},
 	})
 	deps := &interceptDeps{gc: gc, segMgr: mgr}
 
@@ -71,11 +83,12 @@ func TestInterceptSearch_PracticeClientServedViaFanOut(t *testing.T) {
 	require.True(t, handled, "practice search must be claimed client-side")
 	require.False(t, out.IsError, "%v", engine.FirstTextContent(out))
 
-	// The CLIENT engine was driven across BOTH enumerated practice graphs.
-	require.Equal(t, []string{"go", "python"}, mgr.searchedNames(), "fan-out searched every practice graph")
-	// No server ranked search — the only server reqs are GRAPH_NAMES + ids[] hydrate.
+	// The CLIENT engine was driven against the COMBINED graph and nothing else.
+	require.Equal(t, []string{"default"}, mgr.searchedNames(),
+		"an unselected practice search reads the one combined graph")
+	// No server ranked search — the only server reqs are the ids[] hydrate.
 	require.False(t, dispatchedAServerSearch(handler.recordedReqs()),
-		"practice fan-out must NOT dispatch a server search")
+		"practice search must NOT dispatch a server search")
 }
 
 // TestInterceptQueryKnowledgeSearch_RecentClientServed is the Phase 2

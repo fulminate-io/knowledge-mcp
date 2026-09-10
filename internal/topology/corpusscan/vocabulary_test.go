@@ -49,28 +49,9 @@ func TestVocabulary_CheckVocabularyEnumeratesEveryKey(t *testing.T) {
 	}
 }
 
-// TestVocabulary_TitleConstantsCarryTheLockedTrailingSpace guards the one
-// property of the title constants no compiler can see: the two prefixes that
-// have an id concatenated after them END IN A SPACE, and the three that
-// describe a set or a run do NOT.
-func TestVocabulary_TitleConstantsCarryTheLockedTrailingSpace(t *testing.T) {
-	withSpace := map[string]string{
-		"RefusalPrefixUnvalidated": RefusalPrefixUnvalidated,
-		"RefusalPrefixEnvironment": RefusalPrefixEnvironment,
-		"TruncationPrefixCheck":    TruncationPrefixCheck,
-	}
-	for name, v := range withSpace {
-		if !strings.HasSuffix(v, " ") {
-			t.Errorf("%s=%q must end in a space — an id is concatenated directly after it", name, v)
-		}
-	}
-	withoutSpace := map[string]string{
-		"TruncationTitleRun":     TruncationTitleRun,
-		"DisclosureTitleLLMOnly": DisclosureTitleLLMOnly,
-	}
-	for name, v := range withoutSpace {
-		if strings.HasSuffix(v, " ") {
-			t.Errorf("%s=%q must not end in a space — nothing is concatenated after it", name, v)
-		}
-	}
-}
+// The hand-listed trailing-space walk that stood here is RETIRED, not dropped.
+// It named five of the block's constants and judged them against a list its
+// author retyped, so a constant added to the block was outside it by default —
+// which is exactly what happened. Its property is now asserted over EVERY
+// declared title by TestVocabulary_LockedTitleNamingRuleDecidesTheTrailingSpace,
+// which reads the block out of the source; see locked_titles_census_test.go.

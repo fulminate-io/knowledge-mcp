@@ -145,17 +145,6 @@ func NodeContributionHash(n *knowledgev1.Node) [32]byte {
 	return sha256.Sum256(buf)
 }
 
-// nodeBufHint sums the hashed text lengths plus a fixed framing allowance so the
-// encoder sizes its buffer once instead of growing it.
-func nodeBufHint(n *knowledgev1.Node) int {
-	const framingPerField = 5
-	const nodeFieldCount = 14
-	return len(n.GetType()) + len(n.GetSymbolName()) + len(n.GetFilePath()) +
-		len(n.GetLanguage()) + len(n.GetContent()) + len(n.GetSignature()) +
-		len(n.GetTestKind()) + len(n.GetDescription()) + len(n.GetSource()) +
-		len(n.GetStatus()) + nodeFieldCount*framingPerField + 32
-}
-
 // EdgeContributionHash returns the SHA-256 over the 7 encoded edge fields of spec
 // section D. LastValidated is excluded because the collector never sets it — the
 // only non-test reference under the collector decodes a server response rather
@@ -166,8 +155,10 @@ func nodeBufHint(n *knowledgev1.Node) int {
 func EdgeContributionHash(e kgwire.BatchEdge) [32]byte {
 	const framingPerField = 5
 	const edgeFieldCount = 7
-	buf := make([]byte, 0, len(e.FromID)+len(e.ToID)+len(e.Type)+
-		len(e.Method)+len(e.Evidence)+edgeFieldCount*framingPerField+16)
+	buf := make([]byte, 0, bufHint(
+		len(e.FromID), len(e.ToID), len(e.Type),
+		len(e.Method), len(e.Evidence), edgeFieldCount*framingPerField, 16,
+	))
 	buf = appendText(buf, e.FromID)
 	buf = appendText(buf, e.ToID)
 	buf = appendText(buf, string(e.Type))
@@ -312,6 +303,37 @@ func RowContributionHashes(nodes []*knowledgev1.Node, edges []kgwire.BatchEdge) 
 func FilelessContributionHash(nodes []*knowledgev1.Node, edges []kgwire.BatchEdge) [32]byte {
 	_, fileless := PartitionByOwningFile(nodes, edges)
 	return fileGroupHash(fileless)
+}
+
+// NodeKeyContributionHashes is the NODE-KEYED twin of FileContributionHashes:
+// one hash per node id, folded over that node and the edges it owns.
+//
+// IT FOLDS THROUGH fileGroupHash, THE SAME FOLDER, deliberately — the identical
+// reason FilelessContributionHash does. That folder is the basis of the server's
+// per-key decline, so its determinism and its agreement with the server's
+// aggregate are already proven by a shipped mechanism; a second folder would
+// have to re-establish both, and the server's node-keyed aggregate is written to
+// match this one (sha256(node_agg || edge_agg), node_agg over the single node's
+// digest, edge_agg over the owned edges in the four-part identity order).
+//
+// THE UNOWNED REMAINDER HAS NO ENTRY, exactly as the fileless group has none
+// here: a row no key covers is outside the manifest, which is what makes the
+// returned key set equal to the set of nodes this collect positively handled.
+//
+// IT IS SERIAL WHERE THE FILE VERSION FANS OUT, and the asymmetry is the group
+// SIZE rather than an oversight. A file group folds a whole file's symbols and
+// their edges — kilobytes of Content per node, hundreds of rows for a large
+// file — while a node group folds ONE node and its own outbound edges, so the
+// per-group work is a small constant and a worker pool would spend more on
+// channel traffic than it saves. The measured scale is a custom graph's node
+// count, not a repository's.
+func NodeKeyContributionHashes(nodes []*knowledgev1.Node, edges []kgwire.BatchEdge) map[string][32]byte {
+	byNode, _ := PartitionByOwningNode(nodes, edges)
+	out := make(map[string][32]byte, len(byNode))
+	for id, g := range byNode {
+		out[id] = fileGroupHash(g)
+	}
+	return out
 }
 
 func FileContributionHashes(nodes []*knowledgev1.Node, edges []kgwire.BatchEdge) map[string][32]byte {

@@ -67,7 +67,7 @@ func (s *crawlState) materializeGithub(ctx context.Context, fc *fetchClient, raw
 		// on, its not a failure at all". It logs at Warn naming the URL and
 		// carries NO census class; the link itself is reported by the
 		// follow-up inventory on the collect response.
-		slog.Warn("github_materializer: prior materialization aborted, repository not materialized", "url", raw)
+		slog.Warn("github_materializer: prior materialization aborted, repository not materialized", "url", logSafe(raw))
 		return
 	}
 
@@ -104,7 +104,7 @@ func (s *crawlState) materializeRepo(ctx context.Context, fc *fetchClient, raw s
 	if err != nil {
 		// A follow-up candidate rather than a degrade — see the ruling quoted
 		// at the abort lane above. Warn, name the URL, count nothing.
-		slog.Warn("github_materializer: tarball fetch failed, repository not materialized", "url", raw, "err", err)
+		slog.Warn("github_materializer: tarball fetch failed, repository not materialized", "url", logSafe(raw), "err", logSafeErr(err))
 		s.githubMat.abort(key)
 		return
 	}
@@ -126,7 +126,7 @@ func (s *crawlState) materializeRepo(ctx context.Context, fc *fetchClient, raw s
 	if err != nil {
 		// A follow-up candidate rather than a degrade — see the ruling quoted
 		// at the abort lane above.
-		slog.Warn("github_materializer: repository population failed, repository not materialized", "url", raw, "err", err)
+		slog.Warn("github_materializer: repository population failed, repository not materialized", "url", logSafe(raw), "err", logSafeErr(err))
 		s.githubMat.abort(key)
 		return
 	}
@@ -279,7 +279,7 @@ func (s *crawlState) appendWarning(raw string, info githubURLInfo, w *materializ
 		// A string-map marshal cannot fail in a correct build; reaching this
 		// means it is not correct, so the warning node is refused loudly
 		// rather than appended with its provenance edge missing.
-		slog.Error("github_materializer: could not build materialization warning node", "url", raw, "err", err)
+		slog.Error("github_materializer: could not build materialization warning node", "url", logSafe(raw), "err", logSafeErr(err))
 		s.githubMat.abort(key)
 		return
 	}

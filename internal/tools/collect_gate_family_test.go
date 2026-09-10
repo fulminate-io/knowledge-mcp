@@ -26,7 +26,7 @@ import (
 func TestCollectEpoch_AdvancesForANonCodeCollect(t *testing.T) {
 	pdfPath, err := filepath.Abs("../collector/pdf/testdata/form_xobject.pdf")
 	require.NoError(t, err)
-	graphName, err := CollectGateGraphName("pdf", pdfPath, nil)
+	graphName, err := CollectGateGraphName("pdf", pdfPath, nil, false)
 	require.NoError(t, err, "the pdf derivation must not refuse an absolute path")
 	require.NotEmpty(t, graphName, "a pdf collect must derive an epoch identity")
 

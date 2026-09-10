@@ -384,7 +384,7 @@ func TestFetchGraphNames(t *testing.T) {
 	gi := &knowledgev1.GraphInfo{}
 	gi.Name = "acct-1"
 	f := &fakeCaller{graphNames: []*knowledgev1.GraphInfo{gi}}
-	got, err := FetchGraphNames(context.Background(), f, kgtypes.GraphCloud)
+	got, err := FetchGraphNames(context.Background(), f, kgtypes.GraphPractice)
 	if err != nil {
 		t.Fatalf("FetchGraphNames: %v", err)
 	}

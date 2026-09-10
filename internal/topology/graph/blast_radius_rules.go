@@ -174,7 +174,7 @@ func replicaRedundancyRule(_ context.Context, _ foundation.Request, node *knowle
 // load balancers and GCP backend services — both fan traffic across multiple
 // downstream targets via the same edge type.
 func outgoingTargetsRedundancyRule(ctx context.Context, req foundation.Request, node *knowledgev1.Node) (float64, error) {
-	count, err := countEdges(ctx, req, node.Id, kgtypes.EdgeTargets, "out")
+	count, err := countEdges(ctx, req, node.Id, edgeTargets, "out")
 	if err != nil {
 		return defaultRedundancyFactor, err
 	}
@@ -188,7 +188,7 @@ func outgoingTargetsRedundancyRule(ctx context.Context, req foundation.Request, 
 // ← load balancers) and returns 1 / max(count, 1). A target group fronted
 // by N load balancers is N-way redundant with respect to the LB layer.
 func incomingTargetsRedundancyRule(ctx context.Context, req foundation.Request, node *knowledgev1.Node) (float64, error) {
-	count, err := countEdges(ctx, req, node.Id, kgtypes.EdgeTargets, "in")
+	count, err := countEdges(ctx, req, node.Id, edgeTargets, "in")
 	if err != nil {
 		return defaultRedundancyFactor, err
 	}
@@ -225,8 +225,17 @@ func countEdges(ctx context.Context, req foundation.Request, nodeID string, edge
 	return n, nil
 }
 
+// edgeTargets is the load-balancer fan-out edge type the two TARGETS rules
+// below read. IT IS DECLARED HERE RATHER THAN IN kgtypes because its PRODUCER
+// is a contrib collector — the aws, gcp, azure and k8s modules each emit
+// "TARGETS" from their own vocabulary — and edge types travel the wire as open
+// strings. The client module carries constants for the vocabularies its own
+// built-in collectors produce; this one is a value the analyzer READS, so the
+// analyzer is where it belongs.
+const edgeTargets kgtypes.EdgeType = "TARGETS"
+
 // init registers the v1 redundancy rules. Resource type strings match the
-// values emitted by the cloud collectors (k8s, aws, gcp).
+// values the contrib cloud collectors emit (k8s, aws, gcp).
 func init() {
 	registerRedundancyRule("Deployment", replicaRedundancyRule)
 	registerRedundancyRule("StatefulSet", replicaRedundancyRule)

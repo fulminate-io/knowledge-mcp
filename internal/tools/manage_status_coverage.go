@@ -154,6 +154,19 @@ type CoverageRow struct {
 	// the pinned ten rather than derived: widening a pinned wire shape is a separate
 	// decision from adding a column to the table.
 	CountsRead bool `json:"-"`
+	// NoInstance reports that this row is a REGISTERED FAMILY WITH NO COLLECTED
+	// GRAPH — an operator's registration with nothing collected under it yet. Every
+	// count field is at its zero value and none of them is a measurement, the same
+	// contract CountsRead states, and the row's segment cell is read from the
+	// registration's declared behavior rather than from a probe.
+	//
+	// IT CARRIES json:"-" for the RepairVerified reason its neighbors do: the
+	// ten-key wire shape the Daemon Status web card types against is PINNED, and
+	// widening it is a separate decision from adding a row shape to the table. A
+	// JSON consumer therefore reads this row's zeros with only SegDisposition ==
+	// DispositionNotCollected to tell it they are not measurements — which is the
+	// same discrimination the declined row already relies on.
+	NoInstance bool `json:"-"`
 	// ImageBytes is the graph image's SIZE ON DISK as the catalog enumeration
 	// reported it — Registry.listGraphs takes it off os.ReadDir's DirEntry.Info and
 	// loads nothing to get it. It is the only durable per-graph fact a declined row
@@ -184,18 +197,28 @@ func repairVerifiedFrom(st RepairVerification, ok bool, nowNanos int64) bool {
 // collectCoverageRows. Returns "" when there are no rows (stats seam unavailable
 // or no eligible graphs) so the caller appends nothing.
 func renderLLMCoverage(ctx context.Context, deps ClientDeps) string {
-	rows := collectCoverageRows(ctx, deps)
+	rows, walkErr := collectCoverageRows(ctx, deps)
+	// A WALK FAILURE IS NAMED EVEN WHEN IT LEFT NO ROWS AT ALL. The only error the
+	// walk produces costs the registered custom families and no builtin row, so
+	// the table below still renders; but a failure the operator is not told about
+	// is the silent degrade this line exists to prevent, and it is worth a section
+	// of its own on the empty-table path rather than being dropped with it.
+	failure := ""
+	if walkErr != nil {
+		failure = "\n\n## LLM coverage — INCOMPLETE\n\n⚠ " + walkErr.Error() + "\n"
+	}
 	if len(rows) == 0 {
-		return ""
+		return failure
 	}
 
 	var sb strings.Builder
+	sb.WriteString(failure)
 	sb.WriteString("\n\n## LLM coverage (durable, per-graph)\n")
 	// summarized counts any non-empty Summary, which INCLUDES deterministic
 	// auto-summaries — so it is most meaningful as a coverage signal for code
 	// graphs, where Summary is populated only by the summarizer.
 	sb.WriteString("_summarized = node has a non-empty Summary, which INCLUDES deterministic auto-summaries for structured nodes (decisions, findings, thoughts, etc.) — most meaningful as an LLM-coverage signal for code graphs, where Summary is populated only by the summarizer._\n\n")
-	sb.WriteString("_the segment-coverage cell names INDEPENDENT counts and none of them bounds another, so they are labeled rather than joined with \"of\": `shipped N` sums the resident segments' doc counts WITH DUPLICATES (a document resident in more than one segment across an un-reclaimed merge window is counted once per segment), `live M` is the DISTINCT live-searchable count — so the pair is a duplication meter, and `shipped` above `live` is that duplication — and the embedded count has its own column. The bracketed term is that graph's coverage BAND, derived from the LIVE count, NOT the shipped one, and it names which arm owns the row: `self-healing` resolves within one reconcile interval, `gap-repairing` is the band the repair arm services, `cache-aged` is that same band on a graph the coverage backstop has not verified within its interval, `stuck` is a graph this client maintains whose heal breaker has latched — no arm is servicing it, and the age is how long that has been true IN THIS PROCESS (a restart clears it), `unmanaged` is a graph this client has never searched, collected into or written to, so no background arm maintains it at all — the intended state for a graph you are not working on rather than a fault. ITS COUNTS ARE REAL, and its SEGMENT CELL IS NOT: counting is a read the backend answers from durable state it already maintains, while probing the segment pool imports that pool into this process and constructs the graph's engine here, so the counts render and the segment cell says `not read`. When even the counts cannot be produced without materializing the graph — a local server whose image predates the durable count record — the count cells say `not read` too and the row carries only the on-disk image size the catalog already reported. Search, collect into or write to the graph and the next status reports its segment coverage as well. And `evicted` is a graph whose segment pool this client's residency budget dropped from RAM to stay inside its byte ceiling — the segments are intact on local disk and the next search reloads them, so it is a memory-management state that needs NO operator action._\n\n")
+	sb.WriteString("_the segment-coverage cell names INDEPENDENT counts and none of them bounds another, so they are labeled rather than joined with \"of\": `shipped N` sums the resident segments' doc counts WITH DUPLICATES (a document resident in more than one segment across an un-reclaimed merge window is counted once per segment), `live M` is the DISTINCT live-searchable count — so the pair is a duplication meter, and `shipped` above `live` is that duplication — and the embedded count has its own column. The bracketed term is that graph's coverage BAND, derived from the LIVE count, NOT the shipped one, and it names which arm owns the row: `self-healing` resolves within one reconcile interval, `gap-repairing` is the band the repair arm services, `cache-aged` is that same band on a graph the coverage backstop has not verified within its interval, `stuck` is a graph this client maintains whose heal breaker has latched — no arm is servicing it, and the age is how long that has been true IN THIS PROCESS (a restart clears it), `unmanaged` is a graph this client has never searched, collected into or written to, so no background arm maintains it at all — the intended state for a graph you are not working on rather than a fault. ITS COUNTS ARE REAL, and its SEGMENT CELL IS NOT: counting is a read the backend answers from durable state it already maintains, while probing the segment pool imports that pool into this process and constructs the graph's engine here, so the counts render and the segment cell says `not read`. When even the counts cannot be produced without materializing the graph — a local server whose image predates the durable count record — the count cells say `not read` too and the row carries only the on-disk image size the catalog already reported. Search, collect into or write to the graph and the next status reports its segment coverage as well. `evicted` is a graph whose segment pool this client's residency budget dropped from RAM to stay inside its byte ceiling — the segments are intact on local disk and the next search reloads them, so it is a memory-management state that needs NO operator action. And `not collected` is a REGISTERED FAMILY WITH NO GRAPH: an operator registered the collector and nothing has been collected under it yet, so the row names the family with no instance half, every count cell is absent rather than zero, and the segment cell is read from the registration's own declared behavior. Run a collect and the row becomes an ordinary one._\n\n")
 	// The segment cell reads "shipped N · live M [band]". Shipped sums the resident
 	// segments' doc_counts WITH DUPLICATES; live is the DISTINCT LIVE-SEARCHABLE doc
 	// count. Neither bounds the other, so the cell labels the two rather than joining
@@ -323,11 +346,34 @@ const (
 // both-counts helper THAT now projects from, live in
 // manage_status_coverage_counts.go.
 func GraphEmbeddedCount(ctx context.Context, gc GraphCaller, gt kgtypes.GraphType, name string) (int, error) {
-	target := graphsel.GraphSelectorFor(gt, name, false)
+	return graphEmbeddedCountFor(ctx, gc, statusGraphTarget(gt, name))
+}
+
+// statusGraphTarget builds the Stats target for ONE NAMED graph in the status
+// coverage table.
+//
+// TWO FAMILIES NEED MORE THAN THE DERIVATION, and both are named here rather
+// than duplicated at the two call sites below.
+//
+// The DEFAULT knowledge graph (empty instance name) addresses as an empty
+// selector, mirroring renderLLMCoverage's knowledge-row handling.
+//
+// PRACTICE ADDRESSES A NAMED graph through the LEGACY read selector. The family
+// became a singleton, so graphsel puts no instance field on its selector — right
+// for a write and for an unselected read, and wrong here: this table walks the
+// catalog and reports a row PER GRAPH, so a derived target would ask about the
+// combined graph once per name and print the same numbers down every legacy row.
+// A repeated number reads as a working table, which is why it is worth the
+// exception. It is read-only; a practice WRITE refuses the field on both sides.
+func statusGraphTarget(gt kgtypes.GraphType, name string) *knowledgev1.GraphSelector {
 	if gt == kgtypes.GraphKnowledge && name == "" {
-		target = &knowledgev1.GraphSelector{Graph: ""}
+		return &knowledgev1.GraphSelector{Graph: ""}
 	}
-	return graphEmbeddedCountFor(ctx, gc, target)
+	target := graphsel.GraphSelectorFor(gt, name, false)
+	if gt == kgtypes.GraphPractice && name != "" {
+		target.Language = name
+	}
+	return target
 }
 
 // GraphCoverageCounts returns the FULL on-demand LLM-coverage set for one graph,
@@ -343,24 +389,19 @@ func GraphEmbeddedCount(ctx context.Context, gc GraphCaller, gt kgtypes.GraphTyp
 // It carries the same (gt, name) special case as GraphEmbeddedCount above: the
 // unnamed knowledge graph addresses as an empty selector rather than by name.
 func GraphCoverageCounts(ctx context.Context, gc GraphCaller, gt kgtypes.GraphType, name string) (GraphCoverage, error) {
-	target := graphsel.GraphSelectorFor(gt, name, false)
-	if gt == kgtypes.GraphKnowledge && name == "" {
-		target = &knowledgev1.GraphSelector{Graph: ""}
-	}
-	return graphCoverageFor(ctx, gc, target)
+	return graphCoverageFor(ctx, gc, statusGraphTarget(gt, name))
 }
 
 // segCoveredFor reads the SERVER-shipped HNSW-segment-covered doc count AND the
 // LIVE in-memory engine resident doc count for a row's graph via the nil-safe
 // SegmentCoverage seam. Segments exist for every graph kgtypes.HasRebuildableSegments
-// admits — the embeddable builtins (knowledge, code, cloud, cicd, practice,
-// checks) plus the raw graphs web and pdf, whose collected chunks carry vectors and
-// BM25 documents — the
-// SAME gate buildHealFactory and the manual rebuild_segments op use, so the status
-// column reports coverage for exactly the graph set the auto-heal arm services.
-// Reporting coverage for a raw graph is what makes manage(status) answerable for
-// one, which is how an operator confirms a collected document is searchable. A
-// graph with no rebuildable segments (linkage, logs)
+// admits, which is every builtin except linkage — read that predicate rather
+// than a list here, because a list of families is what rots when one is added or
+// retired. It is the SAME gate buildHealFactory and the manual rebuild_segments
+// op use, so the status column reports coverage for exactly the graph set the
+// auto-heal arm services. Reporting coverage for a raw graph is what makes
+// manage(status) answerable for one, which is how an operator confirms a
+// collected document is searchable. A graph with no rebuildable segments
 // returns (0, 0, false) and the column renders "—". When the seam is unwired
 // (degraded headless mode) or the shipped probe errs, it also returns (0, 0, false)
 // — a placeholder, not a hard failure of the status table. The live resident read is

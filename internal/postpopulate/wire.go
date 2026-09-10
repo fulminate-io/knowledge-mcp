@@ -46,12 +46,12 @@ type GraphCaller interface {
 
 // selectorArgs returns the (graph, name-field) selector key/value pair the
 // server's ResolveGraphDB (tools_graph_routing.go) expects for graphType:
-// code routes by repo, cloud/cicd by account, everything else by name. This is
-// the SAME translation the proven pipeline/rpc.go fetchNodes (L151-160) +
-// writeBatchUpdates (L288-297) switch performs. Routing a cloud/cicd write via
-// name: would land Account-less and the server rejects it ("graph=cloud
-// requires account") — the silent-write regression these helpers exist
-// to prevent. The returned map is merged into the query/mutate args.
+// code routes by repo, a singleton family by nothing at all, everything else by
+// name. This is the SAME translation graphsel.ApplyInstanceKey performs for the
+// pipeline's own writeBatchUpdates. Routing a code write via name: would land
+// Repo-less and the server rejects it ("graph=code requires repo") — the
+// silent-write regression these helpers exist to prevent. The returned map is
+// merged into the query/mutate args.
 func selectorArgs(gt kgtypes.GraphType, graphName string) map[string]any {
 	return graphsel.ScopePayload(gt, graphName, true)
 }
@@ -369,7 +369,7 @@ func execCreateBatchNodes(ctx context.Context, gc GraphCaller, gt kgtypes.GraphT
 	// system-managed-type guard (decodeCreate → validateCreateNodeBody rejects
 	// type=package|file|branch as "created by the code indexer, not by hand").
 	// Writes on this path come from collectors, not from a user's mutate call, so
-	// their package/branch/file creates are legitimate — the cloud and CI/CD
+	// their package/branch/file creates are legitimate — an inventory collector's
 	// resource hooks are the callers that create such nodes here. (The code
 	// graph's own package/repo-root nodes no longer ride this path at all: the
 	// collector emits them in the collect payload.) We set the flag
@@ -387,7 +387,7 @@ func execCreateBatchNodes(ctx context.Context, gc GraphCaller, gt kgtypes.GraphT
 
 // nodesToWire maps knowledgev1.Node values onto the create_batch nodes[] wire
 // shape (the engine's nodeBody subset: type/name/summary/content/status/metadata/
-// id). SymbolName rides as the node "name" (cloud/cicd/code nodes carry their
+// id). SymbolName rides as the node "name" (code nodes carry their
 // identity in SymbolName). Reads the proto fields directly (promoted onto the
 // wire node) — providers pass the &proxy.Node extracted from BuildCrossGraphProxy
 // or directly-built issuer nodes, both *knowledgev1.Node.

@@ -5,17 +5,8 @@ package kgtypes
 const (
 	GraphKnowledge GraphType = "knowledge"
 	GraphCode      GraphType = "code"
-	GraphCloud     GraphType = "cloud"
 	GraphPractice  GraphType = "practice"
 	GraphLinkage   GraphType = "linkage"
-	GraphCICD      GraphType = "cicd"
-	// GraphLogs is an ephemeral per-query graph built from structured log
-	// entries. A single query can produce millions of nodes (templates,
-	// streams, chunks, labels). Log graphs are MUST NEVER be sent to the
-	// summarizer or embedder — doing so would cost thousands of dollars
-	// and take hours. SkipsLLMProcessing enforces this at the store layer.
-	// Storage: ~/.knowledge/logs/
-	GraphLogs GraphType = "logs"
 	// GraphWebRaw is a per-source graph of typed raw-graph records emitted
 	// by the web collector (page / section / paragraph / code_block /
 	// list / list_item / table / link / image / blockquote nodes with
@@ -72,10 +63,10 @@ const (
 )
 
 // allGraphTypes is the canonical ordered list of every GraphType. The first
-// seven are sync-eligible; the trailing three (logs/web/pdf) are the raw/
-// LLM-skipped graphs SyncEligible filters out. Ordering is load-bearing:
-// SyncEligibleGraphTypes filters this slice in place, so the eligible-set
-// order is {knowledge, code, cloud, cicd, practice, linkage, checks}.
+// five are sync-eligible; the trailing two (web/pdf) are the raw graphs
+// SyncEligible filters out. Ordering is load-bearing: SyncEligibleGraphTypes
+// filters this slice in place, so the eligible-set order is
+// {knowledge, code, practice, linkage, checks}.
 //
 // Position does NOT decide eligibility — SyncEligible is a complement
 // predicate, so any type absent from its exclusion set is eligible wherever it
@@ -84,22 +75,25 @@ const (
 var allGraphTypes = []GraphType{
 	GraphKnowledge,
 	GraphCode,
-	GraphCloud,
-	GraphCICD,
 	GraphPractice,
 	GraphLinkage,
 	GraphChecks,
-	GraphLogs,
 	GraphWebRaw,
 	GraphPDFRaw,
 }
 
 // SyncEligible reports whether a graph of type gt may be pushed to Fulminate
-// Cloud. Every type EXCEPT logs and the raw graphs (web, pdf) is sync-eligible —
+// Cloud. Every type EXCEPT the raw graphs (web, pdf) is sync-eligible —
 // CEO-locked, "raw graphs and logs are the only ones we don't want to sync".
-// The reason for those three is RESIDENCY, not processing: a raw graph is a
+// The reason for the raw graphs is RESIDENCY, not processing: a raw graph is a
 // temporary scratch corpus expected to be dropped once a golden graph is
 // produced, so pushing it would ship bytes nobody will keep.
+//
+// THE LOGS FAMILY THAT RULING ALSO NAMED IS GONE, and its exclusion left with
+// it. Log collection is a contrib collector now, and whatever graph type a
+// custom collector registers is governed by that registration rather than by
+// this list, so there is no longer a builtin `logs` for this predicate to
+// exclude. What remains of the ruling is the raw-graph half, unchanged.
 //
 // IT IS NO LONGER THE COMPLEMENT OF store.SkipsLLMProcessing, and that is the
 // resolution of a contradiction this doc used to carry against itself. It said
@@ -141,11 +135,11 @@ var allGraphTypes = []GraphType{
 // on the embed axis and deliberately not sync-eligible — which is the concrete
 // case that retired the complement claim at the top of this doc.
 func SyncEligible(gt GraphType) bool {
-	return gt != GraphLogs && gt != GraphWebRaw && gt != GraphPDFRaw
+	return gt != GraphWebRaw && gt != GraphPDFRaw
 }
 
 // SyncEligibleGraphTypes returns the ordered set of sync-eligible graph types:
-// {knowledge, code, cloud, cicd, practice, linkage, checks}. The
+// {knowledge, code, practice, linkage, checks}. The
 // set is UNCHANGED by the raw-graph enrollment — segment residency and sync
 // residency are separate questions now, and only the former moved. Filters the
 // canonical allGraphTypes slice through SyncEligible so the set and the
@@ -165,9 +159,8 @@ func SyncEligibleGraphTypes() []GraphType {
 // the client-side mirror of the server's store.GraphType.Embeddable()
 // (cmd/knowledge-server/internal/store/node_type_eligibility_table.go) — the SAME
 // gate the server's segment_rebuild scan uses (embedGapEligible → gt.Embeddable()).
-// The embeddable builtins {knowledge, code, cloud, cicd, practice, checks, web,
-// pdf} have rebuildable segments; the non-embeddable types {linkage, logs} do
-// not.
+// The embeddable builtins {knowledge, code, practice, checks, web, pdf}
+// have rebuildable segments; the non-embeddable type {linkage} does not.
 //
 // CHECKS IS ADMITTED AT THE GRAPH LEVEL AND NARROWED AT THE NODE LEVEL. The
 // server embeds its check findings and refuses its fixture example nodes through
@@ -185,10 +178,10 @@ func SyncEligibleGraphTypes() []GraphType {
 // not express "carries segments and never leaves the machine" — so a raw graph
 // could not be given BM25 segments without also being made cloud-sync-eligible,
 // and the two independent questions were welded together by an implementation
-// convenience. It is now an INDEPENDENT EXCLUSION over the three types that have
-// nothing for an embedding-gated rebuild scan to find: logs (never embedded) and
-// linkage (proxy edges, no text). Every other builtin's answer is byte-identical
-// to before; web and pdf flip to true, which is the point.
+// convenience. It is now an INDEPENDENT EXCLUSION over the one remaining type that has
+// nothing for an embedding-gated rebuild scan to find: linkage, which holds
+// proxy edges and no text. The logs family was the other one, and it is gone
+// with the builtin log collectors rather than having become eligible.
 //
 // DELIBERATE client-side DUPLICATE of the server predicate, for the same
 // module-boundary reason as SyncEligible: the client cannot import the
@@ -197,7 +190,7 @@ func SyncEligibleGraphTypes() []GraphType {
 // SyncEligible derivation is gone, that exclusion is now something an author has
 // to write rather than something they inherit.
 func HasRebuildableSegments(gt GraphType) bool {
-	return gt != GraphLogs && gt != GraphLinkage
+	return gt != GraphLinkage
 }
 
 // BuiltinGraphTypeNames returns the canonical built-in graph-type names in
@@ -221,8 +214,8 @@ func BuiltinGraphTypeNames() []string {
 }
 
 // IsBuiltinGraphType reports whether name matches one of the canonical built-in
-// GraphType constants (knowledge / code / cloud / cicd / practice / linkage /
-// checks / logs / web / pdf). It is the registration-time collision
+// GraphType constants (knowledge / code / practice / linkage / checks /
+// web / pdf). It is the registration-time collision
 // predicate for user-registered graph types: a GraphTypeDef whose Name collides
 // with a built-in is rejected so a registered type can never shadow a built-in.
 // A predicate is exported alongside BuiltinGraphTypeNames (which projects the
@@ -259,6 +252,19 @@ var retiredGraphTypes = map[string]string{
 	"transformers": "the transformers graph family was removed: it held only recipe nodes, " +
 		"and recipes are ephemeral inline bodies now — pass a body as collect's " +
 		"`recipe_body` with extract=true; see help(\"recipes\")",
+	"cloud": "the built-in cloud graph family was removed with the built-in aws, gcp, azure " +
+		"and k8s collectors: cloud inventory is collected by contrib collectors now, each " +
+		"registering its own graph type — install one with `knowledge collector add`, which " +
+		"writes the entry into collectors.json, then collect that type by name",
+	"logs": "the built-in logs graph family was removed with the built-in cloudwatch, loki, " +
+		"stackdriver and k8s log collectors: log collection is a contrib collector now, " +
+		"registering its own graph type — install one with `knowledge collector add`, which " +
+		"writes the entry into collectors.json, then collect that type by name",
+	"cicd": "the built-in cicd graph family was removed with the built-in github, gitlab and " +
+		"bitbucket collectors: CI/CD inventory is collected by contrib collectors now — " +
+		"github-actions, gitlab-ci and bitbucket-pipelines, each registering its own graph " +
+		"type — install one with `knowledge collector add`, which writes the entry into " +
+		"collectors.json, then collect that type by name",
 }
 
 // RetiredGraphTypeReason returns the removal sentence for a graph-type name that
@@ -285,16 +291,16 @@ func RetiredGraphTypeReason(name string) (string, bool) {
 // mutate-style writers rather than a collect epoch.
 var collectorOwnedGraphTypes = []GraphType{
 	GraphCode,
-	GraphCloud,
-	GraphCICD,
-	GraphLogs,
 	GraphWebRaw,
 	GraphPDFRaw,
 }
 
 // IsCollectorOwnedGraphType reports whether name matches a built-in graph type
-// that a collector owns and epoch-sweeps (code / cloud / cicd / logs / web /
-// pdf). It is the target-side guard for non-collector writers that ship a
+// that a collector owns and epoch-sweeps (code / web / pdf). It is
+// BUILT-IN-ONLY: a registered custom graph type is collector-owned too, and its
+// own registration is what says so, so a recipe targeting one is refused by the
+// registry rather than by this list. It is the target-side guard for
+// non-collector writers that ship a
 // CollectResult through the shared Sink: recipe.RunRecipe refuses a recipe whose
 // target_graph_type names one of these, because a recipe's partial emission set
 // would become a full-replace collect that wipes the rest of a real collector

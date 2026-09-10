@@ -146,8 +146,6 @@ var pipelineEligibleGraphTypes = []kgtypes.GraphType{
 	kgtypes.GraphKnowledge,
 	kgtypes.GraphCode,
 	kgtypes.GraphPractice,
-	kgtypes.GraphCloud,
-	kgtypes.GraphCICD,
 	// GraphChecks rides the ranked-search cutover: check nodes are summarized at
 	// authoring time and embed-eligible on the server (fixtures excluded there),
 	// so the client must drain the graph or every check node sits at embedded=0
@@ -203,7 +201,7 @@ type GraphRef struct {
 }
 
 // updateBatchItem is one row in a mutate(update_batch) call. Mirrors the
-// server-side mutateUpdateBatchItem shape exactly.
+// per-item shape the server's update_batch arm decodes.
 //
 // EmbedIdentity states what BinaryVector's bytes ARE, and is set ONLY on an item
 // that carries one. An identity without a vector claims nothing about stored
@@ -221,8 +219,9 @@ type updateBatchItem struct {
 // updateBatchArgs is the wrapped arguments for mutate(operation:"update_batch").
 // Graph/Repo/Account/Name route the write to the right backing DB —
 // without them, mutate defaults to the knowledge graph and code-graph
-// summary/embed writes silently land in the wrong place. Same routing
-// shape as fetchNodes; mirrors server's graphSelectorFromArgs.
+// summary/embed writes silently land in the wrong place. The scan side carries
+// the same pair on its own request instead (scanGaps sets GraphType and
+// GraphName directly); this side lowers them through graphsel.ApplyInstanceKey.
 //
 // Branch carries the overlay dimension a branch-overlay-resident write must
 // target. The gap scan tags overlay-resident GapItems with the overlay-qualified
@@ -243,7 +242,7 @@ type updateBatchArgs struct {
 // writeBatchUpdates issues exactly ONE mutate(update_batch) call per
 // invocation. Empty items is a no-op (no RPC fired).
 //
-// graphType + graphName REQUIRED for the same reason fetchNodes requires
+// graphType + graphName REQUIRED for the same reason scanGaps requires
 // them — the server's mutate dispatcher needs to resolve the right
 // backing DB or the write lands on the knowledge graph default and the
 // pipeline silently never makes progress.
@@ -283,11 +282,11 @@ func writeBatchUpdates(ctx context.Context, c WireClient, gt kgtypes.GraphType, 
 	if gt == kgtypes.GraphCode {
 		args.Branch = branch
 	}
-	graphsel.ApplyInstanceKey(gt, base, &args.Repo, &args.Account, &args.Name, &args.Language, true)
+	graphsel.ApplyInstanceKey(gt, base, &args.Repo, &args.Name, &args.Language, true)
 	// Compile the update_batch to a MUTATION_KIND_UPDATE_ITEMS MutationPlan and
 	// run it through the Execute seam (the same engine.Compile+Execute shape
 	// wire_persist.executeMutate uses) — NOT the legacy gc.Call(mutate) path.
-	// This is the change that makes the legacy handleMutateUpdateBatch deletable
+	// This is the change that made the legacy server-side update_batch handler deletable
 	// Still EXACTLY ONE Execute RPC per write group: N heterogeneous
 	// items ride one plan in one Execute (no N+1).
 	rawArgs, err := json.Marshal(args)

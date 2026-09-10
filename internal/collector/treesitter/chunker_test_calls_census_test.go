@@ -78,13 +78,12 @@ var testCallsConsumerCensus = []testCallsConsumerRow{
 			"It consumes nothing; a disposition here would be a decision about a const block.",
 	},
 	{
-		Path:        "internal/kgtypes/edge_types_cloud.go",
+		Path:        "internal/tools/help_content_query.go",
 		Disposition: dispositionProducer,
-		Reason: "Declares the cloud, CI/CD, cross-domain and log-graph edge vocabulary, split out " +
-			"of edge_types.go by vocabulary. It names EdgeCalls in ONE PLACE ONLY — the " +
-			"EdgeCorrelatesWith doc comment, which cites it as an example of the structural " +
-			"confirmation a log correlation requires — so it consumes nothing and a disposition " +
-			"here would be a decision about a const block.",
+		Reason: "HELP PROSE, not a consumer. It names CALLS in one place — the correlations " +
+			"example's edge_type argument, which shows a reader how to narrow a ranking to an " +
+			"exact one. It reads no edge and dispatches nothing, so a TEST_CALLS disposition " +
+			"here would be a decision about a documentation string.",
 	},
 	{
 		Path:        "internal/collector/treesitter/types.go",

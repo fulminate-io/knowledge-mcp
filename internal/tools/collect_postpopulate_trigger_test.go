@@ -27,13 +27,13 @@ import (
 const ppTriggerStubName = "postpopulate-trigger-test"
 
 // ppTriggerStubCollector is a minimal collector that succeeds with a benign
-// cloud CollectResult so InterceptCollect reaches the post-collect tail-call.
+// CollectResult so InterceptCollect reaches the post-collect tail-call.
 type ppTriggerStubCollector struct{}
 
 func (ppTriggerStubCollector) Name() string { return ppTriggerStubName }
 
 func (ppTriggerStubCollector) Collect(_ context.Context, _ string, _ collector.CollectOptions) (*collectorwire.CollectResult, error) {
-	return &collectorwire.CollectResult{GraphType: kgtypes.GraphCloud, GraphName: "pp-smoke"}, nil
+	return &collectorwire.CollectResult{GraphType: kgtypes.GraphCode, GraphName: "pp-smoke"}, nil
 }
 
 var (
@@ -52,11 +52,10 @@ type ppTriggerDeps struct {
 	gc   GraphCaller
 }
 
-func (d *ppTriggerDeps) LocalLiveness() LocalLiveness          { return nil }
-func (d *ppTriggerDeps) Sink() collector.Sink                  { return d.sink }
-func (d *ppTriggerDeps) SubgraphFetcher() CloudSubgraphFetcher { return nil }
-func (d *ppTriggerDeps) RootDir() string                       { return "" }
-func (d *ppTriggerDeps) UsageAnalyzer() UsageAnalyzerAPI       { return nil }
+func (d *ppTriggerDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d *ppTriggerDeps) Sink() collector.Sink            { return d.sink }
+func (d *ppTriggerDeps) RootDir() string                 { return "" }
+func (d *ppTriggerDeps) UsageAnalyzer() UsageAnalyzerAPI { return nil }
 
 func (d *ppTriggerDeps) PropReady() bool     { return true }
 func (d *ppTriggerDeps) PipelineReady() bool { return true }
@@ -90,15 +89,19 @@ func (d *ppTriggerDeps) TensionsProvider() TensionsProvider   { return nil }
 // the SAME collector type are driven through InterceptCollect with a fake Sink
 // and a fakeGraphCaller; the hook must fire after the collect, receive the wire
 // GraphCaller + an enumerated graph name, and its LinkEdgesBatch must land a
-// captured create_batch mutation whose Target.Account==<account graph> (NOT a
-// name:-only write the server would reject).
+// captured create_batch mutation whose Target carries the family's own instance
+// field (Repo for code) rather than a name:-only write the server would reject.
 func TestInterceptCollect_FiresPostPopulateHookOnLivePath(t *testing.T) {
 	registerPPTriggerStub()
 
-	// Map the stub collector type onto the cloud graph type so the orchestrator
-	// enumerates GraphCloud names. Restore afterwards so other tests are clean.
+	// Map the stub collector type onto an INSTANCE-KEYED family so the
+	// orchestrator enumerates its graph names and the write below has an instance
+	// field to route by. Code is that family: practice served here while it held
+	// eight per-language graphs, and a singleton routes no instance field at all,
+	// so it can no longer carry this claim. Restore afterwards so other tests are
+	// clean.
 	prev, had := postPopulateGraphType[ppTriggerStubName]
-	postPopulateGraphType[ppTriggerStubName] = kgtypes.GraphCloud
+	postPopulateGraphType[ppTriggerStubName] = kgtypes.GraphCode
 	t.Cleanup(func() {
 		if had {
 			postPopulateGraphType[ppTriggerStubName] = prev
@@ -119,16 +122,16 @@ func TestInterceptCollect_FiresPostPopulateHookOnLivePath(t *testing.T) {
 		gotGraphName = graphName
 		gotNilCaller = gc == nil
 		mu.Unlock()
-		// Write a structural edge into the per-account cloud graph over the wire.
-		return postpopulate.LinkEdgesBatch(ctx, gc, kgtypes.GraphCloud, graphName, []knowledgev1.Edge{
-			{FromId: "role-a", ToId: "principal-b", Type: string(kgtypes.EdgeTrusts), Method: "test"},
+		// Write a structural edge into the per-instance graph over the wire.
+		return postpopulate.LinkEdgesBatch(ctx, gc, kgtypes.GraphCode, graphName, []knowledgev1.Edge{
+			{FromId: "role-a", ToId: "principal-b", Type: string(kgtypes.EdgeBuilds), Method: "test"},
 		})
 	})
 
-	// Seed the fake to enumerate exactly one cloud graph named "aws-acct-123".
+	// Seed the fake to enumerate exactly one code graph named "repo-alpha".
 	fc := &fakeGraphCaller{
 		listGraphsResult: &kgtools.ToolResult{
-			Content: []kgtools.ContentBlock{{Type: "text", Text: `{"graphs":[{"graph_type":"cloud","graph_name":"aws-acct-123"}]}`}},
+			Content: []kgtools.ContentBlock{{Type: "text", Text: `{"graphs":[{"graph_type":"code","graph_name":"repo-alpha"}]}`}},
 		},
 	}
 	deps := &ppTriggerDeps{sink: noopSink{}, gc: fc}
@@ -143,25 +146,27 @@ func TestInterceptCollect_FiresPostPopulateHookOnLivePath(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.Equal(t, 1, fired, "the postpopulate hook must fire exactly once (one enumerated cloud graph)")
+	require.Equal(t, 1, fired, "the postpopulate hook must fire exactly once (one enumerated graph)")
 	assert.False(t, gotNilCaller, "the hook must receive a non-nil wire GraphCaller")
-	assert.Equal(t, "aws-acct-123", gotGraphName, "the hook must receive the enumerated graph name")
+	assert.Equal(t, "repo-alpha", gotGraphName, "the hook must receive the enumerated graph name")
 
 	// The hook's LinkEdgesBatch must have landed a create_batch mutation whose
-	// Target routes by Account (cloud), NOT by Name.
+	// Target routes by the family's own instance field (Repo for code), NOT by
+	// Name.
 	require.Len(t, fc.execMutations, 1, "expected exactly one create_batch mutation from the hook")
-	var foundCloudAccount bool
+	var foundInstanceKeyed bool
 	for _, req := range fc.execRequests {
 		if req.GetMutation() == nil {
 			continue
 		}
 		tgt := req.GetTarget()
-		assert.Equal(t, "cloud", tgt.GetGraph(), "edge write must target the cloud graph")
-		assert.Equal(t, "aws-acct-123", tgt.GetAccount(), "edge write must route by Account==aws-acct-123 (NOT Name)")
-		assert.Empty(t, tgt.GetName(), "cloud edge write must NOT route by Name")
-		if tgt.GetGraph() == "cloud" && tgt.GetAccount() == "aws-acct-123" {
-			foundCloudAccount = true
+		assert.Equal(t, "code", tgt.GetGraph(), "edge write must target the enumerated graph")
+		assert.Equal(t, "repo-alpha", tgt.GetRepo(), "edge write must route by Repo==repo-alpha (NOT Name)")
+		assert.Empty(t, tgt.GetName(), "an instance-keyed edge write must NOT route by Name")
+		assert.Empty(t, tgt.GetAccount(), "and no family is account-keyed, so nothing may set it")
+		if tgt.GetGraph() == "code" && tgt.GetRepo() == "repo-alpha" {
+			foundInstanceKeyed = true
 		}
 	}
-	assert.True(t, foundCloudAccount, "the live-path wire call must route to the per-account cloud graph")
+	assert.True(t, foundInstanceKeyed, "the live-path wire call must route to the per-instance graph")
 }

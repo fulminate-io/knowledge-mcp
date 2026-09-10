@@ -22,12 +22,9 @@ func TestSyncEligible_PerType(t *testing.T) {
 	}{
 		{GraphKnowledge, true},
 		{GraphCode, true},
-		{GraphCloud, true},
-		{GraphCICD, true},
 		{GraphPractice, true},
 		{GraphLinkage, true},
 		{GraphChecks, true},
-		{GraphLogs, false},
 		{GraphWebRaw, false},
 		{GraphPDFRaw, false},
 	}
@@ -39,11 +36,11 @@ func TestSyncEligible_PerType(t *testing.T) {
 }
 
 // TestSyncEligibleGraphTypes_OrderedSet asserts the eligible set is exactly the
-// 7-element ordered set {knowledge, code, cloud, cicd, practice, linkage,
-// checks}, excluding logs/web/pdf, in that order.
+// 5-element ordered set {knowledge, code, practice, linkage, checks},
+// excluding web/pdf, in that order.
 //
 // WHAT THE checks ROW ASSERTS. Both the mechanical state — SyncEligible is a
-// complement predicate and checks is absent from its {logs, web, pdf} exclusion
+// complement predicate and checks is absent from its {web, pdf} exclusion
 // set — AND the decision behind it: checks SHOULD sync. It is the compiled half
 // of the practice corpus, practice already syncs, and portability is the point
 // of compiling prose into a check at all. See
@@ -53,8 +50,6 @@ func TestSyncEligibleGraphTypes_OrderedSet(t *testing.T) {
 	want := []GraphType{
 		GraphKnowledge,
 		GraphCode,
-		GraphCloud,
-		GraphCICD,
 		GraphPractice,
 		GraphLinkage,
 		GraphChecks,
@@ -124,9 +119,10 @@ func TestSyncEligible_ChecksAreEligibleDeliberately(t *testing.T) {
 	// KNOWN-NEGATIVE CONTROL. The assertion above is a positive, and a
 	// SyncEligible broken to return true for everything would satisfy it while
 	// proving nothing. A type that is genuinely INELIGIBLE must say so in the
-	// same run.
-	if SyncEligible(GraphLogs) {
-		t.Fatal("control: GraphLogs must NOT be sync-eligible — SyncEligible is returning " +
+	// same run. It used to be logs, which no longer exists; the raw graphs carry
+	// the same property for the same reason (residency, not processing).
+	if SyncEligible(GraphWebRaw) {
+		t.Fatal("control: GraphWebRaw must NOT be sync-eligible — SyncEligible is returning " +
 			"true for everything, so the checks assertion above proves nothing")
 	}
 
@@ -155,8 +151,8 @@ func TestSyncEligible_ChecksAreEligibleDeliberately(t *testing.T) {
 // projects would agree with any drop or reorder by construction.
 func TestBuiltinGraphTypeNames_IsTheFullVocabulary(t *testing.T) {
 	want := []string{
-		"knowledge", "code", "cloud", "cicd", "practice", "linkage",
-		"checks", "logs", "web", "pdf",
+		"knowledge", "code", "practice", "linkage",
+		"checks", "web", "pdf",
 	}
 	got := BuiltinGraphTypeNames()
 	if len(got) != len(want) {

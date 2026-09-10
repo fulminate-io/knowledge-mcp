@@ -73,7 +73,7 @@ func residueRejectTable() []residueRejectCase {
 		{tool: "search", fn: InterceptSearch, payload: map[string]any{"query": "x", "graph": "knowledge"}},
 		{tool: "sync", fn: InterceptSync, payload: map[string]any{"operation": "status"}},
 		{tool: "thoughts", fn: InterceptThoughts, payload: map[string]any{"operation": "propagate"}},
-		{tool: "traverse", fn: InterceptLogsTraversal, payload: map[string]any{"start": "a"}},
+		{tool: "traverse", fn: InterceptTraverseParams, payload: map[string]any{"start": "a"}},
 		// NOT a seventeenth tool: a SECOND entry point on the mutate tool. It
 		// gates on params.Name == "mutate" and fires ahead of the main mutate
 		// intercept, so the main intercept's accounting does not cover it.

@@ -7,7 +7,7 @@
 // be wired BEFORE Phase 5 lands so production traffic never reaches
 // the stub.
 //
-// Mirrors the minimal-claim-by-name shape of InterceptLogsQuery:
+// Mirrors the minimal-claim-by-name shape every intercept in the chain follows:
 // short args parse, gate on the tool name, hand the raw arguments
 // to the render package which walks the wire as needed via the
 // supplied GraphCaller. Non-assemble calls return (false, _) — chain

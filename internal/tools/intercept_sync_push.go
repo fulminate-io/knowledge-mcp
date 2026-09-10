@@ -87,7 +87,7 @@ func pushGraph(
 ) kgtools.ToolResult {
 	serializeStart := time.Now()
 	resp, err := exp.ExportGraph(ctx, &knowledgev1.ExportGraphRequest{
-		Target: manageGraphSelector(graph, name),
+		Target: syncGraphSelector(graph, name),
 	})
 	if err != nil {
 		return errorResult(fmt.Sprintf("sync push: export %s/%s: %v", graph, name, err))
@@ -209,8 +209,9 @@ func exporterSeam(deps ClientDeps) (Exporter, error) {
 // on top of the underlying transport error. 401 means the refresh flow could not
 // re-auth; 403 usually means the OAuth session lacks the `sync` scope.
 // auth.ErrNotFound surfaces as "not logged in". Other errors are surfaced
-// verbatim. Ported from the legacy server-side wrapSyncErr (engine_sync.go) so
-// the chat-visible login guidance survives the move to the client.
+// verbatim. The wording was ported from the server-side sync wrapper this
+// replaced when sync moved to the client; neither that function nor its file
+// exists at HEAD, so the guidance below is the only copy of it.
 func wrapPushErr(graph, name string, err error) string {
 	if errors.Is(err, auth.ErrNotFound) {
 		return fmt.Sprintf("sync push %s/%s: not logged in — run 'knowledge login' to authenticate",

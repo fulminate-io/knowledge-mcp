@@ -13,17 +13,17 @@ import (
 
 // fullGraphTypeDef returns a fully populated record so the round-trip covers
 // every proto field at once: set + unset optional bools, repeated lists, the
-// param_schema + node_types maps, and the forward-compat extra map.
+// node_types map, and the forward-compat extra map.
 func fullGraphTypeDef() *knowledgev1.GraphTypeDef {
 	return &knowledgev1.GraphTypeDef{
 		Name: "jira",
 		Collector: &knowledgev1.CollectorSpec{
-			BinaryPath:     "/usr/local/bin/jira-collector",
-			ParamTransport: "flag:--config",
-			ParamSchema: map[string]*knowledgev1.ParamSpec{
-				"project": {Type: "string", Required: true},
-				"since":   {Type: "string", Required: false},
-			},
+			Tool: "collect_jira",
+			Provider: &knowledgev1.CollectorSpec_Stdio{Stdio: &knowledgev1.StdioProvider{
+				Command: "/usr/local/bin/jira-mcp",
+				Args:    []string{"--serve"},
+				Env:     []string{"JIRA_TOKEN", "JIRA_URL"},
+			}},
 		},
 		Behavior: &knowledgev1.BehaviorDefaults{
 			Syncable:        new(true),
@@ -117,7 +117,7 @@ func TestFromNode_Rejections(t *testing.T) {
 
 	// Wrong node type.
 	wrongType := &knowledgev1.Node{
-		Type:     string(kgtypes.NodeLogBackend),
+		Type:     string(kgtypes.NodeDocument),
 		Metadata: map[string]string{MetaGraphTypeDefPB: "AAAA"},
 	}
 	if _, err := FromNode(wrongType); err == nil {

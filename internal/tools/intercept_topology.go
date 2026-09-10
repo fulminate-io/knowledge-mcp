@@ -69,7 +69,7 @@ func InterceptTopology(ctx context.Context, deps ClientDeps, params kgtools.Call
 	// clear validation error is returned (not a vague fallthrough, the old
 	// "unknown analyzer \"\"", or empty-graph misbehavior).
 	if a.Graph == "" {
-		return true, errorResult(`query(mode:"topology") requires "graph" — one of: code, cloud, cicd, knowledge`)
+		return true, errorResult(`query(mode:"topology") requires "graph" — one of: code, knowledge, or a registered custom graph type`)
 	}
 	if a.Algorithm == "" {
 		return true, errorResult(`query(mode:"topology") requires "algorithm". Available analyzers: ` + topologyAnalyzerNames())
@@ -204,9 +204,19 @@ func runLocalTopology(ctx context.Context, deps ClientDeps, a topologyArgs) kgto
 }
 
 // topologyInstanceName resolves the per-graph instance key the analyzer reads
-// through Request.Name: code graphs key on repo, cloud graphs on account, web/pdf
-// on name; knowledge is the single instance (empty). Explicit Name wins when set
-// (the wire arg already carries it), then repo, then account.
+// through Request.Name: code graphs key on repo, web/pdf on name; knowledge is
+// the single instance (empty). Explicit Name wins when set (the wire arg already
+// carries it), then repo.
+//
+// `account` IS NOT AN ARM HERE, and its removal is the fix for a measured
+// defect rather than tidying. The chain carried `case a.Account != "": return
+// a.Account` for the account-keyed inventory families, which are retired — so
+// after the retirement the arm could only fire for a caller sending the
+// (accepted and ignored) `account` tool param, and it handed the analyzer
+// Request.Name="<that value>": a DIFFERENT graph instance than the same call
+// without the parameter, on graph:"knowledge" an instance that does not exist.
+// A collected inventory graph is a registered custom type now and is addressed
+// by `name`, which the first arm already serves.
 //
 // THE repo ARGUMENT SERVES TWO ROLES AND THEY DIVERGE FOR AN ABSOLUTE PATH. It
 // names the code GRAPH instance here, and it is also the source of the walk ROOT
@@ -221,8 +231,6 @@ func topologyInstanceName(a topologyArgs) string {
 		return a.Name
 	case a.Repo != "":
 		return codeGraphInstanceName(a.Repo)
-	case a.Account != "":
-		return a.Account
 	default:
 		return ""
 	}

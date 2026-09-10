@@ -196,7 +196,11 @@ func mergeOverCurrent(
 	if node == nil {
 		return payload, false, nil
 	}
-	merged := make(map[string]string, len(node.GetMetadata())+len(payload))
+	// SIZED FROM ONE LENGTH, NOT A SUM: a make() capacity is a hint —
+	// the payload's keys cost at most a growth, and most of them overwrite —
+	// while a size built by addition is a value the allocator has to take on
+	// trust.
+	merged := make(map[string]string, len(node.GetMetadata()))
 	maps.Copy(merged, node.GetMetadata())
 	maps.Copy(merged, payload)
 	return merged, true, nil

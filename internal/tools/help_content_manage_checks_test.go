@@ -35,7 +35,12 @@ func TestHelpManageChecks_TeachesEveryPinnedWhereTreeTrap(t *testing.T) {
 	}{
 		{"$match binds to the nearest pattern scope", `"$match" IN A NESTED WHERE BINDS TO THE NEAREST PATTERN SCOPE`},
 		{"an as binding is invisible in its own leaf", "INVISIBLE INSIDE ITS OWN LEAF'S NESTED WHERE"},
-		{"sub-pattern captures do not escape to siblings", "SUB-PATTERN CAPTURES NEVER ESCAPE TO SIBLING LEAVES"},
+		// RESTATED, NOT DELETED. Sub-pattern captures now reach a sibling leaf,
+		// but ONLY through the namespace the leaf's own `as` declares, and a
+		// leaf with no `as` still exports nothing — so the trap the author hits
+		// is the same trap in a new spelling, and deleting the row would remove
+		// a documented hazard that still exists.
+		{"sub-pattern captures reach siblings only through the as namespace", "SUB-PATTERN CAPTURES REACH A SIBLING LEAF ONLY THROUGH THE 'as' NAMESPACE"},
 		{"flows_to refuses a sequence capture as from", "REFUSES A SEQUENCE CAPTURE AS ITS 'from'"},
 		{"shared-type parameter grammar defeats position anchoring", "SHARED-TYPE PARAMETER GRAMMAR MAKES PARAMETER-POSITION ANCHORING"},
 		{"contains_pattern with as does not backtrack", "BINDS THE FIRST MATCHING DESCENDANT AND DOES NOT"},
@@ -55,6 +60,13 @@ func TestHelpManageChecks_TeachesEveryPinnedWhereTreeTrap(t *testing.T) {
 
 	// The folding idiom and the two-slot contract, which are the other half of
 	// the phase and are documented nowhere else either.
+	// TRAP 6 OWES A SENTENCE ABOUT THE NAMESPACED EXPORT. The export is the one
+	// change most likely to be read as lifting the no-backtracking limit, and it
+	// does not — the exported captures are the FIRST candidate's. Without this
+	// line the topic teaches a remedy and then ships the spelling that undoes it.
+	assert.Contains(t, body, "DOES NOT LIFT THIS",
+		"trap 6 must say the namespaced capture export does not lift the no-backtracking limit")
+
 	assert.Contains(t, body, "additional FUNCTIONS inside the bound good fixture")
 	assert.Contains(t, body, "A FIXTURE PAIR PROVES ONLY THE AXES IT VARIES")
 

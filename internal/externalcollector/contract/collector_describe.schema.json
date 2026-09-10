@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "knowledge custom-collector describe tool output (v1)",
+  "description": "The output schema the REQUIRED `describe` tool must advertise, and the schema its structuredContent result is validated against. describe takes no arguments and returns ONE document: what this collector is, in the vocabulary the registration entry is written in. `knowledge collector add` calls it once during its dial and fills the entry from it; a provider that does not serve the tool, or whose declaration does not satisfy this schema, is REFUSED and nothing is written. The two LLM axes in `behavior` are a SUGGESTION and never a setting: summarize and embed are the operator's, taken from their flags, and this document's values are printed rather than applied.",
+  "type": "object",
+  "required": ["behavior", "node_types", "edge_types", "environment"],
+  "properties": {
+    "behavior": {
+      "type": "object",
+      "description": "The behavior defaults this collector SUGGESTS for its graph. summarizable and embeddable are a suggestion the add path prints and does not apply; the three field lists and syncable are written into the entry as declared.",
+      "required": ["summarizable", "embeddable", "syncable"],
+      "properties": {
+        "summarizable": {
+          "type": "boolean",
+          "description": "SUGGESTION ONLY. Whether this collector's author thinks the family's nodes are worth sending to the LLM summarizer. The written entry takes this from the operator's flag, never from here."
+        },
+        "embeddable": {
+          "type": "boolean",
+          "description": "SUGGESTION ONLY. Whether this collector's author thinks the family's nodes are worth embedding. The written entry takes this from the operator's flag, never from here."
+        },
+        "syncable": {
+          "type": "boolean",
+          "description": "Whether this family's graph should sync. It costs no LLM call, so it is written as declared."
+        },
+        "embed_fields": {
+          "type": "array",
+          "description": "The node fields and metadata keys the embed text is composed from, in order.",
+          "items": { "type": "string" }
+        },
+        "summarize_fields": {
+          "type": "array",
+          "description": "The node fields and metadata keys the summarizer input is composed from, in order.",
+          "items": { "type": "string" }
+        },
+        "bm25_fields": {
+          "type": "array",
+          "description": "The node fields and metadata keys the keyword document is composed from, in order.",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "node_type_overrides": {
+      "type": "object",
+      "description": "OPTIONAL. Per-node-type overrides of the graph-level behavior, keyed by node type. The key set is this collector's own vocabulary, so it is an object rather than a fixed list. Each value carries the optional keys summarizable, embeddable, embed_fields, summarize_fields and bm25_fields; an absent key means inherit the graph default."
+    },
+    "node_types": {
+      "type": "array",
+      "description": "The NODE TYPE VOCABULARY: every node type this collector emits. It is required and it is closed — once a family is registered with a vocabulary, a collect carrying a node type outside it is REFUSED at ingest by name, so a collector that adds a type adds it here first. A collector that declares an empty vocabulary declares that it emits no nodes, which is refused at ingest for every node it then sends.",
+      "items": { "type": "string" }
+    },
+    "edge_types": {
+      "type": "array",
+      "description": "The EDGE TYPE VOCABULARY: every edge type this collector emits, on the same closed terms as node_types. A collector emitting no edges declares an empty array.",
+      "items": { "type": "string" }
+    },
+    "environment": {
+      "type": "array",
+      "description": "The environment variables this collector READS, each with its class. It is a declaration of NAMES and never of values: a value here is refused. The class decides what an installer writes — `path` a literal, `selector` a literal when set and the key omitted when unset, `secret` nothing at all in any state, and `not-carried` nothing at all because the name is read but is not one an installed entry should declare (a machine fact, a platform the installer does not target, or a non-default deployment the operator configures by hand).",
+      "items": {
+        "type": "object",
+        "required": ["name", "class"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The variable name, matching [A-Za-z_][A-Za-z0-9_]*."
+          },
+          "class": {
+            "type": "string",
+            "description": "path, selector, secret or not-carried. A secret is never written into a config entry in any state — not its value and not a reference to it, because a reference is expanded by the process serving the collect and arrives present-and-empty. not-carried is the name a collector READS that an installed entry deliberately does not declare; declaring it says the omission is a decision rather than an oversight, which is what an operator adding it by hand needs to know.",
+            "enum": ["path", "selector", "secret", "not-carried"]
+          },
+          "description": {
+            "type": "string",
+            "description": "OPTIONAL. What this collector reads the variable for, for an operator reading the install output."
+          },
+          "empty_sensitive": {
+            "type": "boolean",
+            "description": "OPTIONAL, and absent means false. Declares that this collector tells the name PRESENT AND EMPTY apart from ABSENT: it refuses such a value, branches on the name's presence, or hands it to a dependency that does either. It changes nothing an installer writes into an entry — the class decides that — and it governs what a WORKED ENTRY in documentation may show. A `${NAME:-}` reference resolves to the empty string in the process serving the collect, so the child receives the name present and empty: inert for an unmarked name and a broken collect for a marked one. It is legal on every class, not-carried included, because a name no installed entry carries can still appear in an example an operator copies."
+          }
+        }
+      }
+    },
+    "context": {
+      "type": "object",
+      "description": "OPTIONAL. The DECLARED FOREIGN-GRAPH CONTEXT this collector needs, in the same shape the registration entry's `context` key carries: an object keyed by graph-type name, each value declaring node_types (or all_node_types), node_fields, metadata_keys, edge_fields and path_basenames. It carries no `reason` key: the entry's decoder refuses an unknown field by name, so a collector's own reason for a declaration stays in its source and its README. See docs/guides/tools/custom_collector.md."
+    }
+  }
+}

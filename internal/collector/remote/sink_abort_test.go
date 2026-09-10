@@ -71,10 +71,9 @@ func TestWriteResult_InconsistentManifestAbortsCollect(t *testing.T) {
 	bad := manifestMatching(result)
 	// A DUPLICATE file_path. Many symbols legitimately share a file, so a repeated
 	// path in a PER-FILE manifest can only mean broken aggregation.
-	bad.Entries = append(bad.Entries, &knowledgev1.ManifestEntry{
-		FilePath:         bad.Entries[0].GetFilePath(),
-		ContributionHash: append([]byte(nil), bad.Entries[0].GetContributionHash()...),
-	})
+	bad.Entries = append(bad.Entries, newManifestEntry(diffKeyFile,
+		bad.Entries[0].GetFilePath(),
+		append([]byte(nil), bad.Entries[0].GetContributionHash()...)))
 	rec.manifest = bad
 
 	err := sink.WriteResult(context.Background(), "", result)
@@ -147,8 +146,8 @@ func TestFilterToChangedFiles_IndexAddressedEdgeErrors(t *testing.T) {
 			FromIdx: -1, ToIdx: -1,
 			FromID: "pkg/a.go:Alpha", ToID: "pkg/b.go:Beta", Type: kgtypes.EdgeType("CALLS"),
 		}}
-		keptNodes, keptHashes, keptEdges, err := filterToChangedFiles(
-			nodes, nil, edges, []string{"pkg/a.go", "pkg/b.go"}, true)
+		keptNodes, keptHashes, keptEdges, err := filterToChangedRows(
+			nodes, nil, edges, []string{"pkg/a.go", "pkg/b.go"}, true, diffKeyFile)
 		require.NoError(t, err)
 		require.Len(t, keptNodes, 2)
 		require.Len(t, keptEdges, 1, "an ID-addressed edge whose FROM node survives rides with it")
@@ -162,8 +161,8 @@ func TestFilterToChangedFiles_IndexAddressedEdgeErrors(t *testing.T) {
 		// implementation that kept the first N would return alpha's digest for beta.
 		alpha := [32]byte{0xAA}
 		beta := [32]byte{0xBB}
-		keptNodes, keptHashes, _, err := filterToChangedFiles(
-			nodes, [][32]byte{alpha, beta}, nil, []string{"pkg/b.go"}, true)
+		keptNodes, keptHashes, _, err := filterToChangedRows(
+			nodes, [][32]byte{alpha, beta}, nil, []string{"pkg/b.go"}, true, diffKeyFile)
 		require.NoError(t, err)
 		require.Len(t, keptNodes, 1, "only pkg/b.go was named as changed")
 		require.Equal(t, [][32]byte{beta}, keptHashes,
@@ -173,8 +172,8 @@ func TestFilterToChangedFiles_IndexAddressedEdgeErrors(t *testing.T) {
 	t.Run("misaligned_digest_array_is_refused", func(t *testing.T) {
 		// A length that does not match is the two-passes bug, and narrowing to the
 		// shorter array would hand the chunker digests belonging to other nodes.
-		_, _, _, err := filterToChangedFiles(
-			nodes, [][32]byte{{0xAA}}, nil, []string{"pkg/a.go", "pkg/b.go"}, true)
+		_, _, _, err := filterToChangedRows(
+			nodes, [][32]byte{{0xAA}}, nil, []string{"pkg/a.go", "pkg/b.go"}, true, diffKeyFile)
 		require.Error(t, err, "a misaligned digest array must ERROR rather than truncate")
 		require.Contains(t, err.Error(), "index-aligned", "the error names the contract it broke")
 		require.Contains(t, err.Error(), "1 per-row node digests for 2 nodes", "and both lengths")
@@ -184,7 +183,7 @@ func TestFilterToChangedFiles_IndexAddressedEdgeErrors(t *testing.T) {
 		edges := []kgwire.BatchEdge{{
 			FromIdx: 0, ToIdx: 1, Type: kgtypes.EdgeType("CONTAINS"), ToID: "pkg/b.go:Beta",
 		}}
-		_, _, _, err := filterToChangedFiles(nodes, nil, edges, []string{"pkg/a.go", "pkg/b.go"}, true)
+		_, _, _, err := filterToChangedRows(nodes, nil, edges, []string{"pkg/a.go", "pkg/b.go"}, true, diffKeyFile)
 		require.Error(t, err, "an unplaceable edge must ERROR — dropping information is not an available response")
 		require.Contains(t, err.Error(), "INDEX-ADDRESSED", "the error names the condition")
 		require.Contains(t, err.Error(), "CONTAINS", "and the offending edge's type")

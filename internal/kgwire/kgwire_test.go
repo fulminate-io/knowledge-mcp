@@ -132,11 +132,6 @@ func TestProxyInfo_FivePatterns(t *testing.T) {
 			want: &knowledgev1.ProxyTarget{GraphType: string(kgtypes.GraphCode), Name: "knowledge", NodeId: "fn-1"},
 		},
 		{
-			name: "cloud->GraphCloud+account+foreign_id",
-			node: proxyNode("p", map[string]string{"foreign_graph": "cloud", "account": "acct-1", "foreign_id": "res-1"}),
-			want: &knowledgev1.ProxyTarget{GraphType: string(kgtypes.GraphCloud), Name: "acct-1", NodeId: "res-1"},
-		},
-		{
 			name: "practice->GraphPractice+foreign_id",
 			node: proxyNode("p", map[string]string{"foreign_graph": "practice", "foreign_id": "pat-1"}),
 			want: &knowledgev1.ProxyTarget{GraphType: string(kgtypes.GraphPractice), NodeId: "pat-1"},

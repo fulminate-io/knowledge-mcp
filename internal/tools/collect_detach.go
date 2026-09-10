@@ -11,9 +11,6 @@ import (
 	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
-	"github.com/fulminate-io/knowledge-mcp/internal/collector/cicd/bitbucket"
-	"github.com/fulminate-io/knowledge-mcp/internal/collector/cicd/github"
-	"github.com/fulminate-io/knowledge-mcp/internal/collector/cicd/gitlab"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/pdfcollector"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/web"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
@@ -26,13 +23,19 @@ import (
 // message, and the per-target single-flight key. Split out of collect.go to keep
 // that file under the file-length cap; pure relocation, no behavior change.
 
-// builtinCollectWork runs the builtin collector.Collect for a target plus its
-// post-collect tail (repo-manifest record, cross-graph linker, postpopulate hook,
-// pipeline wake, composition verdict). It is the unit collectWaitOrDetach runs
-// either synchronously (rt==nil fallback) or on the standing runtime's detached
-// goroutine — identical work on both paths.
+// collectWork runs a collect plus its post-collect tail (repo-manifest record,
+// cross-graph linker, postpopulate hook, pipeline wake, composition verdict). It
+// is the unit collectWaitOrDetach runs either synchronously (rt==nil fallback)
+// or on the standing runtime's detached goroutine — identical work on both
+// paths.
 //
-// It returns collector.Collect's error verbatim when the collect itself fails.
+// run IS THE ONLY THING THAT DIFFERS BETWEEN A BUILTIN AND A CUSTOM COLLECT: the
+// builtin runner walks through the collector registry, the custom runner proxies
+// a registered MCP provider. Everything below the call is shared, which is what
+// makes a custom graph behave under the same rules a code graph does rather than
+// under a parallel set that drifts.
+//
+// It returns the runner's error verbatim when the collect itself fails.
 // Past that point the returned error joins the postpopulate hook's error with the
 // composition verdict, so a harvest that captured nothing usable reports failure.
 //
@@ -50,7 +53,19 @@ import (
 // graphName is the PREDICTED name, derived once by CollectGateGraphName at the
 // dispatch and threaded down rather than recomputed here, so the postpopulate
 // scope and the gate identity cannot disagree about which graph this run is.
-func builtinCollectWork(ctx context.Context, deps ClientDeps, a collectArgs, opts collector.CollectOptions, graphName string) (string, string, error) {
+//
+// registeredCustom says whether this collect resolved to a REGISTRATION rather
+// than to a compiled-in collector. It is threaded rather than derived because it
+// is not derivable from the request alone: a.Type is the same string on both
+// paths when a registration shadows a compiled-in collector of that name, which
+// is precisely the case the post-collect tail must tell apart. It is the same
+// carrier the three dispatch-side consumers already take.
+//
+// BOTH TAIL GATES READ IT, from this one parameter: the linker below and the
+// post-populate hook below that. A second derivation for either would be a second
+// source of truth for a fact resolved once at the dispatch, and the two gates
+// disagreeing is exactly the drift that would let one of them run.
+func collectWork(ctx context.Context, deps ClientDeps, a collectArgs, opts collector.CollectOptions, graphName string, registeredCustom bool, run collectRunner) (string, string, error) {
 	// A collect spikes the heap hard — the chunker holds every file's parse
 	// results live until upload. This is a
 	// long-lived daemon process, so once the collect is done that working set is pure
@@ -85,24 +100,36 @@ func builtinCollectWork(ctx context.Context, deps ClientDeps, a collectArgs, opt
 	if filepath.IsAbs(a.ID) {
 		recordCollectedRepo(a.Type, a.ID)
 	}
-	comp, err := collector.Collect(ctx, a.Type, a.ID, opts)
+	comp, foreignFill, err := run(ctx, a, opts)
 	if err != nil {
-		// collector.Collect already wraps with "collect <type>:" — adding our own
+		// The runner already wraps with "collect <type>:" — adding our own
 		// "collect <type> <id>:" prefix produces a duplicate "collect <type>:"
 		// stutter. Return the inner error verbatim; type information survives via
 		// the pipeline's wrap.
 		return "", "", err
 	}
-	// Post-collect linker tail-call. Replaces the former server-side
-	// runPostCollectLinker that ran on the collect-write path. Gated on the same
-	// collector types that previously triggered the server-side path. Best-effort:
-	// failures slog.Warn but the user-facing textResult is unchanged.
-	runPostCollectLinker(ctx, deps, a.Type)
+	// Post-collect linker tail-call, SCOPED TO THE GRAPH JUST COLLECTED.
+	// Best-effort: failures slog.Warn but the user-facing textResult is unchanged.
+	//
+	// TWO GATES, AND THE SECOND IS THE ONE THAT MATTERS HERE: the collector type
+	// whose data the surviving pass reads, AND the registered-custom fact — the
+	// SAME value the post-populate call below reads, from the same single
+	// resolution. The type check alone is not sufficient, because a registration
+	// under the name a compiled-in collector also holds presents the identical
+	// type string. The whole post-collect tail therefore skips a registered custom
+	// family: no linker here and no compiled-in post-populate hook below.
+	//
+	// THE COLLECTED GRAPH NAME RIDES ALONG for the same reason it rides along to
+	// the post-populate sibling below: the pass fires against THAT graph alone
+	// rather than every graph of the family's type. It is the name
+	// CollectGateGraphName predicted at the dispatch, threaded in rather than
+	// recomputed.
+	runPostCollectLinker(ctx, deps, a.Type, graphName, registeredCustom)
 	// Post-collect PostPopulate tail-call, SIBLING to the linker. Runs the
 	// registered postpopulate hook for the collector family over the wire,
 	// enriching the per-account/per-repo graph with the structural edges the linker
 	// does not own (SG/NACL rules, cross-account trust, image lineage, k8s
-	// selector/cluster linkage, CICD OIDC federation, step→code links).
+	// selector/cluster linkage, step→code links).
 	//
 	// UNLIKE the linker above, this is NOT best-effort: its error is captured and
 	// returned below, so a collect whose enrichment failed reports failure to the
@@ -114,7 +141,7 @@ func builtinCollectWork(ctx context.Context, deps ClientDeps, a collectArgs, opt
 	// threaded in rather than recomputed. Only code registers a BreadthScoped hook
 	// today; every other family's hook declares BreadthFamilyBroad, whose arm
 	// ignores the name.
-	ppErr := runPostCollectPostPopulate(ctx, deps, a.Type, graphName)
+	ppErr := runPostCollectPostPopulate(ctx, deps, a.Type, graphName, registeredCustom)
 	// Wake the LLM pipeline: the just-collected graph may have idle-backed-off its
 	// scan cadence toward the hour-long ceiling, so nudge every collector to re-scan
 	// now and discover + enrich the freshly-uploaded nodes instead of waiting out
@@ -138,7 +165,12 @@ func builtinCollectWork(ctx context.Context, deps ClientDeps, a collectArgs, opt
 	// deleted, skipped or rolled back — the graph the harvest produced stays on the
 	// server exactly as today, which is what made the originating incident
 	// diagnosable at all. Only the REPORT changes.
-	return comp.Render(), comp.GraphName, errors.Join(ppErr, collector.CheckComposition(a.Type, comp))
+	// THE FOREIGN-CONTEXT FILL RIDES THE COMPOSITION SUFFIX, through the same
+	// empty-degrades-to-nothing helper the composition and the drop directive
+	// use: a collect whose entry declares no context returns the composition text
+	// byte-identically to before the report existed.
+	return withComposition(comp.Render(), foreignFill), comp.GraphName,
+		errors.Join(ppErr, collector.CheckComposition(a.Type, comp))
 }
 
 // rawCollectDropDirective renders the follow-up call a RAW document collect owes
@@ -147,7 +179,7 @@ func builtinCollectWork(ctx context.Context, deps ClientDeps, a collectArgs, opt
 // THE CLASSIFIER IS THE POINT. Raw web and pdf graphs are staging: they are
 // collected so a recipe can read them into golden practice content, and once
 // that content exists the raw graph is dead weight that accumulates on disk and
-// in every catalog listing. Every OTHER family — code, cloud, cicd, practice,
+// in every catalog listing. Every OTHER family — code, practice,
 // knowledge and the rest — is the durable artifact itself, and telling an
 // operator to drop one would be telling them to destroy the thing they just
 // built. The empty string for those families is a refusal to speak, not a
@@ -311,7 +343,7 @@ func collectTargetKey(collectorType, id string) string {
 // silently, and a predicted name matching no collector gates nothing at all.
 //
 // The per-family rules live WITH their families and are called here, never
-// re-implemented: pdfcollector.SourceSlug, web.GraphName, and each cicd
+// re-implemented: pdfcollector.SourceSlug and web.GraphName, each
 // provider's own GraphName.
 //   - code: the bare base name, DELIBERATELY UNQUALIFIED BY BRANCH. This is
 //     exactly how the code collector names the graph it produces, and the
@@ -329,8 +361,12 @@ func collectTargetKey(collectorType, id string) string {
 //     'id' is required guard runs before this derivation's call site, so the
 //     empty-id fallbacks those three carry are unreachable from here and the
 //     derivation is EXACT rather than approximate.
-//   - github, gitlab and bitbucket: each provider package's own GraphName, the
-//     same function that provider's collector fills CollectResult.GraphName from.
+//   - a REGISTERED CUSTOM type: the collect id VERBATIM. Under the custom
+//     collector contract the registration name is the graph FAMILY and the
+//     collect id is the INSTANCE inside it, so the id is the name with no
+//     derivation at all. registeredCustom is what says a type is one: the
+//     collector type alone cannot tell a registered custom type from a typo,
+//     and the caller has already resolved the record either way.
 //   - AWS DELIBERATELY DERIVES NOTHING, and its absence is a decision rather than
 //     an omission: the aws collector discards the collect id entirely and names
 //     its graph from the account id an STS GetCallerIdentity call returns DURING
@@ -343,7 +379,10 @@ func collectTargetKey(collectorType, id string) string {
 // EXPORTED so a test can pin BOTH sides of the identity equality to production
 // code — the name predicted here against the name the real collector emits —
 // instead of hardcoding an expected string and comparing it against itself.
-func CollectGateGraphName(collectorType, id string, seedURLs []string) (string, error) {
+func CollectGateGraphName(collectorType, id string, seedURLs []string, registeredCustom bool) (string, error) {
+	if registeredCustom {
+		return id, nil
+	}
 	switch collectorType {
 	case "code":
 		return filepath.Base(filepath.Clean(id)), nil
@@ -358,16 +397,10 @@ func CollectGateGraphName(collectorType, id string, seedURLs []string) (string, 
 		return web.GraphName(id, seedURLs)
 	// Plain string literals rather than the neighboring `case
 	// string(kgtypes.GraphPDFRaw)` spelling: pdf and web are collector types that
-	// ARE graph types, and these are not — gcp collects into the cloud family — so
-	// there is no constant to spell them with.
+	// ARE graph types, and these are not — gcp collected into the cloud family —
+	// so there is no constant to spell them with.
 	case "gcp", "azure", "k8s":
 		return id, nil
-	case "github":
-		return github.GraphName(id), nil
-	case "gitlab":
-		return gitlab.GraphName(id), nil
-	case "bitbucket":
-		return bitbucket.GraphName(id), nil
 	default:
 		return "", nil
 	}
@@ -385,11 +418,14 @@ func CollectGateGraphName(collectorType, id string, seedURLs []string) (string, 
 // WHY A SWITCH RATHER THAN kgtypes.GraphType(collectorType). For code, web and
 // pdf the collector type string and the graph type string are equal
 // (kgtypes.GraphCode is "code", GraphWebRaw is "web", GraphPDFRaw is "pdf"), so a
-// bare conversion would compile and pass for them. For the six cloud and cicd
-// families it is FALSE and not close: "gcp" collects into the cloud family and
-// "github" into cicd, so a conversion would mint the graph types "gcp" and
-// "github", which no collector and no pipeline collector registration ever
-// carries — a recorded identity that can never match, which is the exact silent
+// bare conversion would compile and pass for them. It was FALSE and not close for
+// the cloud and cicd provider names this repository used to compile in — "gcp"
+// collected into the cloud family and "github" into cicd, so a conversion would
+// have minted the graph types "gcp" and "github", which no collector and no
+// pipeline collector registration ever carries. Those families are retired and
+// their arms are gone, but the switch stays a switch: a collector type whose
+// family is not its own name is exactly what the next contrib adoption can
+// reintroduce, and a recorded identity that can never match is the silent
 // inertness this gate exists to avoid.
 //
 // THE DEFAULT ARM ERRORS rather than returning a zero family, per the repo
@@ -397,10 +433,18 @@ func CollectGateGraphName(collectorType, id string, seedURLs []string) (string, 
 // TODAY BY CONSTRUCTION — every collector type the name derivation names has an
 // arm here — and that is the point: the next collector added to the name half
 // cannot reach production without declaring its family here too.
-func collectGateGraphIdentity(collectorType, id string, seedURLs []string) (kgtypes.GraphType, string, error) {
-	name, err := CollectGateGraphName(collectorType, id, seedURLs)
+func collectGateGraphIdentity(collectorType, id string, seedURLs []string, registeredCustom bool) (kgtypes.GraphType, string, error) {
+	name, err := CollectGateGraphName(collectorType, id, seedURLs, registeredCustom)
 	if err != nil || name == "" {
 		return "", "", err
+	}
+	if registeredCustom {
+		// THE REGISTRATION NAME IS THE FAMILY. This is the one place a bare
+		// kgtypes.GraphType(collectorType) conversion is CORRECT rather than the
+		// silent-inertness trap the doc comment above warns about: a custom
+		// collect's graph type is its registration name by definition, and the
+		// caller resolved that registration before reaching here.
+		return kgtypes.GraphType(collectorType), name, nil
 	}
 	switch collectorType {
 	case "code":
@@ -409,10 +453,6 @@ func collectGateGraphIdentity(collectorType, id string, seedURLs []string) (kgty
 		return kgtypes.GraphWebRaw, name, nil
 	case "pdf":
 		return kgtypes.GraphPDFRaw, name, nil
-	case "gcp", "azure", "k8s":
-		return kgtypes.GraphCloud, name, nil
-	case "github", "gitlab", "bitbucket":
-		return kgtypes.GraphCICD, name, nil
 	default:
 		return "", "", fmt.Errorf("collect %s: the graph-name derivation named a graph but no graph type is declared for this collector type", collectorType)
 	}

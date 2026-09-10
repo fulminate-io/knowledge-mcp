@@ -61,6 +61,11 @@ type scanOptions struct {
 	// execution: a run-wide true widens every ast check, and a check's
 	// declaration widens that check alone.
 	includeTests bool
+	// files is the resolved FILE-LIST scope, nil when the caller named none.
+	// Every path in it was resolved against the tree before this value existed,
+	// so a check reading it is reading paths that were present when the run
+	// started — and any that were not have already been refused BY NAME.
+	files *fileScope
 }
 
 // validateScanRequest refuses every malformed input with a typed error naming
@@ -94,11 +99,44 @@ func validateScanRequest(req foundation.Request) (scanOptions, error) {
 	if err != nil {
 		return scanOptions{}, err
 	}
-	includeTests, err := parseIncludeTests(req.Extra, req.Language)
+	includeTests, testsExplicit, err := parseIncludeTests(req.Extra, req.Language)
 	if err != nil {
 		return scanOptions{}, err
 	}
-	return scanOptions{checks: checks, includeTests: includeTests}, nil
+	files, err := parseFileList(req.Extra)
+	if err != nil {
+		return scanOptions{}, err
+	}
+	opts := scanOptions{checks: checks, includeTests: includeTests}
+	if files == nil {
+		return opts, nil
+	}
+	// THE TWO SCOPE CHANNELS ARE MUTUALLY EXCLUSIVE. Both lower to the same
+	// ast.Scope.PackagePrefixes, so honoring both would mean "these files AND
+	// that whole subtree" — and the per-path accounting a file list owes could
+	// not then answer which walked file belonged to which channel. Bad input
+	// errors rather than resolving to one of the two silently.
+	if strings.TrimSpace(req.PathPrefix) != "" {
+		return scanOptions{}, fmt.Errorf("topology/%s: %s and path_prefix are mutually exclusive and both were supplied (%s=%d path(s), path_prefix=%q) — they narrow the same walk, so pass one",
+			AnalyzerName, ExtraKeyFiles, ExtraKeyFiles, len(files), req.PathPrefix)
+	}
+	scope, err := resolveFileScope(req.RepoRoot, req.Language, files)
+	if err != nil {
+		return scanOptions{}, err
+	}
+	// AN EXPLICIT include_tests=false BESIDE A NAMED TEST FILE IS A CONTRADICTION.
+	// The list says "open this file" and the knob says "skip files like it"; a
+	// file-list run resolves that in the list's favor for every other filter, so
+	// resolving it silently here too would hand the caller a control they wrote
+	// and did not get. The refusal names the file that makes it one.
+	if testsExplicit && !includeTests {
+		if named := namedTestFiles(req.Language, scope); len(named) > 0 {
+			return scanOptions{}, fmt.Errorf("topology/%s: %s names the test file(s) %s while include_tests=false asks the walk to skip them — a file list opens every path it names, so drop the flag or drop the path",
+				AnalyzerName, ExtraKeyFiles, strings.Join(named, ", "))
+		}
+	}
+	opts.files = scope
+	return opts, nil
 }
 
 // parseIncludeTests reads the run-wide test-file knob, strictly.
@@ -115,29 +153,35 @@ func validateScanRequest(req foundation.Request) (scanOptions, error) {
 // because there the walk filters nothing at either setting and the caller would
 // believe a control is in force when it is not. This is the ast tool's own rule
 // (tools.validateIncludeTests), applied at the ONE place EVERY face converges —
-// manage_checks(run), `knowledge check run`, and the topology dispatcher, which
-// forwards Extra verbatim — rather than once per face. The third of those
+// manage_checks(run), the topology dispatcher, which forwards Extra verbatim,
+// and `knowledge check run`, whose flags reach this parse through
+// manage_checks(run) on the daemon — rather than once per face. The dispatcher
 // declares no parameter of its own, so this parse is the only gate it has.
-func parseIncludeTests(extra map[string]string, language string) (bool, error) {
+//
+// THE SECOND RETURN IS THE THIRD STATE, and it is a return value rather than a
+// re-read of the map by the one caller that needs it: a file-list scope has to
+// tell an explicit false from an omission to refuse the contradiction of a named
+// test file beside include_tests=false, and a second reader of this key would be
+// a second place the three states are decided.
+func parseIncludeTests(extra map[string]string, language string) (value bool, explicit bool, err error) {
 	raw, present := extra[ExtraKeyIncludeTests]
 	if !present {
-		return false, nil
+		return false, false, nil
 	}
-	var value bool
 	switch strings.TrimSpace(raw) {
 	case "true":
 		value = true
 	case "false":
 		value = false
 	default:
-		return false, fmt.Errorf("topology/%s: %s=%q is not admitted (admitted: true, false; omit the key to walk non-test files only)",
+		return false, false, fmt.Errorf("topology/%s: %s=%q is not admitted (admitted: true, false; omit the key to walk non-test files only)",
 			AnalyzerName, ExtraKeyIncludeTests, raw)
 	}
 	if !ast.HasTestFilePredicate(treesitter.Language(language)) {
-		return false, fmt.Errorf("topology/%s: %s is not supported for language %s — ast has no test-file convention registered for it, so the flag would silently do nothing. Languages that do: %s. Omit %s for this language",
+		return false, false, fmt.Errorf("topology/%s: %s is not supported for language %s — ast has no test-file convention registered for it, so the flag would silently do nothing. Languages that do: %s. Omit %s for this language",
 			AnalyzerName, ExtraKeyIncludeTests, language, strings.Join(ast.TestFilePredicateLanguages(), ", "), ExtraKeyIncludeTests)
 	}
-	return value, nil
+	return value, true, nil
 }
 
 // parseChecksSubset reads the check-subset Extra key.

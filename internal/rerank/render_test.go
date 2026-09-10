@@ -196,35 +196,15 @@ func TestRenderForRerank_PracticeNode(t *testing.T) {
 	assert.Contains(t, out, "compositeDB delegates reads")
 }
 
-// TestRenderForRerank_CloudNode verifies the cloud-graph branch packs
-// Type:resource_type SymbolName in region\nSummary. Asserts the structural
-// shape (separator characters and ordering), not the exact byte sequence.
-// resource_type and region are set via Node.SetValue (Metadata map).
-func TestRenderForRerank_CloudNode(t *testing.T) {
+// TestRenderForRerank_ResourceNodeTakesTheDefaultBranch is what the retired
+// CI/CD-branch test became. The cicd-resource node type went with its family and
+// its render arm went with it, so a resource-shaped node from a CONTRIB
+// collector's registered graph — which is what produces these now — reaches the
+// knowledge default. That is the behavior to pin: not that a special arm exists,
+// but that its absence still emits the fields a reranker scores on.
+func TestRenderForRerank_ResourceNodeTakesTheDefaultBranch(t *testing.T) {
 	n := &knowledgev1.Node{
-		Type:       string(kgtypes.NodeCloudResource),
-		SymbolName: "my-bucket",
-		Summary:    "S3 bucket my-bucket in us-east-1.",
-	}
-	kgtypes.SetValue(n, "resource_type", "s3-bucket")
-	kgtypes.SetValue(n, "region", "us-east-1")
-
-	out := renderForRerank(n)
-
-	// Field-shape: starts with cloud-resource:s3-bucket (no whitespace separator).
-	assert.True(t, strings.HasPrefix(out, "cloud-resource:s3-bucket"),
-		"cloud render must start with `<type>:<resource_type>`; got %q", out)
-	assert.Contains(t, out, "my-bucket")
-	assert.Contains(t, out, " in us-east-1")
-	assert.Contains(t, out, "S3 bucket my-bucket in us-east-1.")
-}
-
-// TestRenderForRerank_CICDNode verifies the cicd-graph branch packs
-// Type:resource_type SymbolName (provider)\nSummary. Mirrors the cloud
-// branch with provider substituted for region.
-func TestRenderForRerank_CICDNode(t *testing.T) {
-	n := &knowledgev1.Node{
-		Type:       string(kgtypes.NodeCICDResource),
+		Type:       "cicd-resource",
 		SymbolName: "ci.yml",
 		Summary:    "GitHub Actions workflow ci.yml triggered on push.",
 	}
@@ -233,11 +213,10 @@ func TestRenderForRerank_CICDNode(t *testing.T) {
 
 	out := renderForRerank(n)
 
-	assert.True(t, strings.HasPrefix(out, "cicd-resource:github-actions-workflow"),
-		"cicd render must start with `<type>:<resource_type>`; got %q", out)
-	assert.Contains(t, out, "ci.yml")
-	assert.Contains(t, out, "(github)")
-	assert.Contains(t, out, "GitHub Actions workflow ci.yml")
+	assert.False(t, strings.HasPrefix(out, "cicd-resource:github-actions-workflow"),
+		"no per-family arm may still claim a resource node type; got %q", out)
+	assert.Contains(t, out, "ci.yml", "the default branch still emits the symbol name")
+	assert.Contains(t, out, "GitHub Actions workflow ci.yml", "and the summary a reranker scores on")
 }
 
 // TestRenderForRerank_DefaultNode is the regression guard for T2-4: the
@@ -388,8 +367,6 @@ func TestRenderForRerank_AllBranchesEmitSummary(t *testing.T) {
 		marker string
 	}{
 		{"code", &knowledgev1.Node{Type: "function", SymbolName: "parity-code", Summary: "parity-marker-code"}, "parity-marker-code"},
-		{"cloud", &knowledgev1.Node{Type: string(kgtypes.NodeCloudResource), SymbolName: "parity-cloud", Summary: "parity-marker-cloud"}, "parity-marker-cloud"},
-		{"cicd", &knowledgev1.Node{Type: string(kgtypes.NodeCICDResource), SymbolName: "parity-cicd", Summary: "parity-marker-cicd"}, "parity-marker-cicd"},
 		{"practice", &knowledgev1.Node{Type: string(kgtypes.NodePattern), SymbolName: "parity-practice", Summary: "parity-marker-practice"}, "parity-marker-practice"},
 		{"knowledge", &knowledgev1.Node{Type: string(kgtypes.NodeDecision), SymbolName: "parity-knowledge", Summary: "parity-marker-knowledge"}, "parity-marker-knowledge"},
 	}

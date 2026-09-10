@@ -127,7 +127,7 @@ func TestCollectGate_HoldsAFirstEverPDFCollect(t *testing.T) {
 	// sides of the gate's equality this test's own.
 	pdfPath, err := filepath.Abs("../collector/pdf/testdata/form_xobject.pdf")
 	require.NoError(t, err)
-	graphName, err := tools.CollectGateGraphName("pdf", pdfPath, nil)
+	graphName, err := tools.CollectGateGraphName("pdf", pdfPath, nil, false)
 	require.NoError(t, err, "the pdf derivation must not refuse an absolute path")
 	require.NotEmpty(t, graphName, "a pdf collect must derive a gate identity")
 

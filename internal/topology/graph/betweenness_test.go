@@ -67,10 +67,13 @@ func TestBetweenness_Registered(t *testing.T) {
 	}
 }
 
-// TestBetweenness_UnsupportedGraphSkips verifies cloud graphs are skipped.
+// TestBetweenness_UnsupportedGraphSkips verifies an unsupported graph family is
+// skipped. The family named here is a FIXTURE CHOICE — any family the analyzer
+// does not support proves the skip — and it used to be cloud, which no longer
+// exists as a builtin.
 func TestBetweenness_UnsupportedGraphSkips(t *testing.T) {
 	f := buildBridgeFixture()
-	req := foundation.Request{Caller: f, Graph: kgtypes.GraphCloud, Name: "acct", TopK: 5}
+	req := foundation.Request{Caller: f, Graph: kgtypes.GraphPractice, Name: "acct", TopK: 5}
 	findings, err := SampledBetweennessAnalyzer{}.Run(newTestCtx(t), req)
 	if err != nil {
 		t.Fatalf("SampledBetweennessAnalyzer.Run: %v", err)
