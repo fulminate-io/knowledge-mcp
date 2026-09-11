@@ -27,24 +27,26 @@ import (
 // scopePayload seeds a Compile query payload with the graph selector keys,
 // routing the single instance name into the field the server resolver keys off
 // per graph type (tools_graph_routing.go ResolveGraphDB): code graphs scope via
-// repo, practice via language, every other graph via name. An empty name
-// leaves only the graph key (knowledge / linkage need no instance). This is the
-// payload-key twin of graphTarget below; both must agree so the Compile-based
-// and raw-plan helpers scope identically.
+// repo, every other instance-addressed graph via name. An empty name leaves only
+// the graph key, and so does a SINGLETON family — knowledge, linkage, checks and
+// practice hold one graph each and address no instance. This is the payload-key
+// twin of graphTarget below; both must agree so the Compile-based and raw-plan
+// helpers scope identically.
+//
+// PRACTICE USED TO SCOPE VIA language HERE, and the key is gone with the graphs
+// it addressed. The family became a singleton while eight instance-keyed
+// practice graphs were still readable through that selector, so graphsel putting
+// no instance key on it was right for a write and wrong for a helper whose whole
+// argument is a graph NAME: left derived, a named practice read would silently
+// have addressed the combined graph instead of the one it was handed. The eight
+// are retired and the selector is refused, so the derivation is right and a
+// practice name reaching here scopes nothing — which is what the family's one
+// graph means.
 func scopePayload(graphType kgtypes.GraphType, name string) map[string]any {
 	if name == "" {
 		return map[string]any{"graph": string(graphType)}
 	}
-	payload := graphsel.ScopePayload(graphType, name, false)
-	// PRACTICE ADDRESSES A NAMED GRAPH THROUGH THE LEGACY READ SELECTOR. The
-	// family became a singleton, so graphsel puts no instance key on it — right
-	// for a write and for an unselected read, and wrong for a helper whose whole
-	// argument is a graph NAME. Left derived, every named practice read here would
-	// silently address the combined graph instead of the one it was handed.
-	if graphType == kgtypes.GraphPractice {
-		payload["language"] = name
-	}
-	return payload
+	return graphsel.ScopePayload(graphType, name, false)
 }
 
 // graphTarget builds the envelope GraphSelector for the raw-QueryPlan helpers
@@ -59,13 +61,10 @@ func graphTarget(graphType kgtypes.GraphType, name string) *knowledgev1.GraphSel
 	if graphType == "" && name == "" {
 		return nil
 	}
-	target := graphsel.GraphSelectorFor(graphType, name, false)
-	// The legacy practice read, for the reason scopePayload above records. The two
-	// must agree, which is why the exception is spelled on both.
-	if graphType == kgtypes.GraphPractice && name != "" {
-		target.Language = name
-	}
-	return target
+	// No per-family exception: the two used to carry a matching practice arm, for
+	// the reason scopePayload above records, and dropped it together — which is
+	// what the requirement that they agree means here.
+	return graphsel.GraphSelectorFor(graphType, name, false)
 }
 
 // executeQuery compiles a query payload to an ExecuteRequest and runs it over

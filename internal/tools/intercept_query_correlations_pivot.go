@@ -434,12 +434,12 @@ func pivotEngineKey(a queryArgs) (kgtypes.GraphType, string) {
 	case graphsel.FieldRepo:
 		return gt, a.Repo
 	default:
-		// The LEGACY practice selector, which names a pre-singleton graph and is
-		// therefore an instance name even though the family declares no instance
-		// field. It is read before the normalizer for exactly that reason.
-		if a.Language != "" {
-			return gt, a.Language
-		}
+		// THE `language` ARM WENT WITH THE GRAPHS IT NAMED. It was read ahead of
+		// the normalizer because a legacy practice selector named a pre-singleton
+		// graph and was therefore an instance name even though the family declared
+		// no instance field. Those graphs are retired and every practice arm
+		// refuses the param, so reading it here would key the engine on a value the
+		// wire read is refused for.
 		return gt, workingset.CanonicalInstanceName(gt, a.Name)
 	}
 }
@@ -460,10 +460,9 @@ func pivotHydrateSelector(a queryArgs) hydrateSelector {
 		graph = string(kgtypes.GraphKnowledge)
 	}
 	return hydrateSelector{
-		Graph:    graph,
-		Repo:     a.Repo,
-		Name:     a.Name,
-		Language: a.Language,
+		Graph: graph,
+		Repo:  a.Repo,
+		Name:  a.Name,
 	}
 }
 

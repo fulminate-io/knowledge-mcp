@@ -184,10 +184,9 @@ const helpMutate = `# mutate — Create, update, and link knowledge nodes
   mutate({ "operation": "link", "from": "a", "to": "b", "relationship": "relates-to",
            "graph": "practice" })
 
-  Practice is ONE combined graph. language is REFUSED on every practice WRITE
-  arm — it named a per-language graph that no longer exists — and stays accepted
-  on READ arms as the legacy selector for the pre-singleton graphs. A CREATE
-  groups its node under an origin with source_hub instead.
+  Practice is ONE combined graph. language is REFUSED on every practice arm,
+  write and read alike — it named a per-language graph that no longer exists. A
+  CREATE groups its node under an origin with source_hub instead.
 
   link and unlink take source_hub too, and it means something different there.
   An edge belongs to no hub, so the param does not GROUP the edge: it SCOPES the
@@ -337,8 +336,8 @@ irrecoverable removal (reserve for deliberate cleanup).
 ## Practice graph deletion
   delete({ "ids": ["node_id"], "graph": "practice" })
 
-  Practice is ONE combined graph, so a delete carries no language: that
-  selector is read-only and is REFUSED on a delete rather than ignored.
+  Practice is ONE combined graph, so a delete carries no language: the param
+  addresses no practice graph and is REFUSED rather than ignored.
 
 ## Practice: delete a whole collection by its source hub
   delete({ "graph": "practice", "source": "<hub id>", "dry_run": true })

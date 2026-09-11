@@ -21,7 +21,7 @@ import (
 // drivePracticeSelector runs one payload through the real practice entry point.
 func drivePracticeSelector(t *testing.T, args map[string]any) (bool, kgtools.ToolResult) {
 	t.Helper()
-	gc := newFanOutHarness(t, []string{"go-idioms", "postgres-best-practices"},
+	gc := newFanOutHarness(t, []string{"default"},
 		practiceNode("p:go", "GoWorkerPool", "bounded goroutines"))
 	mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "p:go", Score: 0.9}}}
 	raw, err := json.Marshal(args)
@@ -53,7 +53,7 @@ func TestPracticeSelector_RefusalNamesTheWorkingCall(t *testing.T) {
 	})
 
 	t.Run("A2_a_browse_filter_on_the_ENUMERATION_is_still_refused", func(t *testing.T) {
-		// The enumeration survives as the legacy read, asked for by name, and it
+		// The enumeration survives as the CATALOG read, asked for by name, and it
 		// still takes no filters — the half of shape A that did not invert.
 		handled, res := drivePracticeSelector(t, map[string]any{
 			"graph": "practice", "mode": "modules", "type": "pattern", "limit": 3,
@@ -92,9 +92,14 @@ func TestPracticeSelector_RefusalNamesTheWorkingCall(t *testing.T) {
 		assert.NotContains(t, body, "0 results",
 			"the vacuous zero-result render is gone, not merely reworded; got: %s", body)
 		assert.NotContains(t, body, "Searched", "no scatter-gather ran")
-		assert.Contains(t, body, "retired", "the refusal says the sentinel is gone rather than that the input is wrong")
-		assert.Contains(t, body, `query(graph:"practice", text:`,
-			"and names the unselected search, which is what \"all\" used to mean")
+		// THE MESSAGE IS THE FIELD'S, NOT THE SENTINEL'S. "all" had a refusal of
+		// its own while every other value of `language` still read a graph; every
+		// value is refused now, with one spelling, so a per-value wording would be
+		// a second message for a rule reachable one way.
+		assert.Contains(t, body, "does not accept `language`",
+			"the refusal names the field rather than the value")
+		assert.Contains(t, body, `source:"<hub id>"`,
+			"and names the selector that does narrow the corpus")
 	})
 
 	t.Run("B2_a_mode_bearing_id_shape_is_left_to_the_arm_that_owns_it", func(t *testing.T) {
@@ -114,18 +119,20 @@ func TestPracticeSelector_RefusalNamesTheWorkingCall(t *testing.T) {
 
 	t.Run("D_the_working_call_still_succeeds", func(t *testing.T) {
 		// BOTH DIRECTIONS. Without this, every leg above is satisfiable by an
-		// implementation that refuses every practice query.
+		// implementation that refuses every practice query. The working call used
+		// to be a language-scoped browse; it is the unselected one, narrowed by
+		// `source` where a caller wants less than the whole corpus.
 		handled, res := drivePracticeSelector(t, map[string]any{
-			"graph": "practice", "language": "go-idioms", "type": "idiom",
+			"graph": "practice", "type": "idiom",
 		})
 		require.True(t, handled)
-		assert.False(t, res.IsError, "a language-scoped browse is still served: %s", textBodyTools(res))
+		assert.False(t, res.IsError, "an unselected browse is served: %s", textBodyTools(res))
 	})
 
 	t.Run("E_the_enumeration_itself_still_succeeds", func(t *testing.T) {
 		// The second both-directions leg. The enumeration is asked for BY NAME now
 		// — a bare graph:"practice" browses the combined graph — but it still
-		// works, which is what keeps requirement 5's legacy read reachable.
+		// works, which is what keeps the catalog read reachable.
 		handled, res := drivePracticeSelector(t, map[string]any{"graph": "practice", "mode": "modules"})
 		require.True(t, handled)
 		assert.False(t, res.IsError, "the enumeration is untouched: %s", textBodyTools(res))

@@ -428,11 +428,12 @@ func firstQueryLabel(query string, queries []string) string {
 // "knowledge".
 //
 // IT IS WHERE A PRACTICE READ SAYS WHICH CORPUS ANSWERED, which is the one place
-// a caller looks. The three practice spellings are distinguishable on purpose:
-// a bare "practice" is the whole combined graph, "practice:<hub>" is a read
-// narrowed to one source hub, and "practice:<language>" is a LEGACY read of one
-// pre-singleton graph. Rendering the same word for all three would make a
+// a caller looks. The two practice spellings are distinguishable on purpose: a
+// bare "practice" is the whole combined graph and "practice:<hub>" is a read
+// narrowed to one source hub. Rendering the same word for both would make a
 // whole-corpus read and a hub-scoped one indistinguishable in the response.
+// There was a third — "practice:<language>", a read of one pre-singleton graph —
+// and it went with those graphs and the selector that named them.
 //
 // An earlier version of this comment claimed the function mirrored a server
 // symbol of a similar name. No such symbol exists anywhere in the tree.
@@ -441,21 +442,19 @@ func queryGraphLabelFor(a queryArgs) string {
 	case "", "knowledge":
 		return "knowledge"
 	case "practice":
-		// THE HUB IS CHECKED FIRST because the two cannot both apply: `language`
-		// is the legacy read of a pre-singleton graph and `source` narrows the
-		// combined one, so a call carrying both has already been refused upstream.
+		// THE HUB IS THE ONLY QUALIFIER. `language` was checked after it, for a read
+		// of one pre-singleton graph; the field addresses no practice graph now and
+		// every practice arm refuses it, so a label composed from it would have
+		// named a read that never ran.
 		if a.Source != "" {
 			return "practice:" + a.Source
-		}
-		if a.Language != "" {
-			return "practice:" + a.Language
 		}
 		return "practice"
 	case "checks":
 		// One graph, so the family name IS the instance name. Practice is the same
-		// case now — an unselected practice read renders a bare "practice" — and
-		// differs only in that practice qualifies by hub or by legacy language when
-		// one is named, where checks has nothing to qualify by.
+		// case — an unselected practice read renders a bare "practice" — and differs
+		// only in that practice qualifies by hub when one is named, where checks has
+		// nothing to qualify by.
 		return "checks"
 	// THERE IS NO "cloud" ARM. It qualified the label by `account` for the
 	// account-keyed inventory family, which is retired: the name is refused by

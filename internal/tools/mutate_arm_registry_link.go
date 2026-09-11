@@ -94,11 +94,18 @@ var linkArmSpecs = map[armID]armSpec{
 			// refusal used to ride this arm's own gate, and moving it up is what
 			// closed the same hole on the arms that had no such gate.
 			"source_hub",
-			"operation", "from", "to", "relationship", "link_graph", "graph", "language",
+			"operation", "from", "to", "relationship", "link_graph", "graph",
 			"weight", "confidence", "method", "edge_evidence", "last_validated",
 			"verified_quote", "cited_range",
 		),
 		rejected: paramSet(
+			// `language` WAS CONSUMED HERE while practice was language-addressed:
+			// a cross-graph link could name one of the eight instance-keyed
+			// practice graphs. Those are retired and nothing on an edge arm reads
+			// the param — an edge carries no node body, so there is no checks
+			// corpus language for it to be either, which is what keeps it consumed
+			// on the passthrough arms below.
+			"language",
 			"repo", "account",
 			"supports",
 			"type", "id", "ids", "name", "description", "summary", "content", "status",
@@ -133,11 +140,14 @@ var linkArmSpecs = map[armID]armSpec{
 		operation: "link",
 		handler:   "engine compileMutateByIDLinkUnlink",
 		consumed: paramSet(
-			"operation", "from", "to", "relationship", "graph", "language", "name", "format",
+			"operation", "from", "to", "relationship", "graph", "name", "format",
 			"weight", "confidence", "method", "edge_evidence", "last_validated",
 			"verified_quote", "cited_range",
 		),
 		rejected: paramSet(
+			// `language`, for the reason the cross-graph arm above records: an edge
+			// arm reads it on no family now that practice is not language-addressed.
+			"language",
 			"source_hub",
 			"repo", "account",
 			"supports",
@@ -229,12 +239,13 @@ var linkArmSpecs = map[armID]armSpec{
 			// param on this arm whose behaviour splits by the graph it serves. This
 			// arm claims BOTH practice and checks: on a CHECKS write `language` is
 			// the check's corpus language and is read, and on a PRACTICE write it is
-			// REFUSED by name (practice is one combined graph now, so a write has no
+			// REFUSED by name (practice is one combined graph, so a write has no
 			// per-language graph to land in and dropping it would silently redirect
-			// the write). The registry classifies one param per arm, so it is
-			// declared for the half that reads it and the practice refusal rides its
-			// own guard; the parity fixture drives this cell against the checks half
-			// for that reason.
+			// the write; it is refused on a practice READ on the same terms now).
+			// The registry classifies one param per arm, so it is declared for the
+			// half that reads it and the practice refusal rides its own guard; the
+			// parity fixture drives this cell against the checks half for that
+			// reason.
 			"language",
 			"verified_quote", "cited_range",
 		),

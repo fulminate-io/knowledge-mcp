@@ -192,9 +192,9 @@ func TestAssemblePattern_FromPracticeGraph(t *testing.T) {
 	}
 
 	f := newGraphFixture().
-		addNode("practice", "design-patterns", pat).
-		addNode("practice", "design-patterns", uc).
-		addEdge("practice", "design-patterns", &knowledgev1.Edge{
+		addNode("practice", "default", pat).
+		addNode("practice", "default", uc).
+		addEdge("practice", "default", &knowledgev1.Edge{
 			FromId: patID, ToId: "uc-confinement", Type: string(kgtypes.EdgeAppliesWhen),
 		})
 

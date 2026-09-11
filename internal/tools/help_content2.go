@@ -302,7 +302,10 @@ const helpSearchCode = `# search — Unified search across code, knowledge, prac
                    arm — pure stored-vector proximity, NOT a raw cosine score.
 
 ## Practice graph parameters
-  language       — language slug (e.g. "go", "python"). Required for search, omit to list graphs.
+  source_hub     — a source-hub id, narrowing the search to the nodes one origin
+                   contributed. It is the ONLY practice narrowing: the family is
+                   one combined graph, so an omitted selector searches the whole
+                   corpus and 'language' is refused.
 
 ## Registered custom graph parameters
   name           — the instance of a graph type a contrib collector registered.
@@ -453,28 +456,24 @@ Requires the "sync" license scope. Three operations:
 
 ## Practice graphs
 The combined practice graph is named 'default', so a push or pull with no name
-addresses it. A NAME on push or pull addresses one of the LEGACY per-language
-practice graphs — the ones that existed before they were combined — for as long
-as they are still around; the migration moves them, and a cleanup ticket retires
-the addressing. The name must be the graph's canonical spelling (lowercase, with
-'/' and ' ' as '-' and '+' as 'plus'); a display spelling such as
-"Design Patterns" is refused naming "design-patterns" rather than rewritten,
-because a rewritten name would move bytes to a graph you did not ask for.
+addresses it, and so does one naming 'default' explicitly. ANY OTHER NAME IS
+REFUSED, on both directions and before either seam. The family holds one graph:
+a name it cannot address would cost a whole-graph serialize and an upload on a
+push, and on a pull the apply CREATES the image it is handed, which would leave
+a local practice graph no read of the family can open.
 
-Whether a legacy name is ACCEPTED at the far end is the destination server's own
-rule rather than this client's: a server from before the practice graphs were
-combined accepts a canonical legacy name, a newer one may refuse it, and its
-refusal comes back verbatim.
+A name once addressed one of the practice graphs that existed before they were
+combined, one per language. Those are gone from the plane, so the refusal is
+total rather than conditional on a spelling.
 
-Every OTHER practice arm is unaffected: query, search, traverse and assemble take
-the combined graph by default and the legacy language selector when one is given,
-and a practice write carrying a language is refused.
+Every OTHER practice arm agrees: query, search, traverse and assemble address
+the combined graph, narrow by 'source' (a hub id), and refuse 'language'.
 
 ## Examples
   sync({ "operation": "push" })
   sync({ "operation": "pull", "graph": "knowledge", "name": "default" })
   sync({ "operation": "push", "graph": "practice" })
-  sync({ "operation": "push", "graph": "practice", "name": "go" })
+  sync({ "operation": "push", "graph": "practice", "name": "default" })
   sync({ "operation": "list" })
 
 ## Result shape

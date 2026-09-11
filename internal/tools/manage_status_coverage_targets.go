@@ -370,10 +370,13 @@ func newCoverageTarget(gt kgtypes.GraphType, name string, overlay bool) coverage
 		label: fmt.Sprintf("%s/%s", gt, name),
 		gt:    gt,
 		name:  name,
-		// statusGraphTarget rather than a bare derivation: this table reports a row
-		// PER NAMED GRAPH, and practice is a singleton whose derived selector
-		// carries no instance field — every legacy practice row would ask about the
-		// combined graph and print the same numbers under a different name.
+		// statusGraphTarget rather than a bare derivation: it carries the one case
+		// this table needs beyond the derivation, the DEFAULT knowledge graph
+		// addressing as an empty selector. It used to carry a practice case as
+		// well, for the same reason — a row per named graph, and a singleton's
+		// derived selector carries no instance field, so eight practice rows would
+		// have printed the combined graph's numbers eight times. The catalog holds
+		// one practice graph now, so there is one row and the derivation is right.
 		target:  statusGraphTarget(gt, name),
 		overlay: overlay,
 	}

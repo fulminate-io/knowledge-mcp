@@ -134,9 +134,13 @@ func TestMetadataStatsHint_OffersNoRetiredFamily(t *testing.T) {
 func TestDomainGraphLabel_OffersNoRetiredFamily(t *testing.T) {
 	// CONTROL: a surviving instance-keyed family still takes the instance-key
 	// branch, so the assertions below are about the retired names and not about a
-	// switch that stopped working.
-	require.Equal(t, "practice:go", domainGraphLabel(queryArgs{Graph: "practice", Language: "go"}),
+	// switch that stopped working. It used to be a practice read qualified by its
+	// `language`; that field is refused on every practice arm, so the control
+	// moved to `code`, which is the instance-keyed family left.
+	require.Equal(t, "code:myrepo", domainGraphLabel(queryArgs{Graph: "code", Repo: "myrepo"}),
 		"the label switch must still qualify a surviving instance-keyed family with its instance")
+	require.Equal(t, "practice:hub-go", domainGraphLabel(queryArgs{Graph: "practice", Source: "hub-go"}),
+		"and a hub-scoped practice read still names the hub that answered")
 
 	// A retired name falls to the default, which renders the graph string bare.
 	// That is the same rendering any unregistered name gets, which is correct:
@@ -149,4 +153,47 @@ func TestDomainGraphLabel_OffersNoRetiredFamily(t *testing.T) {
 		assert.Equalf(t, retired, domainGraphLabel(queryArgs{Graph: retired, Account: "acme"}),
 			"the label switch still has an arm qualifying the retired %q family with an account", retired)
 	}
+}
+
+// TestDomainTarget_CarriesThePracticeLanguageToTheWire is the observer the
+// composite-mode selector composer did not have.
+//
+// WHY IT IS NEEDED, measured rather than assumed. domainTarget copies `language`
+// onto the Target RAW for every family, which is what lets the SERVER refuse a
+// practice read on the composite modes — mode=metadata_stats, mode=topology,
+// mode=pivot and mode=correlations are generic arms with no practice-specific
+// gate of their own, by the same reasoning that keeps a practice check off each
+// of them. Dropping the field here would leave those reads carrying no selector
+// at all and served SILENTLY from the combined graph, which is the redirect the
+// per-family partition exists to close.
+//
+// NOTHING READ IT. Removing `Language: a.Language` from domainTarget left every
+// package in this module green — the same hole class the topology/foundation
+// composers had, in the opposite direction: there the correct behavior is not to
+// compose, here it is to compose. engine.buildTarget, the read twin, IS observed
+// (TestBuildTarget, TestCompileQuery_ModulesMode and
+// TestPracticeTraverse_LoudAndCharacterized all red when its copy is dropped),
+// so this closes the one of the pair that was open.
+//
+// THE CONTROLS ARE IN THE SAME TEST. A composer that copied every field for
+// every family satisfies the practice row alone, and one that dropped every
+// field satisfies nothing here — so the code and name-keyed rows are what make
+// the practice row a statement about the FIELD rather than about the composer
+// being verbatim or empty.
+func TestDomainTarget_CarriesThePracticeLanguageToTheWire(t *testing.T) {
+	prac := domainTarget(queryArgs{Graph: "practice", Language: "go"})
+	require.NotNil(t, prac)
+	assert.Equal(t, "practice", prac.GetGraph())
+	assert.Equal(t, "go", prac.GetLanguage(),
+		"the caller's language must reach the wire, where validateGraphSelector refuses it; "+
+			"dropping it here serves the composite read from the combined graph and says nothing")
+
+	// THE CONTROLS: the fields a family genuinely consumes still ride, so the row
+	// above is the raw copy rather than a composer that fills everything.
+	code := domainTarget(queryArgs{Graph: "code", Repo: "myrepo"})
+	assert.Equal(t, "myrepo", code.GetRepo(), "control: a code composite read carries its repo")
+	assert.Empty(t, code.GetLanguage(), "control: and no language, because the caller supplied none")
+
+	web := domainTarget(queryArgs{Graph: "web", Name: "docs-site"})
+	assert.Equal(t, "docs-site", web.GetName(), "control: a name-keyed family carries its name")
 }

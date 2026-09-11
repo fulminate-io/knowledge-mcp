@@ -487,6 +487,6 @@ func nodeBodyToProto(n nodeBody) *knowledgev1.NodeBody {
 func mutationRequest(plan *knowledgev1.MutationPlan, a mutateArgs) *knowledgev1.ExecuteRequest {
 	return &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-		Target: mutateTarget(a.Graph, a.Repo, a.Name, a.Language, ""),
+		Target: mutateTarget(a.Graph, a.Repo, a.Name, ""),
 	}
 }

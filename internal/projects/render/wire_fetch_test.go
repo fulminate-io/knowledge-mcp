@@ -195,22 +195,27 @@ func TestTruncate(t *testing.T) {
 }
 
 // TestGraphTarget_PerFamilySelectorField: each graph family routes its instance
-// name into the selector field the server's resolver actually keys on — practice
-// via Language, code via REPO (the code resolver rejects name-keyed selectors
-// before any lookup, so routing code through Name silently fails every
-// cross-graph code fetch and drops every born-link referent), everything else
-// via Name. Fails-when-absent: reverting any family to the Name branch turns
-// that family's assertion red.
+// name into the selector field the server's resolver actually keys on — code via
+// REPO (the code resolver rejects name-keyed selectors before any lookup, so
+// routing code through Name silently fails every cross-graph code fetch and
+// drops every born-link referent), a SINGLETON family into no field at all, and
+// everything else via Name. Fails-when-absent: reverting any family to the Name
+// branch turns that family's assertion red.
 //
-// THE ACCOUNT-KEYED ROW IS GONE WITH ITS FAMILIES. cloud and cicd were the two,
-// and both are retired; the row below asserts what a retired name does INSTEAD,
-// which is take the Name-keyed default like any unregistered string.
+// TWO ROWS ARE GONE WITH THEIR FAMILIES' INSTANCE KEYS. cloud and cicd were
+// account-keyed and both are retired; the row below asserts what a retired name
+// does INSTEAD, which is take the Name-keyed default like any unregistered
+// string. And practice routed via Language, for the eight instance-keyed graphs
+// this helper's cross-graph probes walked by name; those are retired and the
+// server refuses the field, so the practice row asserts the ABSENCE — a helper
+// that re-added the branch would be composing a selector every read is refused
+// for.
 func TestGraphTarget_PerFamilySelectorField(t *testing.T) {
 	assert.Nil(t, graphTarget("", "ignored"), "empty graph type targets knowledge/default")
 
 	prac := graphTarget("practice", "go")
-	assert.Equal(t, "go", prac.GetLanguage())
-	assert.Empty(t, prac.GetName())
+	assert.Empty(t, prac.GetLanguage(), "practice addresses no instance: the field is refused")
+	assert.Empty(t, prac.GetName(), "and a name is refused outside the family's root aliases")
 	assert.Empty(t, prac.GetRepo())
 
 	code := graphTarget("code", "knowledge")

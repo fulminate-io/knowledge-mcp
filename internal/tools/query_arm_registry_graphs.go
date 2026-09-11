@@ -25,12 +25,21 @@ var queryGraphArmSpecs = map[armID]armSpec{
 	// THE ENUMERATION IS ASKED FOR BY NAME NOW. An empty selector used to reach
 	// this arm before `mode` was ever read, because a practice read had to name a
 	// graph; an empty selector BROWSES the one combined graph today, so the
-	// enumeration of the pre-singleton graphs is reached by mode:"modules" and
-	// `mode` is CONSUMED here rather than rejected.
+	// CATALOG read is reached by mode:"modules" and `mode` is CONSUMED here rather
+	// than rejected.
+	//
+	// `language` IS REJECTED ON EVERY PRACTICE ARM, here and in the four cells
+	// below, and that is requirement 2's client clause. It was CONSUMED while the
+	// field addressed one of eight instance-keyed practice graphs; those are
+	// retired, so nothing reads it and the accounting gate is what refuses it —
+	// removing the declaration IS the enforcement. A caller reaching a practice
+	// arm with it set is answered earlier and more usefully by
+	// refusePracticeLanguageOnRead, which names `source`; this cell is the
+	// partition's statement of the same fact.
 	armPracticeListGraphs: {
 		operation: "query",
 		handler:   "InterceptQueryPracticeLinkage listPracticeGraphs",
-		consumed:  qparams(qkeys("graph", "language", "mode")),
+		consumed:  qparams(qkeys("graph", "mode")),
 		rejected: qparams(
 			qgPracticeHub,
 			qgIdentity, qgPaging, qgCode, qgThought, qgSimulate,
@@ -38,7 +47,7 @@ var queryGraphArmSpecs = map[armID]armSpec{
 			// qgText minus `mode`, which this arm now consumes as its own
 			// discriminant.
 			qkeys("text", "queries", "query_vector"),
-			qkeys("name", "repo", "account", "branch"),
+			qkeys("name", "repo", "account", "branch", "language"),
 		),
 		// The browse-shaped params get the SPECIFIC tail rather than the generic
 		// one, on the justifyRulesKnowledgeOnly precedent: a caller sending them
@@ -60,11 +69,11 @@ var queryGraphArmSpecs = map[armID]armSpec{
 		deliberatelyIgnored: queryRenderIgnored(),
 	},
 
-	// The practice stats body reads Language, Format and Samples.
+	// The practice stats body reads Format and Samples.
 	armPracticeStats: {
 		operation: "query",
 		handler:   "InterceptQueryPracticeLinkage routePracticeClient stats",
-		consumed:  qparams(qkeys("graph", "language", "mode", "format", "samples")),
+		consumed:  qparams(qkeys("graph", "mode", "format", "samples")),
 		rejected: qparams(
 			// `source` is REFUSED here rather than narrowing, and that is an honest
 			// classification instead of a gap. This arm's body is the Stats RPC,
@@ -76,7 +85,7 @@ var queryGraphArmSpecs = map[armID]armSpec{
 			qgPracticeHub,
 			qgIdentity, qgPaging, qgCode, qgThought, qgSimulate,
 			qgTopology, qgPivot, qgCloud, qgRules,
-			qkeys("name", "repo", "account", "branch", "text", "queries", "query_vector"),
+			qkeys("name", "repo", "account", "branch", "language", "text", "queries", "query_vector"),
 		),
 		rejectionReasons: map[string]string{
 			"source": practiceStatsNoHubScope,
@@ -93,12 +102,12 @@ var queryGraphArmSpecs = map[armID]armSpec{
 		operation: "query",
 		handler:   "InterceptQueryPracticeLinkage practiceBrowse",
 		consumed: qparams(qgPracticeHub, qgPaging, qgRender,
-			qkeys("graph", "language", "mode", "type", "types", "status", "meta",
+			qkeys("graph", "mode", "type", "types", "status", "meta",
 				"include_tombstones", "text", "queries")),
 		rejected: qparams(
 			qgCode, qgThought, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys(
-				"name", "repo", "account", "branch",
+				"name", "repo", "account", "branch", "language",
 				"id", "ids", "since", "include_edges", "include_cross_links",
 				"query_vector",
 			),
@@ -121,12 +130,12 @@ var queryGraphArmSpecs = map[armID]armSpec{
 		operation: "query",
 		handler:   "InterceptQueryPracticeLinkage practiceStyleIndex",
 		consumed: qparams(qgPracticeHub, qkeys(
-			"graph", "language", "mode", "meta", "repo",
+			"graph", "mode", "meta", "repo",
 			"path_prefix", "path_prefixes", "format")),
 		rejected: qparams(
 			qgPaging, qgThought, qgSimulate, qgTopology, qgPivot, qgStats, qgCloud, qgRules,
 			qkeys(
-				"name", "account", "branch",
+				"name", "account", "branch", "language",
 				"id", "ids", "type", "types", "status", "since",
 				"include_tombstones", "include_edges", "include_cross_links",
 				"text", "queries", "query_vector",
@@ -142,21 +151,20 @@ var queryGraphArmSpecs = map[armID]armSpec{
 		deliberatelyIgnored: queryFieldsIgnored(),
 	},
 
-	// The per-language practice search. Same read set as the fan-out minus the
-	// enumeration. `limit` is CONSUMED on both: it resolves the per-graph Search k
-	// (and, on the fan-out, the merge cap too). `offset` stays REJECTED and is
-	// listed as a LOOSE key rather than riding qgPaging, because a segment-engine
-	// ranked search has nowhere to put one — dropping the group here would leave
-	// offset in no cell and fail the partition assertion.
+	// The practice ranked search. Same read set as the retired fan-out minus the
+	// enumeration. `limit` is CONSUMED: it resolves the Search k. `offset` stays
+	// REJECTED and is listed as a LOOSE key rather than riding qgPaging, because a
+	// segment-engine ranked search has nowhere to put one — dropping the group
+	// here would leave offset in no cell and fail the partition assertion.
 	armPracticeSearch: {
 		operation: "query",
 		handler:   "InterceptQueryPracticeLinkage composePracticeSearchClient",
 		consumed: qparams(qgPracticeHub, qkeys(
-			"graph", "language", "mode", "text", "queries", "format", "fields", "limit")),
+			"graph", "mode", "text", "queries", "format", "fields", "limit")),
 		rejected: qparams(
 			qgIdentity, qgCode, qgThought, qgSimulate,
 			qgTopology, qgPivot, qgStats, qgCloud, qgRules,
-			qkeys("name", "repo", "account", "branch", "query_vector", "offset"),
+			qkeys("name", "repo", "account", "branch", "language", "query_vector", "offset"),
 		),
 	},
 

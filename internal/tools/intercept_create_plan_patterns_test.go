@@ -247,7 +247,12 @@ func TestInterceptCreatePlan_LanguagePatternsIndependent(t *testing.T) {
 // no false "not found" warning. This proves cross-practice pattern resolution
 // works on the rewritten wire path.
 func TestInterceptCreatePlan_PracticePatternResolvesToProxyTarget(t *testing.T) {
-	const practiceGraph = "knowledge-architecture"
+	const practiceGraph = "default"
+	// THE PRACTICE GRAPH IS "default", THE ONE COMBINED GRAPH. It used to be a
+	// per-language name here, because the catalog listed eight of them and the
+	// probe addressed the one it was handed; the family holds one graph, the
+	// catalog reports that name, and every practice target addresses it with no
+	// instance field at all.
 	const practicePatID = "practice-pat-1"
 
 	// The practice-graph pattern node (the source the proxy is built from), in

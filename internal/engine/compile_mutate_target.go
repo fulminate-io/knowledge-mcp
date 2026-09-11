@@ -33,6 +33,14 @@ import (
 // copy of one partition, updated in one place and not the others. There is no
 // language-blind twin to add, because there is no per-field list at all.
 //
+// IT TAKES NO language, and the absence is what the practice singleton finished.
+// The param was already projected away for every family — no family is keyed by
+// language — so it could only ever have reached a Target by a future arm putting
+// it there. buildTarget, the READ twin, still takes one: it copies the field
+// through RAW so the server can REFUSE a practice read carrying it, which is
+// where that refusal has to land for a caller reaching the wire without an MCP
+// arm in front of it.
+//
 // ONE RULE, EVERY ARM. All four Target-building sites route through this helper:
 // mutationRequest (create/upsert/by-id update/link/unlink),
 // compileMutateUpdateBatch and compileMutateBulkMetadata
@@ -40,9 +48,9 @@ import (
 //
 // A nil Target is preserved for the all-empty case, which is how the knowledge
 // default is addressed; buildTarget's own callers rely on the same convention.
-func mutateTarget(graph, repo, name, language, branch string) *knowledgev1.GraphSelector {
+func mutateTarget(graph, repo, name, branch string) *knowledgev1.GraphSelector {
 	gt := kgtypes.GraphType(graph)
-	instance := graphsel.InstanceValueOf(gt, repo, name, language)
+	instance := graphsel.InstanceValueOf(gt, repo, name)
 	if graph == "" && instance == "" && branch == "" {
 		return nil
 	}

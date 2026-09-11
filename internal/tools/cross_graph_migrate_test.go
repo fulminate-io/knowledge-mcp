@@ -59,11 +59,11 @@ func TestMigrateSlugLessPracticeProxy(t *testing.T) {
 			nodeMatchResults: map[graphKey][]*knowledgev1.Node{
 				{Type: "knowledge"}: {slugLess},
 			},
-			// listForeignGraphs: practice/go is the loaded foreign graph.
-			listGraphsResult: listGraphsResultFor(t, [2]string{"practice", "go"}),
-			// locateForeignNode: pat-1 resolves in practice/go → slug=go.
+			// listForeignGraphs: practice/default is the ONE loaded practice graph.
+			listGraphsResult: listGraphsResultFor(t, [2]string{"practice", "default"}),
+			// locateForeignNode: pat-1 resolves in practice/default → slug=default.
 			queryResponsesByGraphName: map[graphKey]map[string]kgtools.ToolResult{
-				{Type: "practice", Name: "go"}: {"pat-1": graphNodeResult(t, "pat-1", "pattern", "Pat", "a pattern")},
+				{Type: "practice", Name: "default"}: {"pat-1": graphNodeResult(t, "pat-1", "pattern", "Pat", "a pattern")},
 			},
 			// render.IterEdges: one metadata-FREE incident edge dec-1 -[uses]-> proxy.
 			edgesByID: map[string][]*knowledgev1.Edge{
@@ -82,12 +82,12 @@ func TestMigrateSlugLessPracticeProxy(t *testing.T) {
 		upsert := fc.execMutations[0]
 		assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_UPSERT, upsert.GetKind())
 		require.Len(t, upsert.GetNodeBodies(), 1)
-		assert.Equal(t, "proxy:practice:go:pat-1", upsert.GetNodeBodies()[0].GetId(), "slug-ful proxy id")
+		assert.Equal(t, "proxy:practice:default:pat-1", upsert.GetNodeBodies()[0].GetId(), "slug-ful proxy id")
 
 		link := fc.execMutations[1]
 		assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_LINK, link.GetKind())
 		assert.Equal(t, []string{"dec-1"}, link.GetSelection().GetIds(), "from preserved")
-		assert.Equal(t, "proxy:practice:go:pat-1", link.GetEdgeSpec().GetToId(), "re-pointed onto slug-ful proxy")
+		assert.Equal(t, "proxy:practice:default:pat-1", link.GetEdgeSpec().GetToId(), "re-pointed onto slug-ful proxy")
 		assert.Equal(t, "uses", link.GetEdgeSpec().GetRelationship())
 
 		del := fc.execMutations[2]
@@ -100,7 +100,7 @@ func TestMigrateSlugLessPracticeProxy(t *testing.T) {
 			nodeMatchResults: map[graphKey][]*knowledgev1.Node{
 				{Type: "knowledge"}: {},
 			},
-			listGraphsResult: listGraphsResultFor(t, [2]string{"practice", "go"}),
+			listGraphsResult: listGraphsResultFor(t, [2]string{"practice", "default"}),
 		}
 		migrated2, err2 := migratePracticeProxies(context.Background(), fc2)
 		require.NoError(t, err2)
@@ -117,9 +117,9 @@ func TestMigrateSlugLessPracticeProxy(t *testing.T) {
 			nodeMatchResults: map[graphKey][]*knowledgev1.Node{
 				{Type: "knowledge"}: {slugLess},
 			},
-			listGraphsResult: listGraphsResultFor(t, [2]string{"practice", "go"}),
+			listGraphsResult: listGraphsResultFor(t, [2]string{"practice", "default"}),
 			queryResponsesByGraphName: map[graphKey]map[string]kgtools.ToolResult{
-				{Type: "practice", Name: "go"}: {"pat-1": graphNodeResult(t, "pat-1", "pattern", "Pat", "a pattern")},
+				{Type: "practice", Name: "default"}: {"pat-1": graphNodeResult(t, "pat-1", "pattern", "Pat", "a pattern")},
 			},
 			// One metadata-BEARING incident edge dec-1 -[uses]-> proxy, constructed
 			// as a fresh slice-literal element (no value-copy of a lock-holding
@@ -143,14 +143,14 @@ func TestMigrateSlugLessPracticeProxy(t *testing.T) {
 		assert.Equal(t, 1, migrated, "metadata-bearing proxy re-keys (no refusal)")
 
 		require.Len(t, fc.execMutations, 3, "UPSERT + LINK + DELETE")
-		assert.Equal(t, "proxy:practice:go:pat-1", fc.execMutations[0].GetNodeBodies()[0].GetId())
+		assert.Equal(t, "proxy:practice:default:pat-1", fc.execMutations[0].GetNodeBodies()[0].GetId())
 
 		// The re-point LINK carries the edge metadata onto its EdgeSpec — the
 		// wire-level proof LinkOneWithMeta transports it through the Phase 0 carrier.
 		link := fc.execMutations[1]
 		assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_LINK, link.GetKind())
 		spec := link.GetEdgeSpec()
-		assert.Equal(t, "proxy:practice:go:pat-1", spec.GetToId())
+		assert.Equal(t, "proxy:practice:default:pat-1", spec.GetToId())
 		assert.InDelta(t, 0.7, spec.GetWeight(), 1e-9, "weight preserved on re-point")
 		assert.InDelta(t, 0.9, spec.GetConfidence(), 1e-9, "confidence preserved on re-point")
 		assert.Equal(t, "linker:helm", spec.GetMethod(), "method preserved on re-point")

@@ -15,21 +15,24 @@ import (
 
 // hydrateSelector is the graph-routing envelope a client-engine search hydrates
 // against: the same fields buildTarget consumes, so the bulk ids[] read lands on
-// the right graph (knowledge default / code repo / practice language / ...).
+// the right graph (knowledge default / code repo / a named custom graph / ...).
 //
-// THERE IS NO Account FIELD, and its removal closed a measured defect rather than
-// trimming an unused member. It sat in the instance-precedence chain below AHEAD
-// of Name, and exactly one composer ever set it — pivotHydrateSelector, which
-// copied the caller's `account` tool param straight in. Since the account-keyed
-// families retired, that param is accepted and ignored by owner ruling, so the
-// only thing the field could still do was stamp a caller-supplied string as the
-// GraphInstance of rows that came from somewhere else.
+// THERE IS NEITHER AN Account NOR A Language FIELD, and each removal closed a
+// measured defect rather than trimming an unused member. Account sat in the
+// instance-precedence chain below AHEAD of Name, and exactly one composer ever
+// set it — pivotHydrateSelector, which copied the caller's `account` tool param
+// straight in. Since the account-keyed families retired, that param is accepted
+// and ignored by owner ruling, so the only thing the field could still do was
+// stamp a caller-supplied string as the GraphInstance of rows that came from
+// somewhere else. Language was practice's instance field until the family became
+// one combined graph and the selector was refused on every arm; the same
+// composer was its last setter, and a value it stamped would have named a graph
+// the hydrate read is refused for.
 type hydrateSelector struct {
-	Graph    string
-	Repo     string
-	Name     string
-	Language string
-	Branch   string
+	Graph  string
+	Repo   string
+	Name   string
+	Branch string
 }
 
 // hydrateEngineHits turns a CLIENT-engine RRF result (ranked []searchengine.Hit
@@ -65,12 +68,11 @@ func hydrateEngineHits(
 	}
 
 	args, err := json.Marshal(map[string]any{
-		"ids":      ids,
-		"graph":    sel.Graph,
-		"repo":     sel.Repo,
-		"name":     sel.Name,
-		"language": sel.Language,
-		"branch":   sel.Branch,
+		"ids":    ids,
+		"graph":  sel.Graph,
+		"repo":   sel.Repo,
+		"name":   sel.Name,
+		"branch": sel.Branch,
 	})
 	if err != nil {
 		return nil, err
@@ -128,22 +130,22 @@ func hydrateEngineHits(
 
 // hydrateSelectorInstance picks the per-result instance string from the
 // hydrateSelector: the field a buildTarget consumes for this graph family — Repo
-// for code, Name for a registered custom family, Language for
-// practice. The knowledge default has no instance (empty). When more than one is
-// set (defensive — the composers set exactly one) the code→name→
-// language precedence mirrors the selector-routing order.
+// for code, Name for a registered custom family. A SINGLETON family has no
+// instance and reads empty, which is what the knowledge default, checks and
+// practice all return. When both are set (defensive — the composers set exactly
+// one) the code→name precedence mirrors the selector-routing order.
 //
-// AN Account ARM SAT BETWEEN Repo AND Name and is gone with the field. It
-// out-ranked Name, so a read that legitimately named its instance had that name
-// overwritten by an `account` the product no longer keys anything on.
+// TWO ARMS SAT HERE AND WENT WITH THEIR FIELDS. An Account arm sat between Repo
+// and Name and out-ranked Name, so a read that legitimately named its instance
+// had that name overwritten by an `account` the product no longer keys anything
+// on; a Language arm sat after Name for the practice family, which addresses no
+// instance since its per-language graphs became one.
 func hydrateSelectorInstance(sel hydrateSelector) string {
 	switch {
 	case sel.Repo != "":
 		return sel.Repo
 	case sel.Name != "":
 		return sel.Name
-	case sel.Language != "":
-		return sel.Language
 	default:
 		return ""
 	}

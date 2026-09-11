@@ -87,10 +87,11 @@ const helpManage = `# manage — Server operations
 
   drop_graph tears down a WHOLE graph — the persisted store plus its loaded
   state — via one DROP_GRAPH mutation. Requires
-  graph=<knowledge|code|practice|web|pdf|checks|linkage or a registered
-  custom type> plus the instance field that family needs (code→name as repo,
-  practice→name as language, the rest→name; knowledge
-  needs no name). A RETIRED family name is refused, naming the removal.
+  graph=<knowledge|code|web|pdf|checks|linkage or a registered custom type>
+  plus the instance field that family needs (code→name as repo, the rest→name;
+  knowledge needs no name). practice is REFUSED outright: practice graphs are
+  never a destructive target, and practice nodes leave through delete by
+  source hub. A RETIRED family name is refused, naming the removal.
   DESTRUCTIVE, AND THE DEFAULT EXECUTES. dry_run:true issues ZERO mutations and
   renders a "would drop" preview so the target can be confirmed first. Note this
   is the OPPOSITE polarity from prune-cache, which previews by default and acts

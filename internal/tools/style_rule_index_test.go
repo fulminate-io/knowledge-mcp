@@ -336,16 +336,24 @@ func TestPracticeStyleIndex_Params(t *testing.T) {
 		assert.Empty(t, f.plans, "a refused call issues no read")
 	})
 
-	t.Run("a legacy language renders an EMPTY index plus the legacy notice", func(t *testing.T) {
+	t.Run("an_empty_index_renders_its_own_line_and_no_corpus_qualifier", func(t *testing.T) {
+		// THIS ROW USED TO BE THE LEGACY-NOTICE ROW. A `language` here addressed a
+		// pre-singleton graph that held no style rules, so the arm answered with an
+		// empty index plus a sentence naming the corpus that had answered rather
+		// than a refusal it would have invented while every sibling arm accepted
+		// the selector. The selector is refused on every arm now, so there is one
+		// corpus and nothing to qualify — what must survive is that an empty index
+		// still renders a LINE, so an empty answer is distinguishable from no
+		// output at all.
 		f := &styleIndexStoreFake{}
 		res := practiceStyleIndex(opCtx(), f.exec, queryArgs{
-			Graph: "practice", Mode: "style_index", Source: "hub-go", Language: "go",
+			Graph: "practice", Mode: "style_index", Source: "hub-go",
 		})
-		require.False(t, res.IsError, "a legacy read is not a refusal on any other practice arm either")
+		require.False(t, res.IsError, "an empty index is an answer, not a refusal")
 		body := textBodyTools(res)
 		assert.Contains(t, body, styleIndexEmpty)
-		assert.Contains(t, body, "LEGACY practice graph",
-			"the legacy notice says which corpus answered")
+		assert.NotContains(t, body, "LEGACY practice graph",
+			"there is one corpus, so no read qualifies which one answered")
 		require.Len(t, f.plans, 1)
 	})
 

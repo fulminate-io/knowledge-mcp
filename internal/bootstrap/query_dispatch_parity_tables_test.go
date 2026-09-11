@@ -238,13 +238,24 @@ var queryShapeDispositions = []shapeDisposition{
 	// ranked-search arm and this harness's unwired segment manager answers
 	// "practice search: client segment engine unavailable" — which is handled,
 	// carries no generic deny, and carries no "Best Practices" either, so all three
-	// absence legs pass against the mis-route. "practice:go" is
-	// InterceptQueryMetadataStats' own domainGraphLabel, emitted on BOTH of its
-	// render branches (the empty-rows message and RenderMetadataStatsTable's
-	// header) and on neither practice-search output.
+	// absence legs pass against the mis-route. "practice graph" is
+	// InterceptQueryMetadataStats' own domainGraphLabel followed by the word both
+	// of its render branches append to it — the empty-rows message ("No metadata
+	// stats yet for %s graph.") and RenderMetadataStatsTable's header ("## Metadata
+	// stats — %s graph") — and the measured mis-route body ("practice search:
+	// client segment engine unavailable") carries neither.
+	//
+	// THE MARKER USED TO BE "practice:go", COMPOSED FROM `language`, and it is
+	// weaker now because the qualifier is gone rather than because a weaker one
+	// was chosen. The field addresses no practice graph and every practice arm
+	// refuses it, so domainGraphLabel composes no qualifier from one; `source`
+	// would qualify the label but this arm REJECTS it in its param accounting, so
+	// a row supplying one measures that rejection instead of the hand-off. What is
+	// left is the unqualified label plus the noun its two branches share, which
+	// still discriminates against the mis-route this row was measured against.
 	{name: "practice_metadata_stats", args: map[string]any{
-		"graph": "practice", "language": "go", "mode": "metadata_stats",
-	}, kind: shapeForeignHandOff, marker: "practice:go"},
+		"graph": "practice", "mode": "metadata_stats",
+	}, kind: shapeForeignHandOff, marker: "practice graph"},
 
 	// === THE GRAPH AXIS ===
 	//

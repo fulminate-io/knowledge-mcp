@@ -234,60 +234,73 @@ func TestPracticeSearch_NoSelectorSearchesTheSingleton(t *testing.T) {
 // TestPracticeSearch_AllSentinelRefused pins requirement 6's second cell on BOTH
 // tools.
 //
-// IT ASSERTS ON THE MESSAGE, not merely on IsError. The sentinel asked for a
-// scatter-gather that no longer exists, and the useful answer names the call
-// that does — a bare refusal leaves the caller guessing whether practice search
-// broke.
-func TestPracticeSearch_AllSentinelRefused(t *testing.T) {
+// IT ASSERTS ON THE MESSAGE, not merely on IsError, and on BOTH TOOLS. The two
+// tools claim a practice payload at different entry points, so a refusal
+// installed in one leaves the other serving the call — which is the shape the
+// per-arm spelling of every other practice rule kept producing.
+func TestPracticeSearch_LanguageRefusedOnBothTools(t *testing.T) {
 	seed := func() (*graphclient.GraphClient, *fanOutSegmentSearcher) {
-		gc := newFanOutHarness(t, []string{"default", "go"})
-		return gc, newFanOutSegmentSearcher(nil)
+		gc := newFanOutHarness(t, []string{"default"},
+			practiceNode("p:go", "GoWorkerPool", "bounded goroutines"))
+		return gc, newFanOutSegmentSearcher(map[string][]searchengine.Hit{
+			"default": {{ID: "p:go", Score: 0.99}},
+		})
 	}
 
-	t.Run("SEARCH tool", func(t *testing.T) {
-		gc, mgr := seed()
-		deps := &interceptDeps{gc: gc, segMgr: mgr}
-		handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
-			"graph": "practice", "language": "all", "query": "pool",
-		}))
-		require.True(t, handled)
-		require.True(t, out.IsError, "the retired sentinel must be refused, not served")
-		body := textBodyTools(out)
-		assert.Contains(t, body, "retired")
-		assert.Contains(t, body, "Omit the selector", "the refusal names the call that works")
-		assert.Empty(t, mgr.searchedNames(), "the refusal costs no read")
-	})
+	// THE VALUES ARE THE CLAIM. "all" was the retired fan-out sentinel and had a
+	// refusal of its own; "go" was a pre-singleton graph name; "default" is the
+	// combined graph's own name. All three are refused identically, because the
+	// refusal is about the FIELD and not about the value.
+	for _, value := range []string{"all", "go", "default"} {
+		t.Run("SEARCH_tool/"+value, func(t *testing.T) {
+			gc, mgr := seed()
+			deps := &interceptDeps{gc: gc, segMgr: mgr}
+			handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
+				"graph": "practice", "language": value, "query": "pool",
+			}))
+			require.True(t, handled)
+			require.True(t, out.IsError, "`language` must be refused, not served")
+			body := textBodyTools(out)
+			assert.Equal(t, practiceLanguageRefusedOnRead(practiceHubParamOnWrites), body,
+				"the search tool names the hub param IT publishes")
+			assert.Empty(t, mgr.searchedNames(), "the refusal costs no read")
+		})
 
-	t.Run("QUERY tool", func(t *testing.T) {
-		gc, mgr := seed()
-		deps := &interceptDeps{gc: gc, segMgr: mgr}
-		res := gatedRoutePractice(opCtx(), deps, gc, queryArgs{Graph: "practice", Language: "all", Text: "pool"})
-		require.True(t, res.IsError)
-		assert.Contains(t, textBodyTools(res), "retired")
-		assert.Empty(t, mgr.searchedNames(), "the refusal costs no read")
-	})
+		t.Run("QUERY_tool/"+value, func(t *testing.T) {
+			gc, mgr := seed()
+			deps := &interceptDeps{gc: gc, segMgr: mgr}
+			res := gatedRoutePractice(opCtx(), deps, gc, queryArgs{
+				Graph: "practice", Language: value, Text: "pool",
+			})
+			require.True(t, res.IsError)
+			assert.Equal(t, practiceLanguageRefusedOnRead(practiceHubParamFree), res.Content[0].Text,
+				"the query tool names `source`, the spelling free on its schema")
+			assert.Empty(t, mgr.searchedNames(), "the refusal costs no read")
+		})
+	}
 }
 
-// TestPracticeSearch_LegacyLanguageStillScopes is requirement 5 on the search
-// arms: the eight pre-singleton graphs stay readable through `language`, and a
-// named one is searched INSTEAD OF the combined graph rather than beside it.
-func TestPracticeSearch_LegacyLanguageStillScopes(t *testing.T) {
-	gc := newFanOutHarness(t, []string{"default", "go", "python"},
+// TestPracticeSearch_NoSelectorSearchesTheCombinedGraph is the both-directions
+// leg for the refusal above, and the row that replaced
+// TestPracticeSearch_LegacyLanguageStillScopes: that test asserted that a named
+// language read THAT pre-singleton graph and no other, which is the behaviour
+// this ticket removed. What must still hold is that an unselected search reads
+// the one combined graph.
+func TestPracticeSearch_NoSelectorSearchesTheCombinedGraph(t *testing.T) {
+	gc := newFanOutHarness(t, []string{"default"},
 		practiceNode("p:go", "GoWorkerPool", "bounded goroutines"),
 	)
 	mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
-		"default": {{ID: "p:combined", Score: 0.99}},
-		"go":      {{ID: "p:go", Score: 0.90}},
-		"python":  {{ID: "p:py", Score: 0.80}},
+		"default": {{ID: "p:go", Score: 0.99}},
 	})
 	deps := &interceptDeps{gc: gc, segMgr: mgr}
 	handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
-		"graph": "practice", "language": "go", "query": "pool",
+		"graph": "practice", "query": "pool",
 	}))
 	require.True(t, handled)
-	require.False(t, out.IsError, "the legacy read selector is accepted: %s", textBodyTools(out))
-	assert.Equal(t, []string{"go"}, mgr.searchedNames(),
-		"a named language reads THAT pre-singleton graph and no other, including not the combined one")
+	require.False(t, out.IsError, "an unselected practice search is served: %s", textBodyTools(out))
+	assert.Equal(t, []string{"default"}, mgr.searchedNames(),
+		"it searches the combined graph, under the name its segment pool is sealed under")
 	assert.Contains(t, textBodyTools(out), "GoWorkerPool")
 }
 

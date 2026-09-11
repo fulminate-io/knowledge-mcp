@@ -55,7 +55,7 @@ func practiceStyleIndex(ctx context.Context, exec engine.ExecuteFn, a queryArgs)
 	if merr != nil {
 		return errorResult("practice style_index: " + merr.Error())
 	}
-	nodes, err := drainStyleRules(ctx, exec, a.Language, meta)
+	nodes, err := drainStyleRules(ctx, exec, meta)
 	if err != nil {
 		return errorResult("practice style_index: " + err.Error())
 	}
@@ -69,16 +69,13 @@ func practiceStyleIndex(ctx context.Context, exec engine.ExecuteFn, a queryArgs)
 			"source": a.Source, "repo": a.Repo, "rows": rows,
 		})
 	}
-	res := textResult(styleIndexBody(rows))
-	// THE LEGACY NOTICE, ON THE SAME TERMS EVERY OTHER PRACTICE READ CARRIES IT.
-	// A `language` here addresses one of the pre-singleton graphs, which hold no
-	// style rules, so the honest answer is an empty index that says which corpus
-	// answered — not a refusal this arm invents for itself while every sibling
-	// arm accepts the selector.
-	if a.Language != "" && a.Format != "json" {
-		res = appendNotice(res, practiceLegacyNotice(a.Language))
-	}
-	return res
+	// THE LEGACY NOTICE WENT WITH THE SELECTOR IT QUALIFIED. A `language` here used
+	// to address one of the pre-singleton graphs, which held no style rules, so
+	// this arm answered with an empty index and a sentence saying which corpus had
+	// answered — rather than a refusal it would have invented for itself while
+	// every sibling arm accepted the selector. Every arm refuses it now, ahead of
+	// this one, so there is no corpus left to qualify.
+	return textResult(styleIndexBody(rows))
 }
 
 // styleIndexPredicates builds the arm's SERVER-SIDE narrowing: the caller's meta
@@ -129,7 +126,7 @@ func styleIndexPaths(a queryArgs) []string {
 // rules past it become rules nobody was told about. A page that cannot be read
 // fails loudly.
 func drainStyleRules(
-	ctx context.Context, exec engine.ExecuteFn, language string, meta map[string]string,
+	ctx context.Context, exec engine.ExecuteFn, meta map[string]string,
 ) ([]*knowledgev1.Node, error) {
 	var out []*knowledgev1.Node
 	for offset := 0; ; offset += styleIndexPageSize {
@@ -142,7 +139,7 @@ func drainStyleRules(
 				Offset:    int32(offset),
 				SkipTotal: true,
 			}},
-			Target: practiceReadTarget(language),
+			Target: practiceTarget(),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("read style rules: %w", err)

@@ -119,7 +119,11 @@ func statsTargetsFor(fake *coverageFake) []string {
 		case "code":
 			out = append(out, "code/"+sel.GetRepo())
 		case "practice":
-			out = append(out, "practice/"+sel.GetLanguage())
+			// A practice selector carries no instance field, so the key is fixed.
+			// This read sel.GetLanguage(), which is now always empty — the arm
+			// composed "practice/" for every row. It matches coverageFake.Stats's
+			// own key derivation (manage_status_coverage_test.go).
+			out = append(out, "practice/default")
 		default:
 			out = append(out, "knowledge")
 		}

@@ -154,6 +154,41 @@ type findingReference struct {
 	Summary string `json:"summary,omitempty"`
 }
 
+// refusePracticeSelectorsAtTheHead runs the two practice-selector refusals that
+// need no GraphCaller, ONCE, above every routing branch in InterceptMutate.
+//
+// `source_hub` OFF THE PRACTICE FAMILY is the whole off-family rule for every arm
+// and every family: the param means something only in the combined practice
+// graph, so every other family gets one refusal from one line rather than a
+// per-arm check a new arm would eventually be added without.
+//
+// `language` ON A PRACTICE WRITE is the same shape. It used to be spelled per arm
+// — the passthrough arm covering create/create_batch/update/delete, the
+// intra-practice link arm, the unlink arm and the non-knowledge fallthrough — and
+// the per-arm spelling is what left arms accepting the field and reaching
+// nothing.
+//
+// THE POSITION IS THE CONTRACT, and it is why they are one call rather than two
+// scattered ones. They sit above the cross-graph link block, above
+// handleGraphPassthroughMutate (which serves checks as well as practice, and
+// whose create lowering is family-blind) and above the knowledge-graph guard, so
+// no arm is reachable by a foreign family carrying a hub or by a practice write
+// carrying a language. Both are payload-decidable, so they also sit ABOVE the
+// degraded-mode return: a call that is wrong on its face is wrong on a degraded
+// client too.
+//
+// THE POSITION IS ALSO WHAT MAKES THE MESSAGE THE CALLER SEES THE RIGHT ONE.
+// `language` is REJECTED in every practice-reachable arm's param accounting, so
+// below this line the accounting gate would answer first with its generic
+// undeclared-param wording — which tells a caller the param is unrouted without
+// telling them that `source_hub` is what replaced it.
+func refusePracticeSelectorsAtTheHead(a mutateArgs) error {
+	if err := refusePracticeHubOffFamily(a); err != nil {
+		return err
+	}
+	return refusePracticeLanguageOnWrite(a.Graph, a.Language, practiceHubParamOnWrites)
+}
+
 // InterceptMutate is the client-side mutate dispatch head. It claims the
 // knowledge-graph arms of update, delete, create, answer and link, and declines
 // everything the engine owns.
@@ -234,20 +269,10 @@ func InterceptMutate(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 		return true, errorResult(err.Error())
 	}
 
-	// `source_hub` OFF THE PRACTICE FAMILY, refused HERE and nowhere else. This is
-	// the whole off-family rule for every arm and every family: the param means
-	// something only in the combined practice graph, so every other family gets
-	// one refusal from one line rather than a per-arm check that a new arm would
-	// eventually be added without.
-	//
-	// THE POSITION IS THE CONTRACT. It sits above the cross-graph link block,
-	// above handleGraphPassthroughMutate (which serves checks as well as practice,
-	// and whose create lowering is family-blind) and above the knowledge-graph
-	// guard, so no arm can be reached by a foreign family carrying a hub. It is
-	// payload-decidable and needs no GraphCaller, so it sits with the two refusals
-	// above it rather than below the degraded-mode return: a call that is wrong on
-	// its face is wrong on a degraded client too.
-	if err := refusePracticeHubOffFamily(a); err != nil {
+	// THE TWO PAYLOAD-DECIDABLE PRACTICE-SELECTOR REFUSALS, in one call for the
+	// reason each of them is here at all: a rule spelled once per arm is a rule
+	// with one arm missing. See refusePracticeSelectorsAtTheHead.
+	if err := refusePracticeSelectorsAtTheHead(a); err != nil {
 		return true, errorResult("mutate(" + a.Operation + "): " + err.Error())
 	}
 

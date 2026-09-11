@@ -134,13 +134,20 @@ func statsSeamFor(deps ClientDeps, graph string) (statsRPC, kgtools.ToolResult, 
 // verbatim payload, threaded explicitly (rather than stashed on queryArgs) so
 // the per-arm accounting gate cannot be forgotten at a claim point.
 func routePracticeClient(ctx context.Context, deps ClientDeps, gc statsRPC, a queryArgs, raw json.RawMessage) kgtools.ToolResult {
-	// (0) The RETIRED fan-out sentinel is refused BEFORE anything else reads the
-	// payload, because "all" is a value the arms below would otherwise treat as a
-	// legacy graph name and resolve to a graph that does not exist. Refusing first
-	// costs no read, no embed and no wire call, and answers with the call that
-	// works rather than with a not-found.
-	if a.Language == "all" {
-		return errorResult(practiceFanOutRetired)
+	// (0) `language` IS REFUSED BEFORE ANYTHING ELSE READS THE PAYLOAD, for every
+	// value it can carry. The field used to name one of eight instance-keyed
+	// practice graphs on a read; those graphs are gone, so every value — a former
+	// graph name, the combined graph's own name, the retired "all" fan-out
+	// sentinel, a typo — addresses nothing. Refusing first costs no read, no embed
+	// and no wire call, and the message names the selector that does narrow the
+	// corpus.
+	//
+	// IT SITS AHEAD OF THE PER-ARM ACCOUNTING GATE ON PURPOSE. That gate would
+	// refuse the param too, since no practice arm declares it any more, but with
+	// the generic undeclared-param wording — which tells a caller the param is
+	// unrouted without telling them what replaced it.
+	if err := refusePracticeLanguageOnRead(a.Graph, a.Language, practiceHubParamFree); err != nil {
+		return errorResult(err.Error())
 	}
 	// (1) mode=stats.
 	if a.Mode == "stats" {
@@ -168,9 +175,8 @@ func routePracticeClient(ctx context.Context, deps ClientDeps, gc statsRPC, a qu
 		}
 		return practiceStyleIndex(ctx, gc.Execute, a)
 	}
-	// (2) No ranked text → BROWSE. With no language that is the combined graph,
-	// optionally narrowed to one hub by `source`; with a language it is the legacy
-	// graph, unchanged.
+	// (2) No ranked text → BROWSE. That is the combined graph, optionally narrowed
+	// to one hub by `source`.
 	if practiceQueryText(a) == "" {
 		if err := accountQueryParams(armPracticeBrowse, raw); err != nil {
 			return errorResult(err.Error())
@@ -192,7 +198,7 @@ func routePracticeClient(ctx context.Context, deps ClientDeps, gc statsRPC, a qu
 	if err := accountQueryParams(armPracticeSearch, raw); err != nil {
 		return errorResult(err.Error())
 	}
-	return composePracticeSearchClient(ctx, deps, deps.SegmentManager(), a.Language, a.Source, query, a.Format, int(a.Limit), a.Fields)
+	return composePracticeSearchClient(ctx, deps, deps.SegmentManager(), a.Source, query, a.Format, int(a.Limit), a.Fields)
 }
 
 // composePracticeSearchClient runs the practice ranked-search arm against the
@@ -208,7 +214,7 @@ func routePracticeClient(ctx context.Context, deps ClientDeps, gc statsRPC, a qu
 // into RenderForCaller where a literal nil used to sit.
 func composePracticeSearchClient(
 	ctx context.Context, deps ClientDeps, mgr SegmentSearcher,
-	language, hub, query, format string, limit int, fields []string,
+	hub, query, format string, limit int, fields []string,
 ) kgtools.ToolResult {
 	// Readiness gate (bind-first startup): mgr.Search below dereferences the segment Manager
 	// with no nil-check; during the bind-first wiring window SegmentManager() is an
@@ -233,18 +239,18 @@ func composePracticeSearchClient(
 	}
 
 	// THE SEGMENT POOL IS NAMED BY THE INTERNAL KEYING RULE, NOT BY THE WIRE ONE.
-	// An unselected practice search reads the combined graph, whose pool is sealed
-	// under the canonical instance name while every wire read of it sends an empty
-	// selector — the two namespaces diverge exactly as they do for checks, and
-	// asking the engine for "" would search an instance nothing ever wrote to and
-	// return a confident zero.
-	pool := workingset.CanonicalInstanceName(kgtypes.GraphPractice, language)
+	// A practice search reads the combined graph, whose pool is sealed under the
+	// canonical instance name while every wire read of it sends an empty selector —
+	// the two namespaces diverge exactly as they do for checks, and asking the
+	// engine for "" would search an instance nothing ever wrote to and return a
+	// confident zero.
+	pool := workingset.CanonicalInstanceName(kgtypes.GraphPractice, "")
 
 	hits, err := practiceRankedHits(ctx, deps, mgr, pool, hub, query, queryVec, k)
 	if err != nil {
 		return errorResult("practice search: " + err.Error())
 	}
-	results, err := hydrateEngineHits(ctx, deps.GraphCaller(), hydrateSelector{Graph: "practice", Language: language}, hits)
+	results, err := hydrateEngineHits(ctx, deps.GraphCaller(), hydrateSelector{Graph: "practice"}, hits)
 	if err != nil {
 		return errorResult("practice search: hydrate: " + err.Error())
 	}
@@ -253,21 +259,22 @@ func composePracticeSearchClient(
 	// when EmbedBinary failed, and either way the search ran BM25-only.
 	modeLabel := segmentSearchModeLabel(query != "", len(queryVec) > 0)
 	if len(results) == 0 {
-		// THE POOL NAME, NOT THE CALLER'S LANGUAGE. The gap probe reads the graph
-		// by name; an unselected search has no language, and probing practice/""
-		// would find no graph and report a gap that is really an empty selector.
+		// THE POOL NAME, NOT AN EMPTY SELECTOR. The gap probe reads the graph by
+		// name; every practice wire read sends no instance field, and probing
+		// practice/"" would find no graph and report a gap that is really the
+		// family's own addressing convention.
 		notice, loud := practiceZeroHitNotice(ctx, deps, pool, embErr)
 		if loud {
 			return errorResult(notice)
 		}
 		if notice != "" && format != "json" {
-			return appendNotice(engine.RenderPracticeResults(language, query, results, modeLabel), notice)
+			return appendNotice(engine.RenderPracticeResults(query, results, modeLabel), notice)
 		}
 	}
 	if format == "json" {
 		return engine.RenderForCaller(query, results, "json", fields, modeLabel)
 	}
-	return engine.RenderPracticeResults(language, query, results, modeLabel)
+	return engine.RenderPracticeResults(query, results, modeLabel)
 }
 
 // THE SCATTER-GATHER FAN-OUT IS GONE, and its absence is the point rather than
@@ -276,9 +283,10 @@ func composePracticeSearchClient(
 // per-graph attribution, because the corpus was eight graphs and `language:"all"`
 // was how a caller reached all of it. The corpus is ONE graph now: an unselected
 // search already reads the whole of it in one engine call, so the fan-out had no
-// caller left and the sentinel that reached it is refused by name
-// (practiceFanOutRetired). Keeping the machinery would have left a second,
-// slower path to the same answer for the next reader to choose between.
+// caller left and the sentinel that reached it is refused with every other value
+// of `language` (refusePracticeLanguageOnRead). Keeping the machinery would have
+// left a second, slower path to the same answer for the next reader to choose
+// between.
 //
 // The three-bucket outcome discipline it carried — matched, failed, unindexed,
 // never collapsed into one zero — survives in practiceZeroHitNotice, which is
@@ -318,6 +326,11 @@ func rankedSearchRetiredResult(graph string) kgtools.ToolResult {
 
 // listPracticeGraphs enumerates the loaded practice graphs (RETURN_MODE_GRAPH_NAMES
 // Execute via listGraphNamesOfType + per-graph Stats counts).
+//
+// THE FAMILY HOLDS ONE GRAPH, so this enumeration is a catalog read that answers
+// with one row. It stays an enumeration rather than collapsing into the stats arm
+// because the CATALOG is what it reads: a row appears iff the graph exists, which
+// is the question "has anything been authored here yet" and not "how big is it".
 func listPracticeGraphs(ctx context.Context, deps ClientDeps) kgtools.ToolResult {
 	names, err := listGraphNamesOfType(ctx, deps, "practice")
 	if err != nil {
@@ -334,17 +347,17 @@ func listPracticeGraphs(ctx context.Context, deps ClientDeps) kgtools.ToolResult
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Practice graphs (%d):\n\n", len(names))
 	for _, name := range names {
-		// THE LEGACY TARGET, BUILT EXPLICITLY. This enumeration lists the
-		// pre-singleton graphs, and a derived practice target carries no instance
-		// field — every row would report the COMBINED graph's counts under a
-		// different graph's name.
-		sb.WriteString(graphCountRowFor(ctx, sc, name, practiceReadTarget(name)))
+		// ONE TARGET FOR EVERY ROW, because there is one graph to count. This loop
+		// used to build a per-row legacy target naming each pre-singleton graph,
+		// since a derived practice target carries no instance field and every row
+		// would otherwise have reported the combined graph's counts under a
+		// different graph's name. That hazard is gone with the graphs.
+		sb.WriteString(graphCountRowFor(ctx, sc, name, practiceTarget()))
 	}
-	// THE HINT NAMES THE SELECTOR EACH ROW ACTUALLY TAKES. The combined graph is
-	// browsed with no instance field at all and narrowed by `source`; only a
-	// PRE-SINGLETON row is reachable by `language`, which is read-only. A single
-	// `language` hint sent a reader at a graph this enumeration had just listed
-	// under a name that selector cannot resolve.
-	sb.WriteString("\nBrowse the combined graph with `query({ \"graph\": \"practice\" })`, narrowed to one origin by `source`: `query({ \"graph\": \"practice\", \"source\": \"<hub id>\" })`. A row above that names a PRE-SINGLETON graph is read with the legacy read-only selector: `query({ \"graph\": \"practice\", \"language\": \"<that name>\" })`.")
+	// THE HINT NAMES THE SELECTOR THE ROW TAKES. The combined graph is browsed with
+	// no instance field at all and narrowed by `source`. The hint used to name
+	// `language` as well, for the rows that were pre-singleton graphs; naming it
+	// now would send a reader at a refused selector.
+	sb.WriteString("\nBrowse it with `query({ \"graph\": \"practice\" })`, narrowed to one origin by `source`: `query({ \"graph\": \"practice\", \"source\": \"<hub id>\" })`.")
 	return textResult(sb.String())
 }

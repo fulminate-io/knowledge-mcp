@@ -7,11 +7,9 @@
 // repo, and everything else by name — except the SINGLETON families, knowledge,
 // checks and practice, which carry no instance key at all and resolve to their
 // one graph. Practice joined that set when the eight per-language graphs became
-// one; `language` survives only as a read-only selector for those pre-singleton
-// graphs and is set per-read by the practice arms, never here. That single
-// disposition was previously duplicated as a verbatim GraphCode→repo /
-// default→name switch
-// across
+// one, and `language` stopped addressing a practice graph on any arm when those
+// graphs were retired. That single disposition was previously duplicated as a
+// verbatim GraphCode→repo / default→name switch across
 // segmentdist, topology/foundation, postpopulate, and pipeline. This package
 // holds that switch exactly once (InstanceField) and exposes thin builders for
 // the three output shapes the call sites need:
@@ -102,35 +100,27 @@ const (
 	FieldRepo Field = iota
 	// FieldName — every other graph family is keyed by name.
 	//
-	// THERE IS NO FieldAccount, and its absence is a decision rather than an
-	// omission. The account-keyed families were cloud and the CI inventory, both
-	// retired with their built-in collectors, so the constant lost its last
-	// producer: no graph type returned it and every arm switching on it was
-	// unreachable. Retired code is removed rather than left inert, so the constant
-	// and its arms went with the families. A future account-keyed family
-	// reintroduces both together.
+	// THERE IS NEITHER A FieldAccount NOR A FieldLanguage, and both absences are
+	// decisions rather than omissions. The account-keyed families were cloud and
+	// the CI inventory, both retired with their built-in collectors. FieldLanguage
+	// was the practice instance key and outlived the eight per-language graphs by
+	// one ticket: it was kept so a caller projecting a legacy language still had a
+	// field to project into, and it went when `language` stopped being accepted on
+	// the practice read arms — no family returned it, and every arm switching on
+	// it was unreachable. Retired code is removed rather than left inert, so each
+	// constant and its arms went with the thing that produced it. A future
+	// account-keyed or language-keyed family reintroduces both together.
 	//
-	// FieldLanguage BELOW IS KEPT ON THE OPPOSITE REASONING, and the two are not in
-	// tension. Practice READS still accept a legacy language for a pre-singleton
-	// graph, so a caller projecting one still needs a field to project into; no
-	// read path anywhere accepts an account, so there is nothing left to project.
+	// CHECKS AND PRACTICE ARE BOTH IN THE FieldNone ARM, for one reason. Checks
+	// carry a `language` metadata key on every node and practice carries a
+	// `source_hub` key, so in each family the value selects a SUBSET WITHIN the
+	// one graph rather than selecting which graph to open.
 	//
-	// GraphSelector.account SURVIVES ON THE WIRE, and the asymmetry is deliberate:
-	// removing a proto field is its own change with its own compatibility cost,
-	// while a client switch arm nothing can reach is dead code inside one binary.
+	// GraphSelector.account AND GraphSelector.language SURVIVE ON THE WIRE, and
+	// the asymmetry is deliberate: removing a proto field is its own change with
+	// its own compatibility cost, while a client switch arm nothing can reach is
+	// dead code inside one binary.
 	FieldName
-	// FieldLanguage — the LEGACY practice instance key. No builtin family returns
-	// it any more: practice became a singleton and moved to the FieldNone arm
-	// below. `language` survives only as the read-only selector addressing the
-	// old instance-keyed practice graphs, and that path runs through the practice
-	// read arms rather than through this switch. The constant and the arms that
-	// read it stay so a caller projecting a legacy language still has a field.
-	//
-	// CHECKS IS DELIBERATELY NOT HERE. Checks carry a `language` metadata key on
-	// every node, so language selects a SUBSET WITHIN the one checks graph rather
-	// than selecting which graph to open. Practice now works the same way: its
-	// hub is a `source_hub` metadata key on every node, not a graph to open.
-	FieldLanguage
 	// FieldNone — the family addresses NO instance: it holds exactly one graph,
 	// so there is no key to carry and every instance field must stay empty.
 	//
@@ -168,9 +158,8 @@ func InstanceField(gt kgtypes.GraphType) Field {
 		// became one combined graph. Its per-source grouping is a `source_hub`
 		// metadata key on every node, exactly as checks' language is, so there is
 		// no practice instance to address and the server's practice policy row
-		// consumes no instance field. `language` remains accepted on practice READ
-		// arms as the legacy selector for the old graphs, and that path does not
-		// run through here.
+		// consumes no instance field. `language` is refused on every practice arm,
+		// read and write alike, so no path composes one to address a graph.
 		return FieldNone
 	default:
 		return FieldName
@@ -188,7 +177,7 @@ func InstanceField(gt kgtypes.GraphType) Field {
 //
 // A selector naming only a graph TYPE, which is the shape a catalog enumeration
 // compiles to, yields an empty instance name for every family whose key is
-// repo or language.
+// repo.
 func InstanceKeyOf(sel *knowledgev1.GraphSelector) (kgtypes.GraphType, string, bool) {
 	if sel == nil {
 		return "", "", false
@@ -203,8 +192,6 @@ func InstanceKeyOf(sel *knowledgev1.GraphSelector) (kgtypes.GraphType, string, b
 	switch InstanceField(gt) {
 	case FieldRepo:
 		return gt, sel.GetRepo(), true
-	case FieldLanguage:
-		return gt, sel.GetLanguage(), true
 	case FieldNone:
 		// A singleton has no instance name to read back. Falling through to the
 		// default would report whatever name a caller wrongly attached as this
@@ -232,8 +219,6 @@ func GraphSelectorFor(gt kgtypes.GraphType, name string, omitDefaultName bool) *
 		if !omitDefaultName || (name != "" && name != "default") {
 			sel.Name = name
 		}
-	case FieldLanguage:
-		sel.Language = name
 	}
 	return sel
 }
@@ -250,20 +235,20 @@ func ScopePayload(gt kgtypes.GraphType, name string, omitDefaultName bool) map[s
 		if !omitDefaultName || (name != "" && name != "default") {
 			payload["name"] = name
 		}
-	case FieldLanguage:
-		payload["language"] = name
 	}
 	return payload
 }
 
 // ApplyInstanceKey assigns name into exactly one of the caller-owned repo /
-// name / language struct fields per (gt). When omitDefaultName is true, a name
-// field is left untouched for the empty string or the literal "default".
+// name struct fields per (gt). When omitDefaultName is true, a name field is
+// left untouched for the empty string or the literal "default".
 //
-// IT TAKES NO account POINTER, because no family is keyed by account any more:
-// cloud and the CI inventory were, and both are retired. A parameter no arm can
-// write to is a field a caller would keep filling for a case that cannot arise.
-func ApplyInstanceKey(gt kgtypes.GraphType, name string, repo, nameField, language *string, omitDefaultName bool) {
+// IT TAKES NEITHER AN account NOR A language POINTER, because no family is keyed
+// by either any more: cloud and the CI inventory were account-keyed and both are
+// retired, and practice was language-keyed until its eight per-language graphs
+// became one. A parameter no arm can write to is a field a caller would keep
+// filling for a case that cannot arise.
+func ApplyInstanceKey(gt kgtypes.GraphType, name string, repo, nameField *string, omitDefaultName bool) {
 	switch InstanceField(gt) {
 	case FieldRepo:
 		*repo = name
@@ -271,8 +256,6 @@ func ApplyInstanceKey(gt kgtypes.GraphType, name string, repo, nameField, langua
 		if !omitDefaultName || (name != "" && name != "default") {
 			*nameField = name
 		}
-	case FieldLanguage:
-		*language = name
 	}
 }
 
@@ -286,19 +269,17 @@ func ApplyInstanceKey(gt kgtypes.GraphType, name string, repo, nameField, langua
 // every builder agrees with every reader by construction.
 //
 // WHY THIS EXISTS. Callers used to hand every field they had to the target
-// builder at once, so a write could carry a repo AND a name AND a language
-// and rely on the server to sort it out — which it does not: a field the target
-// family does not consume is REFUSED, not ignored. Projecting first means a
-// selector can only ever carry the field its family reads.
-func InstanceValueOf(gt kgtypes.GraphType, repo, name, language string) string {
+// builder at once, so a write could carry a repo AND a name and rely on the
+// server to sort it out — which it does not: a field the target family does not
+// consume is REFUSED, not ignored. Projecting first means a selector can only
+// ever carry the field its family reads.
+func InstanceValueOf(gt kgtypes.GraphType, repo, name string) string {
 	if AddressesOneGraph(gt) {
 		return ""
 	}
 	switch InstanceField(gt) {
 	case FieldRepo:
 		return repo
-	case FieldLanguage:
-		return language
 	case FieldNone:
 		return ""
 	default:

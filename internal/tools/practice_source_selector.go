@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// practice_source_selector.go — the practice family's two selectors, in one
-// place: the `source` HUB narrowing that replaced per-language graphs, and the
-// LEGACY `language` read that still reaches the pre-singleton ones.
+// practice_source_selector.go — the practice family's ONE selector, the `source`
+// HUB narrowing, and the refusal of the `language` selector it replaced.
 //
 // WHY THEY SIT TOGETHER. They are the same question answered before and after
 // the practice graphs were combined — "which subset of the practice corpus does
-// this read address" — and every practice arm has to ask both. Splitting them
-// across the arms is what produced the partition copies this change spent its
-// budget removing.
+// this read address" — and every practice arm has to ask it. `language` used to
+// be the other half of the answer: it named one of eight instance-keyed practice
+// graphs, read-only, after the corpus was combined. Those graphs were retired,
+// so the field names nothing and every arm refuses it here instead.
 //
-// NEITHER TOUCHES THE WIRE SHAPE. `source` lowers onto a metadata predicate on
-// the node, and `language` rides the selector field that already exists.
-// GraphSelector is byte-identical before and after this change.
+// NEITHER TOUCHED THE WIRE SHAPE. `source` lowers onto a metadata predicate on
+// the node, and `language` rode a selector field that already existed and still
+// exists. GraphSelector is byte-identical across both changes.
 
 package tools
 
@@ -29,34 +29,19 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
-// practiceReadTarget builds the wire selector for a practice READ.
+// practiceTarget builds the wire selector for a practice read or write. It is
+// always the ONE combined graph, and graphsel is what says so — the family is
+// FieldNone, so GraphSelectorFor puts no instance field on the selector at all
+// and the server's practice arm opens "default".
 //
-// An empty language addresses the ONE combined graph, and graphsel is what says
-// so — the family is FieldNone now, so GraphSelectorFor puts no instance field
-// on the selector at all and the server's practice arm opens "default".
-//
-// A NON-EMPTY LANGUAGE IS THE LEGACY SELECTOR and is the one thing this function
-// adds on top: it names one of the eight pre-singleton graphs, and the server
-// still resolves it AS GIVEN on a read. It is set here rather than through
-// graphsel deliberately — graphsel answers "which field does this FAMILY use",
-// and the answer for practice is now "none". This is a per-READ legacy override,
-// not a family fact, and writing it through graphsel would put the retired
-// partition back into the one file that stopped holding it.
-//
-// A WRITE NEVER CALLS THIS. `language` is refused on every practice write arm,
-// and the server refuses it again in resolvePractice's ForWrite fence.
-func practiceReadTarget(language string) *knowledgev1.GraphSelector {
-	sel := graphsel.GraphSelectorFor(kgtypes.GraphPractice, "", false)
-	if language != "" {
-		sel.Language = language
-	}
-	return sel
-}
-
-// practiceWriteTarget builds the wire selector for a practice WRITE. It is
-// always the combined graph: there is no legacy override, by construction rather
-// than by omission.
-func practiceWriteTarget() *knowledgev1.GraphSelector {
+// THERE IS NO SECOND BUILDER, and the absence is the change. A practiceReadTarget
+// used to sit beside this one and take a language, setting GraphSelector.Language
+// for a read of one of the eight instance-keyed graphs — a per-read override of
+// the family fact graphsel declares. The graphs were retired, so the override has
+// nothing to address and the two builders collapsed into this one. A read and a
+// write compose the same selector now, which is what makes "practice is one
+// graph" a property of the builder rather than of each arm's discipline.
+func practiceTarget() *knowledgev1.GraphSelector {
 	return graphsel.GraphSelectorFor(kgtypes.GraphPractice, "", false)
 }
 
@@ -95,20 +80,6 @@ func practiceMetaWithHub(meta map[string]string, hub string) (map[string]string,
 	return out, nil
 }
 
-// practiceLegacyNotice is the marker requirement 5 asks a legacy read to carry.
-//
-// IT IS APPENDED TO THE BODY RATHER THAN REPLACING ANYTHING, because the point
-// is that the CONTENT is unchanged: a legacy read returns exactly what it
-// returned before the graphs were combined, and the response says which corpus
-// answered. The render header carries the same fact in one word
-// (engine.queryGraphLabelFor renders "practice:<language>"); this is the
-// sentence a human reads.
-func practiceLegacyNotice(language string) string {
-	return fmt.Sprintf(
-		"_Read from the LEGACY practice graph %q. Practice is one combined graph now; `language` addresses the pre-singleton graphs and is read-only. "+
-			"Omit it to read the combined graph, or pass `source:<hub id>` to narrow it._", language)
-}
-
 // practiceHubMemberIDs resolves the node ids grouped under one source hub.
 //
 // IT IS A SEPARATE READ BEFORE THE SEARCH, AND THAT IS THE DESIGN. The segment
@@ -125,7 +96,7 @@ func practiceLegacyNotice(language string) string {
 // short answer: the missing ids become nodes the accept predicate silently
 // rejects, and the search reports a confident subset of the hub the caller asked
 // for. So the pages are drained and a page that cannot be read fails loudly.
-func practiceHubMemberIDs(ctx context.Context, exec engine.ExecuteFn, language, hub string) (map[string]bool, error) {
+func practiceHubMemberIDs(ctx context.Context, exec engine.ExecuteFn, hub string) (map[string]bool, error) {
 	const pageSize = 1000
 
 	members := map[string]bool{}
@@ -139,7 +110,7 @@ func practiceHubMemberIDs(ctx context.Context, exec engine.ExecuteFn, language, 
 				Offset:    int32(offset),
 				SkipTotal: true,
 			}},
-			Target: practiceReadTarget(language),
+			Target: practiceTarget(),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("resolve source hub %q membership: %w", hub, err)
@@ -196,7 +167,7 @@ func practiceRankedHits(
 			hub, hub)
 	}
 
-	members, err := practiceHubMemberIDs(ctx, deps.GraphCaller().Execute, "", hub)
+	members, err := practiceHubMemberIDs(ctx, deps.GraphCaller().Execute, hub)
 	if err != nil {
 		return nil, err
 	}
@@ -223,57 +194,82 @@ const (
 	practiceHubParamOnWrites = "source_hub"
 )
 
-// practiceLanguageRefusedOnWrite renders the requirement-4 refusal: `language`
-// on a practice WRITE arm, naming the hub selector under the spelling that arm
-// publishes.
+// practiceLanguageRefusedLead is the RULE, spelled once. Both renderers below
+// open with it, so a caller cannot tell from the first sentence which gate
+// caught them — and a reader auditing the rule finds one statement of it rather
+// than two that have to be compared.
+const practiceLanguageRefusedLead = "graph:\"practice\" does not accept `language`: " +
+	"practice is ONE combined graph now, so there is no per-language graph to address — " +
+	"on a read or on a write. "
+
+// practiceLanguageRefusedOnRead renders the refusal for a practice READ arm,
+// naming the hub selector under the spelling that arm publishes.
 //
-// IT REFUSES RATHER THAN IGNORING, and the difference is the whole point. A
-// dropped language would land the write in the combined graph while the caller
-// believed it had written to practice/go — a silent redirect the caller has no
-// way to see. Bad input errors here.
+// IT REFUSES RATHER THAN IGNORING, on the same reasoning the write half records:
+// a dropped language would serve the combined graph while the caller believed it
+// had read practice/go, a silent redirect the caller has no way to see. The
+// field was the read-only selector for eight instance-keyed practice graphs
+// until those were retired; it addresses nothing now, so bad input errors here.
 //
-// It names BOTH replacements because a caller reaching for `language` wants one
-// of two different things: to group the write under an origin (the hub param),
-// or to read one of the pre-singleton graphs (`language`, still accepted on
-// reads).
+// THE TAIL DIFFERS FROM THE WRITE'S BECAUSE THE ACTION DOES. A reader reaching
+// for `language` wants a narrower corpus, and the answer is to omit the selector
+// or to name a hub; the write's tail is about where a node LANDS, which a read
+// has no version of.
+func practiceLanguageRefusedOnRead(hubParam string) string {
+	return practiceLanguageRefusedLead +
+		"Omit it to read the whole practice corpus, or narrow to one origin with " +
+		hubParam + ":\"<hub id>\", where the hub is a node of type \"source\" grouping the " +
+		"nodes one origin contributed"
+}
+
+// practiceLanguageRefusedOnWrite renders the refusal for a practice WRITE arm,
+// naming the hub selector under the spelling that arm publishes.
 //
-// AND IT STATES THE HUB PARAM'S SECOND MEANING, because this one message serves
-// every practice write arm and the param does not mean the same thing on all of
-// them: a create GROUPS its node under the hub, while a link or an unlink SCOPES
-// its endpoints to one (practice_hub_endpoints.go). A caller sent to `source_hub`
+// IT STATES THE HUB PARAM'S THREE MEANINGS, because this one message serves every
+// practice write arm and the param does not mean the same thing on all of them: a
+// create GROUPS its node under the hub, while a link or an unlink SCOPES its
+// endpoints to one (practice_hub_endpoints.go). A caller sent to `source_hub`
 // from an edge arm by a sentence that only describes grouping would reasonably
 // expect the edge to be grouped. The target arms — update, update_batch,
 // bulk_update_metadata and an upsert of an existing node — read it the third way,
 // as a scope over the ids the call names, and the message states that too.
 func practiceLanguageRefusedOnWrite(hubParam string) string {
-	return "graph:\"practice\" does not accept `language` on a write: " +
-		"practice is ONE combined graph now, so a write has no per-language graph to land in. " +
+	return practiceLanguageRefusedLead +
 		"Group the write under its origin instead — pass " + hubParam + ":\"<hub id>\", " +
 		"where the hub is a node of type \"source\" you create once per origin. " +
 		"On a link or an unlink that same param SCOPES THE ENDPOINTS rather than grouping anything: both " +
 		"endpoints must already be grouped under the hub it names. " +
 		"On an update, an update_batch, a bulk_update_metadata or an upsert of an existing node it SCOPES THE " +
-		"TARGETS the same way: every id the call names must already be grouped under that hub. " +
-		"`language` remains accepted on practice READ arms as the read-only selector for the pre-singleton graphs"
+		"TARGETS the same way: every id the call names must already be grouped under that hub"
 }
 
-// refusePracticeLanguageOnWrite is the one gate every practice write arm calls.
+// refusePracticeLanguageOnWrite and refusePracticeLanguageOnRead are the two
+// gates every practice arm calls, one per intent.
 //
-// ONE FUNCTION RATHER THAN A CHECK PER ARM, because the arms are the population
+// TWO FUNCTIONS RATHER THAN A CHECK PER ARM, because the arms are the population
 // a reviewer has to enumerate to know the rule holds, and a rule spelled once is
-// a rule they can find. It self-filters on the family so a caller can drop it in
-// front of a shared arm without the arm knowing which graph it serves.
+// a rule they can find. Each self-filters on the family so a caller can drop it
+// in front of a shared arm without the arm knowing which graph it serves.
 //
-// EVERY WRITE ARM MEANS EVERY ONE. The arms that CLAIM a practice CRUD mutation
-// are not the population: upsert, unlink, update_batch and bulk_update_metadata
-// decline past that claim to the non-knowledge fallthrough, and the `delete`
-// tool never touches the mutate paths at all. Each of those dropped the field
-// and compiled a target with no language on it, which is the silent redirect
-// this refusal exists to prevent, so the gate sits on the fallthrough and on the
-// delete tool's own guard as well.
+// EVERY ARM MEANS EVERY ONE. The arms that CLAIM a practice CRUD mutation are not
+// the write population: upsert, unlink, update_batch and bulk_update_metadata
+// decline past that claim to the non-knowledge fallthrough, and the `delete` tool
+// never touches the mutate paths at all. Each of those dropped the field and
+// compiled a target with no language on it, which is the silent redirect these
+// refusals exist to prevent, so the write gate sits on the fallthrough and on the
+// delete tool's own guard as well. The READ population is the practice query
+// router and the search tool's practice arm, each of which claims the payload
+// before its own accounting gate runs.
 func refusePracticeLanguageOnWrite(graph, language, hubParam string) error {
 	if graph != string(kgtypes.GraphPractice) || language == "" {
 		return nil
 	}
 	return errors.New(practiceLanguageRefusedOnWrite(hubParam))
+}
+
+func refusePracticeLanguageOnRead(graph, language, hubParam string) error {
+	if graph != string(kgtypes.GraphPractice) || language == "" {
+		return nil
+	}
+	return errors.New(practiceLanguageRefusedOnRead(hubParam))
 }

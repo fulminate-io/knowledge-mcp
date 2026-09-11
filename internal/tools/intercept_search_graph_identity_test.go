@@ -173,21 +173,11 @@ func TestSearchJSONCarriesSourceGraph_AllFamilies(t *testing.T) {
 		assert.Equal(t, "acct", env.Results[0].GraphInstance, "and the graph name as the instance")
 	})
 
-	t.Run("practice-single", func(t *testing.T) {
-		gc := newFanOutHarness(t, []string{"go"},
-			practiceNode("p:go", "GoWorkerPool", "bounded goroutines"),
-		)
-		mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
-			"go": {{ID: "p:go", Score: 0.90}},
-		})
-		deps := &interceptDeps{gc: gc, segMgr: mgr}
-		res := gatedRoutePractice(opCtx(), deps, gc, queryArgs{Graph: "practice", Language: "go", Text: "pool", Format: "json"})
-		env := parseEnv(t, textBodyTools(res))
-		require.Len(t, env.Results, 1)
-		assert.Equal(t, "practice", env.Results[0].Graph, "practice single stamps graph=practice")
-		assert.Equal(t, "go", env.Results[0].GraphInstance, "practice single stamps the language as instance")
-	})
-
+	// THE "practice-single" SUBTEST RETIRED WITH THE SELECTOR IT DROVE. It searched
+	// one pre-singleton practice graph by `language` and asserted the language was
+	// stamped as the result's GraphInstance; the field addresses no practice graph
+	// now and is refused on every arm, so the subtest below — the unselected read
+	// stamping the family alone — is the only practice shape there is.
 	t.Run("practice-no-selector-stamps-the-family-alone", func(t *testing.T) {
 		// The per-hit-varying instance case retired with the fan-out that produced
 		// it: results came from N graphs and each had to carry its own. An

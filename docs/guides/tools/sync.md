@@ -40,6 +40,6 @@ fresh machine — not to merge two diverged copies. For the full reference, run
 | Parameter | Type | Required | Enum | Description |
 | --- | --- | --- | --- | --- |
 | `graph` | string |  |  | Graph type (knowledge, code, practice, etc.); defaults to 'knowledge' |
-| `name` | string |  |  | Graph name; defaults to 'default'. For graph='practice' a name addresses a LEGACY per-language practice graph (the combined graph is the default); it must be the canonical spelling, and a non-canonical one is refused naming the spelling that would have worked. Whether a legacy name is ACCEPTED is the destination server's own rule rather than this client's: a server from before the practice graphs were combined accepts a canonical legacy name, a newer one may refuse it, and its refusal is surfaced verbatim. |
+| `name` | string |  |  | Graph name; defaults to 'default'. For graph='practice' the ONLY addressable name is 'default', the one combined graph: a name naming anything else is refused before either seam, because the practice family holds one graph and an admitted name would export or overwrite that graph under a label no read of the family can reach. |
 | `operation` | string | yes | push, pull, list | Operation to perform |
 <!-- END GENERATED: params -->

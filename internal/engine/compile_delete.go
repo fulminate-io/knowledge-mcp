@@ -166,7 +166,7 @@ func compileDelete(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 			Selection:  hubSelection(hub),
 			HardDelete: hard,
 		}
-		return deleteRequest(plan, a.Graph, a.Repo, a.Language), true
+		return deleteRequest(plan, a.Graph, a.Repo), true
 	}
 
 	if len(ids) > 0 {
@@ -177,7 +177,7 @@ func compileDelete(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 			Selection:  &knowledgev1.Selection{Ids: ids},
 			HardDelete: hard,
 		}
-		return deleteRequest(plan, a.Graph, a.Repo, a.Language), true
+		return deleteRequest(plan, a.Graph, a.Repo), true
 	}
 
 	sel, selOK := pruneSelection(a)
@@ -189,7 +189,7 @@ func compileDelete(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 		Selection:  sel,
 		HardDelete: hard,
 	}
-	return deleteRequest(plan, a.Graph, a.Repo, a.Language), true
+	return deleteRequest(plan, a.Graph, a.Repo), true
 }
 
 // deleteHub folds the delete tool's `source` and the mutate arms' `source_hub`
@@ -269,19 +269,22 @@ func pruneSelection(a deleteArgs) (*knowledgev1.Selection, bool) {
 // rather than ignoring it, which is why the projection rather than a verbatim
 // copy is what routes here.
 //
-// ACCOUNT IS NOT AMONG THEM AND IS NOT PASSED. The delete tool still declares the
-// param, because the wire field survives its families, but no family is keyed by
-// account since the account-keyed collectors were retired — so there is nothing
-// for the projection to select and a parameter carrying it would be one no arm
-// can read.
+// NEITHER account NOR language IS AMONG THEM AND NEITHER IS PASSED. The delete
+// tool still declares both params, because the wire fields survive their
+// families, but no family is keyed by either: the account-keyed collectors were
+// retired, and practice stopped being language-keyed when its eight per-language
+// graphs became one. So there is nothing for the projection to select and a
+// parameter carrying one would be one no arm can read. `language` on a practice
+// delete is REFUSED by the tool's own guard (intercept_delete_guard.go) rather
+// than projected away here, which is what keeps it from being a silent drop.
 //
 // The `name` argument stays empty: the delete surface declares no name param, so
 // every family gets an empty Target name. No family pins a literal name here —
 // the one that did addressed a graph family that no longer exists.
-func deleteRequest(plan *knowledgev1.MutationPlan, graph, repo, language string) *knowledgev1.ExecuteRequest {
+func deleteRequest(plan *knowledgev1.MutationPlan, graph, repo string) *knowledgev1.ExecuteRequest {
 	return &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-		Target: mutateTarget(graph, repo, "", language, ""),
+		Target: mutateTarget(graph, repo, "", ""),
 	}
 }
 

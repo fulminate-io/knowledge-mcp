@@ -109,12 +109,13 @@ func instanceFieldsOf(sel *knowledgev1.GraphSelector) map[string]string {
 // TestSyncGraphSelector_MatchesTheSharedImageMoveVector drives the client's
 // image-move selector builder over every row of the shared table.
 //
-// FAILS WHEN ABSENT: drop the instance name in syncGraphSelector's non-practice
-// fall-through and the code, cloud, cicd and logs rows go red here; fold a legacy
-// practice name back into the singleton and the practice/go row goes red. Both
-// are the same defect the ticket exists to fix — an image move addressing a graph
-// the caller did not name — and before this test only the practice half of it was
-// observed anywhere in the package.
+// FAILS WHEN ABSENT: drop the instance name in syncGraphSelector and the code,
+// web, pdf and registered-custom rows go red here. The practice rows are the
+// OTHER half of the same defect — an image move addressing a graph the caller
+// did not name — and they pin the singleton's shape: both practice rows expect
+// NO instance field, so a builder that put the caller's name on `language` or on
+// `name` reds them. The name a practice push cannot address never reaches this
+// builder at all; that half is the refusal test beside the sync arm.
 func TestSyncGraphSelector_MatchesTheSharedImageMoveVector(t *testing.T) {
 	v := loadImageMoveVector(t)
 	for _, c := range v.Cases {
@@ -149,12 +150,15 @@ func TestSyncPush_NonPracticeFamiliesCarryTheirInstanceName(t *testing.T) {
 		graph, name, field string
 	}{
 		{graph: "code", name: "knowledge-repo", field: "repo"},
-		// A LEGACY PRACTICE IMAGE, which is the one remaining family whose image
-		// move carries an instance name that is not a repo: the combined graph is a
-		// singleton for reads and writes, but the pre-singleton images still exist
-		// and are addressed on `language`. It replaces the account-keyed row, whose
-		// family retired with its built-in collector.
-		{graph: "practice", name: "go", field: "language"},
+		// THE PRACTICE ROW WENT, and its absence is the change. It used to push
+		// practice/go and assert the name arrived on `language`, because the
+		// pre-singleton images still existed and that was the field the server's
+		// practice policy consumed. They are gone: a practice push naming any graph
+		// is refused before the export, which
+		// TestSync_PracticeNameOtherThanDefault_IsRefusedClientSide asserts with
+		// its own no-export observable, and a push naming none carries no instance
+		// field, which cell nine of the manage-arm matrix asserts. Neither is a
+		// "carries its instance name" row, so neither belongs here.
 		{graph: "web", name: "site-alpha", field: "name"},
 	} {
 		t.Run(tc.graph, func(t *testing.T) {

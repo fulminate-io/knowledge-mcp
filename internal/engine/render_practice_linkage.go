@@ -17,8 +17,23 @@ import (
 // traversalNodeName) rather than re-implementing proxy-target formatting.
 
 // RenderPracticeResults renders practice-graph search results — a port of the
-// server's since-removed formatPracticeResults: the
-// "## <LANG> Best Practices" header + per-result importance/category lines.
+// server's since-removed formatPracticeResults: the "## Best Practices" header +
+// per-result importance/category lines.
+//
+// THE COUNT IS PLURALIZED. The header read "%d results" unconditionally, so a
+// single hit rendered "1 results" — the search that returns exactly one match is
+// the common case on a narrow query, so it was the wording an operator saw most.
+//
+// THE HEADER NAMES NO GRAPH, AND IT NAMES NO FAMILY EITHER. It used to
+// interpolate the caller's `language` for the pre-singleton graph the search
+// read; there is one combined graph now and the selector is refused, so an
+// interpolated name would have been the empty string on every call. The
+// intermediate wording was "## Practice Best Practices", which stutters in
+// operator-facing output — the caller named the family in the call, so repeating
+// it in the body adds nothing. "## Practice Graph" was the alternative, matching
+// the stats arm's header; it is not used HERE because this body is a RESULT LIST
+// rather than a description of a graph, and a header that names the graph would
+// mislabel it.
 //
 // searchMode is the ALWAYS-ON arm disclosure ("vector+text", "vector",
 // "BM25-only"), rendered as the same "_search mode: …_" footer renderText emits so
@@ -27,19 +42,37 @@ import (
 // rows, so the label has to be present when results ARE returned — that is
 // precisely the case where the degrade is invisible. Empty prints no footer, for
 // callers that have no arm information to report.
-func RenderPracticeResults(lang, query string, results []SearchResult, searchMode string) kgtools.ToolResult {
+func RenderPracticeResults(query string, results []SearchResult, searchMode string) kgtools.ToolResult {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "## %s Best Practices — %d results for \"%s\"\n\n", capFirst(lang), len(results), query)
+	fmt.Fprintf(&sb, "## Best Practices — %d result%s for %q\n\n",
+		len(results), pluralSuffix(len(results)), query)
 	for i, r := range results {
-		writePracticeHit(&sb, i, r, "")
+		writePracticeHit(&sb, i, r)
 	}
 	writeSearchModeFooter(&sb, searchMode)
 	return kgtools.TextResult(sb.String())
 }
 
-// writeSearchModeFooter appends the arm-disclosure footer both practice renderers
-// emit. Spelled once so the two cannot drift, and matched to renderText's wording
-// so a reader learns one form rather than three.
+// pluralSuffix returns "s" when n != 1, so a single hit renders "1 result"
+// rather than "1 results". It keeps the header grammatical without a ternary in
+// the format code.
+//
+// IT IS A SECOND COPY, and the import direction is why. The identical helper
+// lives in cmd/knowledge/internal/tools (tools_text_helpers.go) with the same
+// doc, and this package cannot reach it: package tools imports package engine so
+// its per-graph composers can consume these renderers, so engine importing tools
+// back would be a cycle. This is the same situation formatBytes records beside
+// that helper, for the module boundary rather than the package one.
+func pluralSuffix(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// writeSearchModeFooter appends the arm-disclosure footer the practice renderer
+// emits, matched to renderText's wording so a reader learns one form rather than
+// two.
 func writeSearchModeFooter(sb *strings.Builder, searchMode string) {
 	if searchMode == "" {
 		return
@@ -47,14 +80,16 @@ func writeSearchModeFooter(sb *strings.Builder, searchMode string) {
 	fmt.Fprintf(sb, "\n_search mode: %s_\n", searchMode)
 }
 
-// writePracticeHit writes the per-hit render block shared by RenderPracticeResults
-// (single-language) and RenderPracticeFanOut (cross-graph): the
+// writePracticeHit writes one result's render block: the
 // "### <n>. <symbol> [importance] (category)" line, the score+content line, and the
-// "ID: … | Status: …" line. When graphTag is non-empty it is appended to the header
-// as " — <graphTag>" so a merged fan-out hit names its source practice graph; the
-// single-language renderer passes "" and the line is byte-identical to the pre-extract
-// shape. Both renderers emit the same per-hit lines for the same SearchResult.
-func writePracticeHit(sb *strings.Builder, idx int, r SearchResult, graphTag string) {
+// "ID: … | Status: …" line.
+//
+// THE PER-GRAPH TAG WENT WITH THE FAN-OUT RENDERER. A merged cross-graph search
+// once appended " — <graph>" to the header so a hit named its source practice
+// graph; there is one combined graph, so there is no second renderer and nothing
+// to attribute. The same removal took capFirst, which title-cased the language the
+// header interpolated.
+func writePracticeHit(sb *strings.Builder, idx int, r SearchResult) {
 	n := r.Node
 	category := kgtypes.Value(n, "category")
 	importance := kgtypes.Value(n, "importance")
@@ -65,51 +100,6 @@ func writePracticeHit(sb *strings.Builder, idx int, r SearchResult, graphTag str
 	if category != "" {
 		fmt.Fprintf(sb, " (%s)", category)
 	}
-	if graphTag != "" {
-		fmt.Fprintf(sb, " — %s", graphTag)
-	}
 	fmt.Fprintf(sb, "\n%.2f — %s\n", r.Score, n.Content)
 	fmt.Fprintf(sb, "ID: %s | Status: %s\n\n", n.Id, n.Status)
-}
-
-// PracticeFanOutHit is a practice search hit tagged with the practice graph
-// (language) it came from. The scatter-gather fan-out (composePracticeSearchFanOut)
-// emits these so the merged renderer (RenderPracticeFanOut) can attribute each
-// hit to its source graph in the markdown output. The json arm no longer needs
-// this wrapper — SearchResult.Graph/GraphInstance now carries the per-result
-// source-graph identity directly, stamped at hydrate time — so the
-// wrapper is a markdown-render concern only.
-type PracticeFanOutHit struct {
-	Graph  string
-	Result SearchResult
-}
-
-// RenderPracticeFanOut renders a merged, score-ranked practice search across N
-// practice graphs. It emits a "Searched N practice graphs" header naming the
-// graphs searched, then one entry per hit tagged with its source graph via the
-// shared writePracticeHit helper RenderPracticeResults also calls — so the two
-// renderers emit identical per-hit lines for the same SearchResult.
-//
-// searchMode is the same ALWAYS-ON arm disclosure RenderPracticeResults renders,
-// and it matters MORE here: the fan-out embeds the query once and reuses that one
-// vector for every graph, so a single failed embed silently degrades the whole
-// cross-graph ranking rather than one graph's.
-func RenderPracticeFanOut(query string, graphs []string, hits []PracticeFanOutHit, searchMode string) kgtools.ToolResult {
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "Searched %d practice graphs (%s) — %d results for \"%s\"\n\n",
-		len(graphs), strings.Join(graphs, ", "), len(hits), query)
-	for i, h := range hits {
-		writePracticeHit(&sb, i, h.Result, h.Graph)
-	}
-	writeSearchModeFooter(&sb, searchMode)
-	return kgtools.TextResult(sb.String())
-}
-
-// capFirst upper-cases the first rune (port of the server's
-// strings.ToUpper(lang[:1])+lang[1:] idiom, guarded for the empty string).
-func capFirst(s string) string {
-	if s == "" {
-		return s
-	}
-	return strings.ToUpper(s[:1]) + s[1:]
 }

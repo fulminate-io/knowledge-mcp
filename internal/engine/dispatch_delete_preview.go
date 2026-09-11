@@ -55,7 +55,7 @@ func dispatchDeletePreview(ctx context.Context, exec ExecuteFn, args json.RawMes
 	// family does not consume rather than ignoring it.
 	resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Query{Query: plan},
-		Target: mutateTarget(a.Graph, a.Repo, "", a.Language, ""),
+		Target: mutateTarget(a.Graph, a.Repo, "", ""),
 	})
 	if err != nil {
 		return renderEngineError(err), true

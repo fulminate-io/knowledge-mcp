@@ -36,22 +36,22 @@ func projectedSearchRows(t *testing.T, body string) []map[string]any {
 // the shared default, and that the fan-out applies it at the MERGE end too.
 func TestPracticeSearch_LimitRouted(t *testing.T) {
 	t.Run("q_limit", func(t *testing.T) {
-		gc := newFanOutHarness(t, []string{"go"}, practiceNode("p:go", "GoWorkerPool", "bounded goroutines"))
+		gc := newFanOutHarness(t, []string{"default"}, practiceNode("p:go", "GoWorkerPool", "bounded goroutines"))
 		mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "p:go", Score: 0.9}}}
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
 
 		gatedRoutePractice(opCtx(), deps, gc, queryArgs{
-			Graph: "practice", Language: "go", Text: "pool", Limit: 3,
+			Graph: "practice", Text: "pool", Limit: 3,
 		})
 		assert.Equal(t, 3, mgr.lastK, "the QUERY tool's limit must reach mgr.Search as k")
 	})
 
 	t.Run("q_default", func(t *testing.T) {
-		gc := newFanOutHarness(t, []string{"go"}, practiceNode("p:go", "GoWorkerPool", "bounded goroutines"))
+		gc := newFanOutHarness(t, []string{"default"}, practiceNode("p:go", "GoWorkerPool", "bounded goroutines"))
 		mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "p:go", Score: 0.9}}}
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
 
-		gatedRoutePractice(opCtx(), deps, gc, queryArgs{Graph: "practice", Language: "go", Text: "pool"})
+		gatedRoutePractice(opCtx(), deps, gc, queryArgs{Graph: "practice", Text: "pool"})
 		// The KNOWN-POSITIVE half of q_limit: an absent limit must resolve to the
 		// shared default, not to zero. Without this, "limit is routed" would be
 		// satisfied by a composer that passed the caller's value straight through
@@ -64,7 +64,7 @@ func TestPracticeSearch_LimitRouted(t *testing.T) {
 		// The SEARCH tool routes through searchReducibleArgs, whose Limit field is
 		// this step's addition; the QUERY tool's queryArgs already carried one, so
 		// only this subtest exercises the new struct field.
-		gc := newFanOutHarness(t, []string{"go"}, practiceNode("p:go", "GoWorkerPool", "bounded goroutines"))
+		gc := newFanOutHarness(t, []string{"default"}, practiceNode("p:go", "GoWorkerPool", "bounded goroutines"))
 		mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "p:go", Score: 0.9}}}
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
 
@@ -83,15 +83,15 @@ func TestPracticeSearch_LimitRouted(t *testing.T) {
 func TestPracticeSearch_FieldsProjected(t *testing.T) {
 	fields := []string{"id", "name", "metadata.category"}
 
-	t.Run("per_language", func(t *testing.T) {
-		gc := newFanOutHarness(t, []string{"go"}, practiceNode("p:go", "GoWorkerPool", "bounded goroutines"))
+	t.Run("the_combined_graph", func(t *testing.T) {
+		gc := newFanOutHarness(t, []string{"default"}, practiceNode("p:go", "GoWorkerPool", "bounded goroutines"))
 		mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
-			"go": {{ID: "p:go", Score: 0.9}},
+			"default": {{ID: "p:go", Score: 0.9}},
 		})
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
 
 		res := gatedRoutePractice(opCtx(), deps, gc, queryArgs{
-			Graph: "practice", Language: "go", Text: "pool", Format: "json", Fields: fields,
+			Graph: "practice", Text: "pool", Format: "json", Fields: fields,
 		})
 		rows := projectedSearchRows(t, textBodyTools(res))
 		require.Len(t, rows, 1)
@@ -330,7 +330,9 @@ func TestHelpPatterns_DocumentedCallsAreRouted(t *testing.T) {
 // graphs ("traversal root ... not found"), a real practice node with edges
 // traverses correctly, and a root with no edges renders "No nodes reached." —
 // which names the outcome rather than hiding it. compileTraverse's buildTarget
-// carries Language for the practice family, which is why the walk resolves.
+// copies Language through RAW for every family, which is why a practice walk
+// carrying one is REFUSED by the server rather than silently served from the
+// combined graph.
 //
 // It sits at the engine's compile/render seam rather than against a live daemon
 // so it runs in CI without a populated practice graph.
@@ -338,15 +340,20 @@ func TestPracticeTraverse_LoudAndCharacterized(t *testing.T) {
 	const practiceTraverse = `{"start":"practice-root-node","graph":"practice",` +
 		`"language":"postgres-best-practices","direction":"both","depth":2}`
 
-	t.Run("practice selector carries language", func(t *testing.T) {
+	t.Run("the practice traverse target carries the caller's language to the wire", func(t *testing.T) {
 		req, ok := engine.Compile("traverse", json.RawMessage(practiceTraverse))
 		require.True(t, ok, "a practice traversal must compile")
 		assert.Equal(t, "practice", req.GetTarget().GetGraph())
-		// THE LOAD-BEARING LEG. buildTarget carries Language for the practice
-		// family, and that is precisely why the practice walk resolves rather than
-		// silently addressing another graph.
+		// THE LOAD-BEARING LEG, AND ITS REASON INVERTED. buildTarget copies
+		// Language through raw for every family, and that used to be why a practice
+		// walk RESOLVED the pre-singleton graph it named. Those graphs are retired
+		// and `language` addresses none, so what the raw copy is for now is the
+		// REFUSAL: the field has to reach validateGraphSelector for the server to
+		// reject it. A client that dropped it here would leave a practice traverse
+		// carrying a selector served silently from the combined graph — the silent
+		// redirect this project refuses.
 		assert.Equal(t, "postgres-best-practices", req.GetTarget().GetLanguage(),
-			"the practice traverse target is keyed on language")
+			"the caller's language reaches the wire, where the server refuses it")
 		assert.Equal(t, knowledgev1.ReturnMode_RETURN_MODE_TRAVERSAL, req.GetQuery().GetReturnMode())
 	})
 

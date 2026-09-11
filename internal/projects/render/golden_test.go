@@ -339,9 +339,9 @@ func TestGoldenPatternUseCases(t *testing.T) {
 	// dropped. The golden reflects exactly that: header + ID, no
 	// section. Fixture matches the capture for byte parity.
 	f := newGraphFixture().
-		addNode("practice", "go", pat).
-		addNode("practice", "go", child).
-		addEdge("practice", "go", &knowledgev1.Edge{
+		addNode("practice", "default", pat).
+		addNode("practice", "default", child).
+		addEdge("practice", "default", &knowledgev1.Edge{
 			FromId: patID, ToId: "child-use_case-fixture", Type: string(kgtypes.EdgeKGContains),
 		})
 
@@ -365,9 +365,9 @@ func TestGoldenPatternExamples(t *testing.T) {
 		Summary: "child summary",
 	}
 	f := newGraphFixture().
-		addNode("practice", "go", pat).
-		addNode("practice", "go", child).
-		addEdge("practice", "go", &knowledgev1.Edge{
+		addNode("practice", "default", pat).
+		addNode("practice", "default", child).
+		addEdge("practice", "default", &knowledgev1.Edge{
 			FromId: patID, ToId: "ex-child", Type: string(kgtypes.EdgeKGContains),
 		})
 
@@ -396,9 +396,9 @@ func TestGoldenPatternReferences(t *testing.T) {
 	// land). The golden reflects exactly that empty render. Fixture
 	// matches capture for byte parity.
 	f := newGraphFixture().
-		addNode("practice", "go", pat).
-		addNode("practice", "go", child).
-		addEdge("practice", "go", &knowledgev1.Edge{
+		addNode("practice", "default", pat).
+		addNode("practice", "default", child).
+		addEdge("practice", "default", &knowledgev1.Edge{
 			FromId: patID, ToId: "child-reference-fixture", Type: string(kgtypes.EdgeKGContains),
 		})
 

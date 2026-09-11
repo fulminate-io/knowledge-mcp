@@ -78,18 +78,18 @@ func TestPracticeSearchReroutesToClientEngine(t *testing.T) {
 		&knowledgev1.Node{Id: "p1", Type: "rule", SymbolName: "GoRule"},
 	))
 	mgr := newPerGraphSearcher(map[string][]searchengine.Hit{
-		"practice:go": {{ID: "p1", Score: 0.9}},
+		"practice:default": {{ID: "p1", Score: 0.9}},
 	})
 	deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
 
 	handled, out := InterceptQueryPracticeLinkage(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "query",
-		Arguments: mustMarshal(t, map[string]any{"graph": "practice", "language": "go", "text": "error handling"}),
+		Arguments: mustMarshal(t, map[string]any{"graph": "practice", "text": "error handling"}),
 	})
 	require.True(t, handled)
 	require.False(t, out.IsError, engine.FirstTextContent(out))
 
-	require.Equal(t, int64(1), mgr.calls.Load(), "per-language client engine drove the practice search")
+	require.Equal(t, int64(1), mgr.calls.Load(), "the client engine drove the practice search")
 	require.Equal(t, []kgtypes.GraphType{kgtypes.GraphPractice}, mgr.lastGTs)
 	require.False(t, dispatchedAServerSearch(handler.recordedReqs()), "practice arm must NOT dispatch a server search")
 	assert.Contains(t, engine.FirstTextContent(out), "GoRule")

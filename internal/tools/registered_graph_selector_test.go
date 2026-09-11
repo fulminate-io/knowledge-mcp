@@ -222,28 +222,42 @@ func TestRegisteredGraphSelector_RegisteredAndCollectedStillSearches(t *testing.
 // still returns its hits under that condition is proof the gate does not sit on
 // these paths, rather than proof it happened to pass.
 func TestRegisteredGraphSelector_InstanceFanOutsAreUntouched(t *testing.T) {
-	t.Run(`practice legacy language still reads its graph`, func(t *testing.T) {
-		gc := newFanOutHarness(t, []string{"default", "go"},
-			&knowledgev1.Node{Id: "n-go", Type: "pattern", SymbolName: "GoPattern"},
+	t.Run(`a practice read takes no instance selector at all`, func(t *testing.T) {
+		// THIS ROW INVERTED. It used to assert that `language` read THAT
+		// pre-singleton practice graph rather than the combined one, because the
+		// practice arm was where a builtin instance selector was genuinely
+		// consumed on the query tool. Practice addresses one graph and refuses the
+		// param, so what the row pins is the pair: the unselected read is served
+		// from the combined graph, and the selector is refused rather than dropped
+		// into a silent read of it.
+		gc := newFanOutHarness(t, []string{"default"},
 			&knowledgev1.Node{Id: "n-cb", Type: "pattern", SymbolName: "CombinedPattern"},
 		)
 		mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
 			"default": {{ID: "n-cb", Score: 0.90}},
-			"go":      {{ID: "n-go", Score: 0.70}},
 		})
-		deps := &interceptDeps{gc: gc, segMgr: mgr}
-
-		// The legacy language is a QUERY-tool selector read on the practice arm,
-		// which is where a builtin instance selector is actually consumed.
-		handled, out := InterceptQueryPracticeLinkage(opCtx(), deps, queryParams(t, map[string]any{
-			"graph": "practice", "language": "go", "text": "x",
-		}))
+		handled, out := InterceptQueryPracticeLinkage(opCtx(),
+			&interceptDeps{gc: gc, segMgr: mgr}, queryParams(t, map[string]any{
+				"graph": "practice", "text": "x",
+			}))
 		require.True(t, handled)
 		require.False(t, out.IsError, textBodyTools(out))
-		body := textBodyTools(out)
-		assert.Contains(t, body, "GoPattern", "the pre-singleton graph's hit is served")
-		assert.NotContains(t, body, "CombinedPattern",
-			"and the legacy read reads THAT graph rather than the combined one")
+		assert.Contains(t, textBodyTools(out), "CombinedPattern",
+			"the unselected read is served from the one combined graph")
+
+		refusedGC := newFanOutHarness(t, []string{"default"},
+			&knowledgev1.Node{Id: "n-cb", Type: "pattern", SymbolName: "CombinedPattern"},
+		)
+		refusedMgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
+			"default": {{ID: "n-cb", Score: 0.90}},
+		})
+		handled, refused := InterceptQueryPracticeLinkage(opCtx(),
+			&interceptDeps{gc: refusedGC, segMgr: refusedMgr}, queryParams(t, map[string]any{
+				"graph": "practice", "language": "go", "text": "x",
+			}))
+		require.True(t, handled)
+		require.True(t, refused.IsError, "`language` is refused, not dropped into a read of the combined graph")
+		assert.Empty(t, refusedMgr.searchedNames(), "and the refusal costs no read")
 	})
 
 	t.Run(`code repo:"all" still fans out`, func(t *testing.T) {

@@ -59,15 +59,20 @@ func TestPracticeBrowse_RoutesFilters(t *testing.T) {
 			Nodes: []*knowledgev1.Node{browseNode("p1", "Use errgroup", nil)},
 			Total: 1,
 		}}
-		res := practiceBrowse(opCtx(), f.exec, queryArgs{Graph: "practice", Language: "go"})
+		res := practiceBrowse(opCtx(), f.exec, queryArgs{Graph: "practice"})
 		plan := f.lastPlan(t)
 		sel := plan.GetSelection()
-		assert.Empty(t, sel.GetNodeType(), "a bare browse pins NO node type — practice graphs hold four")
+		assert.Empty(t, sel.GetNodeType(), "a bare browse pins NO node type — the practice graph holds four")
 		assert.Empty(t, sel.GetNodeTypes())
-		assert.Equal(t, "go", f.reqs[0].GetTarget().GetLanguage(), "the target is keyed on language")
+		// THE TARGET CARRIES NO INSTANCE FIELD, which is the singleton's whole
+		// addressing convention. It used to be keyed on `language`, and a target
+		// still carrying one would mean this arm had kept composing the selector
+		// its own gate now refuses.
+		assert.Empty(t, f.reqs[0].GetTarget().GetLanguage(), "no language is composed")
+		assert.Empty(t, f.reqs[0].GetTarget().GetName(), "and no name either")
 		assert.Equal(t, "practice", f.reqs[0].GetTarget().GetGraph())
 		body := textBodyTools(res)
-		assert.Contains(t, body, "## practice:go — 1 nodes")
+		assert.Contains(t, body, "## practice — 1 nodes")
 		assert.Contains(t, body, "Use errgroup")
 	})
 
@@ -98,7 +103,7 @@ func TestPracticeBrowse_RoutesFilters(t *testing.T) {
 			Total: 9,
 		}}
 		res := practiceBrowse(opCtx(), f.exec, queryArgs{
-			Graph: "practice", Language: "go", Limit: 2, Offset: 5,
+			Graph: "practice", Limit: 2, Offset: 5,
 		})
 		plan := f.lastPlan(t)
 		assert.EqualValues(t, 2, plan.GetLimit(), "the caller's limit rides the plan, not a client-side slice")
@@ -111,29 +116,35 @@ func TestPracticeBrowse_RoutesFilters(t *testing.T) {
 
 	t.Run("default_cap", func(t *testing.T) {
 		f := &browseExecFake{resp: &knowledgev1.ExecuteResponse{}}
-		practiceBrowse(opCtx(), f.exec, queryArgs{Graph: "practice", Language: "go"})
+		practiceBrowse(opCtx(), f.exec, queryArgs{Graph: "practice"})
 		assert.EqualValues(t, engine.BrowseDefaultLimit, f.lastPlan(t).GetLimit(),
 			"an absent limit takes the ENGINE's browse cap, not a local literal")
 	})
 
-	t.Run("lang_all", func(t *testing.T) {
-		// The retired sentinel is refused BEFORE the browse arm reads the payload,
-		// and the assertion is on the message rather than on IsError alone.
+	t.Run("language_is_refused_before_the_browse_reads_the_payload", func(t *testing.T) {
+		// `language` is refused ahead of the browse arm, for every value, and the
+		// assertion is on the message rather than on IsError alone.
 		//
-		// THE SECOND ASSERTION IS THE DISCRIMINATING ONE. "all" is not a graph
-		// name, so a change that simply deleted the sentinel handling would browse
-		// a practice graph literally named "all" and render an empty result under a
+		// THE SECOND ASSERTION IS THE DISCRIMINATING ONE. A value like "all" is not
+		// a graph name, so a change that simply deleted the refusal would browse a
+		// practice graph literally named "all" and render an empty result under a
 		// "practice:all" header — a confident zero rather than a refusal. The
 		// absence of that header is what separates the two outcomes.
-		var execHits atomic.Int64
-		gc := newInterceptHarness(t, &execHits, cannedNodesResp())
-		deps := &interceptDeps{gc: gc, segMgr: newFanOutSegmentSearcher(nil)}
+		for _, value := range []string{"all", "go", "default"} {
+			t.Run(value, func(t *testing.T) {
+				var execHits atomic.Int64
+				gc := newInterceptHarness(t, &execHits, cannedNodesResp())
+				deps := &interceptDeps{gc: gc, segMgr: newFanOutSegmentSearcher(nil)}
 
-		res := gatedRoutePractice(opCtx(), deps, gc, queryArgs{Graph: "practice", Language: "all"})
-		body := textBodyTools(res)
-		assert.True(t, res.IsError, "the retired sentinel is refused, not browsed")
-		assert.Equal(t, practiceFanOutRetired, body, "the refusal names the call that works")
-		assert.NotContains(t, body, "practice:all")
+				res := gatedRoutePractice(opCtx(), deps, gc, queryArgs{Graph: "practice", Language: value})
+				body := textBodyTools(res)
+				assert.True(t, res.IsError, "`language` is refused, not browsed")
+				assert.Equal(t, practiceLanguageRefusedOnRead(practiceHubParamFree), body,
+					"the refusal is the one shared read spelling, naming the hub selector")
+				assert.NotContains(t, body, "practice:"+value)
+				assert.Zero(t, execHits.Load(), "the refusal costs no read")
+			})
+		}
 	})
 
 	t.Run("projection", func(t *testing.T) {
@@ -250,7 +261,7 @@ func TestPracticeSearch_LoudWhenSegmentsAbsent(t *testing.T) {
 	// coverage and programmable graph stats behind it.
 	zeroHitDeps := func(t *testing.T, cov SegmentCoverageReader, stats *knowledgev1.GraphStats) *interceptDeps {
 		t.Helper()
-		gc, h := newFanOutHarnessWithHandler(t, []string{"go"})
+		gc, h := newFanOutHarnessWithHandler(t, []string{"default"})
 		h.stats = stats
 		return &interceptDeps{gc: gc, segMgr: &fakeSegmentSearcher{}, segCoverage: cov}
 	}
@@ -259,7 +270,7 @@ func TestPracticeSearch_LoudWhenSegmentsAbsent(t *testing.T) {
 		cov := &gapCoverageFake{covered: 0}
 		deps := zeroHitDeps(t, cov, &knowledgev1.GraphStats{NodeCount: 3117, BinaryVectorCount: 2556})
 		res := gatedRoutePractice(opCtx(), deps, deps.gc, queryArgs{
-			Graph: "practice", Language: "design-patterns", Text: "event",
+			Graph: "practice", Text: "event",
 		})
 		body := textBodyTools(res)
 		assert.True(t, res.IsError, "a missing ranked index is an ERROR, not data: %s", body)
@@ -269,7 +280,7 @@ func TestPracticeSearch_LoudWhenSegmentsAbsent(t *testing.T) {
 		assert.Contains(t, body, `"operation":"rebuild_segments"`, "the notice names the rebuild invocation")
 		// And the graph name, so the interpolation is proven to have RUN rather
 		// than the bare template being echoed.
-		assert.Contains(t, body, "design-patterns", "the notice names the graph")
+		assert.Contains(t, body, "\"default\"", "the notice names the graph it probed")
 		assert.Contains(t, body, "2556", "the notice names the embedded count")
 	})
 
@@ -278,7 +289,7 @@ func TestPracticeSearch_LoudWhenSegmentsAbsent(t *testing.T) {
 		cov := &gapCoverageFake{covered: 42}
 		deps := zeroHitDeps(t, cov, &knowledgev1.GraphStats{NodeCount: 3117, BinaryVectorCount: 2556})
 		res := gatedRoutePractice(opCtx(), deps, deps.gc, queryArgs{
-			Graph: "practice", Language: "go", Text: "nonsense",
+			Graph: "practice", Text: "nonsense",
 		})
 		body := textBodyTools(res)
 		assert.False(t, res.IsError, "a genuine no-match is not an error: %s", body)
@@ -290,7 +301,7 @@ func TestPracticeSearch_LoudWhenSegmentsAbsent(t *testing.T) {
 		cov := &gapCoverageFake{covered: 0}
 		deps := zeroHitDeps(t, cov, &knowledgev1.GraphStats{NodeCount: 0, BinaryVectorCount: 0})
 		res := gatedRoutePractice(opCtx(), deps, deps.gc, queryArgs{
-			Graph: "practice", Language: "go", Text: "anything",
+			Graph: "practice", Text: "anything",
 		})
 		body := textBodyTools(res)
 		assert.False(t, res.IsError, "a genuinely empty graph renders a clean zero: %s", body)
@@ -302,7 +313,7 @@ func TestPracticeSearch_LoudWhenSegmentsAbsent(t *testing.T) {
 		// No coverage seam at all: the zero stands but must NOT pass as clean.
 		deps := zeroHitDeps(t, nil, &knowledgev1.GraphStats{NodeCount: 3117, BinaryVectorCount: 2556})
 		res := gatedRoutePractice(opCtx(), deps, deps.gc, queryArgs{
-			Graph: "practice", Language: "go", Text: "event",
+			Graph: "practice", Text: "event",
 		})
 		body := textBodyTools(res)
 		assert.False(t, res.IsError, "an unqualifiable zero is a caveat, not an error: %s", body)
@@ -324,7 +335,7 @@ func TestPracticeSearch_LoudWhenSegmentsAbsent(t *testing.T) {
 			segCoverage: cov,
 		}
 		res := gatedRoutePractice(opCtx(), deps, gc, queryArgs{
-			Graph: "practice", Language: "go", Text: "pool",
+			Graph: "practice", Text: "pool",
 		})
 		assert.False(t, res.IsError, textBodyTools(res))
 		assert.Contains(t, textBodyTools(res), "GoWorkerPool", "the hits render normally")
@@ -334,7 +345,7 @@ func TestPracticeSearch_LoudWhenSegmentsAbsent(t *testing.T) {
 		// set is empty, so the zero above is a real never-called and not a dead fake.
 		empty := zeroHitDeps(t, cov, &knowledgev1.GraphStats{NodeCount: 3117, BinaryVectorCount: 2556})
 		gatedRoutePractice(opCtx(), empty, empty.gc, queryArgs{
-			Graph: "practice", Language: "go", Text: "pool",
+			Graph: "practice", Text: "pool",
 		})
 		assert.Positive(t, cov.probeCount(), "an empty hit set DOES read the coverage operand")
 	})
@@ -343,7 +354,7 @@ func TestPracticeSearch_LoudWhenSegmentsAbsent(t *testing.T) {
 		cov := &gapCoverageFake{covered: 0}
 		deps := zeroHitDeps(t, cov, &knowledgev1.GraphStats{NodeCount: 3117, BinaryVectorCount: 0})
 		res := gatedRoutePractice(opCtx(), deps, deps.gc, queryArgs{
-			Graph: "practice", Language: "go", Text: "event",
+			Graph: "practice", Text: "event",
 		})
 		body := textBodyTools(res)
 		assert.True(t, res.IsError, "an un-embedded graph is an ERROR, not data: %s", body)
@@ -405,7 +416,7 @@ func TestPracticeBrowse_TruncationNotice(t *testing.T) {
 			Total:     1,
 			Truncated: truncated,
 		}}
-		return practiceBrowse(opCtx(), f.exec, queryArgs{Graph: "practice", Language: "go"})
+		return practiceBrowse(opCtx(), f.exec, queryArgs{Graph: "practice"})
 	}
 
 	t.Run("truncated_response_discloses", func(t *testing.T) {

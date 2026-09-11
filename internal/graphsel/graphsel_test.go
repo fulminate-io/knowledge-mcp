@@ -105,7 +105,6 @@ func TestInstanceField_EveryBuiltinFamilyPinned(t *testing.T) {
 	const (
 		repo = "sentinel-repo"
 		name = "sentinel-name"
-		lang = "sentinel-language"
 	)
 
 	cases := []struct {
@@ -146,7 +145,7 @@ func TestInstanceField_EveryBuiltinFamilyPinned(t *testing.T) {
 		t.Run(string(c.gt), func(t *testing.T) {
 			assert.Equalf(t, c.wantField, InstanceField(c.gt),
 				"family %q addresses its instance by a different field than pinned", c.gt)
-			assert.Equalf(t, c.wantValue, InstanceValueOf(c.gt, repo, name, lang),
+			assert.Equalf(t, c.wantValue, InstanceValueOf(c.gt, repo, name),
 				"family %q projected the wrong caller value; the projection and the field must agree", c.gt)
 		})
 		seen[c.gt] = true

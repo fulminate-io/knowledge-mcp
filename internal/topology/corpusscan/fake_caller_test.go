@@ -64,9 +64,11 @@ func refuseUnconsumedSelectorFields(t *knowledgev1.GraphSelector) error {
 		switch graphsel.InstanceField(gt) {
 		case graphsel.FieldRepo:
 			consumed = "repo"
-		case graphsel.FieldLanguage:
-			consumed = "language"
 		default:
+			// THERE IS NO language ARM. It kept the legacy practice read servable
+			// while the family had eight instance-keyed graphs; the family has one
+			// and the server's policy row consumes nothing, so a fake still serving
+			// a practice language would agree with a client the server refuses.
 			consumed = "name"
 		}
 	}
@@ -85,17 +87,16 @@ func refuseUnconsumedSelectorFields(t *knowledgev1.GraphSelector) error {
 		if f.name == "branch" && gt == kgtypes.GraphCode {
 			continue
 		}
-		// PRACTICE IS THE ONE FAMILY THAT CONSUMES A FIELD THAT IS NOT ITS
-		// INSTANCE FIELD, and the fake has to say so or it refuses a selector the
-		// real server serves. graphsel reports practice as addressing ONE graph,
-		// which is true — but the server's policy row keeps consumesLanguage true
-		// so the eight PRE-SINGLETON graphs stay readable through the legacy
-		// selector, and that validator runs on the read path. Deriving the whole
-		// answer from graphsel alone made this fake STRICTER than its subject,
-		// which is the same class of defect as being laxer: it disagrees.
-		if f.name == "language" && gt == kgtypes.GraphPractice {
-			continue
-		}
+		// THE PRACTICE EXEMPTION WENT WITH THE GRAPHS IT SERVED. practice used to
+		// be the ONE family that consumed a field that was not its instance field:
+		// graphsel reported it as addressing one graph, which was true, while the
+		// server's policy row kept consumesLanguage true so the eight
+		// pre-singleton graphs stayed readable through the legacy selector — and
+		// deriving the whole answer from graphsel alone made this fake STRICTER
+		// than its subject, which disagrees with it just as being laxer does. The
+		// row is `{}` now and every practice selector field is refused, so the
+		// derivation from graphsel IS the server's answer and no exemption is
+		// left to state.
 		return fmt.Errorf("fake: graph=%q does not consume %s=%q — the real server refuses this selector", gt, f.name, f.val)
 	}
 	return nil
@@ -363,15 +364,15 @@ func TestFakeRefusesUnconsumedSelectorFields(t *testing.T) {
 		{"checks with a language", &knowledgev1.GraphSelector{Graph: "checks", Language: "go"}},
 		{"checks with a name", &knowledgev1.GraphSelector{Graph: "checks", Name: "go"}},
 		{"checks with an account", &knowledgev1.GraphSelector{Graph: "checks", Account: "acct"}},
-		// The two scopeKey is blind to, which is why the guard exists at all. The
-		// EXTRA field is what refuses them: `language` itself is still consumed by
-		// practice, for the legacy read, which the control below asserts.
-		{"practice with a branch", &knowledgev1.GraphSelector{Graph: "practice", Language: "go", Branch: "b"}},
-		{"practice with an account", &knowledgev1.GraphSelector{Graph: "practice", Language: "go", Account: "a"}},
-		// NEW WITH THE SINGLETON: practice has no instance field, so a `name` is
-		// not the graph it selects — the server refuses one outside its root
-		// aliases, and so must the fake.
+		// The two scopeKey is blind to, which is why the guard exists at all.
+		{"practice with a branch", &knowledgev1.GraphSelector{Graph: "practice", Branch: "b"}},
+		{"practice with an account", &knowledgev1.GraphSelector{Graph: "practice", Account: "a"}},
+		// practice has no instance field at all, so neither a `name` nor a
+		// `language` is the graph it selects — the server refuses both, and so
+		// must the fake. The language row is the one that moved: it was the LEGACY
+		// read selector and was served until the graphs it named were retired.
 		{"practice with a name", &knowledgev1.GraphSelector{Graph: "practice", Name: "go"}},
+		{"practice with a language", &knowledgev1.GraphSelector{Graph: "practice", Language: "go"}},
 		{"practice with a repo", &knowledgev1.GraphSelector{Graph: "practice", Repo: "r"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -382,16 +383,17 @@ func TestFakeRefusesUnconsumedSelectorFields(t *testing.T) {
 		})
 	}
 
-	// THE ACCEPT CONTROL, and it is the assertion that inverted with the
-	// singleton. A bare legacy practice read must be SERVED: the server's practice
-	// policy row keeps consumesLanguage true so the eight pre-singleton graphs
-	// stay readable, and a fake that refused it would fail a correct client. It is
-	// paired with the unselected read, which is the new normal case.
+	// THE ACCEPT CONTROL, and it is the assertion that inverted TWICE. A bare
+	// legacy practice read used to have to be SERVED, because the server's
+	// practice policy row kept consumesLanguage true so the eight pre-singleton
+	// graphs stayed readable, and a fake that refused it would have failed a
+	// correct client. The row is empty of practice now: the ONLY practice selector
+	// the real server serves is the unselected one, which is what a correct client
+	// composes.
 	for _, tc := range []struct {
 		name string
 		sel  *knowledgev1.GraphSelector
 	}{
-		{"practice legacy read", &knowledgev1.GraphSelector{Graph: "practice", Language: "go"}},
 		{"practice unselected read", &knowledgev1.GraphSelector{Graph: "practice"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

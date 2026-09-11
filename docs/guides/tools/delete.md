@@ -25,8 +25,9 @@ delete({ "older_than": "7d", "type": "session" })
 ```
 
 Two things to keep in mind: deleting a node does not delete its edges, and
-pruning runs against creation time, not last-updated time. Practice-graph
-deletes require the `language` param. For the full reference, run
+pruning runs against creation time, not last-updated time. A practice-graph
+delete takes no `language` — the param is refused — and narrows by `source` (a hub
+id) instead. For the full reference, run
 `help("delete")`.
 
 ## Parameters
@@ -42,7 +43,7 @@ deletes require the `language` param. For the full reference, run
 | `id` | string |  |  | Singular alias for a one-element `ids` — every other single-node op names its target with `id`, so deleting one node accepts that spelling too. Supplying both is additive (the two sets union), not a conflict. |
 | `ids` | array of string |  |  | Node IDs to delete |
 | `ids[]` | string |  |  |  |
-| `language` | string |  |  | LEGACY read-only practice selector naming a pre-singleton practice graph. It is REFUSED on a delete: practice is one combined graph, so narrow by `source` instead. |
+| `language` | string |  |  | REFUSED on a practice delete, and it addresses no other family's graph. Practice is ONE combined graph, so narrow by `source` (a hub id) instead. |
 | `older_than` | string |  |  | Prune-by-age window (e.g. '7d', '24h'). NOT CURRENTLY AVAILABLE — no node type is retention-eligible, so a call carrying older_than is refused rather than run. |
 | `repo` | string |  |  | Code graph name — REQUIRED for graph='code'; it is never inferred from cwd. Writes to a collected graph are caller-owned: a later collect reconciles that graph from its source and overwrites hand-authored changes. |
 | `session_id` | string |  |  | Restricts prune-by-age to one session. Inert while prune-by-age is unavailable. |

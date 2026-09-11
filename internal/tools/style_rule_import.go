@@ -148,7 +148,7 @@ func resolveExistingStyleRules(
 			Limit:     int32(len(ids)),
 			SkipTotal: true,
 		}},
-		Target: practiceReadTarget(""),
+		Target: practiceTarget(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("resolve which rule ids already exist: %w", err)

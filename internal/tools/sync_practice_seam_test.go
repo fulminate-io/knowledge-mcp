@@ -20,14 +20,15 @@ import (
 )
 
 // practiceExportHandler is an EngineServiceHandler that resolves a practice
-// export the way the server's own resolver does — off the selector's LANGUAGE,
-// falling back to the combined graph when it is empty — and serves a distinct
-// byte image per graph so the test can tell WHICH graph answered.
+// export the way the server's own resolver does, and serves a distinct byte
+// image per graph so a test can tell WHICH graph answered.
 //
-// IT ALSO REFUSES A SET NAME, because the server's practice selector policy does:
-// the practice row carries no instance field, so a name outside the family's root
-// aliases is rejected before routing ever happens. A stub that accepted one would
-// let a client-side regression onto `name` pass this seam and fail in production.
+// IT REFUSES A SET NAME AND A SET LANGUAGE, because the server's practice
+// selector policy refuses both: the practice row carries no instance field at
+// all, so either one is rejected before routing ever happens. A stub that
+// accepted one would let a client-side regression onto that field pass this seam
+// and fail in production — which is what the language half models now that the
+// pre-singleton graphs it used to address are gone.
 //
 // The RESOLUTION RULE modeled here is proved against the real store, real
 // resolver and real handler by the server module's own seam test — this half
@@ -36,8 +37,10 @@ import (
 type practiceExportHandler struct {
 	knowledgev1connect.UnimplementedEngineServiceHandler
 
-	// images is keyed by the practice graph name: "default" is the combined
-	// graph, any other key is one of the pre-singleton graphs.
+	// images is keyed by the practice graph name. "default" is the combined
+	// graph and the only key a resolve can reach; the other keys are
+	// pre-singleton graphs, kept so a test can assert that their bytes were
+	// NOT the ones that moved.
 	images map[string][]byte
 
 	gotTarget *knowledgev1.GraphSelector
@@ -54,10 +57,11 @@ func (h *practiceExportHandler) ExportGraph(
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			errNamedPracticeSelector)
 	}
-	name := t.GetLanguage()
-	if name == "" {
-		name = "default"
+	if t.GetLanguage() != "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errLanguagePracticeSelector)
 	}
+	name := "default"
 	image, ok := h.images[name]
 	if !ok {
 		return nil, connect.NewError(connect.CodeNotFound, errNoSuchPracticeGraph)
@@ -66,26 +70,34 @@ func (h *practiceExportHandler) ExportGraph(
 }
 
 var (
-	errNamedPracticeSelector = &seamError{"graph=practice does not consume a name"}
-	errNoSuchPracticeGraph   = &seamError{"practice graph not found"}
+	errNamedPracticeSelector    = &seamError{"graph=practice does not consume a name"}
+	errLanguagePracticeSelector = &seamError{"graph=practice does not accept language="}
+	errNoSuchPracticeGraph      = &seamError{"practice graph not found"}
 )
 
 type seamError struct{ msg string }
 
 func (e *seamError) Error() string { return e.msg }
 
-// TestSyncPush_LegacyPracticeSelectorSurvivesTheWire is the client-to-server hop
+// TestSyncPush_ANamedPracticeGraphNeverReachesTheWire is the client-to-server hop
 // of the sync seam, with the REAL graph client (graphclient.GraphClient over a
 // real HTTP round trip) and the REAL generated Connect handler
 // (knowledgev1connect.NewEngineServiceHandler) on the far end — no fake exporter
 // anywhere on the path.
 //
-// WHAT IT ADDS OVER THE FAKE-EXPORTER TESTS. Those read the selector off a Go
-// struct the intercept handed them in-process; this one reads what a server
-// DECODED after the selector was marshaled, sent and unmarshaled, and it makes
-// the answer depend on it: the bytes that come back — and the bytes that reach
-// the cloud object — are the legacy graph's, not the combined graph's.
-func TestSyncPush_LegacyPracticeSelectorSurvivesTheWire(t *testing.T) {
+// IT INVERTED. It used to be TestSyncPush_LegacyPracticeSelectorSurvivesTheWire:
+// a push of practice/go composed a legacy selector, the selector survived a real
+// marshal and unmarshal, and the bytes that came back were the legacy graph's
+// rather than the combined graph's. The pre-singleton images are gone, so the
+// client refuses the name before either seam and the assertion is the ABSENCE:
+// nothing was exported, nothing was offered to the cloud, and the handler was
+// never called.
+//
+// WHAT IT ADDS OVER THE FAKE-EXPORTER TEST. That one reads the refusal off an
+// in-process result and counts a fake's calls; this one proves the far side was
+// never reached at all, which is the property "refused before the seams" is
+// actually about.
+func TestSyncPush_ANamedPracticeGraphNeverReachesTheWire(t *testing.T) {
 	legacyImage := []byte("KGV4 the image of practices/go.bin")
 	combinedImage := []byte("KGV4 the image of the combined practice graph")
 
@@ -111,22 +123,16 @@ func TestSyncPush_LegacyPracticeSelectorSurvivesTheWire(t *testing.T) {
 	handled, out := InterceptSync(opCtx(), interceptTestDeps{gc: local},
 		syncParams(t, map[string]any{"operation": "push", "graph": "practice", "name": "go"}))
 	require.True(t, handled)
-	require.False(t, out.IsError, "the legacy push must reach the handler and succeed: %q", textOf(out))
+	require.True(t, out.IsError, "a named practice push is refused")
+	assert.Contains(t, textOf(out), "ONE combined graph")
 
-	require.NotNil(t, stub.gotTarget, "the handler decoded a target")
-	assert.Equal(t, "practice", stub.gotTarget.GetGraph())
-	assert.Equal(t, "go", stub.gotTarget.GetLanguage(),
-		"the legacy name arrived on the language field after a real marshal/unmarshal")
-	assert.Empty(t, stub.gotTarget.GetName(), "and not on the name field, which the family refuses")
-
-	// THE BYTES ARE THE ASSERTION, not just the field: the cloud object the push
-	// uploaded decrypts to the LEGACY image and is not the combined one.
+	assert.Nil(t, stub.gotTarget,
+		"the handler was never called, so no selector was composed for it to decode")
+	assert.Equal(t, 0, backend.presignCalls, "and no cloud object was offered")
 	backend.mu.Lock()
 	uploaded := backend.confirmedPlaintext
 	backend.mu.Unlock()
-	assert.Equal(t, legacyImage, uploaded, "the pushed image is practices/go.bin")
-	assert.NotEqual(t, combinedImage, uploaded, "and never the combined graph's")
-	assert.Equal(t, "go", backend.lastConfirmName, "ingested as practice/go")
+	assert.Empty(t, uploaded, "nothing was uploaded under any name")
 }
 
 // TestSyncPush_UnselectedPracticeExportIsTheCombinedGraph is the control for the

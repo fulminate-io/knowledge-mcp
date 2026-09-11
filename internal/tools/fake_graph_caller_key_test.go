@@ -23,14 +23,21 @@ import (
 // NOTHING DROVE IT, which is how it kept returning graphKey{practice, ""} for
 // the unselected read the whole change makes normal — a key no fixture seals
 // under, so every practice fixture routed through it would have missed while the
-// suite stayed green. The rows are the two shapes the server distinguishes.
+// suite stayed green.
+//
+// THERE IS ONE PRACTICE SHAPE NOW. The second row used to assert that a set
+// language keyed the pre-singleton graph it named, exactly as the server
+// resolved it; the server refuses that field before any routing, so a fake that
+// still routed on it would answer for a selector the real server never receives.
+// The row below pins the collapse instead: EVERY practice target keys the one
+// combined graph, whatever else it carries.
 func TestTargetGraphKey_PracticeKeysTheSingletonUnderDefault(t *testing.T) {
 	assert.Equal(t, graphKey{Type: "practice", Name: workingset.DefaultInstanceName},
 		targetGraphKey(&knowledgev1.GraphSelector{Graph: "practice"}),
 		"an unselected practice read addresses the ONE combined graph, which the collector seals under default")
-	assert.Equal(t, graphKey{Type: "practice", Name: "go"},
+	assert.Equal(t, graphKey{Type: "practice", Name: workingset.DefaultInstanceName},
 		targetGraphKey(&knowledgev1.GraphSelector{Graph: "practice", Language: "go"}),
-		"and a legacy read still names the pre-singleton graph, exactly as the server resolves it")
+		"and so does one carrying a language, which no longer selects anything")
 
 	// THE CONTROLS: the families whose instance field genuinely is the key must be
 	// unaffected, or the rows above are satisfied by an arm that returns default

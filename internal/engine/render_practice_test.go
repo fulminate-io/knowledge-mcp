@@ -12,7 +12,7 @@ import (
 )
 
 // practiceFixtureResult builds a SearchResult with the importance/category
-// metadata the practice renderers surface.
+// metadata the practice renderer surfaces.
 func practiceFixtureResult(id, name, content string, score float64) SearchResult {
 	return SearchResult{
 		Node: &knowledgev1.Node{
@@ -29,9 +29,8 @@ func practiceFixtureResult(id, name, content string, score float64) SearchResult
 	}
 }
 
-// perHitBlock extracts the "### N. …" per-hit blocks from a rendered body,
-// dropping the leading header line(s) so the single-language and fan-out
-// renderers can be compared on per-hit lines alone.
+// perHitBlocks extracts the "### N. …" per-hit blocks from a rendered body,
+// dropping the leading header line(s) so the per-hit shape is asserted on its own.
 func perHitBlocks(text string) string {
 	idx := strings.Index(text, "### ")
 	if idx < 0 {
@@ -40,41 +39,59 @@ func perHitBlocks(text string) string {
 	return text[idx:]
 }
 
-// TestRenderPracticeFanOut_ParityWithSingle proves the acceptance shape: the
-// shared writePracticeHit helper makes RenderPracticeResults and
-// RenderPracticeFanOut emit identical per-hit lines for the same SearchResult
-// (the fan-out renderer additionally tags each hit with its source graph), and
-// RenderPracticeFanOut emits the "Searched N practice graphs" header.
-func TestRenderPracticeFanOut_ParityWithSingle(t *testing.T) {
+// TestRenderPracticeResults_HeaderAndPerHitShape pins the rendered shape: the
+// family header that names no graph instance, and the per-hit block with its
+// importance and category, score-and-content line, and id-and-status line, with
+// no per-graph attribution appended (the cross-graph tag went with the fan-out
+// renderer, which had no caller once the practice graphs were combined).
+func TestRenderPracticeResults_HeaderAndPerHitShape(t *testing.T) {
 	r := practiceFixtureResult("p:1", "WorkerPool", "bound goroutines with a semaphore", 0.91)
 
-	single := RenderPracticeResults("go", "pool", []SearchResult{r}, "").Content[0].Text
-	fan := RenderPracticeFanOut("pool", []string{"go"}, []PracticeFanOutHit{{Graph: "go", Result: r}}, "").Content[0].Text
+	text := RenderPracticeResults("pool", []SearchResult{r}, "").Content[0].Text
 
-	// Fan-out header names the graph count + the graphs searched.
-	assert.Contains(t, fan, "Searched 1 practice graphs (go)")
-
-	// The single-language renderer emits the un-tagged per-hit block; the fan-out
-	// renderer emits the same block with the source-graph tag appended to the header.
-	singleBlock := perHitBlocks(single)
-	fanBlock := perHitBlocks(fan)
-	assert.Equal(t, "### 1. WorkerPool [high] (concurrency)\n0.91 — bound goroutines with a semaphore\nID: p:1 | Status: active\n\n", singleBlock)
-	assert.Equal(t, "### 1. WorkerPool [high] (concurrency) — go\n0.91 — bound goroutines with a semaphore\nID: p:1 | Status: active\n\n", fanBlock)
-
-	// The per-hit lines are byte-identical once the graph tag is stripped — the
-	// only difference the fan-out introduces is the " — <graph>" attribution.
-	assert.Equal(t, singleBlock, strings.Replace(fanBlock, " — go\n", "\n", 1))
+	assert.True(t, strings.HasPrefix(text, "## Best Practices — 1 result for \"pool\"\n\n"), text)
+	assert.Equal(t, "### 1. WorkerPool [high] (concurrency)\n0.91 — bound goroutines with a semaphore\nID: p:1 | Status: active\n\n", perHitBlocks(text))
 }
 
-// TestRenderPracticeFanOut_MultiGraphAttribution asserts each merged hit is
-// tagged with its own source graph and the header counts every searched graph.
-func TestRenderPracticeFanOut_MultiGraphAttribution(t *testing.T) {
-	goHit := PracticeFanOutHit{Graph: "go", Result: practiceFixtureResult("p:go", "GoPattern", "go content", 0.80)}
-	pyHit := PracticeFanOutHit{Graph: "python", Result: practiceFixtureResult("p:py", "PyPattern", "py content", 0.70)}
+// TestRenderPracticeResults_HeaderPluralizesTheCount is the conditional half of
+// the header, and it takes TWO rows because one cannot prove a condition.
+//
+// THE SINGULAR ROW ALONE IS SATISFIED BY A SUFFIX THAT IS ALWAYS EMPTY, which is
+// the regression the plural fix could introduce: the header read "%d results"
+// unconditionally, so a single hit rendered "1 results", and a helper hard-wired
+// the other way renders "2 result". The zero row is here because an empty result
+// set is a real render — the arm returns it with a qualifying notice rather than
+// an error — and English wants the plural for it.
+func TestRenderPracticeResults_HeaderPluralizesTheCount(t *testing.T) {
+	one := practiceFixtureResult("p:1", "WorkerPool", "bound goroutines with a semaphore", 0.91)
+	two := practiceFixtureResult("p:2", "Confinement", "one goroutine owns the value", 0.80)
 
-	text := RenderPracticeFanOut("pattern", []string{"go", "python"}, []PracticeFanOutHit{goHit, pyHit}, "").Content[0].Text
+	for _, tc := range []struct {
+		name    string
+		results []SearchResult
+		want    string
+	}{
+		{name: "zero", results: nil, want: "## Best Practices — 0 results for \"pool\"\n\n"},
+		{name: "one", results: []SearchResult{one}, want: "## Best Practices — 1 result for \"pool\"\n\n"},
+		{name: "two", results: []SearchResult{one, two}, want: "## Best Practices — 2 results for \"pool\"\n\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := RenderPracticeResults("pool", tc.results, "").Content[0].Text
+			assert.True(t, strings.HasPrefix(text, tc.want),
+				"want prefix %q, got %q", tc.want, text)
+		})
+	}
+}
 
-	assert.Contains(t, text, "Searched 2 practice graphs (go, python)")
-	assert.Contains(t, text, "### 1. GoPattern [high] (concurrency) — go")
-	assert.Contains(t, text, "### 2. PyPattern [high] (concurrency) — python")
+// TestRenderPracticeResults_SearchModeFooter pins the always-on arm disclosure:
+// present, as renderText's footer, when the caller reports an arm; absent when it
+// has none to report.
+func TestRenderPracticeResults_SearchModeFooter(t *testing.T) {
+	r := practiceFixtureResult("p:1", "WorkerPool", "bound goroutines with a semaphore", 0.91)
+
+	withMode := RenderPracticeResults("pool", []SearchResult{r}, "vector+text").Content[0].Text
+	assert.True(t, strings.HasSuffix(withMode, "\n_search mode: vector+text_\n"), withMode)
+
+	noMode := RenderPracticeResults("pool", []SearchResult{r}, "").Content[0].Text
+	assert.NotContains(t, noMode, "_search mode:")
 }

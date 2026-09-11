@@ -352,28 +352,24 @@ func GraphEmbeddedCount(ctx context.Context, gc GraphCaller, gt kgtypes.GraphTyp
 // statusGraphTarget builds the Stats target for ONE NAMED graph in the status
 // coverage table.
 //
-// TWO FAMILIES NEED MORE THAN THE DERIVATION, and both are named here rather
-// than duplicated at the two call sites below.
+// ONE FAMILY NEEDS MORE THAN THE DERIVATION, and it is named here rather than
+// duplicated at the two call sites below: the DEFAULT knowledge graph (empty
+// instance name) addresses as an empty selector, mirroring renderLLMCoverage's
+// knowledge-row handling.
 //
-// The DEFAULT knowledge graph (empty instance name) addresses as an empty
-// selector, mirroring renderLLMCoverage's knowledge-row handling.
-//
-// PRACTICE ADDRESSES A NAMED graph through the LEGACY read selector. The family
-// became a singleton, so graphsel puts no instance field on its selector — right
-// for a write and for an unselected read, and wrong here: this table walks the
-// catalog and reports a row PER GRAPH, so a derived target would ask about the
-// combined graph once per name and print the same numbers down every legacy row.
-// A repeated number reads as a working table, which is why it is worth the
-// exception. It is read-only; a practice WRITE refuses the field on both sides.
+// PRACTICE USED TO NEED ONE TOO, through the legacy read selector, and no longer
+// does. The family became a singleton, so graphsel puts no instance field on its
+// selector — right for a write and for an unselected read, and wrong while this
+// table walked a catalog of eight practice graphs: a derived target would have
+// asked about the combined graph once per name and printed the same numbers down
+// every row, and a repeated number reads as a working table. The catalog holds
+// one practice graph now, so the derivation is right and the one row it produces
+// carries that graph's own counts.
 func statusGraphTarget(gt kgtypes.GraphType, name string) *knowledgev1.GraphSelector {
 	if gt == kgtypes.GraphKnowledge && name == "" {
 		return &knowledgev1.GraphSelector{Graph: ""}
 	}
-	target := graphsel.GraphSelectorFor(gt, name, false)
-	if gt == kgtypes.GraphPractice && name != "" {
-		target.Language = name
-	}
-	return target
+	return graphsel.GraphSelectorFor(gt, name, false)
 }
 
 // GraphCoverageCounts returns the FULL on-demand LLM-coverage set for one graph,

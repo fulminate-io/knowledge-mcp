@@ -160,25 +160,22 @@ func interceptSearchReducibleGraph(ctx context.Context, deps ClientDeps, graph s
 
 	switch graph {
 	case "practice":
-		// NO SELECTOR IS THE COMBINED GRAPH, which is the reroute requirement 6
-		// asks for and the half a sentinel retirement alone would have missed:
-		// BOTH the empty language and the literal "all" used to fall through to the
-		// scatter-gather, so retiring only the sentinel would have left the DEFAULT
-		// call still fanning out across the pre-singleton graphs.
-		//
-		// "all" is REFUSED rather than treated as the empty selector. It asked for
-		// a fan-out that no longer exists, and answering a different question
-		// silently is the coercion this repo does not do.
-		if a.Language == "all" {
-			return true, errorResult(practiceFanOutRetired)
+		// `language` IS REFUSED FOR EVERY VALUE, and the refusal names `source_hub`
+		// because that is the spelling THIS arm publishes — on search, `source`
+		// already selects a logs provider. The field named one of eight
+		// instance-keyed practice graphs on a read; those graphs are gone, so a
+		// value that reached the composer would silently search the combined graph
+		// under a name the caller thought selected something else.
+		if err := refusePracticeLanguageOnRead(graph, a.Language, practiceHubParamOnWrites); err != nil {
+			return true, errorResult(err.Error())
 		}
 		// One composer for every practice shape — the one the QUERY tool's
 		// practice-search arm uses. A second practice search would drift from it on
 		// ranking and on limit semantics, which is the cross-tool inconsistency
-		// this delegation removes. A named language is the legacy read; `source`
-		// narrows to one hub inside the combined graph.
+		// this delegation removes. `source_hub` narrows to one hub inside the
+		// combined graph; nothing else narrows it.
 		return true, composePracticeSearchClient(ctx, deps, deps.SegmentManager(),
-			a.Language, a.SourceHub, query, a.Format, int(a.Limit), a.Fields)
+			a.SourceHub, query, a.Format, int(a.Limit), a.Fields)
 	default: // web, pdf — client-computed BM25 over the drained raw graph.
 		return true, searchRawGraphArm(ctx, deps, graph, raw, query, a)
 	}

@@ -129,9 +129,14 @@ func (f *plFake) Stats(_ context.Context, _ *knowledgev1.StatsRequest) (*knowled
 func TestPracticeRoute_StatsAndSearch(t *testing.T) {
 	t.Run("stats", func(t *testing.T) {
 		f := &plFake{stats: &knowledgev1.GraphStats{NodeCount: 9, EdgeCount: 1, NodesByType: map[string]int64{"pattern": 9}}}
-		res := gatedRoutePractice(opCtx(), nil, f, queryArgs{Graph: "practice", Language: "go", Mode: "stats"})
+		res := gatedRoutePractice(opCtx(), nil, f, queryArgs{Graph: "practice", Mode: "stats"})
 		body := textBodyTools(res)
-		assert.Contains(t, body, "## Practice Graph: go")
+		// THE HEADER NAMES THE FAMILY, NOT AN INSTANCE. It used to interpolate the
+		// caller's `language`, which is refused now — so an interpolating header
+		// would render "## Practice Graph: " on every call.
+		assert.Contains(t, body, "## Practice Graph\n")
+		assert.NotContains(t, body, "## Practice Graph: ",
+			"nothing is interpolated, so there is no trailing colon to leave empty")
 		assert.Contains(t, body, "Nodes: 9")
 	})
 
@@ -148,13 +153,17 @@ func TestPracticeRoute_StatsAndSearch(t *testing.T) {
 		mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "p1", Score: 0.88}}}
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
 
-		res := gatedRoutePractice(opCtx(), deps, gc, queryArgs{Graph: "practice", Language: "go", Text: "errgroup"})
+		res := gatedRoutePractice(opCtx(), deps, gc, queryArgs{Graph: "practice", Text: "errgroup"})
 		body := textBodyTools(res)
 		assert.Equal(t, int64(1), mgr.calls.Load(), "practice search drove the CLIENT engine")
 		assert.Equal(t, kgtypes.GraphPractice, mgr.lastGT)
-		assert.Equal(t, "go", mgr.lastName, "practice engine keyed on language")
+		// THE ENGINE POOL IS THE CANONICAL INSTANCE NAME, not the caller's
+		// selector. The two namespaces diverge on purpose: every wire read sends no
+		// instance field while the pool is sealed under "default", so asking the
+		// engine for "" would search an instance nothing ever wrote to.
+		assert.Equal(t, "default", mgr.lastName, "practice engine keyed on the combined graph's pool")
 		assert.False(t, dispatchedAServerSearch(handler.recordedReqs()), "practice search must NOT dispatch a server search")
-		assert.Contains(t, body, "## Go Best Practices — 1 results for \"errgroup\"")
+		assert.Contains(t, body, "## Best Practices — 1 result for \"errgroup\"")
 		assert.Contains(t, body, "### 1. Use errgroup [high] (concurrency)")
 		assert.Contains(t, body, "ID: p1 | Status: active")
 	})
@@ -208,13 +217,17 @@ func TestPracticeStats_JSON(t *testing.T) {
 		NodesByType: map[string]int64{"pattern": 9},
 		EdgesByType: map[string]int64{"relates-to": 1},
 	}}
-	res := gatedRoutePractice(opCtx(), nil, f, queryArgs{Graph: "practice", Language: "go", Mode: "stats", Format: "json"})
+	res := gatedRoutePractice(opCtx(), nil, f, queryArgs{Graph: "practice", Mode: "stats", Format: "json"})
 	require.False(t, res.IsError, textBodyTools(res))
 
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal([]byte(textBodyTools(res)), &payload), "body must be valid JSON")
 	assert.Equal(t, "practice", payload["graph"])
-	assert.Equal(t, "go", payload["language"])
+	// NO `language` KEY. It carried the caller's selector, which is refused now, so
+	// the key could only ever have been the empty string — a field a machine reader
+	// would treat as a real value.
+	assert.NotContains(t, payload, "language",
+		"the json body names no per-language practice graph")
 	assert.EqualValues(t, 9, payload["node_count"])
 	assert.EqualValues(t, 1, payload["edge_count"])
 	assert.EqualValues(t, 3, payload["binary_vector_count"])

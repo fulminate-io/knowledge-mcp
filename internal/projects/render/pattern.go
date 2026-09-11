@@ -31,11 +31,13 @@ import (
 // format each section.
 //
 // Ported from cmd/knowledge-server/tools/tools_assemble_containers_pattern.go:30
-// with the store.DB parameter replaced by (graphType, graphName) so the
-// caller's resolveAssembleNode result drives the cross-graph routing
-// transparently. Pattern children live in whichever practice/<lang>
-// graph the pattern itself lives in.
-func assemblePatternIn(ctx context.Context, gc GraphCaller, node *knowledgev1.Node, graphType, graphName string) kgtools.ToolResult {
+// with the store.DB parameter replaced by the graph TYPE, so the caller's
+// resolveAssembleNode result drives the cross-graph routing transparently.
+//
+// IT TOOK A graphName TOO, for the pre-singleton practice graph a pattern was
+// resolved in: children lived in whichever practice/<lang> graph the pattern
+// itself did. There is one practice graph, so the name was always empty.
+func assemblePatternIn(ctx context.Context, gc GraphCaller, node *knowledgev1.Node, graphType string) kgtools.ToolResult {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "# Pattern: %s\n\n", node.SymbolName)
 	if node.Summary != "" {
@@ -54,7 +56,11 @@ func assemblePatternIn(ctx context.Context, gc GraphCaller, node *knowledgev1.No
 	}
 	fmt.Fprintf(&sb, "ID: %s%s\n", node.Id, updatedSuffix(node))
 
-	appliesWhen, avoidWhen, examples, refs, truncated := bucketPatternChildrenIn(ctx, gc, node.Id, graphType, graphName)
+	// THE GRAPH NAME IS EMPTY, AND THAT IS THE ADDRESS. bucketPatternChildrenIn
+	// takes a (type, name) pair because its own callers include the code family,
+	// which is named; both families this arm can be reached for hold ONE graph, so
+	// the name they address it under is no name at all.
+	appliesWhen, avoidWhen, examples, refs, truncated := bucketPatternChildrenIn(ctx, gc, node.Id, graphType, "")
 
 	sb.WriteString(renderPatternUseCases("## Applies when", appliesWhen))
 	sb.WriteString(renderPatternUseCases("## Avoid when", avoidWhen))

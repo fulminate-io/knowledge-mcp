@@ -2114,10 +2114,17 @@ type GraphSelector struct {
 	// cost, and a reserved field number cannot be given back to the next
 	// account-keyed family. Its client-side switch arms are gone, which is a
 	// different question from its presence on the wire.
-	Account  string `protobuf:"bytes,3,opt,name=account,proto3" json:"account,omitempty"`
-	Name     string `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`         // web|pdf source slug
-	Language string `protobuf:"bytes,5,opt,name=language,proto3" json:"language,omitempty"` // required for family=PRACTICE (slugified server-side)
-	Branch   string `protobuf:"bytes,6,opt,name=branch,proto3" json:"branch,omitempty"`     // optional for family=CODE (composed repo@branch)
+	Account string `protobuf:"bytes,3,opt,name=account,proto3" json:"account,omitempty"`
+	Name    string `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"` // web|pdf source slug
+	// language NAMES NO LIVE FAMILY EITHER. It was required for family=PRACTICE
+	// while that family held one graph per language, then survived as the
+	// read-only selector for those graphs; they are retired and every practice arm
+	// REFUSES the field, naming the `source` hub selector instead. The FIELD stays
+	// on the same reasoning as account above. Unlike account, a set language is
+	// refused rather than ignored: a discarded one served a DIFFERENT GRAPH than
+	// the caller asked for.
+	Language string `protobuf:"bytes,5,opt,name=language,proto3" json:"language,omitempty"`
+	Branch   string `protobuf:"bytes,6,opt,name=branch,proto3" json:"branch,omitempty"` // optional for family=CODE (composed repo@branch)
 	// family is the typed vocabulary. A writer sets BOTH this and `graph`; a
 	// reader prefers this when it is set and reads `graph` when it is
 	// UNSPECIFIED, which means the peer predates the enum.

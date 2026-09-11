@@ -237,8 +237,12 @@ func (g *fakeGcFixture) Execute(_ context.Context, req *knowledgev1.ExecuteReque
 	sel := req.GetTarget()
 	graphType := sel.GetGraph()
 	graphName := sel.GetName()
-	if graphType == "practice" && sel.GetLanguage() != "" {
-		graphName = sel.GetLanguage()
+	if graphType == "practice" {
+		// THE ONE PRACTICE GRAPH. This used to read the selector's `language`,
+		// which was the family's instance field while it held eight graphs; every
+		// practice target carries no instance field now, so a fixture keyed on the
+		// field would never be reached and every practice probe would miss.
+		graphName = "default"
 	}
 
 	// listPracticeGraphs: query(graph:practice, mode:modules) → graph_names_json.

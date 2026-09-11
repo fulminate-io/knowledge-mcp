@@ -7,14 +7,14 @@ package tools
 // in this package can observe, plus the four manage/sync arms manageGraphSelector
 // routes.
 //
-// CELL NINE IS THE ONE ARM THAT DIVERGED SINCE. sync push and sync pull address a
-// LEGACY practice graph by the name the caller gave, because the eight
-// pre-singleton graph IMAGES still exist on both sides until the migration moves
-// them; the other three arms address nodes in the combined graph and carry no
-// instance field. Cell nine therefore asserts the legacy shape for a NAMED push
-// and the singleton shape for an unselected one, which is a stronger pair than
-// the single assertion it replaced: the old cell was satisfied by an arm that
-// dropped the name on the floor, which is exactly what it was doing.
+// CELL NINE IS THE ONE ARM THAT DIVERGED AND HAS CONVERGED. sync push and sync
+// pull used to address a LEGACY practice graph by the name the caller gave,
+// while the eight pre-singleton graph IMAGES still existed on both sides; those
+// images are gone, so every one of the four arms addresses the combined graph
+// and carries no instance field. Cell nine therefore asserts the REFUSAL for a
+// NAMED push and the singleton shape for an unselected one, which is a stronger
+// pair than the single assertion it replaced: the old cell was satisfied by an
+// arm that dropped the name on the floor, which is exactly what it was doing.
 //
 // WHY A SEPARATE FILE, AND WHY THE ASSERTIONS LOOK THE WAY THEY DO. Two earlier
 // rounds of this change left a converted switch guarded by a test that could not
@@ -202,7 +202,14 @@ func TestManageArms_PracticeTargetsCarryNoInstanceField(t *testing.T) {
 		assert.Equal(t, int64(1), ix.indexCalls.Load(), "one Index RPC and nothing else")
 	})
 
-	t.Run("cell nine: sync push carries the legacy practice name", func(t *testing.T) {
+	t.Run("cell_nine_sync_push_carries_no_instance_field_either", func(t *testing.T) {
+		// THIS CELL INVERTED. It used to pin that a push of a LEGACY practice name
+		// carried that name on the `language` field — the one divergence from every
+		// other practice arm, because sync moves whole graph IMAGES and the eight
+		// pre-singleton images still existed on both sides. They are gone: the only
+		// practice image a push can move is the combined graph's, so the target
+		// carries no instance field and matches the other eight cells.
+		//
 		// The export is the first thing pushGraph does and the only step that reads
 		// the selector, so failing it after the record keeps this test off the
 		// network while still driving the real arm through InterceptSync.
@@ -212,20 +219,28 @@ func TestManageArms_PracticeTargetsCarryNoInstanceField(t *testing.T) {
 		// before the transport is ever dereferenced.
 		withTransport(t, func() (*auth.Transport, error) { return nil, nil })
 		handled, res := InterceptSync(opCtx(), interceptTestDeps{gc: exp},
-			syncParams(t, map[string]any{"operation": "push", "graph": "practice", "name": "go"}))
+			syncParams(t, map[string]any{"operation": "push", "graph": "practice"}))
 		require.True(t, handled)
 		require.Equal(t, 1, exp.exportCalls, "the push arm reached ExportGraph")
 		tgt := exp.lastTarget
 		require.NotNil(t, tgt)
 		assert.Equal(t, "practice", tgt.GetGraph())
-		assert.Equal(t, "go", tgt.GetLanguage(),
-			"sync moves whole graph IMAGES, and the eight legacy images are addressed by name on the field the server consumes")
-		assert.Empty(t, tgt.GetName(), "the name must not fall through to the default arm")
+		assert.Empty(t, tgt.GetLanguage(), "no language is composed for any practice push")
+		assert.Empty(t, tgt.GetName(), "and the name must not fall through to the default arm")
 		assert.Empty(t, tgt.GetRepo(), "nor onto repo")
 		assert.Equal(t, knowledgev1.GraphFamily_GRAPH_FAMILY_PRACTICE, tgt.GetFamily(),
-			"the typed family rides the legacy builder too")
+			"the typed family rides this builder too")
 		assert.Contains(t, toolResultText(res), "scripted export stop",
 			"and the arm surfaced the export failure rather than proceeding")
+
+		// THE REFUSAL HALF, so the emptiness above is the family's rule rather than
+		// a name this call happened not to send: a push that DOES name a graph is
+		// refused before the export.
+		refused := &fakeExporter{exportErr: errors.New("unreachable")}
+		_, rres := InterceptSync(opCtx(), interceptTestDeps{gc: refused},
+			syncParams(t, map[string]any{"operation": "push", "graph": "practice", "name": "go"}))
+		require.True(t, rres.IsError, "a named practice push is refused")
+		assert.Zero(t, refused.exportCalls, "and refused before the export")
 	})
 
 	t.Run("cell nine control: an unselected sync push is the combined graph", func(t *testing.T) {

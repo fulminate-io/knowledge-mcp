@@ -46,7 +46,7 @@ func compileMutateUpdateBatch(a mutateArgs) (*knowledgev1.ExecuteRequest, bool) 
 	// not bypass the rule.
 	return &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-		Target: mutateTarget(a.Graph, a.Repo, a.Name, a.Language, a.Branch),
+		Target: mutateTarget(a.Graph, a.Repo, a.Name, a.Branch),
 	}, true
 }
 
@@ -116,6 +116,6 @@ func compileMutateBulkMetadata(a mutateArgs) (*knowledgev1.ExecuteRequest, bool)
 	// on a name-addressed one.
 	return &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-		Target: mutateTarget(a.Graph, a.Repo, a.Name, a.Language, a.Branch),
+		Target: mutateTarget(a.Graph, a.Repo, a.Name, a.Branch),
 	}, true
 }

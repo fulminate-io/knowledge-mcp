@@ -193,9 +193,9 @@ type graphKey struct {
 // name — mirroring the server, which would refuse anything else. The code and
 // practice arms
 // exist because the server's resolvers reject a name-keyed selector for those
-// families before any lookup (resolveCode requires Repo, and resolvePractice
-// refuses a name outside the singleton's root aliases), so a Target with only
-// Name set
+// families before any lookup (resolveCode requires Repo, and validateGraphSelector
+// refuses a practice name outside the singleton's root aliases), so a Target with
+// only Name set
 // must deliberately MISS here too — otherwise the fake would keep agreeing with
 // a client that builds selectors the real server refuses.
 //
@@ -208,15 +208,14 @@ func targetGraphKey(target *knowledgev1.GraphSelector) graphKey {
 	case "":
 		return graphKey{Type: "knowledge"}
 	case "practice":
-		// PRACTICE HOLDS ONE GRAPH, SEALED UNDER "default". Keying it on the
-		// language alone produced graphKey{practice, ""} for every unselected
-		// read — the normal shape now — so every fixture keyed on the graph the
-		// collector actually seals would have missed. A set language is the
-		// LEGACY read and still names one of the pre-singleton graphs, which is
-		// exactly what the server does with it.
-		if lang := target.GetLanguage(); lang != "" {
-			return graphKey{Type: gt, Name: lang}
-		}
+		// PRACTICE HOLDS ONE GRAPH, SEALED UNDER "default", and EVERY practice
+		// target names it. Keying it on the language alone produced
+		// graphKey{practice, ""} for every unselected read — the normal shape —
+		// so every fixture keyed on the graph the collector actually seals would
+		// have missed. The language ARM went when the field stopped addressing a
+		// practice graph: a set language is refused before any target is built,
+		// so a fake that still routed on it would answer for a selector the real
+		// server never receives.
 		return graphKey{Type: gt, Name: workingset.DefaultInstanceName}
 	case "code":
 		return graphKey{Type: gt, Name: target.GetRepo()}

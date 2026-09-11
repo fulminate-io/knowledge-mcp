@@ -29,8 +29,8 @@ search({ "query": "cache eviction policy", "graph": "knowledge" })
 
 Code-graph results carry a staleness indicator — if the index is far behind
 HEAD, re-run `collect` before trusting them. Practice searches take no selector —
-omit `language` to search the whole combined graph, and narrow to one origin with
-`source_hub`. For the full parameter reference, run
+`language` is refused, so omit it to search the whole combined graph and narrow to
+one origin with `source_hub`. For the full parameter reference, run
 `help("search")`.
 
 ## Parameters
@@ -49,7 +49,7 @@ omit `language` to search the whole combined graph, and narrow to one origin wit
 | `include_comments` | boolean |  |  | Include comment nodes in code search results (default: false). Comments are excluded by default to reduce noise. |
 | `include_source` | boolean |  |  | Include full source code (default: true). Code graph only. |
 | `include_tests` | boolean |  |  | Include test code (test/benchmark/example/fuzz/setup/teardown/fixture/mock/helper) in results. Default true. Code graph only — silently ignored on other graphs (mirrors path_prefix). Set false to exclude all test code from impl-style queries. Note: until per-language predicate-population tickets land, all code nodes have is_test=false so this filter is currently a no-op. |
-| `language` | string |  |  | LEGACY read-only practice selector naming ONE pre-singleton practice graph (e.g. 'go', 'go-idioms'). Practice is ONE combined graph now, so OMIT this to search the whole practice corpus. The 'all' fan-out sentinel is retired and is refused. Practice graph only; the same spelling query uses. |
+| `language` | string |  |  | REFUSED on a practice search, and it addresses no other family's graph either. Practice is ONE combined graph: omit the param to search the whole practice corpus, or narrow to one origin with 'source_hub' (a hub id). Every value is refused, including the retired 'all' fan-out sentinel and the combined graph's own name. The same spelling query uses. |
 | `limit` | number |  |  | Max results per query (default: 10, max: 50). |
 | `mode` | string |  |  | Search mode, honored on the knowledge and registered custom-graph arms: 'hybrid' (default — BM25 and vector fused), 'text' (BM25 only — no query embedding and no rerank), 'vector' (vector only — requires an embedder). 'recent'/'temporal' are one recency boost (knowledge graph). Not honored on the code arm, which always fuses BM25 and vector when an embedder is available. 'similar' (knowledge graph). mode:'similar' takes a node_id and returns that node's nearest corpus neighbors by searching the node's OWN STORED vector (its embedding already on disk — NOT a fresh embedding of any query text), with the node itself EXCLUDED from results. Results are ranked by the client engine's reciprocal-rank fusion over the stored-vector (HNSW) arm — with no query text the order is pure stored-vector proximity — NOT a raw cosine similarity score. |
 | `name` | string |  |  | Graph identifier, for the families keyed by name. |

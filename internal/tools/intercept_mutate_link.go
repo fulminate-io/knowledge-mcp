@@ -241,15 +241,12 @@ func intraPracticeLinkArm(
 	if a.Graph != "practice" {
 		return false, kgtools.ToolResult{}, false
 	}
-	// A LANGUAGE-LESS PRACTICE LINK IS THE NORMAL CASE NOW, not the fall-through.
-	// This arm used to require one, because a link needed to know WHICH practice
-	// graph held both endpoints; there is one, so both endpoints are in it and the
-	// arm claims the link. A language is a WRITE carrying the legacy selector and
-	// is refused by name rather than dropped — dropping it would link in the
-	// combined graph while the caller believed it had written to practice/go.
-	if err := refusePracticeLanguageOnWrite(a.Graph, a.Language, practiceHubParamOnWrites); err != nil {
-		return true, errorResult("mutate(link): " + err.Error()), true
-	}
+	// A LANGUAGE-LESS PRACTICE LINK IS THE ONLY CASE NOW. This arm used to require
+	// a language, because a link needed to know WHICH practice graph held both
+	// endpoints; there is one, so both endpoints are in it and the arm claims the
+	// link. The arm's own `language` refusal went with the per-arm spelling: the
+	// head of InterceptMutate refuses it above every routing branch, so a call
+	// reaching here carries none.
 	// THE HUB SELECTOR, on the arm that owns the practice link. It runs BEFORE
 	// the endpoint probe below rather than after, because a hub-scoped link whose
 	// endpoints do not resolve must be REFUSED rather than fall through: the
@@ -261,8 +258,8 @@ func intraPracticeLinkArm(
 	if err := guardPracticeHubScopesEndpoints(ctx, gc, a); err != nil {
 		return true, errorResult("mutate(link): " + err.Error()), true
 	}
-	fromNode, ferr := render.FetchNodeIn(ctx, gc, a.From, "practice", a.Language)
-	toNode, terr := render.FetchNodeIn(ctx, gc, a.To, "practice", a.Language)
+	fromNode, ferr := render.FetchNodeIn(ctx, gc, a.From, "practice", "")
+	toNode, terr := render.FetchNodeIn(ctx, gc, a.To, "practice", "")
 	if ferr != nil || terr != nil || fromNode == nil || toNode == nil || fromNode.Id == "" || toNode.Id == "" {
 		if a.SourceHub != "" {
 			return true, errorResult(fmt.Sprintf(
@@ -283,7 +280,7 @@ func intraPracticeLinkArm(
 		return true, errorResult("intra-practice link: " + serr.Error()), true
 	}
 	resolved, rerr := engine.ResolveEdgeTypeDeclaration(ctx, linkStatsFn,
-		practiceWriteTarget(),
+		practiceTarget(),
 		[]string{a.Relationship})
 	if rerr != nil {
 		return true, errorResult("intra-practice link: " + rerr.Error()), true
@@ -312,7 +309,7 @@ func intraPracticeLinkArm(
 	}
 	if _, eerr := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-		Target: practiceWriteTarget(),
+		Target: practiceTarget(),
 	}); eerr != nil {
 		return true, errorResult("intra-practice link failed: " + eerr.Error()), true
 	}

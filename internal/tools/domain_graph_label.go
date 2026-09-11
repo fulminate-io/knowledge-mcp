@@ -19,11 +19,14 @@ package tools
 // needed no rewrite here: a read with no instance field set already falls through
 // to the bare family name.
 //
-// `source` is probed LAST rather than not at all, because the practice browse
-// takes its header from this function: without it a hub-scoped browse and a
-// whole-graph browse would render the same word, and requirement 5's marker
-// would be missing from the one arm most likely to carry it. It sits after
-// `language` so a legacy read still names the graph that answered.
+// `source` is probed rather than not at all, because the practice browse takes
+// its header from this function: without it a hub-scoped browse and a
+// whole-graph browse would render the same word, and the hub a reader asked for
+// would be missing from the one arm most likely to carry it. `language` used to
+// be probed ahead of it, so that a legacy read named the pre-singleton graph
+// that answered; the field addresses no practice graph now and is refused before
+// this label is composed, so probing it could only ever have labeled a call
+// that never ran.
 func domainGraphLabel(a queryArgs) string {
 	switch a.Graph {
 	case "", "knowledge":
@@ -31,9 +34,6 @@ func domainGraphLabel(a queryArgs) string {
 	case "practice", "linkage", "code":
 		if a.Repo != "" {
 			return a.Graph + ":" + a.Repo
-		}
-		if a.Language != "" {
-			return a.Graph + ":" + a.Language
 		}
 		if a.Source != "" {
 			return a.Graph + ":" + a.Source

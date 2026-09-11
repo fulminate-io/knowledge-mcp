@@ -168,14 +168,14 @@ func queryParityGraphFixtures() map[armID]queryParityFixture {
 
 		armPracticeStats: {
 			entry:         InterceptQueryPracticeLinkage,
-			base:          map[string]any{"graph": "practice", "language": "go", "mode": "stats"},
+			base:          map[string]any{"graph": "practice", "mode": "stats"},
 			discriminants: map[string]any{"graph": "practice", "mode": "stats"},
 			deselecting:   queryParityPracticeForeignDeselects(),
 		},
 
 		armPracticeBrowse: {
 			entry: InterceptQueryPracticeLinkage,
-			base:  map[string]any{"graph": "practice", "language": "go"},
+			base:  map[string]any{"graph": "practice"},
 			discriminants: map[string]any{
 				"graph": "practice", "mode": "", "text": "", "queries": []any{},
 			},
@@ -184,10 +184,10 @@ func queryParityGraphFixtures() map[armID]queryParityFixture {
 			opaque: map[string]bool{"fields": true},
 		},
 
-		// The style-rule index. `mode` is its discriminant, so the base pins it;
-		// the base carries NO language, because a language addresses a legacy
-		// pre-singleton graph and the probe should measure the combined-graph
-		// read every other caller takes.
+		// The style-rule index. `mode` is its discriminant, so the base pins it.
+		// NO practice base carries a `language` any more: the param is refused on
+		// every practice arm, so a base that carried one would measure the refusal
+		// rather than the arm.
 		armPracticeStyleIndex: {
 			entry:         InterceptQueryPracticeLinkage,
 			base:          map[string]any{"graph": "practice", "mode": "style_index"},
@@ -206,7 +206,7 @@ func queryParityGraphFixtures() map[armID]queryParityFixture {
 		armPracticeSearch: {
 			entry: InterceptQueryPracticeLinkage,
 			base: map[string]any{
-				"graph": "practice", "language": "go", "text": "probe-text",
+				"graph": "practice", "text": "probe-text",
 			},
 			discriminants: map[string]any{"graph": "practice", "mode": ""},
 			deselecting:   queryParityPracticeForeignDeselects(),

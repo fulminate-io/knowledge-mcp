@@ -15,10 +15,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/auth"
 	"github.com/fulminate-io/knowledge-mcp/internal/syncgcs"
 )
 
@@ -126,6 +129,21 @@ type fakeSyncBackend struct {
 
 func newFakeSyncBackend(t *testing.T) *fakeSyncBackend {
 	t.Helper()
+	// THE FAKE GATEWAY SERVES A CLIENT WITH NO SELECTED FULMINATE ACCOUNT. A
+	// transport built without auth.WithAccountSelection reads the process-wide
+	// selection, and that selection reads the operator's ~/.knowledge config. With
+	// a real account id there, the fake's bare 401 is reported as that account
+	// being rejected by the gateway, and the rows that assert the plain
+	// "authentication failed" spelling go red on an operator machine while CI,
+	// which has no config, stays green. The selection is installed here, in the
+	// one constructor every fake-backed test goes through, on an empty config in
+	// a TempDir, the same seam graphclient's account_interceptor_test uses.
+	cfgPath := filepath.Join(t.TempDir(), "config")
+	if err := os.WriteFile(cfgPath, []byte("[default]\n"), 0o600); err != nil {
+		t.Fatalf("write isolated config: %v", err)
+	}
+	t.Cleanup(auth.SetSelectedAccountForTest(auth.NewAccountSelection(cfgPath, time.Second)))
+
 	priv, err := rsa.GenerateKey(rand.Reader, 3072)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)

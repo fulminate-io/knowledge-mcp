@@ -49,9 +49,13 @@ func (g *hubProbeGc) Execute(_ context.Context, req *knowledgev1.ExecuteRequest)
 		}
 		return &knowledgev1.ExecuteResponse{GraphNames: infos}, nil
 	}
+	// THE PROBE'S ADDRESS, RECORDED AS THE SELECTOR CARRIES IT. It used to append
+	// the selector's `language`, because a practice probe named the graph it
+	// walked; practice addresses no instance now, so a practice probe records the
+	// bare family and the `name` is what an instance-addressed family carries.
 	graph := req.GetTarget().GetGraph()
-	if lang := req.GetTarget().GetLanguage(); lang != "" {
-		graph += "/" + lang
+	if name := req.GetTarget().GetName(); name != "" {
+		graph += "/" + name
 	}
 	g.askedGraphs = append(g.askedGraphs, graph)
 
@@ -78,13 +82,13 @@ func TestResolveAssembleNode_HubScopesTheResolve(t *testing.T) {
 		return &hubProbeGc{
 			knowledge:     map[string]*knowledgev1.Node{},
 			practice:      map[string]*knowledgev1.Node{"p1": hubbedNode("p1", "hub-1")},
-			practiceNames: []string{"go", "python"},
+			practiceNames: []string{"default"},
 		}
 	}
 
 	t.Run("a node under the named hub resolves", func(t *testing.T) {
 		gc := newGc()
-		node, graphType, _, err := resolveAssembleNode(context.Background(), gc, "p1", "hub-1")
+		node, graphType, err := resolveAssembleNode(context.Background(), gc, "p1", "hub-1")
 		require.NoError(t, err)
 		require.NotNil(t, node)
 		assert.Equal(t, "p1", node.GetId())
@@ -96,30 +100,39 @@ func TestResolveAssembleNode_HubScopesTheResolve(t *testing.T) {
 	// and passes the row above unchanged.
 	t.Run("a node under a different hub is refused, naming the hub", func(t *testing.T) {
 		gc := newGc()
-		_, _, _, err := resolveAssembleNode(context.Background(), gc, "p1", "hub-2")
+		_, _, err := resolveAssembleNode(context.Background(), gc, "p1", "hub-2")
 		require.Error(t, err, "the node belongs to hub-1; a hub-2 read must not be served it")
 		assert.Contains(t, err.Error(), "hub-2",
 			"the error names the hub the caller asked for, so it is not read as 'no such node'")
 	})
 
-	// A HUB IS A FACT ABOUT THE COMBINED GRAPH, so a hub-scoped miss must not fan
-	// out over the pre-singleton graphs — they predate hubs and could only
-	// produce a node that cannot satisfy the scope.
-	t.Run("a hub-scoped read never falls back to the legacy graphs", func(t *testing.T) {
+	// A HUB IS A FACT ABOUT THE COMBINED PRACTICE GRAPH, so a hub-scoped miss must
+	// not reach past it: no catalog enumeration and no knowledge read, whose nodes
+	// carry no hub at all. The practice probe itself DOES run — it is how the scope
+	// is evaluated — so the assertions are on the two reads a scoped resolve must
+	// skip rather than on every read it makes.
+	t.Run("a_hub_scoped_read_never_falls_back_to_the_catalog", func(t *testing.T) {
 		gc := newGc()
-		_, _, _, err := resolveAssembleNode(context.Background(), gc, "absent", "hub-1")
+		_, _, err := resolveAssembleNode(context.Background(), gc, "absent", "hub-1")
 		require.Error(t, err)
 		assert.Zero(t, gc.listedGraphs, "no practice-graph enumeration for a hub-scoped read")
-		assert.NotContains(t, gc.askedGraphs, "practice/go", "and no legacy probe")
-		assert.NotContains(t, gc.askedGraphs, "", "nor the knowledge read: a knowledge node carries no hub")
+		assert.NotContains(t, gc.askedGraphs, "", "and no knowledge read: a knowledge node carries no hub")
 
-		// THE CONTROL, same fixture: the UNSCOPED miss does all three, so the
-		// zeros above are the scope short-circuiting rather than a resolver that
-		// stopped probing.
+		// THE CONTROL, same fixture: the UNSCOPED miss reads BOTH families, so the
+		// assertions above are the scope short-circuiting rather than a resolver
+		// that stopped probing.
+		//
+		// IT NO LONGER ENUMERATES. The catalog read was the legacy fallback's first
+		// step, and the fallback is gone: one practice probe answers for the one
+		// practice graph, so an unscoped miss reads knowledge and practice and
+		// nothing else. `listedGraphs` staying zero is asserted here rather than
+		// dropped, because a resolver that started enumerating again would be
+		// paying a round trip for a catalog it has no use for.
 		open := newGc()
-		_, _, _, oerr := resolveAssembleNode(context.Background(), open, "absent", "")
+		_, _, oerr := resolveAssembleNode(context.Background(), open, "absent", "")
 		require.Error(t, oerr)
-		assert.Positive(t, open.listedGraphs, "control: an unscoped miss enumerates the legacy graphs")
-		assert.Contains(t, open.askedGraphs, "practice/go", "control: and probes them")
+		assert.Zero(t, open.listedGraphs, "control: an unscoped miss needs no catalog read")
+		assert.Contains(t, open.askedGraphs, "practice", "control: it probes the practice graph")
+		assert.Contains(t, open.askedGraphs, "", "control: and the knowledge graph, which a scoped read skips")
 	})
 }

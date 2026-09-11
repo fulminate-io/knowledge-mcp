@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/paging"
@@ -108,7 +106,7 @@ func Handle(ctx context.Context, gc GraphCaller, args json.RawMessage) kgtools.T
 		nodeID = resolved
 	}
 
-	node, graphType, graphName, err := resolveAssembleNode(ctx, gc, nodeID, a.Source)
+	node, graphType, err := resolveAssembleNode(ctx, gc, nodeID, a.Source)
 	if err != nil {
 		if a.Source != "" {
 			// THE HUB-SCOPED MISS NAMES THE HUB. "not in any practice graph" would
@@ -118,7 +116,7 @@ func Handle(ctx context.Context, gc GraphCaller, args json.RawMessage) kgtools.T
 			return kgtools.ErrorResult(fmt.Sprintf(
 				"no node with id %q under source hub %q in the practice graph", nodeID, a.Source))
 		}
-		return kgtools.ErrorResult(fmt.Sprintf("no node with id %q in knowledge or any practice graph", nodeID))
+		return kgtools.ErrorResult(fmt.Sprintf("no node with id %q in knowledge or the practice graph", nodeID))
 	}
 
 	// Every arm's result funnels through the one appendRenderedSize call below
@@ -159,7 +157,7 @@ func Handle(ctx context.Context, gc GraphCaller, args json.RawMessage) kgtools.T
 		case kgtypes.NodePlanSection:
 			res = assembleSection(ctx, gc, node)
 		case kgtypes.NodePattern:
-			res = assemblePatternIn(ctx, gc, node, graphType, graphName)
+			res = assemblePatternIn(ctx, gc, node, graphType)
 		default:
 			res = assembleFallback(ctx, gc, node)
 		}
@@ -303,19 +301,21 @@ func resolveAssembleByName(ctx context.Context, gc GraphCaller, typ, name string
 	return foundID, nil
 }
 
-// resolveAssembleNode looks up a node by ID, first in the knowledge
-// graph and then across every loaded practice graph. Returns the
-// node and the (graphType, graphName) tuple it was found in so
-// callers (assemblePatternIn) can walk edges in the right graph.
+// resolveAssembleNode looks up a node by ID, first in the knowledge graph and
+// then in the practice graph. Returns the node and the graph TYPE it was found
+// in, so callers (assemblePatternIn) can walk edges in the right graph.
 //
-// Ported from the retired server-side assemble tool with
-// the direct store reads swapped for wire calls. Practice graph
-// enumeration goes through `query({graph:"practice"})` (the list-
-// graphs path); the result is a JSON list with each graph's
-// language slug under the `Name` field.
+// IT RETURNED A (graphType, graphName) TUPLE and now returns the type alone.
+// The name was the pre-singleton practice graph a legacy probe had resolved in,
+// and both families it can answer for hold exactly one graph — knowledge and
+// the combined practice graph — so the second half of the tuple was always the
+// empty string once the legacy fan-out went.
+//
+// Ported from the retired server-side assemble tool with the direct store reads
+// swapped for wire calls.
 func resolveAssembleNode(
 	ctx context.Context, gc GraphCaller, nodeID, hub string,
-) (*knowledgev1.Node, string, string, error) {
+) (*knowledgev1.Node, string, error) {
 	// A HUB-SCOPED RESOLVE IS A PRACTICE READ AND NOTHING ELSE, so the knowledge
 	// probe is skipped rather than run and discarded: a knowledge node carries no
 	// source hub, so a hit there could only be a node the scope excludes.
@@ -323,7 +323,7 @@ func resolveAssembleNode(
 		// Try knowledge graph first.
 		node, err := FetchNode(ctx, gc, nodeID)
 		if err == nil && node != nil {
-			return node, "", "", nil
+			return node, "", nil
 		}
 	}
 	// PRACTICE FALLBACK: ONE PROBE FIRST, against the combined graph. The practice
@@ -336,109 +336,28 @@ func resolveAssembleNode(
 			// exists; it belongs to another hub. Returning it would serve a read the
 			// caller explicitly narrowed, and continuing to the legacy fallback
 			// would search graphs that have no hubs at all.
-			return nil, "", "", fmt.Errorf(
+			return nil, "", fmt.Errorf(
 				"node %q is not under source hub %q", nodeID, hub)
 		}
-		return pn, "practice", "", nil
+		return pn, "practice", nil
 	}
 
-	// A HUB SCOPE STOPS HERE. The pre-singleton graphs predate hubs entirely, so
-	// probing them for a hub-scoped read could only produce a node that cannot
-	// satisfy the scope — eight round trips for a guaranteed miss.
+	// NOTHING FOLLOWS THE PRACTICE PROBE, AND THAT IS THE CHANGE. A LEGACY
+	// FALLBACK used to sit here: it enumerated the practice catalog and probed
+	// every pre-singleton graph CONCURRENTLY through the legacy `language`
+	// selector, taking the lowest-indexed resolver so the answer did not depend on
+	// which probe finished first. Those graphs are retired and `language`
+	// addresses none of them, so every one of those probes would compose the same
+	// selector the single probe above already sent — N round trips to re-ask one
+	// question — and the enumeration, the errgroup, the per-index slots and the
+	// local listPracticeGraphs helper went with it.
+	//
+	// THE HUB-SCOPED MESSAGE STAYS ITS OWN, because the two misses are different
+	// facts: a scoped miss means the id is not under that hub, and an unscoped one
+	// means it is in neither graph family.
 	if hub != "" {
-		return nil, "", "", fmt.Errorf(
+		return nil, "", fmt.Errorf(
 			"no node with id %q under source hub %q in the practice graph", nodeID, hub)
 	}
-
-	// LEGACY FALLBACK: the pre-singleton graphs, probed CONCURRENTLY. It survives
-	// because the eight old graphs are still readable through the legacy selector
-	// and an id handed to assemble may still live in one of them. The probes are
-	// independent — each targets a different graph and none informs the next — so
-	// probing them serially costs one full round trip per loaded graph before the
-	// answer is known, on a path that is already the slow one.
-	langs := listPracticeGraphs(ctx, gc)
-	if len(langs) == 0 {
-		return nil, "", "", fmt.Errorf("no node with id %q in knowledge or any practice graph", nodeID)
-	}
-
-	// RESULTS GO IN A PER-INDEX SLOT, NOT A SHARED APPEND. Probes finish in
-	// arbitrary order, and the serial loop this replaces returned the FIRST
-	// graph in listPracticeGraphs order that resolved. Picking the lowest
-	// populated slot after Wait preserves that exactly. In practice an id
-	// resolves in at most one graph — but "in practice" is not a contract, and
-	// a resolver that answers differently on different calls is a worse defect
-	// than a slow one.
-	found := make([]*knowledgev1.Node, len(langs))
-
-	g, gctx := errgroup.WithContext(ctx)
-	// These are network-bound probes, not CPU work, so the bound is a small
-	// constant rather than GOMAXPROCS: eight in-flight reads is enough to
-	// collapse the latency of every practice graph this corpus loads, without
-	// opening an unbounded fan-out if the number of graphs grows.
-	g.SetLimit(min(len(langs), 8))
-	for i, lang := range langs {
-		g.Go(func() error {
-			// A PROBE FAILURE IS NOT A RESOLUTION FAILURE. An error against
-			// graph A says nothing about graph B, and the serial loop already
-			// treated a per-graph error as "not here" and continued. Returning
-			// the error here would cancel the sibling probes through gctx and
-			// turn one unreachable graph into a global not-found.
-			pn, perr := FetchNodeIn(gctx, gc, nodeID, "practice", lang)
-			if perr == nil && pn != nil {
-				found[i] = pn
-			}
-			return nil
-		})
-	}
-	_ = g.Wait() // every probe returns nil; failures are recorded as empty slots
-
-	for i, pn := range found {
-		if pn != nil {
-			return pn, "practice", langs[i], nil
-		}
-	}
-	// Unchanged: this message covers both "probed and absent everywhere" and
-	// "every probe failed", which is the same outcome for a caller.
-	return nil, "", "", fmt.Errorf("no node with id %q in knowledge or any practice graph", nodeID)
-}
-
-// listPracticeGraphs returns the NAME of every loaded practice graph — the
-// combined graph's own name plus the pre-singleton language slugs, which is what
-// the probe walking them needs — via the Execute carrier seam: a query(graph:practice, mode:modules)
-// compiled to RETURN_MODE_GRAPH_NAMES (compileQuery emits the graph-names mode
-// only for mode=="modules"), decoded via engine.DecodeGraphNames → []*knowledgev1.GraphInfo
-// (we project .GetName()). Returns an empty slice on any failure — the caller falls
-// through to the not-found error, the same outcome as "no practice graphs loaded."
-func listPracticeGraphs(ctx context.Context, gc GraphCaller) []string {
-	ex, err := asExecutor(gc)
-	if err != nil {
-		return nil
-	}
-	payload := struct {
-		Graph string `json:"graph"`
-		Mode  string `json:"mode"`
-	}{Graph: "practice", Mode: "modules"}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return nil
-	}
-	req, ok := engine.Compile("query", raw)
-	if !ok {
-		return nil
-	}
-	resp, err := ex.Execute(ctx, req)
-	if err != nil {
-		return nil
-	}
-	infos, err := engine.DecodeGraphNames(resp)
-	if err != nil {
-		return nil
-	}
-	out := make([]string, 0, len(infos))
-	for _, gi := range infos {
-		if gi.Name != "" {
-			out = append(out, gi.Name)
-		}
-	}
-	return out
+	return nil, "", fmt.Errorf("no node with id %q in knowledge or the practice graph", nodeID)
 }

@@ -106,9 +106,13 @@ func TestMapMirrorPath_ClassifiesMirrorOnly(t *testing.T) {
 // root-testdata one — which is what keeps the new prefix from swallowing every
 // package fixture directory in the tree.
 func TestMapPath_ShipSetAdditionsRoundTrip(t *testing.T) {
+	// THE PRACTICE CANONICAL-NAME VECTOR WAS A THIRD ROW HERE and went with the
+	// file: its rows pinned the practice slug transform, which was retired with
+	// the per-language practice graphs it spelled. The rule it exercised is the
+	// root-testdata PREFIX rather than a per-file entry, so the contribution-hash
+	// vector still drives it and the known-negatives below still bound it.
 	for _, p := range []string{
 		"testdata/contribution_hash_vector.json",
-		"testdata/practice_graph_name_canonical_cases.json",
 		".golangci.yml",
 	} {
 		internal, class, err := MapMirrorPath(p)

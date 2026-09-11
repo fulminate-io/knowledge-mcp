@@ -91,7 +91,10 @@ func (f *coverageFake) baseNamesFor(graphType string) []string {
 	case "code":
 		return []string{"myrepo"}
 	case "practice":
-		return []string{"go"}
+		// The ONE combined practice graph, under the only name it can carry. It
+		// used to be a per-language name here, which is what the catalog reported
+		// while the family held eight graphs.
+		return []string{"default"}
 	}
 	return nil
 }
@@ -113,14 +116,20 @@ func (f *coverageFake) Stats(_ context.Context, req *knowledgev1.StatsRequest) (
 	f.reqs = append(f.reqs, req)
 	f.mu.Unlock()
 	// Resolve the row label the renderer would use: empty Graph → knowledge; a code
-	// graph carries the repo field, a practice graph the language field.
+	// graph carries the repo field.
+	//
+	// A PRACTICE SELECTOR CARRIES NO INSTANCE FIELD AT ALL, so the key is fixed.
+	// It used to read the `language` field, which was the family's instance field
+	// while it held eight graphs; the family holds one, every practice target
+	// addresses it with no field set, and a fake still reading language would key
+	// "practice/" for every row and answer with empty stats.
 	sel := req.GetTarget()
 	key := "knowledge"
 	switch sel.GetGraph() {
 	case "code":
 		key = "code/" + sel.GetRepo()
 	case "practice":
-		key = "practice/" + sel.GetLanguage()
+		key = "practice/default"
 	}
 	if f.statsErrByKey[key] {
 		return nil, fmt.Errorf("stats unavailable for %s without materializing the graph", key)
@@ -187,7 +196,7 @@ func TestCoverageFake_OverlayKeyForms(t *testing.T) {
 	t.Run("unprogrammed_base_list_keeps_the_historical_literals", func(t *testing.T) {
 		bare := &coverageFake{}
 		assert.Equal(t, []string{"myrepo"}, enumerateGraphNames(t, bare, "code", ""))
-		assert.Equal(t, []string{"go"}, enumerateGraphNames(t, bare, "practice", ""))
+		assert.Equal(t, []string{"default"}, enumerateGraphNames(t, bare, "practice", ""))
 		assert.Empty(t, enumerateGraphNames(t, bare, "knowledge", ""),
 			"the default knowledge graph still enumerates no name, so its row comes from the explicit selector")
 	})

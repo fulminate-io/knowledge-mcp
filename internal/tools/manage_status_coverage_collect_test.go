@@ -27,15 +27,15 @@ import (
 // has_segments=false so the web renders '—' instead of 'shipped 0 · live 0'.
 func TestCollectCoverageRows_JSONShape(t *testing.T) {
 	fake := &coverageFake{statsByKey: map[string]*knowledgev1.GraphStats{
-		"knowledge":   {NonProxyNodeCount: 10, SummarizedCount: 4, BinaryVectorCount: 4, SummaryFailureCount: 1, EmbedFailureCount: 2},
-		"code/myrepo": {NonProxyNodeCount: 8, SummarizedCount: 8, BinaryVectorCount: 8},
-		"practice/go": {NonProxyNodeCount: 20, SummarizedCount: 20, BinaryVectorCount: 12},
+		"knowledge":        {NonProxyNodeCount: 10, SummarizedCount: 4, BinaryVectorCount: 4, SummaryFailureCount: 1, EmbedFailureCount: 2},
+		"code/myrepo":      {NonProxyNodeCount: 8, SummarizedCount: 8, BinaryVectorCount: 8},
+		"practice/default": {NonProxyNodeCount: 20, SummarizedCount: 20, BinaryVectorCount: 12},
 	}}
 	// code/myrepo: segments cover 6 of 8 embedded but the LIVE engine is resident
 	// with only 2 — a collapse the web WARNs on (live_resident < seg_covered).
 	seg := &coverageSegReader{
-		coveredByKey:  map[string]int{"knowledge": 0, "code/myrepo": 6, "practice/go": 0},
-		residentByKey: map[string]int{"knowledge": 0, "code/myrepo": 2, "practice/go": 0},
+		coveredByKey:  map[string]int{"knowledge": 0, "code/myrepo": 6, "practice/default": 0},
+		residentByKey: map[string]int{"knowledge": 0, "code/myrepo": 2, "practice/default": 0},
 	}
 	rows, rowsErr := collectCoverageRows(context.Background(), &coverageDeps{gc: fake, segCov: seg})
 	require.NoError(t, rowsErr)
@@ -99,19 +99,19 @@ func TestRenderLLMCoverage_Table(t *testing.T) {
 		"knowledge": {NonProxyNodeCount: 10, SummarizedCount: 0, BinaryVectorCount: 0},
 		// code/myrepo: fully covered 8 of 8 + 8 embedded, no failures
 		"code/myrepo": {NonProxyNodeCount: 8, SummarizedCount: 8, BinaryVectorCount: 8},
-		// practice/go: a NON-code embeddable builtin — 20 nodes, 12 embedded. Its
+		// practice/default: a NON-code embeddable builtin — 20 nodes, 12 embedded. Its
 		// segment coverage now surfaces as a real cell instead of "—".
-		"practice/go": {NonProxyNodeCount: 20, SummarizedCount: 20, BinaryVectorCount: 12},
+		"practice/default": {NonProxyNodeCount: 20, SummarizedCount: 20, BinaryVectorCount: 12},
 	}}
 	// Segment-coverage stub: code/myrepo ships 6 docs against its 8 embedded (a
 	// degenerate-looking pool, the lever-3 operator signal) and the live engine is
 	// resident with all 6 (a healthy live≈shipped row); knowledge ships nothing so
-	// its segment cell is "shipped 0 · live 0". practice/go ships nothing against 12
+	// its segment cell is "shipped 0 · live 0". practice/default ships nothing against 12
 	// embedded docs (a never-shipped non-code graph) — zero shown as a real number,
 	// "shipped 0 · live 0", not "—".
 	seg := &coverageSegReader{
-		coveredByKey:  map[string]int{"knowledge": 0, "code/myrepo": 6, "practice/go": 0},
-		residentByKey: map[string]int{"knowledge": 0, "code/myrepo": 6, "practice/go": 0},
+		coveredByKey:  map[string]int{"knowledge": 0, "code/myrepo": 6, "practice/default": 0},
+		residentByKey: map[string]int{"knowledge": 0, "code/myrepo": 6, "practice/default": 0},
 	}
 	deps := &coverageDeps{gc: fake, segCov: seg}
 
@@ -137,7 +137,7 @@ func TestRenderLLMCoverage_Table(t *testing.T) {
 	// code graph; a healthy row shows live≈shipped.
 	assert.Contains(t, out, "shipped 6 · live 6", "code graph renders shipped and live as labeled terms")
 
-	// lever-3 surface: a NON-code embeddable builtin (practice/go) renders a REAL
+	// lever-3 surface: a NON-code embeddable builtin (practice/default) renders a REAL
 	// segment-coverage cell — zero coverage shown as real numbers, not "—" or an
 	// omitted row. segCoveredFor gates on HasRebuildableSegments, so
 	// practice reports coverage.
@@ -145,11 +145,11 @@ func TestRenderLLMCoverage_Table(t *testing.T) {
 	// This asserts the WHOLE ROW rather than the cell alone, and that is load-bearing
 	// now that the embedded count lives only in its own column: the cell for a
 	// never-shipped graph reads "shipped 0 · live 0" whatever its embedded count is,
-	// so knowledge (0 embedded) and practice/go (12 embedded) have IDENTICAL cells and
+	// so knowledge (0 embedded) and practice/default (12 embedded) have IDENTICAL cells and
 	// a cell-only assertion could be satisfied by the wrong row. The full row carries
 	// the embedded column that tells them apart.
-	assert.Contains(t, out, "| practice/go |", "a non-code embeddable graph renders its own row")
-	assert.Contains(t, out, "| practice/go | 20 | 20 of 20 | 12 of 20 | shipped 0 · live 0 [below-floor] | 0 | 0 |",
+	assert.Contains(t, out, "| practice/default |", "a non-code embeddable graph renders its own row")
+	assert.Contains(t, out, "| practice/default | 20 | 20 of 20 | 12 of 20 | shipped 0 · live 0 [below-floor] | 0 | 0 |",
 		"practice graph renders zero segment coverage as real numbers plus its real embedded count, not the — placeholder")
 
 	// T2: every issued StatsRequest set IncludeCoverage.
@@ -188,14 +188,14 @@ func TestRenderLLMCoverage_ShippedLiveGrammar(t *testing.T) {
 		// The summ-eval shape: shipped MULTIPLES of embedded, and converged.
 		"code/myrepo": {NonProxyNodeCount: 788, SummarizedCount: 788, BinaryVectorCount: 781},
 		// The residue shape: live EXCEEDS embedded.
-		"practice/go": {NonProxyNodeCount: 109, SummarizedCount: 109, BinaryVectorCount: 14},
+		"practice/default": {NonProxyNodeCount: 109, SummarizedCount: 109, BinaryVectorCount: 14},
 	}}
 	seg := &coverageSegReader{
 		coveredByKey: map[string]int{
-			"knowledge/default": 100, "code/myrepo": 4695, "practice/go": 92,
+			"knowledge/default": 100, "code/myrepo": 4695, "practice/default": 92,
 		},
 		residentByKey: map[string]int{
-			"knowledge/default": 100, "code/myrepo": 781, "practice/go": 106,
+			"knowledge/default": 100, "code/myrepo": 781, "practice/default": 106,
 		},
 	}
 

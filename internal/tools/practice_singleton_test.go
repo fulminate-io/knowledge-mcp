@@ -107,34 +107,42 @@ func TestPracticeWriteArms_RefuseLanguageNamingTheReplacement(t *testing.T) {
 			body := toolResultText(res)
 			assert.Contains(t, body, "source_hub",
 				"the refusal names the replacement — a caller reaching for `language` wants to group the write")
-			assert.Contains(t, body, "READ arms",
-				"and says where `language` still works, so the caller can tell a removal from a rename")
+			assert.Contains(t, body, "on a read or on a write",
+				"and says the rule is total, so the caller does not go looking for an arm that still takes it")
+			assert.NotContains(t, body, "READ arms",
+				"the message no longer points at read arms: they refuse it too")
 			assert.Empty(t, fc.execMutations, "a refused write issues no mutation")
 		})
 	}
 }
 
-// TestPracticeGraphLabel_DistinguishesTheThreeReads is requirement 5's
-// observable, and requirement 3's on the by-id and browse cells.
+// TestPracticeGraphLabel_DistinguishesTheTwoReads is the render observable on
+// the by-id and browse cells.
 //
-// THE THREE SPELLINGS MUST DIFFER. A bare `practice` for a whole-corpus read, a
-// hub-scoped one and a legacy one rendering the same word makes them
-// indistinguishable in the one place a caller looks.
-func TestPracticeGraphLabel_DistinguishesTheThreeReads(t *testing.T) {
+// THERE WERE THREE SPELLINGS AND THERE ARE TWO. A bare `practice` is the
+// whole-corpus read and `practice:<hub>` is a hub-scoped one; the third was
+// `practice:<language>`, a read of one pre-singleton graph, and it went with
+// those graphs. The two that remain must still DIFFER: rendering the same word
+// for both makes them indistinguishable in the one place a caller looks.
+//
+// AND THE RETIRED SPELLING MUST NOT COME BACK. A `language` reaching the label
+// composer would mean the refusal ahead of it had been removed, so the absence
+// is asserted rather than left to the refusal's own test.
+func TestPracticeGraphLabel_DistinguishesTheTwoReads(t *testing.T) {
 	whole := domainGraphLabel(queryArgs{Graph: "practice"})
 	hub := domainGraphLabel(queryArgs{Graph: "practice", Source: "hub-1"})
-	legacy := domainGraphLabel(queryArgs{Graph: "practice", Language: "go"})
 
 	assert.Equal(t, "practice", whole, "an unselected read names the family alone")
 	assert.Equal(t, "practice:hub-1", hub, "a hub-scoped read names the hub")
-	assert.Equal(t, "practice:go", legacy, "a legacy read names the graph that answered")
 
-	// THE DISCRIMINATING ASSERTION: all three differ. Without it a renderer that
+	// THE DISCRIMINATING ASSERTION: the two differ. Without it a renderer that
 	// returned the family name for everything satisfies the first row and reads
 	// as correct.
 	require.NotEqual(t, whole, hub)
-	require.NotEqual(t, whole, legacy)
-	require.NotEqual(t, hub, legacy)
+
+	// THE RETIRED SPELLING: a language qualifies nothing.
+	assert.Equal(t, "practice", domainGraphLabel(queryArgs{Graph: "practice", Language: "go"}),
+		"`language` composes no label — it addresses no practice graph and is refused before a read runs")
 }
 
 // TestDropGraph_PracticeRefusedBeforeTheExecute is requirement 7, and the
@@ -214,8 +222,10 @@ func TestPracticeWriteArms_EveryArmRefusesLanguage(t *testing.T) {
 			body := toolResultText(res)
 			assert.Contains(t, body, "source_hub",
 				"the refusal names the replacement on a write arm, where `source` is the node's own provenance")
-			assert.Contains(t, body, "READ arms",
-				"and says where `language` still works, so the caller can tell a removal from a rename")
+			assert.Contains(t, body, "on a read or on a write",
+				"and says the rule is total, so the caller does not go looking for an arm that still takes it")
+			assert.NotContains(t, body, "READ arms",
+				"the message no longer points at read arms: they refuse it too")
 			assert.Empty(t, fc.execMutations, "a refused write issues no mutation")
 		})
 	}
@@ -236,7 +246,7 @@ func TestPracticeWriteArms_EveryArmRefusesLanguage(t *testing.T) {
 			"the delete tool's hub selector is spelled `source`, which is free on that schema")
 		assert.NotContains(t, body, "source_hub",
 			"and NOT source_hub, which is the mutate/search spelling and is not declared on this tool")
-		assert.Contains(t, body, "READ arms")
+		assert.Contains(t, body, "on a read or on a write")
 	})
 
 	// THE FAMILY CONTROL, on the two arms the refusal newly reaches. Without it a
@@ -268,10 +278,14 @@ func TestPivotEngineKey_SingletonsKeyUnderDefault(t *testing.T) {
 	assert.Equal(t, "default", name,
 		"an unselected practice read keys the ONE pool the collector seals, never the empty string")
 
-	// THE LEGACY READ still names its pre-singleton graph, which is the whole
-	// point of keeping the selector readable.
-	_, legacy := pivotEngineKey(queryArgs{Graph: "practice", Language: "go"})
-	assert.Equal(t, "go", legacy, "a legacy read keys the graph it named")
+	// A `language` KEYS NOTHING. It used to name the pre-singleton graph a legacy
+	// read addressed, and pivotEngineKey read it ahead of the normalizer for that
+	// reason; the field addresses no practice graph now and the wire read carrying
+	// it is refused, so keying the engine on it would point the seed search at a
+	// pool no wire read can reach.
+	_, withLanguage := pivotEngineKey(queryArgs{Graph: "practice", Language: "go"})
+	assert.Equal(t, "default", withLanguage,
+		"a practice pivot keys the one combined pool whatever `language` carries")
 
 	// THE CONTROLS: the families whose instance field is a real one are
 	// unaffected, and knowledge — the case the hard-coded arm existed for — still

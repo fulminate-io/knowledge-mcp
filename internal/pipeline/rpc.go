@@ -234,7 +234,6 @@ type updateBatchArgs struct {
 	Repo      string            `json:"repo,omitempty"`
 	Account   string            `json:"account,omitempty"`
 	Name      string            `json:"name,omitempty"`
-	Language  string            `json:"language,omitempty"`
 	Branch    string            `json:"branch,omitempty"`
 	Items     []updateBatchItem `json:"items"`
 }
@@ -282,7 +281,7 @@ func writeBatchUpdates(ctx context.Context, c WireClient, gt kgtypes.GraphType, 
 	if gt == kgtypes.GraphCode {
 		args.Branch = branch
 	}
-	graphsel.ApplyInstanceKey(gt, base, &args.Repo, &args.Name, &args.Language, true)
+	graphsel.ApplyInstanceKey(gt, base, &args.Repo, &args.Name, true)
 	// Compile the update_batch to a MUTATION_KIND_UPDATE_ITEMS MutationPlan and
 	// run it through the Execute seam (the same engine.Compile+Execute shape
 	// wire_persist.executeMutate uses) — NOT the legacy gc.Call(mutate) path.

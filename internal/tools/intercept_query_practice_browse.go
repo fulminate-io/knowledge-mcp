@@ -58,8 +58,9 @@ const practiceRebuildHint = `manage({"operation":"rebuild_segments","graph":"pra
 // predicates, paged by the caller's limit/offset.
 //
 // It mirrors the per-account resource browse that the retired inventory families
-// carried — Selection + Limit/Offset + Execute + decode + render — keyed on
-// Language instead of Account, with four deliberate differences:
+// carried — Selection + Limit/Offset + Execute + decode + render — against the
+// ONE combined graph rather than a per-account instance, with four deliberate
+// differences:
 //
 //   - NodeType/NodeTypes ride the caller's filter rather than a pinned kind:
 //     practice graphs hold four node types (pattern / use_case / example /
@@ -106,7 +107,7 @@ func practiceBrowse(ctx context.Context, exec engine.ExecuteFn, a queryArgs) kgt
 			Offset:            int32(offset),
 			IncludeTombstones: a.IncludeTombstones,
 		}},
-		Target: practiceReadTarget(a.Language),
+		Target: practiceTarget(),
 	})
 	if err != nil {
 		return errorResult("practice browse failed: " + err.Error())
@@ -133,15 +134,12 @@ func practiceBrowse(ctx context.Context, exec engine.ExecuteFn, a queryArgs) kgt
 	// ceiling clamped renders as a complete-looking list with rows missing.
 	res = engine.WithTruncationNotice(res, resp)
 
-	// REQUIREMENT 5'S MARKER, IN PROSE. The render header already says which
-	// corpus answered — a legacy read renders `practice:<language>` — but a header
-	// says WHICH graph without saying that the graph is a legacy one, and a caller
-	// reading rows that look normal has no reason to look at the qualifier. On the
-	// json path the header carries it and the body is a machine payload, so the
-	// sentence is appended on the text path only.
-	if a.Language != "" && a.Format != "json" {
-		res = appendNotice(res, practiceLegacyNotice(a.Language))
-	}
+	// THE LEGACY-CORPUS NOTICE WENT WITH THE CORPUS. A legacy read used to render
+	// `practice:<language>` in the header and carry an appended sentence saying the
+	// graph it read was one of the pre-singleton ones, because a caller reading rows
+	// that looked normal had no reason to check the qualifier. There is one corpus,
+	// so there is nothing to qualify: every browse reads it, and `language` is
+	// refused before this arm runs.
 	return res
 }
 
@@ -160,25 +158,29 @@ func sortedMetaKeys(meta map[string]string) []string {
 }
 
 // practiceStatsResult renders the practice stats body: Stats RPC →
-// RenderStatsBreakdown under the per-language header, or the json envelope, plus
-// the bounded sample names when samples=true. Split out of routePracticeClient so
-// that router stays a flat gate-and-delegate sequence — the accounting gate added
-// a nested block to each arm, and the stats arm was the one that carried enough
-// body to tip the router over the nesting budget. It sits in this file rather
-// than beside the router for the file-length budget; the router's other three
-// arms are unaffected.
+// RenderStatsBreakdown, or the json envelope, plus the bounded sample names when
+// samples=true. Split out of routePracticeClient so that router stays a flat
+// gate-and-delegate sequence — the accounting gate added a nested block to each
+// arm, and the stats arm was the one that carried enough body to tip the router
+// over the nesting budget. It sits in this file rather than beside the router for
+// the file-length budget; the router's other three arms are unaffected.
+//
+// THE HEADER AND THE json `language` KEY WENT WITH THE PER-LANGUAGE GRAPHS. Both
+// interpolated the selector the caller supplied, so with the selector refused
+// they would have rendered an empty name on every call — a header saying
+// "Practice Graph: " and a json field that is always the empty string. The family
+// holds one graph and the render says which one by naming the family.
 func practiceStatsResult(ctx context.Context, gc statsRPC, a queryArgs) kgtools.ToolResult {
 	resp, err := gc.Stats(ctx, &knowledgev1.StatsRequest{
-		Target: practiceReadTarget(a.Language),
+		Target: practiceTarget(),
 	})
 	if err != nil {
-		return errorResult(fmt.Sprintf("practice %q graph stats failed: %s", a.Language, err.Error()))
+		return errorResult("practice graph stats failed: " + err.Error())
 	}
 	stats := resp.GetGraphStats()
 	if a.Format == "json" {
 		return jsonResult(map[string]any{
 			"graph":               "practice",
-			"language":            a.Language,
 			"node_count":          stats.GetNodeCount(),
 			"edge_count":          stats.GetEdgeCount(),
 			"binary_vector_count": stats.GetBinaryVectorCount(),
@@ -187,10 +189,10 @@ func practiceStatsResult(ctx context.Context, gc statsRPC, a queryArgs) kgtools.
 		})
 	}
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "## Practice Graph: %s\n\n", a.Language)
+	sb.WriteString("## Practice Graph\n\n")
 	sb.WriteString(engine.RenderStatsBreakdown(stats))
 	if a.Samples {
-		samples := fetchPracticeSamples(ctx, gc.Execute, a.Language, stats)
+		samples := fetchPracticeSamples(ctx, gc.Execute, stats)
 		var sampleSB strings.Builder
 		engine.RenderSampleNames(&sampleSB, stats, samples)
 		sb.WriteString(sampleSB.String())
@@ -201,7 +203,7 @@ func practiceStatsResult(ctx context.Context, gc statsRPC, a queryArgs) kgtools.
 // fetchPracticeSamples fetches up to 2 sample nodes per node type for the
 // practice stats sample enrichment (bounded by node-type count). It sits beside
 // practiceStatsResult, its only caller.
-func fetchPracticeSamples(ctx context.Context, exec engine.ExecuteFn, language string, stats *knowledgev1.GraphStats) map[kgtypes.NodeType][]*knowledgev1.Node {
+func fetchPracticeSamples(ctx context.Context, exec engine.ExecuteFn, stats *knowledgev1.GraphStats) map[kgtypes.NodeType][]*knowledgev1.Node {
 	byType := stats.GetNodesByType()
 	samples := make(map[kgtypes.NodeType][]*knowledgev1.Node, len(byType))
 	for nt := range byType {
@@ -211,7 +213,7 @@ func fetchPracticeSamples(ctx context.Context, exec engine.ExecuteFn, language s
 				Limit:     2,
 				SkipTotal: true,
 			}},
-			Target: practiceReadTarget(language),
+			Target: practiceTarget(),
 		})
 		if err != nil {
 			continue

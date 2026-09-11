@@ -20,15 +20,14 @@ import (
 
 // resolverFake serves by-id reads ONLY when the request's GraphSelector carries
 // the instance name in the field that graph family's server-side resolver
-// actually keys on. It mirrors ResolveGraphDB's per-family requirements
+// actually keys on, AND carries no field the family refuses. It mirrors
+// ResolveGraphDB's per-family requirements
 // (cmd/knowledge-server/internal/tools/tools_graph_routing.go): code requires
-// Repo, and a SINGLETON family requires no instance
-// key at all — practice moved onto that arm when its eight per-language graphs
-// became one combined graph, so requireInstanceKey below no longer demands a
-// Language for it and TestRequireInstanceKey_AgreesWithTheServerOnPractice pins
-// that. A selector that carries the name in the wrong field is rejected before
-// any lookup — exactly as the server rejects it — so a client that builds the
-// wrong shape cannot fetch.
+// Repo, and a SINGLETON family requires no instance key at all — practice moved
+// onto that arm when its eight per-language graphs became one combined graph.
+// A selector that carries the name in the wrong field is rejected before any
+// lookup — exactly as the server rejects it — so a client that builds the wrong
+// shape cannot fetch.
 type resolverFake struct {
 	nodesByGraph map[string]map[string]*knowledgev1.Node // graphType → id → node
 }
@@ -45,21 +44,33 @@ func (f *resolverFake) Execute(_ context.Context, req *knowledgev1.ExecuteReques
 	return enginetest.ResponseWithNodes(nodes...), nil
 }
 
-// requireInstanceKey rejects a selector whose instance name landed in a field
-// the family's resolver does not read.
+// requireInstanceKey rejects a selector whose instance name landed in a field the
+// family's resolver does not read, and a selector carrying a field the family
+// REFUSES.
 //
-// PRACTICE IS DELIBERATELY ABSENT and used to be here. It required a language,
-// which was true while the family held eight per-language graphs; it holds one
-// now, an unselected practice selector is the NORMAL shape, and the real server
-// resolves it to the combined graph. A double that kept the old requirement
-// refused a selector its subject serves — which is the same defect as serving
-// one its subject refuses, in the direction that is harder to notice because
-// nothing drives it.
+// PRACTICE HAS MOVED THROUGH BOTH DIRECTIONS OF THE SAME DEFECT, which is why
+// its arm is written out rather than left to the default. It first REQUIRED a
+// language, true while the family held eight per-language graphs; when they
+// became one the requirement refused a selector its subject serves, and the arm
+// was removed. That left the double ACCEPTING a practice language — the same
+// defect in the direction the header below calls harder to notice — while the
+// real server had begun refusing it in validateGraphSelector before any routing.
+// The arm now refuses it, with the server's own wording, so a caller that
+// composes one cannot fetch through this double either.
+//
+// THE MESSAGE MATTERS AS MUCH AS THE REFUSAL. A double that refuses with its own
+// invented sentence agrees with its subject on the verdict and disagrees on what
+// the caller is told, and a test reading the message would pass against a server
+// that refused for a different reason. This is the substring the server emits.
 func requireInstanceKey(sel *knowledgev1.GraphSelector) error {
 	switch sel.GetGraph() {
 	case "code":
 		if sel.GetRepo() == "" {
 			return fmt.Errorf("graph=code requires repo")
+		}
+	case "practice":
+		if sel.GetLanguage() != "" {
+			return fmt.Errorf("graph=practice does not accept language=")
 		}
 	}
 	return nil
@@ -68,15 +79,24 @@ func requireInstanceKey(sel *knowledgev1.GraphSelector) error {
 // TestRequireInstanceKey_AgreesWithTheServerOnPractice is what makes the double
 // above load-bearing rather than merely present.
 //
-// NOTHING DROVE IT BEFORE, which is why it kept a rule the server had dropped
-// and the suite stayed green through the whole change. The rows below are the
-// disagreement, stated: an unselected practice selector must PASS, and the one
-// family that genuinely requires an instance field must still fail.
+// NOTHING DROVE IT TWICE, and the second time is why the second row inverted.
+// The first time it kept a REQUIREMENT the server had dropped; removing that left
+// it ACCEPTING a language the server had begun refusing, and the suite stayed
+// green through both because no crossgraph production path composes a practice
+// language — graphsel has no language arm to compose one with. A latent
+// disagreement is what this test exists to close, so both rows are stated.
 func TestRequireInstanceKey_AgreesWithTheServerOnPractice(t *testing.T) {
 	require.NoError(t, requireInstanceKey(&knowledgev1.GraphSelector{Graph: "practice"}),
 		"practice holds ONE graph: an unselected selector is the normal shape, and the server resolves it")
-	require.NoError(t, requireInstanceKey(&knowledgev1.GraphSelector{Graph: "practice", Language: "go"}),
-		"and a legacy read still names one of the pre-singleton graphs")
+
+	// THE ROW THAT INVERTED. validateGraphSelector's practice arm refuses this
+	// selector before any routing, so a double that served it would serve a shape
+	// its subject rejects.
+	perr := requireInstanceKey(&knowledgev1.GraphSelector{Graph: "practice", Language: "go"})
+	require.Error(t, perr,
+		"the field addresses no practice graph and the server refuses it before routing")
+	require.Contains(t, perr.Error(), "does not accept language=",
+		"and the double refuses with the SERVER'S wording, so a caller is told the same thing either side of the wire")
 
 	// THE CONTROL: the one family that DOES require an instance key must still be
 	// refused, or the rows above are satisfied by a guard that stopped guarding.
@@ -86,6 +106,14 @@ func TestRequireInstanceKey_AgreesWithTheServerOnPractice(t *testing.T) {
 	// field policy, which is a different rule from this one.
 	require.Error(t, requireInstanceKey(&knowledgev1.GraphSelector{Graph: "code"}),
 		"a code selector with no repo names no graph")
+
+	// AND THE SECOND CONTROL, which keeps the practice arm from being a guard
+	// that refuses everything: a code selector carrying its repo passes, and so
+	// does a name-keyed family's.
+	require.NoError(t, requireInstanceKey(&knowledgev1.GraphSelector{Graph: "code", Repo: "myrepo"}),
+		"control: a code selector carrying its repo is the shape the server serves")
+	require.NoError(t, requireInstanceKey(&knowledgev1.GraphSelector{Graph: "web", Name: "docs-site"}),
+		"control: a name-keyed family is untouched by the practice arm")
 }
 
 // errorFake fails every Execute — used to drive the probe-failure arm.

@@ -10,9 +10,10 @@ analyzers, reflection over the thought graph, and more).
 
 Every form respects the `graph` selector, so the same tool reads the knowledge,
 code, practice, linkage, and registered custom graphs — you pick the graph family
-with `graph` and name the specific instance with its typed field (`repo`,
-`account`, `language`, or `name`). `query` is read-only; writes go through
-`mutate`.
+with `graph` and name the specific instance with its typed field (`repo` or
+`name`); a singleton family — knowledge, practice, checks, linkage — holds one
+graph and takes no instance field at all. `query` is read-only; writes go
+through `mutate`.
 
 ## When & how to use
 
@@ -54,8 +55,9 @@ query({ "type": "decision" })
 outside the accepted vocabulary (built-ins plus your registered custom graph
 types) is refused with an error naming it and the accepted set. The fan-outs that
 do exist are within a single graph: `repo: "all"` across code repos. The practice
-counterpart, `language: "all"`, is retired and refused — practice is one combined
-graph, so omit `language` and narrow within it by `source` (a hub id) instead.
+counterpart was `language: "all"`, and `language` is refused on every practice arm
+whatever it carries — practice is one combined graph, so omit the param and narrow
+within the graph by `source` (a hub id) instead.
 For the full mode catalog, run `help("query")`.
 
 ## Parameters
@@ -85,7 +87,7 @@ For the full mode catalog, run `help("query")`.
 | `file_paths[]` | string |  |  |  |
 | `format` | string |  |  | Output format: 'text' (default) or 'json' (structured). Recognized by several modes. A `fields` PROJECTION OVERRIDES IT: when fields is supplied the read emits the json projection whatever format says, on the by-id, ids-hydrate and plan_tree arms alike — a projected row is a json object, so there is no text shape to render it into. Measure format's effect on a read carrying NO fields. |
 | `granularity` | string |  | cluster, topic | Which reflect view mode='summary' and mode='personality' render: 'cluster' (default) rolls up by detected cluster, 'topic' rolls up by topic membership and displays topic summaries as the names. |
-| `graph` | string |  |  | Which graph to search: knowledge, code, practice, checks, linkage, or a registered custom graph type (default: knowledge). There is no cross-graph selector — name ONE graph; a value outside this vocabulary is REFUSED with an error naming it and the accepted set. practice is a SINGLE combined graph taking neither language nor name, narrowed within by 'source' (a hub id) and readable under the legacy read-only 'language' selector for the pre-singleton graphs; checks is a SINGLE graph holding every language's deterministic corpus checks and their fixtures, addressed with no language or name (language is a metadata key on each node). |
+| `graph` | string |  |  | Which graph to search: knowledge, code, practice, checks, linkage, or a registered custom graph type (default: knowledge). There is no cross-graph selector — name ONE graph; a value outside this vocabulary is REFUSED with an error naming it and the accepted set. practice is a SINGLE combined graph taking neither language nor name, narrowed within by 'source' (a hub id) and REFUSING 'language' on every arm; checks is a SINGLE graph holding every language's deterministic corpus checks and their fixtures, addressed with no language or name (language is a metadata key on each node). |
 | `group_by_file` | boolean |  |  | Group code search results by file |
 | `id` | string |  |  | Direct node lookup by ID. If graph=code, runs analyze_node instead. |
 | `ids` | array of string |  |  | Bulk hydrate-by-id: pass a list of node IDs and receive {label, nodes:[]} in one call (JSON output). Mutually exclusive with id. Used by client-side reflective code where K query(id:...) round trips would otherwise be needed. |
@@ -96,7 +98,7 @@ For the full mode catalog, run `help("query")`.
 | `include_source` | boolean |  |  | Include source code in results (code graph) |
 | `include_tests` | boolean |  |  | Include test code (test/benchmark/example/fuzz/setup/teardown/fixture/mock/helper) in results. Default true. Code graph only — silently ignored on other graphs. Note: until per-language predicate-population tickets land, all code nodes have is_test=false so this filter is currently a no-op. |
 | `include_tombstones` | boolean |  |  | Include tombstoned (deleted) nodes in results. Default false. |
-| `language` | string |  |  | Language code (e.g. 'go', 'python', 'typescript'). Two uses: (1) LEGACY practice READ selector naming one of the pre-singleton practice graphs — omit it to read the one combined graph, and narrow that with 'source' instead; it is REFUSED on every practice write; (2) topology analyzer filter — code-graph analyzers like god_object scope to a single language. Empty means no filter for topology, and the whole combined graph for practice. |
+| `language` | string |  |  | Language code (e.g. 'go', 'python', 'typescript'). ONE use: the topology analyzer filter — code-graph analyzers like god_object scope to a single language, and empty means no filter. It addresses NO graph: practice is one combined graph and REFUSES it on every arm, read and write, naming 'source' (a hub id) as the way to narrow that graph. |
 | `limit` | number |  |  | Max results (default: 10). The server serves EVERY read at a row ceiling — 50,000 rows for an edges read and 10,000 rows for a node browse — so omitting limit, or setting it above the ceiling, returns a result bounded at that ceiling rather than a complete one. Completeness is reported TWO WAYS, and which one you get depends on the format you asked for. JSON callers read a `truncated` boolean in the JSON payload of every query read whose ceiling can engage — type-browse, ids[] hydrate, text search, mode=examine, mode=plan_tree (on the envelope ROOT, not per row) and the registered-custom resource browse — emitted UNCONDITIONALLY, so `false` is a positive statement of completeness rather than a missing key. TEXT callers get an English notice in a SECOND content block instead; the payload block itself is untouched, so a JSON body stays parseable. The boolean reports SERVER CEILING ENGAGEMENT specifically: `false` means no ceiling bounded this read, not that the result is guaranteed whole by some other measure. When it is true, re-run with an explicit limit and page until a short page. ONE READ CARRIES THE KEY ONLY ON ITS JSON FORM: query(id) with include_edges / include_cross_links. Ask for format:'json' and it returns a {node, edges, cross_links, truncated} envelope carrying the key on the same unconditional terms as the rest. Leave format unset and it keeps its legacy bodies — a {node, edges} JSON body on the knowledge graph, markdown on any other — and neither carries the key, so a default-format caller's truncation reaches them ONLY as the trailing English notice, which it does append. For mode='correlations' and mode='timeline' limit widens the ranked cap instead (correlations up to 1000 rows, timeline up to 5000); an oversized value is clamped to that ceiling. |
 | `magnitude_min` | number |  |  | Minimum thought magnitude |
 | `meta` | object |  |  | Metadata equality filter, applied to type-browse and text-search dispatch. Map of metadata key to required value; a value of "*" matches any non-empty value (i.e., "the key is set"). Example: {"dsl_pattern": "*"} returns every node carrying a dsl_pattern. Multiple keys are AND'd. |

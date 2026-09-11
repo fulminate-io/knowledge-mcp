@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // perNameStats answers with counts for the names it knows and an error for every
@@ -74,13 +76,16 @@ func TestGraphCountRow_ReportsTheReadFailureRatherThanEmptiness(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	// THE PRACTICE ROWS DRIVE graphCountRowFor, the caller-built-target entry
-	// point, because that is what the legacy practice enumeration uses. A derived
-	// practice target carries NO instance field — practice is a singleton — so
-	// every row here would address the same graph and this fixture's per-name
-	// counts would never be reached.
+	// THE ROWS DRIVE graphCountRowFor, the caller-built-target entry point, with a
+	// NAME-KEYED family's target. It used to build a legacy practice target, which
+	// carried the name on the `language` field, because that is what the practice
+	// enumeration then did; practice addresses no instance at all now, so a
+	// practice target would send the same selector for every row and this
+	// fixture's per-name counts would never be reached. The renderer under test is
+	// family-agnostic, so any name-keyed family exercises it.
 	row := func(name string) string {
-		return graphCountRowFor(ctx, fake, name, practiceReadTarget(name))
+		return graphCountRowFor(ctx, fake, name,
+			graphsel.GraphSelectorFor(kgtypes.GraphWebRaw, name, false))
 	}
 
 	// UNREADABLE: names the graph, carries the error, and reports NO count.

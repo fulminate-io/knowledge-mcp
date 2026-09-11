@@ -67,15 +67,13 @@ func (healthyEmbedder) EmbedBinaryBatch(_ context.Context, texts []string) ([][]
 func TestEmbedDegrade_DisclosedOnPracticeRenderers(t *testing.T) {
 	const embedFailure = "voyage: 429 rate limited"
 
-	practiceBody := func(t *testing.T, language string, emb any) string {
+	practiceBody := func(t *testing.T, emb any) string {
 		t.Helper()
-		gc := newFanOutHarness(t, []string{"default", "go"},
+		gc := newFanOutHarness(t, []string{"default"},
 			practiceNode("p:go", "GoWorkerPool", "bounded goroutines"),
-			practiceNode("p:cb", "CombinedPool", "the combined graph's own entry"),
 		)
 		mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
-			"default": {{ID: "p:cb", Score: 0.90}},
-			"go":      {{ID: "p:go", Score: 0.70}},
+			"default": {{ID: "p:go", Score: 0.90}},
 		})
 		deps := &interceptDeps{gc: gc, segMgr: mgr, segCoverage: &gapCoverageFake{covered: 9}}
 		switch e := emb.(type) {
@@ -85,38 +83,30 @@ func TestEmbedDegrade_DisclosedOnPracticeRenderers(t *testing.T) {
 			deps.emb = e
 		}
 		res := gatedRoutePractice(opCtx(), deps, gc, queryArgs{
-			Graph: "practice", Language: language, Text: "pool",
+			Graph: "practice", Text: "pool",
 		})
 		return textBodyTools(res)
 	}
 
-	t.Run("single_language", func(t *testing.T) {
-		broken := practiceBody(t, "go", failingEmbedder{err: errors.New(embedFailure)})
+	t.Run("the_one_combined_graph", func(t *testing.T) {
+		// THE TWO SUBTESTS THAT USED TO SIT HERE ARE ONE. There was a
+		// "single_language" leg driving a named pre-singleton graph and a
+		// "no_selector" leg driving the unselected corpus-wide read; `language` is
+		// refused on every practice arm now, so there is one read and one leg. The
+		// disclosure contract is unchanged: a dead semantic arm is stated on the
+		// render rather than inferred from flat scores.
+		broken := practiceBody(t, failingEmbedder{err: errors.New(embedFailure)})
 		assert.Contains(t, broken, "_search mode: BM25-only_",
 			"a failed embed must be DISCLOSED on the render, not inferred from flat scores")
 		assert.Contains(t, broken, "GoWorkerPool", "results are still served — this is disclosure, not refusal")
 
-		healthy := practiceBody(t, "go", healthyEmbedder{})
+		healthy := practiceBody(t, healthyEmbedder{})
 		assert.Contains(t, healthy, "_search mode: vector+text_",
 			"a healthy embed must report the vector arm ran")
 		// THE DISCRIMINATING LEG. Without it a renderer that hardcoded the
 		// BM25-only string would satisfy the assertion above.
 		assert.NotContains(t, healthy, "BM25-only",
 			"the label must track the ACTUAL arm, not be printed unconditionally")
-	})
-
-	t.Run("no_selector", func(t *testing.T) {
-		// The UNSELECTED search reads the one combined graph. It is the arm the
-		// fan-out subtest used to cover: the corpus-wide read, which is now one
-		// engine call rather than a scatter-gather, and it must disclose a dead
-		// semantic arm on exactly the same terms.
-		broken := practiceBody(t, "", failingEmbedder{err: errors.New(embedFailure)})
-		assert.Contains(t, broken, "CombinedPool", "the combined graph was searched")
-		assert.Contains(t, broken, "_search mode: BM25-only_")
-
-		healthy := practiceBody(t, "", healthyEmbedder{})
-		assert.Contains(t, healthy, "_search mode: vector+text_")
-		assert.NotContains(t, healthy, "BM25-only")
 	})
 
 	t.Run("zero_results_names_the_embed_failure", func(t *testing.T) {

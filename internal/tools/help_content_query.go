@@ -82,14 +82,13 @@ Design: query is a generic primitive. It dispatches on params: 'id' → direct l
 ## Practice graph queries
   Practice is ONE combined graph. It takes no instance selector: an unselected
   read addresses the whole corpus, and 'source' narrows it to one origin hub.
-  'language' is the READ-ONLY legacy selector for the pre-singleton graphs.
+  'language' is REFUSED on every practice arm, whatever value it carries.
 
   query({ "graph": "practice" })                                     — browse the combined practice graph
-  query({ "graph": "practice", "mode": "modules" })                  — list the pre-singleton practice graphs
+  query({ "graph": "practice", "mode": "modules" })                  — read the practice catalog and its size
   query({ "graph": "practice", "source": "hub_id" })                 — browse one origin hub
   query({ "graph": "practice", "text": "errors" })                   — search the whole practice corpus
   query({ "id": "node_id", "graph": "practice" })                    — look up a specific practice node
-  query({ "graph": "practice", "language": "go" })                   — browse a LEGACY pre-singleton graph
 
 ### Style-rule index
   query({ "graph": "practice", "mode": "style_index", "source": "hub_id" })
@@ -152,7 +151,7 @@ Design: query is a generic primitive. It dispatches on params: 'id' → direct l
 ## Key parameters
   text, id, type, mode, graph (knowledge|code|practice|checks|linkage|custom), limit, offset,
   include_edges, include_cross_links, since, session, status, valence_min/max, magnitude_min,
-  consistency_max, connected_to, language (for practice graph),
+  consistency_max, connected_to, language (topology analyzer filter only),
   resource_type (for a resource-shaped graph), name (for a name-keyed graph)
 
 ## Gotchas
@@ -162,11 +161,11 @@ Design: query is a generic primitive. It dispatches on params: 'id' → direct l
     REFUSED, like any other unknown value, with an error naming it and the
     accepted vocabulary. Name the graph you mean — for code, that also means
     naming 'repo' (or repo:"all", the cross-REPO fan-out within the code graph).
-    language:"all" was its practice-graph counterpart and is RETIRED: practice is
-    one combined graph, so an unselected read already covers the whole corpus.
+    language:"all" was its practice-graph counterpart and is RETIRED with every
+    other value of that param: practice is one combined graph, so an unselected
+    read already covers the whole corpus.
   - Practice graph queries take NO instance selector. Omit it to read the
-    combined graph, narrow with source:"<hub id>", and use the read-only
-    'language' only to reach a pre-singleton graph.
+    combined graph and narrow with source:"<hub id>"; 'language' is refused.
   - include_cross_links only works with id-based queries (not browse or search)
 `
 

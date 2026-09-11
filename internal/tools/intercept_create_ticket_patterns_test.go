@@ -184,7 +184,12 @@ func TestInterceptCreateTicket_LanguagePatternsIndependent(t *testing.T) {
 // graph resolves to its deterministic knowledge proxy ID as the create_batch
 // EdgeUses target, with no false "not found" warning.
 func TestInterceptCreateTicket_PracticePatternResolvesToProxyTarget(t *testing.T) {
-	const practiceGraph = "knowledge-architecture"
+	const practiceGraph = "default"
+	// THE PRACTICE GRAPH IS "default", THE ONE COMBINED GRAPH. It used to be a
+	// per-language name here, because the catalog listed eight of them and the
+	// probe addressed the one it was handed; the family holds one graph, the
+	// catalog reports that name, and every practice target addresses it with no
+	// instance field at all.
 	const practicePatID = "practice-pat-tkt"
 
 	practiceNode := knowledgev1.Node{

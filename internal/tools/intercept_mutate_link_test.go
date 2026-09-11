@@ -31,7 +31,7 @@ func graphNodeResult(t *testing.T, id, typ, symbol, summary string) kgtools.Tool
 // a mutate(link, graph:practice, from:<knowledge-id>, to:<practice-
 // id>, relationship:uses, language:go) where FROM resolves in KNOWLEDGE and TO in
 // practice/go materializes the deterministic proxy via the engine Execute seam (a
-// MUTATION_KIND_UPSERT with NodeBody.Id=='proxy:practice:go:<to>') + a from→proxy
+// MUTATION_KIND_UPSERT with NodeBody.Id=='proxy:practice:default:<to>') + a from→proxy
 // MUTATION_KIND_LINK Execute targeting knowledge. A SECOND identical call is
 // idempotent (same proxy id).
 func TestCrossGraphLink_KnowledgeFromPracticeTo_MaterializesProxy(t *testing.T) {
@@ -41,9 +41,9 @@ func TestCrossGraphLink_KnowledgeFromPracticeTo_MaterializesProxy(t *testing.T) 
 			"knowledge": {"dec-1": graphNodeResult(t, "dec-1", "decision", "Dec", "a decision")},
 		},
 		queryResponsesByGraphName: map[graphKey]map[string]kgtools.ToolResult{
-			{Type: "practice", Name: "go"}: {"pat-1": graphNodeResult(t, "pat-1", "pattern", "Pat", "a pattern")},
+			{Type: "practice", Name: "default"}: {"pat-1": graphNodeResult(t, "pat-1", "pattern", "Pat", "a pattern")},
 		},
-		listGraphsResult: listGraphsResultFor(t, [2]string{"practice", "go"}),
+		listGraphsResult: listGraphsResultFor(t, [2]string{"practice", "default"}),
 	}
 	deps := interceptTestDeps{gc: fc}
 
@@ -60,16 +60,16 @@ func TestCrossGraphLink_KnowledgeFromPracticeTo_MaterializesProxy(t *testing.T) 
 	upsert := fc.execMutations[0]
 	assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_UPSERT, upsert.GetKind())
 	require.Len(t, upsert.GetNodeBodies(), 1)
-	assert.Equal(t, "proxy:practice:go:pat-1", upsert.GetNodeBodies()[0].GetId(), "deterministic practice proxy id")
+	assert.Equal(t, "proxy:practice:default:pat-1", upsert.GetNodeBodies()[0].GetId(), "deterministic practice proxy id")
 	assert.Equal(t, "proxy", upsert.GetNodeBodies()[0].GetType())
-	assert.Equal(t, "proxy:practice:go", upsert.GetNodeBodies()[0].GetSource())
+	assert.Equal(t, "proxy:practice:default", upsert.GetNodeBodies()[0].GetSource())
 
 	link := fc.execMutations[1]
 	assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_LINK, link.GetKind())
 	assert.Equal(t, []string{"dec-1"}, link.GetSelection().GetIds(), "from is the edge source")
 	assert.Equal(t, "Uses", link.GetEdgeSpec().GetRelationship(),
 		"the fixture's knowledge graph carries no edges, so the write DECLARES the family with the caller's spelling")
-	assert.Equal(t, "proxy:practice:go:pat-1", link.GetEdgeSpec().GetToId())
+	assert.Equal(t, "proxy:practice:default:pat-1", link.GetEdgeSpec().GetToId())
 
 	// The LINK Execute targets the knowledge graph (proxy + edge live there).
 	require.NotEmpty(t, fc.execRequests)
@@ -84,7 +84,7 @@ func TestCrossGraphLink_KnowledgeFromPracticeTo_MaterializesProxy(t *testing.T) 
 	require.True(t, handled2)
 	require.False(t, res2.IsError)
 	require.Len(t, fc.execMutations, 4, "second call → another UPSERT+LINK, same ids")
-	assert.Equal(t, "proxy:practice:go:pat-1", fc.execMutations[2].GetNodeBodies()[0].GetId())
+	assert.Equal(t, "proxy:practice:default:pat-1", fc.execMutations[2].GetNodeBodies()[0].GetId())
 }
 
 // TestCrossGraphLink_ProxyEquivalence covers the equivalence: the client proxy
@@ -93,7 +93,7 @@ func TestCrossGraphLink_KnowledgeFromPracticeTo_MaterializesProxy(t *testing.T) 
 // Both paths build the proxy via the SHARED crossgraph.BuildCrossGraphProxy with a ProxyTarget whose
 // Name is the language slug, so equivalence is structural — this asserts the exact
 // field shape both paths emit, for a slug-transforming language input (so the
-// byte-identical-id parity is exercised, not just "go"). The slug
+// byte-identical-id parity is exercised). The graph name
 // ("javascript-typescript") is the deterministic SlugifyLanguage output, inlined.
 func TestCrossGraphLink_ProxyEquivalence(t *testing.T) {
 	const langSlug = "javascript-typescript"
@@ -184,9 +184,9 @@ func TestCrossGraphLink_ForeignFromKnowledgeTo(t *testing.T) {
 			"knowledge": {"dec-1": graphNodeResult(t, "dec-1", "decision", "Dec", "d")},
 		},
 		queryResponsesByGraphName: map[graphKey]map[string]kgtools.ToolResult{
-			{Type: "practice", Name: "go"}: {"pat:worker-pool": graphNodeResult(t, "pat:worker-pool", "pattern", "worker-pool", "a pattern")},
+			{Type: "practice", Name: "default"}: {"pat:worker-pool": graphNodeResult(t, "pat:worker-pool", "pattern", "worker-pool", "a pattern")},
 		},
-		listGraphsResult: listGraphsResultFor(t, [2]string{"practice", "go"}),
+		listGraphsResult: listGraphsResultFor(t, [2]string{"practice", "default"}),
 	}
 	deps := interceptTestDeps{gc: fc}
 
@@ -198,8 +198,8 @@ func TestCrossGraphLink_ForeignFromKnowledgeTo(t *testing.T) {
 	require.False(t, res.IsError, "foreign-from link: %s", toolResultText(res))
 
 	require.Len(t, fc.execMutations, 2)
-	wantProxy := mustProxyID(t, kgtypes.GraphPractice, "go", "pat:worker-pool")
-	assert.Equal(t, "proxy:practice:go:pat:worker-pool", wantProxy)
+	wantProxy := mustProxyID(t, kgtypes.GraphPractice, "default", "pat:worker-pool")
+	assert.Equal(t, "proxy:practice:default:pat:worker-pool", wantProxy)
 	assert.Equal(t, wantProxy, fc.execMutations[0].GetNodeBodies()[0].GetId())
 	assert.Equal(t, []string{wantProxy}, fc.execMutations[1].GetSelection().GetIds())
 	assert.Equal(t, "dec-1", fc.execMutations[1].GetEdgeSpec().GetToId())
@@ -214,9 +214,9 @@ func TestCrossGraphLink_KnowledgeFromForeignTo(t *testing.T) {
 			"knowledge": {"dec-1": graphNodeResult(t, "dec-1", "decision", "Dec", "d")},
 		},
 		queryResponsesByGraphName: map[graphKey]map[string]kgtools.ToolResult{
-			{Type: "practice", Name: "python"}: {"pat:build": graphNodeResult(t, "pat:build", "pattern", "build", "a pattern")},
+			{Type: "practice", Name: "default"}: {"pat:build": graphNodeResult(t, "pat:build", "pattern", "build", "a pattern")},
 		},
-		listGraphsResult: listGraphsResultFor(t, [2]string{"practice", "python"}),
+		listGraphsResult: listGraphsResultFor(t, [2]string{"practice", "default"}),
 	}
 	deps := interceptTestDeps{gc: fc}
 
@@ -228,8 +228,8 @@ func TestCrossGraphLink_KnowledgeFromForeignTo(t *testing.T) {
 	require.False(t, res.IsError, "knowledge-from foreign-to link: %s", toolResultText(res))
 
 	require.Len(t, fc.execMutations, 2)
-	wantProxy := mustProxyID(t, kgtypes.GraphPractice, "python", "pat:build")
-	assert.Equal(t, "proxy:practice:python:pat:build", wantProxy)
+	wantProxy := mustProxyID(t, kgtypes.GraphPractice, "default", "pat:build")
+	assert.Equal(t, "proxy:practice:default:pat:build", wantProxy)
 	assert.Equal(t, wantProxy, fc.execMutations[0].GetNodeBodies()[0].GetId())
 	assert.Equal(t, wantProxy, fc.execMutations[1].GetEdgeSpec().GetToId())
 }
@@ -272,9 +272,9 @@ func TestCrossGraphLink_PracticeFromKnowledgeTo(t *testing.T) {
 			"knowledge": {"dec-1": graphNodeResult(t, "dec-1", "decision", "Dec", "d")},
 		},
 		queryResponsesByGraphName: map[graphKey]map[string]kgtools.ToolResult{
-			{Type: "practice", Name: "go"}: {"pat-1": graphNodeResult(t, "pat-1", "pattern", "Pat", "p")},
+			{Type: "practice", Name: "default"}: {"pat-1": graphNodeResult(t, "pat-1", "pattern", "Pat", "p")},
 		},
-		listGraphsResult: listGraphsResultFor(t, [2]string{"practice", "go"}),
+		listGraphsResult: listGraphsResultFor(t, [2]string{"practice", "default"}),
 	}
 	deps := interceptTestDeps{gc: fc}
 
@@ -286,8 +286,8 @@ func TestCrossGraphLink_PracticeFromKnowledgeTo(t *testing.T) {
 	require.False(t, res.IsError, "practice-from link: %s", toolResultText(res))
 
 	require.Len(t, fc.execMutations, 2)
-	wantProxy := mustProxyID(t, kgtypes.GraphPractice, "go", "pat-1")
-	assert.Equal(t, "proxy:practice:go:pat-1", wantProxy, "slug-ful FROM proxy")
+	wantProxy := mustProxyID(t, kgtypes.GraphPractice, "default", "pat-1")
+	assert.Equal(t, "proxy:practice:default:pat-1", wantProxy, "slug-ful FROM proxy")
 	assert.Equal(t, wantProxy, fc.execMutations[0].GetNodeBodies()[0].GetId())
 	assert.Equal(t, []string{wantProxy}, fc.execMutations[1].GetSelection().GetIds())
 	assert.Equal(t, "dec-1", fc.execMutations[1].GetEdgeSpec().GetToId())
@@ -396,9 +396,9 @@ func TestCrossGraphLink_StatslessCaller_DeclinesRatherThanClaims(t *testing.T) {
 				"knowledge": {"dec-1": graphNodeResult(t, "dec-1", "decision", "Dec", "a decision")},
 			},
 			queryResponsesByGraphName: map[graphKey]map[string]kgtools.ToolResult{
-				{Type: "practice", Name: "go"}: {"pat-1": graphNodeResult(t, "pat-1", "pattern", "Pat", "a pattern")},
+				{Type: "practice", Name: "default"}: {"pat-1": graphNodeResult(t, "pat-1", "pattern", "Pat", "a pattern")},
 			},
-			listGraphsResult: listGraphsResultFor(t, [2]string{"practice", "go"}),
+			listGraphsResult: listGraphsResultFor(t, [2]string{"practice", "default"}),
 		}
 		deps := interceptTestDeps{gc: &statslessCaller{inner: fc}}
 

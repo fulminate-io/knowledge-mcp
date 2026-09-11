@@ -140,7 +140,7 @@ func SearchToolDef() kgtools.MCPTool {
 				"path_prefix":       {Type: "string", Description: "Filter to files under this path. Code graph only."},
 				"repo":              repoProp,
 				"repos":             {Type: "array", Description: "Search specific repos (e.g. [\"agent\",\"knowledge\"]). Alternative to repo='all'. Code graph only.", Items: &kgtools.Property{Type: "string"}},
-				"language":          {Type: "string", Description: "LEGACY read-only practice selector naming ONE pre-singleton practice graph (e.g. 'go', 'go-idioms'). Practice is ONE combined graph now, so OMIT this to search the whole practice corpus. The 'all' fan-out sentinel is retired and is refused. Practice graph only; the same spelling query uses."},
+				"language":          {Type: "string", Description: "REFUSED on a practice search, and it addresses no other family's graph either. Practice is ONE combined graph: omit the param to search the whole practice corpus, or narrow to one origin with 'source_hub' (a hub id). Every value is refused, including the retired 'all' fan-out sentinel and the combined graph's own name. The same spelling query uses."},
 				"source_hub":        {Type: "string", Description: "Practice SOURCE HUB id — narrows the ranked practice search to the nodes grouped under that hub, applied during ranking so a small hub returns its full top-N. Read arms spell it `source`; this tool spells it `source_hub`."},
 				"branch":            {Type: "string", Description: "Branch name for overlay search. Code graph only."},
 				"staleness":         {Type: "boolean", Description: "Include index staleness info (default: false). Code graph only."},

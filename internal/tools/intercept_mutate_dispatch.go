@@ -46,15 +46,11 @@ func handleGraphPassthroughMutate(
 	if err := accountMutateParams(armGraphPassthrough, a); err != nil {
 		return true, errorResult(err.Error())
 	}
-	// REQUIREMENT 4, ON THE ARM EVERY PRACTICE WRITE PASSES THROUGH. create,
-	// create_batch, update and delete on graph:"practice" all land here, so one
-	// gate covers four arms; the link and unlink arms are gated at their own
-	// entry points because they are claimed upstream of this one. The server's
-	// resolvePractice ForWrite fence refuses the same shape again, so a client
-	// that skipped this cannot write into a pre-singleton graph either.
-	if err := refusePracticeLanguageOnWrite(a.Graph, a.Language, practiceHubParamOnWrites); err != nil {
-		return true, errorResult("mutate(" + a.Operation + "): " + err.Error())
-	}
+	// THE `language` REFUSAL IS NOT HERE ANY MORE. It used to sit on this arm,
+	// which every practice create, create_batch, update and delete passes
+	// through, with the link and unlink arms gated at their own entry points —
+	// four spellings of one rule. It now runs ONCE at the head of InterceptMutate,
+	// above every routing branch, so no arm can be reached carrying the param.
 	// THE HUB SELECTOR ON THE UPDATE ARM, which is this arm's half of the target
 	// class. It is scoped to `update` because the hub means three different things
 	// across this one arm's four operations: create and create_batch GROUP the
@@ -356,18 +352,14 @@ func handleBackendMutateUpdate(
 func guardNonKnowledgeMutate(
 	ctx context.Context, gc GraphCaller, a mutateArgs,
 ) (bool, kgtools.ToolResult) {
-	// REQUIREMENT 4 ON THE ARMS THAT DECLINE RATHER THAN CLAIM. Every practice
-	// write that is not a passthrough CRUD op or an intra-practice link arrives
-	// here — upsert, unlink, update_batch, bulk_update_metadata, and a link the
-	// cross-graph composer declined. Without this gate they were accounted as
-	// consumed and then compiled into a target with no language on it at all, so
-	// the write landed in the combined graph while the caller believed it had
-	// addressed practice/go. It runs BEFORE the accounting call because a dropped
-	// selector is a more specific fault than an unconsumed param, and this arm's
-	// spec consumes the whole schema so accounting would never speak.
-	if err := refusePracticeLanguageOnWrite(a.Graph, a.Language, practiceHubParamOnWrites); err != nil {
-		return true, errorResult("mutate(" + a.Operation + "): " + err.Error())
-	}
+	// THE `language` REFUSAL IS NOT HERE ANY MORE EITHER. This gate carried it for
+	// the arms that DECLINE rather than claim — upsert, unlink, update_batch,
+	// bulk_update_metadata, and a link the cross-graph composer declined — because
+	// without it they were accounted as consumed and then compiled into a target
+	// with no language on it at all, so the write landed in the combined graph
+	// while the caller believed it had addressed practice/go. That silent drop is
+	// still refused, one line at the head of InterceptMutate, which covers these
+	// arms and the claiming ones with one spelling.
 	// Backend-backed nodes only live in the knowledge graph.
 	//
 	// The link conjunct is load-bearing: the link block upstream does NOT return

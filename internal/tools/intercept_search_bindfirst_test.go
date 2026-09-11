@@ -66,11 +66,6 @@ func TestSegmentSearchArms_NotReadyGate(t *testing.T) {
 		h, res := InterceptQueryCodeSearch(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
 		expectNotReady(t, h, res)
 	})
-	t.Run("query-practice-language", func(t *testing.T) {
-		raw, _ := json.Marshal(map[string]any{"graph": "practice", "language": "go", "text": "x"})
-		h, res := InterceptQueryPracticeLinkage(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
-		expectNotReady(t, h, res)
-	})
 	t.Run("query-practice-no-selector", func(t *testing.T) {
 		// The UNSELECTED practice search — the corpus-wide read that replaced the
 		// language:"all" fan-out. It reaches the same composer and must meet the
@@ -116,11 +111,6 @@ func TestSegmentSearchArms_DegradedNilManager(t *testing.T) {
 	t.Run("query-code", func(t *testing.T) {
 		raw, _ := json.Marshal(map[string]any{"text": "x", "graph": "code", "repo": "knowledge"})
 		h, res := InterceptQueryCodeSearch(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
-		expectDegraded(t, h, res)
-	})
-	t.Run("query-practice-language", func(t *testing.T) {
-		raw, _ := json.Marshal(map[string]any{"graph": "practice", "language": "go", "text": "x"})
-		h, res := InterceptQueryPracticeLinkage(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
 		expectDegraded(t, h, res)
 	})
 	t.Run("query-practice-no-selector", func(t *testing.T) {

@@ -85,7 +85,7 @@ func resolveMutateArgs(ctx context.Context, stats StatsFn, args json.RawMessage)
 	if a.From == "" || a.To == "" || a.Relationship == "" || a.LinkGraph != "" {
 		return args, "", nil
 	}
-	target := mutateTarget(a.Graph, a.Repo, a.Name, a.Language, "")
+	target := mutateTarget(a.Graph, a.Repo, a.Name, "")
 	res, err := ResolveEdgeTypeDeclaration(ctx, stats, target, []string{a.Relationship})
 	if err != nil {
 		return nil, "", err

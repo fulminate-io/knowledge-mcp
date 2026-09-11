@@ -2,14 +2,14 @@
 
 package tools
 
-// practice_selector_messages.go holds the four practice-selector refusal
-// wordings. They live in a sibling file rather than beside the code that emits
-// them because their two homes — intercept_query_practice_linkage.go and
+// practice_selector_messages.go holds the practice-selector refusal wordings.
+// They live in a sibling file rather than beside the code that emits them
+// because their two homes — intercept_query_practice_linkage.go and
 // query_arm_registry_graphs.go — are both within a handful of lines of the repo's
 // 500-line file convention, which is the split rule query_arm_registry.go's own
 // header states.
 //
-// ALL FOUR FOLLOW ONE SHAPE, the same one rankedSearchRetiredResult
+// THEY ALL FOLLOW ONE SHAPE, the same one rankedSearchRetiredResult
 // (intercept_search_reducible_graph.go) uses: say what the graph IS, say what is
 // not on offer, and NAME THE CALL THAT WORKS. The generic accounting tail — "drop it or
 // issue a separate call that does" — is true and useless here, because the caller
@@ -19,37 +19,28 @@ package tools
 // param on the list-graphs arm, on the justifyRulesKnowledgeOnly precedent: the
 // generic tail is replaced wherever a specific working call exists.
 //
-// practiceListGraphsUnrouted is the refusal for a browse filter on the LEGACY
-// enumeration.
-//
 // THE ENUMERATION IS NO LONGER WHAT AN EMPTY SELECTOR MEANS. Practice is one
 // combined graph, so query(graph:"practice") with nothing else BROWSES it — the
-// shape this message used to say did not exist. The enumeration survives only as
-// the legacy read of the pre-singleton graphs, reached by mode:"modules", and it
-// still takes no filters, which is what this message now says.
-const practiceListGraphsUnrouted = "the practice-graph ENUMERATION lists the pre-singleton graphs and their sizes, " +
+// shape this message used to say did not exist. The enumeration survives as the
+// CATALOG read, reached by mode:"modules", answering whether the graph exists
+// and how big it is; it still takes no filters, which is what this message says.
+//
+// IT NAMES NO LEGACY GRAPH ANY MORE. It used to close by telling a caller how to
+// browse ONE of the pre-singleton graphs with `language`, which would now send
+// them at a refused selector.
+const practiceListGraphsUnrouted = "the practice-graph ENUMERATION reads the CATALOG — whether the graph exists and its size — " +
 	"so it routes no browse filter at all. " +
-	"To browse the combined practice graph, drop the enumeration: query(graph:\"practice\", type:...), " +
+	"To browse the practice graph, drop the enumeration: query(graph:\"practice\", type:...), " +
 	"optionally narrowed to one origin with source:\"<hub id>\". " +
-	"To browse ONE legacy graph, name it: query(graph:\"practice\", language:\"<lang>\", type:...). " +
 	"The enumeration itself takes no filters"
 
-// practiceFanOutRetired is the refusal for the language:"all" fan-out sentinel.
-//
-// THE SENTINEL IS RETIRED RATHER THAN RENAMED. It meant "search every practice
-// graph", and there is one now, so the whole-corpus search is what an unselected
-// call already does. Refusing rather than quietly treating "all" as the empty
-// selector is the point: a caller sending it is asking for a scatter-gather that
-// no longer exists, and answering a different question silently is the coercion
-// this repo does not do.
-//
-// It is shaped on rankedSearchRetiredResult — say what is retired, say why, and
-// name the call that works.
-const practiceFanOutRetired = "language:\"all\" is retired: the practice family is ONE combined graph now, " +
-	"so there is nothing left to fan out across and the sentinel would answer a different question than it was asked. " +
-	"Omit the selector to search the whole practice corpus — query(graph:\"practice\", text:\"<query>\") — " +
-	"or narrow to one origin with source:\"<hub id>\". " +
-	"To search ONE pre-singleton graph, name it: query(graph:\"practice\", language:\"<lang>\", text:\"<query>\")"
+// THE language:"all" FAN-OUT REFUSAL WENT WITH EVERY OTHER VALUE OF THE FIELD.
+// practiceFanOutRetired was the one message here that named a single value: the
+// sentinel meant "search every practice graph", there was one, and refusing
+// rather than quietly treating "all" as the empty selector was the point. Every
+// value of `language` is refused on a practice read now, with one spelling
+// (practiceLanguageRefusedOnRead), so a per-value message would have been a
+// second wording for a rule the caller cannot reach two ways.
 
 // practiceStatsNoHubScope is the rejection reason for `source` on the practice
 // stats arm.

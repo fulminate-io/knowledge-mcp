@@ -153,7 +153,14 @@ func TestMutateInstanceSelector_RefusalNamesValueAndVocabulary(t *testing.T) {
 		assert.Contains(t, msg, "requires repo", "the refusal must name the param the caller owes")
 		assert.Contains(t, msg, "accepted graph-instance selectors",
 			"the refusal must lead into the vocabulary, not merely name the missing param")
-		assert.Contains(t, msg, "language (practice)", "the vocabulary must carry the practice spelling")
+		assert.Contains(t, msg, "repo (code)", "the vocabulary must carry the one selector that exists")
+		// THE PRACTICE SPELLING IS ASSERTED ABSENT, not merely dropped: it used to
+		// read "language (practice)", and practice addresses one graph now, so
+		// offering the param would recommend a call every practice arm refuses.
+		assert.NotContains(t, msg, "language (practice)",
+			"practice takes no instance selector, so the vocabulary must not offer one")
+		assert.Contains(t, msg, "practice, checks and linkage address one graph and take none",
+			"and practice is named among the families that take none")
 
 		// THE RETIRED NAMES ARE ASSERTED ABSENT, not merely dropped from the
 		// positive list above. This vocabulary is INTERPOLATED INTO EVERY
