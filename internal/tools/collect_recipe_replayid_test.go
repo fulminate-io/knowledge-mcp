@@ -56,7 +56,7 @@ func (c *replayNameCaller) Execute(_ context.Context, req *knowledgev1.ExecuteRe
 const replayFixturePath = "/tmp/replay-fixture/Designing Fixtures.pdf"
 
 const replayBody = `select section
-emit heading {
+emit reference {
     name := section.symbol_name
 }
 `

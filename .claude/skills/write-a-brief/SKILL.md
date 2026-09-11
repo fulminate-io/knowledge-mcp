@@ -6,7 +6,7 @@ user-invocable: false
 
 # WRITE-A-BRIEF — everything load-bearing goes in before the spawn
 
-<!-- version: 5 -->
+<!-- version: 6 -->
 <!-- Read at: before every agent spawn. -->
 
 ## A brief is a decision, not a relay
@@ -37,8 +37,9 @@ then treated as live again.
 
 The brief that opens a round states the sha the round is measured on and is
 the only message that may instruct a rebase. A brief that opens a fix round
-says: the report that declares the round done is the round's last push; an
-unfinished item is stated in that report, never pushed after it.
+says: the report that declares the round done follows the round's one commit
+and is the hand-off; an unfinished item is stated in that report, never
+committed after it; the implementer never pushes, the orchestrator does.
 
 ## Standing lines in every brief
 

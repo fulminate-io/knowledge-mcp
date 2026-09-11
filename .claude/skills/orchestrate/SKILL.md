@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: Deliver a complete, working project by running the pipeline — ticket, research, prefill, review, implement, code review, confirm — as the engineering manager who solves the problems the lanes surface. Dispatch lanes in the background, examine every return before acting on it, change what you ask for when a round stops producing progress, hold the gates, land branches, and keep the user informed with truth first. Loads when a validated ticket is approved and persists through execution.
+description: Deliver a complete, working project by running the pipeline — ticket, research, prefill, review, implement, code review, confirm — as the engineering manager who solves the problems the lanes surface. Dispatch lanes, wait for their reports, examine every return before acting on it, change what you ask for when a round stops producing progress, hold the gates, land branches, and keep the user informed with truth first. Loads when a validated ticket is approved and persists through execution.
 ---
 
 # Orchestrate
@@ -188,7 +188,7 @@ desk.
 2. **RECALL BEFORE YOU SPEAK.** Before you state a mechanism, a premise or a prior ruling, to the user or in a brief, run recall and search. Your guesses about this project are wrong more often than they are right, and a guess in a brief taints the lane.
 3. **NO HYPOTHESIS BEFORE THE INVESTIGATION** of a defect. A finding, a red or a flake gets a researcher with the observation and the instruments, never a candidate mechanism. This law governs defects in the work; it never excuses you from forming a view about your own process and acting on it.
 4. **THE AUDITOR IS NEVER THE PRODUCER.** Every production is audited by a fresh lane. A prefill is audited once: its findings are applied by the planner and it ships. A failed code audit returns the production with the audit attached, and the return protocol decides the shape of the next round. A second failure on the same production is a signal about the process: the process changes before a third round, never the same round again.
-5. **NEVER BLOCK, NEVER EXECUTE.** Every spawn runs in the background; you do not write production code, and you do not poll lanes: their reports arrive as notifications. Not blocking is not the same as not thinking: the return protocol runs between the notification and the next dispatch, every time.
+5. **NEVER EXECUTE, ALWAYS WAIT.** You do not write production code: you dispatch, then wait for the lane's report and continue from it. How the wait is expressed is the harness's: where reports arrive as notifications, end the turn and act on the notification; where the dispatch call returns the agent's report, that call is the wait; where neither exists, a bounded check-and-sleep loop on the lane's status is the wait, with each check spaced by the work's own time scale (minutes for a lane, not seconds) and never a tight loop. Waiting is not the same as not thinking: the return protocol runs between the report and the next dispatch, every time.
 6. **ONE WRITER PER ARTIFACT.** A ticket, a prefill or a branch has one lane writing to it at a time. Before spawning a writer, confirm the previous lane is idle and that no message of yours to it is unconsumed; a queued message resumes an idle lane.
 7. **VERIFY BEFORE RELAY, AND BEFORE ASSERTING YOUR OWN.** A lane's "exists, built, committed" is a signpost; open the tree before it reaches the user or a dispatch decision. A conclusion you drew yourself gets the same check.
 8. **DECISIONS BELONG TO THE USER; OBSTACLES BELONG TO YOU.** Scope, wire shapes, security posture, destructive operations, and the owner's money and access posture are the user's. Everything a standing ruling, an in-force artifact (the validated ticket, the reviewed prefill) or an invariant already settles, you apply and report as applied; the in-force artifacts are checked before repository convention. Every obstacle goes through the clearing steps above before it can become a question, and you never ask a question whose answer follows from a ruling you hold or from a check you could have run. A design call that is yours is made after asking the lanes that produced and audited the work for their reasoning, never from one report alone.
@@ -332,7 +332,7 @@ direction.
   has reported done ignores every later notice until a message names its
   next action, so a queued notice never reopens a finished round.
 - A production under audit is frozen at the sha the auditor was given. A
-  push that supersedes it is measured, not re-audited on sight: compare the
+  commit that supersedes it is measured, not re-audited on sight: compare the
   new sha's patch against the audited one; if they are identical apart from
   named files, the auditor audits those files and delivers against the new
   sha; otherwise the difference is a finding and the verdict stays on the
@@ -358,8 +358,8 @@ the user says. A landing order stated in a prefill's landing section is a
 dependency, re-read before every landing decision; a change that carries a
 contract lands before every consumer of that contract, ready or not. A
 tip-moved notice to a lane whose round is open names the new rebase target
-once; if the lane has already pushed, its landing rebases and the notice says
-so. A landing red caused by a measured value the rebase moved (a
+once; if the lane has already committed, your landing rebases and the notice
+says so. A landing red caused by a measured value the rebase moved (a
 count a test pins against the tree) is a rebase residual for the lane's own
 implementer: re-derive it with the test's own rule, one commit, no round.
 Every count in a status or a brief comes from a derivation you ran in this
@@ -406,9 +406,17 @@ acceptance however late that acceptance comes.
 </constraint>
 
 <constraint id="no-lane-supervision" severity="hard">
-  No sleep-based polling of lanes or CI. Dispatch, then end the turn; reports
-  arrive as notifications. Supervise only your own long shell commands, in the
-  background, non-blocking.
+  Dispatch, then WAIT for the lanes' reports and continue the work from them;
+  never stop with lanes in flight and their reports unread. How the wait is
+  expressed is the harness's: where reports arrive as notifications, end the
+  turn and act on the notification, and never sleep-poll a lane that will
+  notify; where the dispatch call returns the agent's report, that call is the
+  wait; where neither exists, wait by checking the lane's status at intervals
+  matched to its work (minutes, not seconds) and continue when the report is
+  there. The same rule covers a CI run: a watch command that blocks until the
+  run finishes is the wait where one exists; a spaced check is the wait where
+  none does; a tight loop is never the wait. Your own long shell commands run
+  in the background and are supervised the same way.
 </constraint>
 
 <when-in-doubt>

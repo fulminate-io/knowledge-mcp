@@ -262,6 +262,13 @@ func applyTemporalRerank(results []engine.SearchResult, halfLife float64) {
 // computeTemporalScore returns the half-life decay factor for a node's
 // UpdatedAt (unix-nanos), mirroring the server computeTemporalScore: a zero/
 // IsZero timestamp is neutral (0.5); a non-positive half-life floors to 30 days.
+// temporalNow is the clock the temporal rerank ages nodes against. A variable
+// rather than a call so a test can pin one instant for the production path and
+// its oracle: the score's sensitivity to the clock is ln2/half-life per unit of
+// age, so two time.Since calls a few milliseconds apart on a slow runner differ
+// by more than a float tolerance can absorb.
+var temporalNow = time.Now
+
 func computeTemporalScore(updatedAtNanos int64, halfLifeDays float64) float64 {
 	if halfLifeDays <= 0 {
 		halfLifeDays = recentTemporalHalfLifeDays
@@ -269,7 +276,7 @@ func computeTemporalScore(updatedAtNanos int64, halfLifeDays float64) float64 {
 	if updatedAtNanos == 0 {
 		return 0.5 // neutral score for nodes with no timestamp (IsZero).
 	}
-	ageDays := time.Since(time.Unix(0, updatedAtNanos)).Hours() / 24.0
+	ageDays := temporalNow().Sub(time.Unix(0, updatedAtNanos)).Hours() / 24.0
 	return math.Pow(2.0, -ageDays/halfLifeDays)
 }
 

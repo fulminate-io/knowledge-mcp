@@ -262,7 +262,7 @@ func TestWalk_RowsCarryTheEdgeTheyWereReachedAlong(t *testing.T) {
 	t.Run("edge_position_reads_on_every_walked_row", func(t *testing.T) {
 		ex := extract(t, `select document
 walk CONTAINS
-emit outline {
+emit pattern {
     name := node.symbol_name
     p := edge.position
 }`)
@@ -278,7 +278,7 @@ emit outline {
 	t.Run("edge_type_reads_on_every_walked_row", func(t *testing.T) {
 		ex := extract(t, `select document
 walk CONTAINS
-emit outline {
+emit pattern {
     name := node.symbol_name
     t := edge.type
 }`)
@@ -294,7 +294,7 @@ emit outline {
 	// source graph consulted at all.
 	t.Run("a_select_derived_row_has_no_edge_head", func(t *testing.T) {
 		_, err := Parse([]byte(`select section
-emit outline {
+emit pattern {
     name := node.symbol_name
     p := edge.position
 }`))

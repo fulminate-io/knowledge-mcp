@@ -52,6 +52,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 )
 
@@ -173,6 +174,96 @@ func TestPlanPartVocabularyLiterals_InThisModule(t *testing.T) {
 		if lit != want {
 			t.Errorf("%s in %s = %q, want %q", name, censusClientVocabFile, lit, want)
 		}
+	}
+}
+
+// TestEnrolledNodeTypes_MatchThisModulesDeclarations is the SAME-MODULE leg of
+// the enrollment census: the set the client's refusal reads (enrolledNodeTypes,
+// through NodeType.IsEnrolled) must hold exactly the wire literals this file
+// DECLARES, in both directions.
+//
+// WHY THE SET RATHER THAN THE DECLARATIONS IS THE SUBJECT. The cross-module leg
+// pins declaration file to declaration file, which was enough while nothing in
+// the client DECIDED anything from the vocabulary. Now a practice write is
+// refused when the type is not in this set, so the set is what has to be right:
+// a const declared here but missing from the map is a type this module refuses
+// while the server admits it, and the caller is told to use one of the types it
+// just named.
+func TestEnrolledNodeTypes_MatchThisModulesDeclarations(t *testing.T) {
+	root := censusModuleRoot(t)
+	declared := censusConstLiterals(t, root, censusClientVocabFile)
+	if len(declared) == 0 {
+		t.Fatalf("census read zero NodeType consts from %s — the probe is broken, not the vocabulary", censusClientVocabFile)
+	}
+
+	declaredSet := map[NodeType]bool{}
+	for name, lit := range declared {
+		if lit == "" {
+			t.Errorf("%s declares %s with a value the census cannot read as a wire literal — "+
+				"an unreadable declaration is a hole in this comparison, not a passing row", censusClientVocabFile, name)
+			continue
+		}
+		declaredSet[NodeType(lit)] = true
+	}
+
+	enrolled := map[NodeType]bool{}
+	for _, t := range EnrolledNodeTypes() {
+		enrolled[t] = true
+	}
+	if len(enrolled) == 0 {
+		t.Fatal("EnrolledNodeTypes() is empty — every assertion below would pass vacuously")
+	}
+
+	if missing := nodeTypeSetDifference(declaredSet, enrolled); len(missing) > 0 {
+		t.Errorf("declared in %s but NOT in enrolledNodeTypes: %v — this module refuses a practice write of a type "+
+			"its own vocabulary declares, and the server admits it", censusClientVocabFile, missing)
+	}
+	if extra := nodeTypeSetDifference(enrolled, declaredSet); len(extra) > 0 {
+		t.Errorf("in enrolledNodeTypes but NOT declared in %s: %v — the set is pinned to the server's declaration "+
+			"file through the declarations here, so a member with no const escapes that pin",
+			censusClientVocabFile, extra)
+	}
+	t.Logf("client declarations and enrolled set agree: %d types", len(enrolled))
+}
+
+// nodeTypeSetDifference returns the members of a that b lacks, sorted. One
+// direction per call, so the caller states which direction it is asserting and
+// its message can name which artifact is missing the type. Sorted so a
+// multi-type failure reads the same on every run.
+func nodeTypeSetDifference(a, b map[NodeType]bool) []string {
+	var out []string
+	for t := range a {
+		if !b[t] {
+			out = append(out, string(t))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestNodeTypeSetDifference_SelfCheck drives the comparator both censuses use
+// over fixtures, so they are known to be CAPABLE of failing in each direction
+// rather than merely never having failed. Both start green: without this, a
+// comparator that returned nothing would look exactly like agreement.
+func TestNodeTypeSetDifference_SelfCheck(t *testing.T) {
+	set := func(names ...NodeType) map[NodeType]bool {
+		out := map[NodeType]bool{}
+		for _, n := range names {
+			out[n] = true
+		}
+		return out
+	}
+	if d := nodeTypeSetDifference(set("plan", "idiom"), set("idiom", "plan")); len(d) != 0 {
+		t.Errorf("equal sets differ: %v", d)
+	}
+	if d := nodeTypeSetDifference(set("plan", "widget"), set("plan")); len(d) != 1 || d[0] != "widget" {
+		t.Errorf("a member missing from b must be reported, got %v", d)
+	}
+	if d := nodeTypeSetDifference(set("plan"), set("plan", "widget")); len(d) != 0 {
+		t.Errorf("the difference is one-directional, got %v — a symmetric helper would hide which side is missing it", d)
+	}
+	if d := nodeTypeSetDifference(set("c", "a", "b"), set()); len(d) != 3 || d[0] != "a" || d[2] != "c" {
+		t.Errorf("the difference must be sorted, got %v", d)
 	}
 }
 

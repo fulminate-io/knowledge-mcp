@@ -90,7 +90,7 @@ func TestEdgeAttributeReads_Behaviour(t *testing.T) {
 	t.Run("reads_the_traversed_edge", func(t *testing.T) {
 		nodes := edgeEmit(t, sv, `select document
 traverse CONTAINS out as $b
-emit block {
+emit pattern {
     name := node.symbol_name
     et := edge.type
     pos := edge.position
@@ -119,7 +119,7 @@ emit block {
 		// for all three and reds here.
 		nodes := edgeEmit(t, sv, `select block
 traverse REFERENCES out as $r
-emit link {
+emit reference {
     name := node.symbol_name
     et := edge.type
     sugar := edge.rel
@@ -142,7 +142,7 @@ emit link {
 		nodes := edgeEmit(t, sv, `select document
 traverse CONTAINS out as $b
 filter {"compare": {"of": "edge.position", "op": "lt", "value": "2"}}
-emit block {
+emit pattern {
     name := node.symbol_name
 }`)
 		assert.Equal(t, []string{"first", "second"}, edgeNames(nodes))
@@ -157,7 +157,7 @@ emit block {
 		nodes := edgeEmit(t, sv, `select document
 traverse CONTAINS out as $b
 filter {"descendant": {"edge": "CONTAINS", "where": {"compare": {"of": "edge.position", "op": "eq", "value": "7"}}}}
-emit block {
+emit pattern {
     name := node.symbol_name
 }`)
 		assert.Equal(t, []string{"first"}, edgeNames(nodes),
@@ -171,7 +171,7 @@ emit block {
 		// it — which is why edgeHead is NOT in universalHeads.
 		_, err := Parse([]byte(`select block
 filter {"compare": {"of": "edge.position", "op": "lt", "value": "2"}}
-emit block {
+emit pattern {
     name := node.symbol_name
 }`))
 		require.Error(t, err)
@@ -186,7 +186,7 @@ emit block {
 		// listing only the latter would never mention edge.type.
 		msg := refusalFor(t, sv, `select document
 traverse CONTAINS out as $b
-emit block {
+emit pattern {
     name := edge.weight
 }`)
 		assert.Contains(t, msg, `"weight"`, "the offending attribute")
@@ -203,7 +203,7 @@ emit block {
 		// key the graph does carry.
 		msg := refusalFor(t, sv, `select document
 traverse CONTAINS out as $b
-emit block {
+emit pattern {
     name := edge.positionn
 }`)
 		assert.Contains(t, msg, `"positionn"`, "the offending key")
@@ -239,7 +239,7 @@ emit r {
 		// read and answer a symbol name for a question about an edge.
 		msg := refusalFor(t, sv, `select document
 traverse CONTAINS out as $b
-emit block {
+emit pattern {
     name := edge
 }`)
 		assert.Contains(t, msg, "names no edge attribute")

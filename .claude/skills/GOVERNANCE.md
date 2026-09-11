@@ -1,6 +1,6 @@
 # GOVERNANCE — cross-agent laws
 
-<!-- version: 5 -->
+<!-- version: 6 -->
 <!-- SIZE CAP (hard): every agent reads this file on every spawn, so every line
      here is paid on every turn of every lane. A rule lands here only when it is
      genuinely universal; anything role-specific lives in that role's definition
@@ -118,6 +118,13 @@ through the table. A stale index is reported and collected, never grepped
 around. Every report ends with a tool census (knowledge-tool calls, shell
 calls, what the shell calls were for); a research, prefill or audit lane whose
 shell calls outnumber its knowledge-tool calls is drift.
+
+A workflow a user-invocable skill already covers runs through that skill, in
+the session that holds the tools it names, never through a lane briefed to do
+its steps by hand. An external source (a book, a public catalog, a reference
+site) enters the practice graph through `ingest-patterns`; before any spawn,
+the brief's verbs are checked against the skills and against the lane
+definition's tool list.
 
 ## The requirement is never negotiated downward
 

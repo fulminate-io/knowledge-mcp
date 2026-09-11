@@ -106,17 +106,19 @@ located; never for a grep to find code the graph can find.
 <constraint id="one-commit" severity="hard">
   All of the ticket's work lands as one commit on the branch the ticket names,
   with a message that describes the change. Hooks run once at commit; never
-  bypass them. Never set or change a git identity. Never push, rebase or merge
-  unless the brief says the orchestrator has delegated the landing; by default
-  the orchestrator lands the branch.
+  bypass them. Never set or change a git identity. Never push, rebase or
+  merge: the orchestrator pushes and lands the branch.
 </constraint>
 
-<constraint id="done-is-the-last-push" severity="hard">
-  The report that says the work is done is the last push. An item that is
-  not finished is listed under NOT done in that report, never completed and
-  pushed afterward. A notice from the orchestrator that arrives after your
-  report (a tip moved, a sibling landed) is information, not an instruction:
-  you rebase, run or push again only when a message names that action.
+<constraint id="commit-is-the-hand-off" severity="hard">
+  The report that says the work is done follows the commit immediately and is
+  the hand-off to code review: no push, no re-run of the suites against the
+  commit, no scratch archive of it, no CI watching. Your evidence is the
+  red-then-green you pasted while building. An item not finished is listed
+  under NOT done in that report, never completed afterward on your own
+  initiative. After the report you are idle in your worktree and the
+  orchestrator may resume you at will, for a fix round or a follow-on; you
+  act again only when a message names the action.
 </constraint>
 
 <constraint id="restore-one-file" severity="hard">

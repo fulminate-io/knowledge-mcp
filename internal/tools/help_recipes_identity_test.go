@@ -60,9 +60,9 @@ const identityCollisionMarker = "produced identity"
 func TestHelpRecipes_IdentityCollisionMarkerDiscriminates(t *testing.T) {
 	caller := helpFixtureCaller()
 	const colliding = "select section\n" +
-		"emit probe { name := \"one name for every row\" }\n"
+		"emit example { name := \"one name for every row\" }\n"
 	const unique = "select section\n" +
-		"emit probe { identity := section.id, name := \"one name for every row\" }\n"
+		"emit example { identity := section.id, name := \"one name for every row\" }\n"
 
 	rows, out := runHelpFixtureExtract(t, caller, "pdf", colliding)
 	if rows != -1 || !strings.Contains(out, identityCollisionMarker) {

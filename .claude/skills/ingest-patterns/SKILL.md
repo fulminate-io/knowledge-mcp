@@ -122,7 +122,7 @@ collect({
   "transformer": "recipe",
   "extract": true,
   "max_rows": 50,
-  "recipe_body": "select section\nemit outline {\n    identity := section.id\n    name := section.symbol_name\n    path := heading_path(\"CONTAINS\", \"symbol_name\", \" > \")\n}"
+  "recipe_body": "select section\nemit reference {\n    identity := section.id\n    name := section.symbol_name\n    path := heading_path(\"CONTAINS\", \"symbol_name\", \" > \")\n}"
 })
 ```
 
@@ -136,7 +136,7 @@ collect({
   "transformer": "recipe",
   "extract": true,
   "max_rows": 20,
-  "recipe_body": "select section\nfilter {\"matches\": {\"of\": \"section.symbol_name\", \"regex\": \"^Idempotent\"}}\nemit passage {\n    identity := section.id\n    name := section.symbol_name\n    path := heading_path(\"CONTAINS\", \"symbol_name\", \" > \")\n    body := subtree_concat(\"CONTAINS\", \"body\", \"\\n\\n\", \"4\")\n}"
+  "recipe_body": "select section\nfilter {\"matches\": {\"of\": \"section.symbol_name\", \"regex\": \"^Idempotent\"}}\nemit example {\n    identity := section.id\n    name := section.symbol_name\n    path := heading_path(\"CONTAINS\", \"symbol_name\", \" > \")\n    body := subtree_concat(\"CONTAINS\", \"body\", \"\\n\\n\", \"4\")\n}"
 })
 ```
 
@@ -190,7 +190,7 @@ collect({
   "id": "<slug-or-absolute-pdf-path>",
   "transformer": "recipe",
   "land": true,
-  "recipe_body": "select section\nfilter {\"matches\": {\"of\": \"section.symbol_name\", \"regex\": \"^Idempotent\"}}\nemit passage {\n    identity := section.id\n    name := section.symbol_name\n    summary := section.symbol_name\n    path := heading_path(\"CONTAINS\", \"symbol_name\", \" > \")\n    body := subtree_concat(\"CONTAINS\", \"body\", \"\\n\\n\", \"4\")\n}"
+  "recipe_body": "select section\nfilter {\"matches\": {\"of\": \"section.symbol_name\", \"regex\": \"^Idempotent\"}}\nemit example {\n    identity := section.id\n    name := section.symbol_name\n    summary := section.symbol_name\n    path := heading_path(\"CONTAINS\", \"symbol_name\", \" > \")\n    body := subtree_concat(\"CONTAINS\", \"body\", \"\\n\\n\", \"4\")\n}"
 })
 ```
 

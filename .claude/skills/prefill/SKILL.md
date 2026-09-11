@@ -6,7 +6,7 @@ user-invocable: false
 
 # PREFILL — the implementer's preloaded context
 
-<!-- version: 5 -->
+<!-- version: 6 -->
 <!-- Read at: planner, before writing; reviewer, before auditing; implementer,
      before its first read of a prefill. -->
 
@@ -104,9 +104,9 @@ exists to make visible.
    or EXPECTED, a behavior the change will introduce, which no run on the
    current tree can show and which the implementer proves red then green.
    An expected entry is never written as if measured, and its pre-change
-   arm, where one exists, is stated beside it as the observed half. Six rows
-   are never left implicit, because each was measured as a miss that reached
-   code review: wherever the change touches credentials, secrets or tokens, a
+   arm, where one exists, is stated beside it as the observed half. The rows
+   below are never left implicit, because each was measured as a miss that
+   reached review: wherever the change touches credentials, secrets or tokens, a
    credential-handling row naming the allowlist of what may reach a stored
    node and every encoding the object carries; for every pending pin (a test
    that exists to turn red when a sibling lands), the red it will show, with
@@ -116,8 +116,16 @@ exists to make visible.
    gets an expectation independent of the producer (a literal, or a value the
    test computes from the raw fixture); every outcome of a read (denied,
    unreachable, partial, failed mid-page, empty) reaches the completeness
-   verdict truthfully; and every premise is checked against the rulings
-   recorded since the citations were resolved.
+   verdict truthfully; every premise is checked against the rulings
+   recorded since the citations were resolved; and every agreement pin (a
+   test asserting that two implementations agree, or a census pinning a copy
+   to its source) compares exactly the two artifacts the requirement names,
+   each cited at its site. A pin written against a wrapper that consults more
+   inputs than the named artifact asserts cells the requirement never stated
+   and fails on them before and after the change; a census anchored on a
+   sibling declaration instead of the artifact the authoritative predicate
+   reads pins nothing. Where two artifacts on one side must also agree with
+   each other, that leg is named as its own row.
 7. **Harnesses**: the repository's test harnesses that reach this change: the
    repository's own test targets, out-of-process harnesses that drive the real
    binaries, container-backed suites, fixture libraries, and the CI legs that

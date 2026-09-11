@@ -8,6 +8,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // validate_source.go — everything a recipe names, checked against the loaded
@@ -175,11 +177,18 @@ func renderVocabulary(values []string) string {
 
 // checkRule censuses one rule.
 //
-// WHAT IS DELIBERATELY NOT CENSUSED, because this census describes the SOURCE
-// graph only: RuleEmit.NodeType and RuleLookup.NodeType are TARGET-graph types,
-// RuleLink.Rel is a target-graph edge type, and an emit field NAME is a name in
-// the target node rather than a value read from the source. Applying the source
-// census to any of them would refuse correct recipes.
+// WHAT IS DELIBERATELY NOT CENSUSED AGAINST THE SOURCE, because this census
+// describes the SOURCE graph only: RuleEmit.NodeType and RuleLookup.NodeType are
+// TARGET-graph types, RuleLink.Rel is a target-graph edge type, and an emit field
+// NAME is a name in the target node rather than a value read from the source.
+// Applying the source census to any of them would refuse correct recipes.
+//
+// AN EMIT'S NODE TYPE IS CHECKED AGAINST THE TARGET VOCABULARY INSTEAD, which is
+// a different question with a different answer key — see checkEmitNodeType. It
+// rides this pass because the ANSWER is per-recipe and the collection point is
+// shared: every violation this walk finds arrives in one error, and an emit-type
+// refusal belongs in that error rather than in a second one the author has to
+// provoke separately.
 func (v *sourceValidator) checkRule(rule Rule) {
 	switch r := rule.(type) {
 	case RuleSelect:
@@ -206,6 +215,7 @@ func (v *sourceValidator) checkRule(rule Rule) {
 	case RuleGroupBy:
 		v.checkExpr(r.Key)
 	case RuleEmit:
+		v.checkEmitNodeType(r)
 		// Sorted, because Fields is a Go map: an unsorted walk would produce the
 		// same set of violations in a different order every run.
 		for _, name := range sortedKeys(r.Fields) {
@@ -237,6 +247,55 @@ func (v *sourceValidator) checkRule(rule Rule) {
 			"if it carries one, its expressions if it reads any, and an empty arm if it "+
 			"legitimately reads nothing from the source", r)
 	}
+}
+
+// checkEmitNodeType refuses an emit whose node type the combined practice graph
+// does not enroll, BEFORE the walk, with every offending emit named in the one
+// error this validator issues.
+//
+// WHY BEFORE THE WALK, and not per row. A landing writes its whole emitted set
+// in one batch or none of it, so an emit type the target refuses can only ever
+// produce a refusal for the WHOLE run — after every row has been interpreted and
+// every source node read. Deciding it here costs one map lookup per emit rule
+// and gives the author the same message before any of that happens. It is also
+// the only place the answer is complete: an emit that matched no rows would
+// otherwise sail through, and the recipe would be reported as correct until the
+// day it matched something.
+//
+// IT IS NOT KEYED ON THE RUN'S TARGET, deliberately. An extract run carries the
+// sentinel `extract` graph type (it writes nothing, so a real graph key would
+// claim ids in a graph it never touches), while a landing carries the caller's
+// target — and a landing's target is always the combined practice graph, which
+// is where an emit can go. Keying on the target would therefore skip exactly the
+// extract run that requirement asks to refuse, and an extract that previewed
+// rows a landing could not write would be a preview of a lie.
+//
+// THE VOCABULARY IS kgtypes', the same copy the client's practice write guard
+// reads and a cross-module census pins to the server's. A private list here
+// would be a third copy of one vocabulary.
+func (v *sourceValidator) checkEmitNodeType(r RuleEmit) {
+	if kgtypes.NodeType(r.NodeType).IsEnrolled() {
+		return
+	}
+	v.add(r.Pos, "emit: node type %q is not one the combined practice graph enrolls (checked against the TARGET "+
+		"vocabulary, not the source graph). Its vocabulary is CLOSED: a landing of a type nothing enrolls would be "+
+		"stored but never embedded and never selected by any scan, so the graph would report itself converged while "+
+		"those rows sat unreachable. The run was refused before the walk rather than answered with rows that could "+
+		"not be landed. Enrolled node types: %s",
+		r.NodeType, renderVocabulary(enrolledTargetVocabulary()))
+}
+
+// enrolledTargetVocabulary renders the enrolled node types for the refusal
+// above, in the same sorted, quoted shape every other vocabulary in this file is
+// rendered in. kgtypes returns them sorted, so a recipe's refusal reads the same
+// on every run.
+func enrolledTargetVocabulary() []string {
+	types := kgtypes.EnrolledNodeTypes()
+	out := make([]string, 0, len(types))
+	for _, t := range types {
+		out = append(out, string(t))
+	}
+	return out
 }
 
 // checkWhereTree censuses a where-tree: node types on kind leaves, edge types on

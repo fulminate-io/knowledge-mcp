@@ -2,6 +2,8 @@
 
 package kgtypes
 
+import "slices"
+
 // Pipeline node types — created by the indexer pipeline.
 const (
 	NodeFile     NodeType = "file"     // source file node (one per indexed file)
@@ -138,6 +140,103 @@ var knowledgeTypes = map[NodeType]bool{
 	NodeUseCase: true, NodeExample: true, NodeSource: true, NodeIdiom: true,
 	NodeMetaValue:   true,
 	NodePlanSection: true, NodePlanAnnotation: true,
+}
+
+// enrolledNodeTypes is this module's copy of the server's ENROLLMENT set — the
+// node types the server's eligibility table carries an entry for, which is what
+// its authoritative refusal (NodeType.IsKnown) answers from.
+//
+// IT IS NOT knowledgeTypes ABOVE, and the two must not be folded together.
+// knowledgeTypes is the set of user/LLM-authored types and exists to drive
+// IsCodeType: it deliberately excludes file, package, branch and language, so
+// widening it to the whole vocabulary would silently reclassify every code node.
+// This set is the whole declared vocabulary, one member per NodeType const
+// declared in this file.
+//
+// WHY A COPY AT ALL. The two binaries share no hand-written package, so every
+// wire vocabulary is declared once per module by design. The drift this invites
+// is closed by a census rather than by trust: one leg pins this set to the const
+// declarations in THIS file, another pins it to the server's declaration file,
+// and a third, in the server module, pins that file to the enrollment table. A
+// client set that is a strict subset would otherwise refuse a legitimately
+// enrolled type with a message telling the caller to use one of the types it
+// just refused.
+var enrolledNodeTypes = map[NodeType]bool{
+	NodeFile: true, NodePackage: true, NodeBranch: true, NodeLanguage: true,
+	NodeProject: true, NodeTicket: true, NodePlan: true, NodePhase: true,
+	NodeStep: true, NodeCriterion: true, NodeDecision: true, NodeFinding: true,
+	nodeMemory: true, NodeResearch: true, NodeQuestion: true, NodeReference: true,
+	nodeResource: true, NodeEvent: true, NodeDocument: true, NodeGithubRepo: true,
+	NodeRule: true, NodeTestPlan: true, NodeTestStep: true, NodeTestRun: true,
+	NodeAgent: true, NodeSkill: true, nodeToolGuide: true,
+	NodeThought: true, NodeCharge: true, NodeThoughtSession: true,
+	NodeProxy: true, NodePattern: true, NodeReuseCheck: true, NodeUseCase: true,
+	NodeExample: true, NodeIdiom: true, NodeSource: true, NodeGraphTypeDef: true,
+	NodePlanSection: true, NodePlanAnnotation: true, NodeMetaValue: true,
+}
+
+// IsEnrolled reports whether the vocabulary enrolls this node type — the
+// question a graph with a CLOSED type set asks of a write before accepting it.
+//
+// EXPORTED AS A PREDICATE, NEVER BY EXPORTING THE MAP: a caller that could take
+// its own copy of the rule is a caller whose copy can drift from this one, which
+// is the whole failure this vocabulary is guarded against.
+func (t NodeType) IsEnrolled() bool { return enrolledNodeTypes[t] }
+
+// EnrolledNodeTypes returns the enrolled vocabulary SORTED, for the censuses
+// that compare it against the server's. Sorted because it is derived from a
+// map, and a comparison whose failure named its members in a different order on
+// every run is one no gate can assert.
+//
+// IT IS THE WHOLE VOCABULARY, system-managed types included, because that is
+// what the census compares. A message OFFERING repairs wants
+// CreatableNodeTypes below instead.
+func EnrolledNodeTypes() []NodeType {
+	out := make([]NodeType, 0, len(enrolledNodeTypes))
+	for t := range enrolledNodeTypes {
+		out = append(out, t)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// systemManagedTypes are the enrolled types a hand-written create is refused
+// for whatever graph it names: they are emitted by the code indexer, the web
+// collector's github materializer, or the cross-graph link resolver, and a
+// user-created one lacks the chunks, vectors, hierarchy or foreign ids its
+// producer supplies.
+//
+// THIS MODULE'S COPY OF A SERVER RULE, on the same terms as the vocabulary
+// beside it: the rule's home is the server's systemManagedType switch, which
+// runs immediately after the vocabulary check and is authoritative. It is
+// mirrored here for ONE purpose — so a refusal composed on this side does not
+// offer a repair the next rule refuses — and for nothing else. A client that
+// let this set drift wide would only under-offer repairs; one that let it drift
+// narrow offers a type the server rejects, which is the failure it exists to
+// prevent.
+var systemManagedTypes = map[NodeType]bool{
+	NodeFile: true, NodePackage: true, NodeBranch: true,
+	NodeGithubRepo: true, NodeProxy: true,
+}
+
+// CreatableNodeTypes returns the enrolled vocabulary a hand-written create may
+// actually use: sorted, minus the system-managed types.
+//
+// IT IS THE SET A REFUSAL MESSAGE NAMES. A message that listed the whole
+// vocabulary offered five repairs — file, package, branch, github_repo, proxy —
+// that the very next validation rule refuses for a different reason, so an
+// author who took the message at its word got a second refusal. A refusal that
+// names a repair owes the caller one the next rule admits.
+func CreatableNodeTypes() []NodeType {
+	out := make([]NodeType, 0, len(enrolledNodeTypes))
+	for t := range enrolledNodeTypes {
+		if systemManagedTypes[t] {
+			continue
+		}
+		out = append(out, t)
+	}
+	slices.Sort(out)
+	return out
 }
 
 // commentTypes are node types that represent comments.

@@ -103,7 +103,7 @@ var recipeBodyTwins = []recipeBodyTwin{
 	{
 		name:  "the section-outline body",
 		left:  guideSide("path := heading_path"),
-		right: skillSide("emit outline {"),
+		right: skillSide("emit reference {"),
 		why: "the guide's scratch-file example and the skill's first ingest body are the same body; the " +
 			"Go help ships no copy of it, so the pair is the guide against the skill",
 	},

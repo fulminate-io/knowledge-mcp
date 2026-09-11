@@ -179,6 +179,8 @@ func GuardPracticePayload(args json.RawMessage) error {
 	if err := practiceHubBodiesCarryTheirEdge(a); err != nil {
 		return err
 	}
+	// The closed-vocabulary rule is deliberately NOT called here; practice_type_guard.go
+	// records the measurement that put it at the terminal position only.
 	return practiceHubNestedCreate(a)
 }
 
@@ -225,6 +227,12 @@ func guardPracticeWriteRules(ctx context.Context, exec ExecuteFn, a practiceWrit
 		return err
 	}
 	if err := practiceHubNestedCreate(a); err != nil {
+		return err
+	}
+	// The VOCABULARY rule is payload-decidable and belongs with the rules above
+	// the one that reads: a body whose type the graph does not enroll is refused
+	// without resolving anything, so no read is spent on a write that cannot land.
+	if err := practiceCreateTypes(a); err != nil {
 		return err
 	}
 	return practiceHubsResolve(ctx, exec, a)

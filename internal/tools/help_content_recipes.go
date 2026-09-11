@@ -148,8 +148,8 @@ const helpRecipes = "# Recipe DSL\n" +
 	"                    name := page.name } as $doc\n" +
 	"    traverse CONTAINS out\n" +
 	"    filter {\"kind\": {\"of\": \"node\", \"is\": \"section\"}}\n" +
-	"    emit section { type := \"section\", identity := node.id,\n" +
-	"                   name := page.name } as $sec\n" +
+	"    emit use_case { type := \"use_case\", identity := node.id,\n" +
+	"                    name := page.name } as $sec\n" +
 	"    link $doc --[contains]--> $sec\n" +
 	"\n" +
 	"A bare head names the CURRENT row rather than the type it is spelled\n" +
@@ -331,6 +331,10 @@ const helpRecipes = "# Recipe DSL\n" +
 	"- a bare field-path head outside the legal set, as above;\n" +
 	"- the retired string-expression predicate after `where` or `filter`;\n" +
 	"- an emit carrying neither `name` nor `identity`;\n" +
+	"- an emit whose node type is not a bare identifier — a bind, an\n" +
+	"  interpolation or a quoted string — for the same reason a computed\n" +
+	"  edge type is refused: it could only be checked per row, where a\n" +
+	"  miss is silent;\n" +
 	"- an unknown key anywhere in a where-tree, at the leaf level as well\n" +
 	"  as the top.\n" +
 	"\n" +
@@ -350,7 +354,12 @@ const helpRecipes = "# Recipe DSL\n" +
 	"- an unknown builtin, or one called with the wrong argument count;\n" +
 	"- a literal regex that does not compile;\n" +
 	"- a `compare` leaf whose operator is not one of the admitted set, or whose\n" +
-	"  literal operand is not a finite number.\n" +
+	"  literal operand is not a finite number;\n" +
+	"- an emit node type the combined practice graph does not enroll. That\n" +
+	"  vocabulary is closed, so a landing of such a type would be stored\n" +
+	"  but never embedded and never selected by any scan; the message names\n" +
+	"  the enrolled types. Both modes are refused, extract included: a\n" +
+	"  preview of rows no landing could write is a preview of a lie.\n" +
 	"\n" +
 	"THESE ARE REPORTED TOGETHER, not one per run. The validator collects\n" +
 	"every violation across the whole recipe and reports them in one error\n" +

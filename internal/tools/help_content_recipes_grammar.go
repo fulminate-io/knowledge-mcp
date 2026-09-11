@@ -124,7 +124,7 @@ const helpRecipesGrammar = "## Grammar (EBNF-ish)\n" +
 	"        {\"compare\": {\"of\": \"node.font_ratio_to_body\", \"op\": \"gte\", \"value\": \"1.15\"}},\n" +
 	"        {\"compare\": {\"of\": \"edge.position\", \"op\": \"lte\", \"value\": \"3\"}}\n" +
 	"    ]}\n" +
-	"    emit heading {\n" +
+	"    emit reference {\n" +
 	"        identity := node.id\n" +
 	"        name := node.symbol_name\n" +
 	"        position := edge.position\n" +
@@ -174,7 +174,7 @@ const helpRecipesGrammar = "## Grammar (EBNF-ish)\n" +
 	"    select document\n" +
 	"    walk CONTAINS\n" +
 	"    filter {\"kind\": {\"of\": \"node\", \"is\": \"section\"}}\n" +
-	"    emit outline {\n" +
+	"    emit reference {\n" +
 	"        identity := node.id\n" +
 	"        name := node.symbol_name\n" +
 	"        level := walk.depth\n" +

@@ -277,10 +277,16 @@ func TestValidateAgainstSource_AcceptsCorrectRecipes(t *testing.T) {
 		require.NoError(t, err, "a key only one node type stamps is still part of the graph's vocabulary")
 	})
 
-	t.Run("target_types_and_link_rel_are_not_censused", func(t *testing.T) {
+	t.Run("target_types_and_link_rel_are_not_censused_against_the_source", func(t *testing.T) {
 		// The emit type, the lookup type and the link relationship all name the
 		// TARGET graph and appear in neither source vocabulary. A validator applied
 		// to the target side refuses this correct recipe.
+		//
+		// AN EMIT TYPE IS CHECKED — against the TARGET vocabulary, which is a
+		// different question with a different answer key (see the emit-type tests
+		// beside this file). `pattern` is enrolled there, so it passes both: this
+		// row would still be red if the SOURCE census were ever applied to it,
+		// which is what it exists to say.
 		r, err := Parse([]byte(`select section
 emit pattern {
     name := node.symbol_name

@@ -59,7 +59,7 @@ const helpRecipesReading = "## The reading loop\n" +
 	"        {\"compare\": {\"of\": \"walk.depth\", \"op\": \"lte\", \"value\": \"2\"}},\n" +
 	"        {\"compare\": {\"of\": \"node.page_first\", \"op\": \"gte\", \"value\": \"10\"}}\n" +
 	"    ]}\n" +
-	"    emit outline {\n" +
+	"    emit reference {\n" +
 	"        identity := node.id\n" +
 	"        name := node.symbol_name\n" +
 	"        level := walk.depth\n" +
@@ -88,7 +88,7 @@ const helpRecipesReading = "## The reading loop\n" +
 	"        {\"kind\": {\"of\": \"node\", \"is\": \"section\"}},\n" +
 	"        {\"compare\": {\"of\": \"walk.depth\", \"op\": \"lte\", \"value\": \"2\"}}\n" +
 	"    ]}\n" +
-	"    emit outline {\n" +
+	"    emit reference {\n" +
 	"        identity := node.id\n" +
 	"        name := node.symbol_name\n" +
 	"        level := walk.depth\n" +
@@ -106,7 +106,7 @@ const helpRecipesReading = "## The reading loop\n" +
 	"\n" +
 	"    select section where {\"matches\": {\"of\": \"section.symbol_name\",\n" +
 	"                                      \"regex\": \"^Event\"}}\n" +
-	"    emit section_body {\n" +
+	"    emit example {\n" +
 	"        identity := section.id\n" +
 	"        name := section.symbol_name\n" +
 	"        path := heading_path(\"CONTAINS\", \"symbol_name\", \" > \")\n" +
@@ -143,7 +143,7 @@ const helpRecipesReading = "## The reading loop\n" +
 	"        {\"exists\": {\"of\": \"node.page_repeat_count\"}},\n" +
 	"        {\"compare\": {\"of\": \"node.page_repeat_count\", \"op\": \"gte\", \"value\": \"2\"}}\n" +
 	"    ]}}\n" +
-	"    emit outline {\n" +
+	"    emit reference {\n" +
 	"        identity := node.id\n" +
 	"        name := node.symbol_name\n" +
 	"        page := node.page_first\n" +
@@ -172,7 +172,7 @@ const helpRecipesReading = "## The reading loop\n" +
 	"                              \"regex\": \"^(nav|header|footer|aside)$\"}}},\n" +
 	"        {\"not\": {\"equals\": {\"of\": \"node.links_only\", \"value\": \"true\"}}}\n" +
 	"    ]}\n" +
-	"    emit content {\n" +
+	"    emit example {\n" +
 	"        identity := node.id\n" +
 	"        name := node.body\n" +
 	"        kind := node.type\n" +

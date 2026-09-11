@@ -51,6 +51,13 @@ naming the offending value and listing what the graph does carry — not a run t
 reads it as empty and emits blank fields. Learn the vocabulary first and the
 refusals never fire.
 
+An `emit`'s node type is checked too, against a different vocabulary: the
+combined practice graph is where a landing writes, and its node types are a
+closed set. A type nothing enrolls would be stored but never embedded and never
+selected by any scan, so an emit naming one is refused before the walk — in both
+modes, extract included, since a preview of rows no landing could write is worth
+nothing. The message lists the enrolled types.
+
 See `help("recipes")` for the where-tree grammar and the full rule reference.
 
 ### Run the body
@@ -66,7 +73,7 @@ collect({
   "transformer": "recipe",
   "extract": true,
   "max_rows": 50,
-  "recipe_body": "select page\nemit passage {\n    identity := page.id\n    name := page.name\n    uri := page.uri\n}"
+  "recipe_body": "select page\nemit reference {\n    identity := page.id\n    name := page.name\n    uri := page.uri\n}"
 })
 ```
 
@@ -99,7 +106,7 @@ escaped JSON string in whatever scratch file you like while you work on it:
 ```jsonc
 {
   "name": "sections-outline",
-  "content": "select section\nemit outline {\n    identity := section.id\n    name := section.symbol_name\n    path := heading_path(\"CONTAINS\", \"symbol_name\", \" > \")\n}"
+  "content": "select section\nemit reference {\n    identity := section.id\n    name := section.symbol_name\n    path := heading_path(\"CONTAINS\", \"symbol_name\", \" > \")\n}"
 }
 ```
 
@@ -163,7 +170,7 @@ collect({
   "id": "<source-slug>",
   "transformer": "recipe",
   "extract": true,
-  "recipe_body": "select document\nwalk CONTAINS\nfilter {\"kind\": {\"of\": \"node\", \"is\": \"section\"}}\nemit outline {\n    identity := node.id\n    name := node.symbol_name\n    level := walk.depth\n    page := node.page_first\n}",
+  "recipe_body": "select document\nwalk CONTAINS\nfilter {\"kind\": {\"of\": \"node\", \"is\": \"section\"}}\nemit reference {\n    identity := node.id\n    name := node.symbol_name\n    level := walk.depth\n    page := node.page_first\n}",
   "offset": 100,
   "max_rows": 50
 })

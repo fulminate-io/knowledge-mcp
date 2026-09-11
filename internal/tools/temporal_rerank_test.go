@@ -17,15 +17,27 @@ import (
 
 // referenceTemporalScore is the server formula, reproduced here independently as
 // the oracle the client port must match EXACTLY (temporal_rerank.go:16-25).
-func referenceTemporalScore(updatedAtNanos int64, halfLifeDays float64) float64 {
+func referenceTemporalScore(now time.Time, updatedAtNanos int64, halfLifeDays float64) float64 {
 	if halfLifeDays <= 0 {
 		halfLifeDays = 30
 	}
 	if updatedAtNanos == 0 {
 		return 0.5
 	}
-	ageDays := time.Since(time.Unix(0, updatedAtNanos)).Hours() / 24.0
+	ageDays := now.Sub(time.Unix(0, updatedAtNanos)).Hours() / 24.0
 	return math.Pow(2.0, -ageDays/halfLifeDays)
+}
+
+// pinTemporalClock fixes the production clock at one instant for the test's
+// duration, so the oracle and applyTemporalRerank age every row against the
+// SAME now. Without it the two clocks are read milliseconds apart and the fresh
+// row's score moves by ln2/half-life per millisecond of gap, which on a slow
+// runner exceeds the tolerance (a measured red at 2.3e-9 against 1e-9).
+func pinTemporalClock(t *testing.T, now time.Time) {
+	t.Helper()
+	prev := temporalNow
+	temporalNow = func() time.Time { return now }
+	t.Cleanup(func() { temporalNow = prev })
 }
 
 // TestApplyTemporalRerank_MatchesServerBoost asserts the client UpdatedAt
@@ -35,6 +47,7 @@ func referenceTemporalScore(updatedAtNanos int64, halfLifeDays float64) float64 
 // must match the independent oracle.
 func TestApplyTemporalRerank_MatchesServerBoost(t *testing.T) {
 	now := time.Now()
+	pinTemporalClock(t, now)
 	day := int64(24 * time.Hour)
 	// Three rows: fresh (today), old (90 days), and never-updated (zero).
 	fresh := now.UnixNano()
@@ -49,7 +62,7 @@ func TestApplyTemporalRerank_MatchesServerBoost(t *testing.T) {
 	want := make([]engine.SearchResult, len(rows))
 	copy(want, rows)
 	for i := range want {
-		want[i].Score = want[i].Score * (1.0 + referenceTemporalScore(want[i].Node.GetUpdatedAt(), 30))
+		want[i].Score = want[i].Score * (1.0 + referenceTemporalScore(now, want[i].Node.GetUpdatedAt(), 30))
 	}
 	sort.SliceStable(want, func(i, j int) bool { return want[i].Score > want[j].Score })
 
@@ -83,4 +96,21 @@ func TestComputeTemporalScore_Rules(t *testing.T) {
 	// half-life ≤ 0 floors to 30 → same 0.5 at 30 days.
 	assert.InDelta(t, 0.5, computeTemporalScore(thirtyDaysAgo, 0), 1e-3)
 	assert.InDelta(t, 0.5, computeTemporalScore(thirtyDaysAgo, -5), 1e-3)
+}
+
+// TestApplyTemporalRerank_ClockGapIsWhatThePinRemoves is the red the pin exists
+// for, made deterministic: the production clock and the oracle clock read a
+// fresh row ten milliseconds apart, and the boosted scores differ by more than
+// the tolerance the matching test allows. Delete pinTemporalClock from the
+// matching test and this is the failure a slow runner produces at random.
+func TestApplyTemporalRerank_ClockGapIsWhatThePinRemoves(t *testing.T) {
+	now := time.Now()
+	pinTemporalClock(t, now)
+	rows := []engine.SearchResult{{Node: &knowledgev1.Node{Id: "fresh", UpdatedAt: now.UnixNano()}, Score: 1.0}}
+	applyTemporalRerank(rows, 30)
+	oracleLater := 1.0 * (1.0 + referenceTemporalScore(now.Add(10*time.Millisecond), now.UnixNano(), 30))
+	assert.Greater(t, math.Abs(oracleLater-rows[0].Score), 1e-9,
+		"a ten-millisecond clock gap moves the fresh row's boosted score past the matching test's tolerance")
+	oracleSame := 1.0 * (1.0 + referenceTemporalScore(now, now.UnixNano(), 30))
+	assert.InDelta(t, oracleSame, rows[0].Score, 1e-12, "with one clock the two agree exactly")
 }
