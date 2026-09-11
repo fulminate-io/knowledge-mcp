@@ -47,15 +47,18 @@ func TestParseCodex(t *testing.T) {
 	}
 
 	first := tokenRows[0]
-	// Tokens come from last_token_usage, NOT total (would be 9999).
-	if first.InputTokens != 100 {
-		t.Errorf("InputTokens = %d, want 100 (last, not total 9999)", first.InputTokens)
+	// Tokens come from last_token_usage, NOT total (would be 9999), and input is
+	// the UNCACHED prompt: Codex's input_tokens (100) contains its
+	// cached_input_tokens (10), so the row stores 90 and the cached 10 lives in
+	// its own column below — the same convention the Claude parser stores.
+	if first.InputTokens != 90 {
+		t.Errorf("InputTokens = %d, want 90 (last input 100 minus cached 10; not total 9999)", first.InputTokens)
 	}
 	// reasoning folded into output: 20 + 5.
 	if first.OutputTokens != 25 {
 		t.Errorf("OutputTokens = %d, want 25 (output 20 + reasoning 5 folded)", first.OutputTokens)
 	}
-	// cached_input → its own cache_read column, NOT folded into input.
+	// cached_input → its own cache_read column, and subtracted OUT of input.
 	if first.CacheReadTokens != 10 {
 		t.Errorf("CacheReadTokens = %d, want 10 (cached_input_tokens)", first.CacheReadTokens)
 	}
@@ -74,8 +77,8 @@ func TestParseCodex(t *testing.T) {
 	}
 
 	// Second token row uses its own last_token_usage.
-	if tokenRows[1].InputTokens != 200 || tokenRows[1].OutputTokens != 37 || tokenRows[1].CacheReadTokens != 20 {
-		t.Errorf("second token row wrong: in=%d out=%d cr=%d (want 200/37/20)",
+	if tokenRows[1].InputTokens != 180 || tokenRows[1].OutputTokens != 37 || tokenRows[1].CacheReadTokens != 20 {
+		t.Errorf("second token row wrong: in=%d out=%d cr=%d (want 180/37/20: input 200 minus cached 20)",
 			tokenRows[1].InputTokens, tokenRows[1].OutputTokens, tokenRows[1].CacheReadTokens)
 	}
 

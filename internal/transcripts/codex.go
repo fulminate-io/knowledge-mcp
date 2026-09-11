@@ -146,9 +146,16 @@ func (st *codexScanState) applyEventMsg(payload json.RawMessage, ts string, reco
 	}
 	u := p.Info.LastTokenUsage
 	row := st.baseRow(ts, recordStart, p.Type)
-	row.InputTokens = u.InputTokens
+	// INPUT IS THE UNCACHED PROMPT, on every source. Codex's input_tokens already
+	// CONTAINS its cached_input_tokens (the OpenAI shape: cached is a subset of
+	// input), while the Claude parser stores Anthropic's input_tokens, which
+	// EXCLUDES cache reads. Storing Codex's figure verbatim put the two sources on
+	// different conventions in one table: a Codex session read as if every cached
+	// token had been billed again, and the account's totals could not be compared
+	// across models. The subtraction is what makes input_tokens mean one thing.
+	row.InputTokens = u.InputTokens - u.CachedInputTokens
 	row.OutputTokens = u.OutputTokens + u.ReasoningOutputTokens // FOLD reasoning into output
-	row.CacheReadTokens = u.CachedInputTokens                   // cached_input is its OWN column; not folded into input
+	row.CacheReadTokens = u.CachedInputTokens                   // cached_input is its OWN column
 	row.CacheCreationTokens = 0                                 // Codex has no cache_creation equivalent
 	st.rows = append(st.rows, row)
 }
