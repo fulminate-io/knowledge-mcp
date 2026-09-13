@@ -98,15 +98,15 @@ func (d clientRepairDeps) Repair(ctx context.Context, g segmentGraphRef) (tools.
 }
 
 func (d clientRepairDeps) BreakerAllows(g segmentGraphRef) bool {
-	return d.c.healBreaker.Allow(g.gt, g.name)
+	return d.c.healBreaker.ForDestination(g.bind(context.Background())).Allow(g.gt, g.name)
 }
 
 func (d clientRepairDeps) LoadRepairState(g segmentGraphRef) (segmentdist.RepairState, error) {
-	return d.c.segmentMgr.LoadRepairState(g.gt, g.name)
+	return d.c.segmentMgr.ForDestination(g.bind(context.Background())).LoadRepairState(g.gt, g.name)
 }
 
 func (d clientRepairDeps) SaveRepairState(g segmentGraphRef, st segmentdist.RepairState) error {
-	return d.c.segmentMgr.SaveRepairState(g.gt, g.name, st)
+	return d.c.segmentMgr.ForDestination(g.bind(context.Background())).SaveRepairState(g.gt, g.name, st)
 }
 
 func (d clientRepairDeps) NowNanos() int64 { return time.Now().UnixNano() }
@@ -116,5 +116,5 @@ func (d clientRepairDeps) ServedHorizon(ctx context.Context, g segmentGraphRef) 
 }
 
 func (d clientRepairDeps) SaveMergeWatermark(g segmentGraphRef, horizonNanos int64) error {
-	return d.c.segmentMgr.SaveMergeWatermark(g.gt, g.name, horizonNanos)
+	return d.c.segmentMgr.ForDestination(g.bind(context.Background())).SaveMergeWatermark(g.gt, g.name, horizonNanos)
 }

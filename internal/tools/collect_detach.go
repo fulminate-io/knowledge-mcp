@@ -100,6 +100,13 @@ func collectWork(ctx context.Context, deps ClientDeps, a collectArgs, opts colle
 	if filepath.IsAbs(a.ID) {
 		recordCollectedRepo(a.Type, a.ID)
 	}
+	// THE REFUSAL RECORDER IS INSTALLED BEFORE THE RUN and read after it. The sink
+	// learns from the server's Finalize that this collect's deletion phase was
+	// refused, several packages below here, and the composition returned by the run
+	// is computed BEFORE the sink writes — so the fact has to ride the context out.
+	// Without it a refused deletion reaches the caller as a plain success line while
+	// the graph keeps rows the collect named as gone.
+	ctx, refusal := collector.WithDeletionRefusal(ctx)
 	comp, foreignFill, err := run(ctx, a, opts)
 	if err != nil {
 		// The runner already wraps with "collect <type>:" — adding our own
@@ -169,7 +176,10 @@ func collectWork(ctx context.Context, deps ClientDeps, a collectArgs, opts colle
 	// empty-degrades-to-nothing helper the composition and the drop directive
 	// use: a collect whose entry declares no context returns the composition text
 	// byte-identically to before the report existed.
-	return withComposition(comp.Render(), foreignFill), comp.GraphName,
+	// THE REFUSAL NOTICE RIDES THE SAME SUFFIX MECHANISM the composition and the
+	// foreign-context fill use, so a collect whose deletion phase RAN returns text
+	// byte-identical to before the report existed.
+	return withComposition(withComposition(comp.Render(), foreignFill), refusal.Notice()), comp.GraphName,
 		errors.Join(ppErr, collector.CheckComposition(a.Type, comp))
 }
 

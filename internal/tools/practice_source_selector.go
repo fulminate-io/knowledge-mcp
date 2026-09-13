@@ -21,9 +21,12 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"sort"
+	"sync"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
@@ -152,6 +155,35 @@ func practiceRankedHits(
 	ctx context.Context, deps ClientDeps, mgr SegmentSearcher,
 	pool, hub, query string, queryVec []byte, k int,
 ) ([]searchengine.Hit, error) {
+	if destinations := graphclient.SearchDestinations(ctx); len(destinations) > 1 && hub != "" {
+		results := make([][]searchengine.Hit, len(destinations))
+		errors := make([]error, len(destinations))
+		var workers sync.WaitGroup
+		for i, destination := range destinations {
+			workers.Go(func() {
+				leg := graphclient.WithDestination(graphclient.WithSearchDestinations(ctx, []graphclient.Destination{destination}), destination)
+				results[i], errors[i] = practiceRankedHits(leg, deps, mgr, pool, hub, query, queryVec, k)
+			})
+		}
+		workers.Wait()
+		var hits []searchengine.Hit
+		for i, result := range results {
+			if errors[i] != nil {
+				return nil, errors[i]
+			}
+			hits = append(hits, result...)
+		}
+		sort.Slice(hits, func(i, j int) bool {
+			if hits[i].Score == hits[j].Score {
+				return hits[i].ID < hits[j].ID
+			}
+			return hits[i].Score > hits[j].Score
+		})
+		if k > 0 && len(hits) > k {
+			hits = hits[:k]
+		}
+		return hits, nil
+	}
 	if hub == "" {
 		hits, err := mgr.Search(ctx, kgtypes.GraphPractice, pool, query, queryVec, k)
 		if err != nil {

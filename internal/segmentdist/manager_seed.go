@@ -111,6 +111,7 @@ func (m *Manager) baseLiveSetForFormat(
 func (m *Manager) SeedBranchBucketFromBase(
 	ctx context.Context, gt kgtypes.GraphType, baseName, branchName, format string, branchCache *diskSegmentCache,
 ) ([]searchengine.SegmentMeta, error) {
+	m = m.ForDestination(ctx)
 	if !isBranchGraphName(branchName) || baseName == "" || baseName == branchName {
 		return nil, nil
 	}

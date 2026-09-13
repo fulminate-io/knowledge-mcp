@@ -701,26 +701,6 @@ type FinalizeRequest struct {
 	// the deletion arms with a NON-NIL, EMPTY named set, which destroys nothing.
 	// nil means full-collect mode and ONLY full-collect mode.
 	DiffMode bool `protobuf:"varint,10,opt,name=diff_mode,json=diffMode,proto3" json:"diff_mode,omitempty"`
-	// deletion_ratio_override opts this collect out of the deletion-ratio bound —
-	// guard 3 — AND NOTHING ELSE.
-	//
-	// WHY IT EXISTS: the bound refuses a named set larger than a fixed percentage
-	// of the live node count, which a small repository with naturally large churn
-	// trips on a LEGITIMATE collect. The floor below which the ratio is not
-	// consulted exempts only very small graphs, so a modest repo just above it is
-	// refused for doing something ordinary.
-	//
-	// WHAT IT DOES NOT RELAX, and the list is the point: the set is still bounded
-	// by what the client NAMED (nothing is inferred from absence), still refused
-	// unless walk_complete is asserted, still refused on a stale manifest
-	// identity, still validated entry by entry, and still lands as quarantined
-	// tombstones that stay recoverable. This flag decides one thing only —
-	// whether an already-validated set is additionally refused for being large
-	// relative to a small graph.
-	//
-	// UNSET IS OFF, the opposite default from diff_mode above, deliberately: an
-	// override that armed itself would be the hack it exists to remove.
-	DeletionRatioOverride bool `protobuf:"varint,11,opt,name=deletion_ratio_override,json=deletionRatioOverride,proto3" json:"deletion_ratio_override,omitempty"`
 	// deleted_node_ids names what a NODE-KEYED collect asserts is gone: the
 	// deletion carrier of a registered custom graph, whose diff key is a node id
 	// rather than a file path.
@@ -840,13 +820,6 @@ func (x *FinalizeRequest) GetWalkComplete() bool {
 func (x *FinalizeRequest) GetDiffMode() bool {
 	if x != nil {
 		return x.DiffMode
-	}
-	return false
-}
-
-func (x *FinalizeRequest) GetDeletionRatioOverride() bool {
-	if x != nil {
-		return x.DeletionRatioOverride
 	}
 	return false
 }
@@ -1239,7 +1212,7 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"\tfile_path\x18\x01 \x01(\tH\x00R\bfilePath\x12\x19\n" +
 	"\anode_id\x18\x03 \x01(\tH\x00R\x06nodeId\x12+\n" +
 	"\x11contribution_hash\x18\x02 \x01(\fR\x10contributionHashB\x05\n" +
-	"\x03key\"\xd4\x03\n" +
+	"\x03key\"\xbb\x03\n" +
 	"\x0fFinalizeRequest\x12\x14\n" +
 	"\x05epoch\x18\x01 \x01(\x04R\x05epoch\x12\x1d\n" +
 	"\n" +
@@ -1254,9 +1227,8 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"manifestId\x12#\n" +
 	"\rwalk_complete\x18\t \x01(\bR\fwalkComplete\x12\x1b\n" +
 	"\tdiff_mode\x18\n" +
-	" \x01(\bR\bdiffMode\x126\n" +
-	"\x17deletion_ratio_override\x18\v \x01(\bR\x15deletionRatioOverride\x12(\n" +
-	"\x10deleted_node_ids\x18\f \x03(\tR\x0edeletedNodeIds\"\x90\x01\n" +
+	" \x01(\bR\bdiffMode\x12(\n" +
+	"\x10deleted_node_ids\x18\f \x03(\tR\x0edeletedNodeIdsJ\x04\b\v\x10\fR\x17deletion_ratio_override\"\x90\x01\n" +
 	"\x10FinalizeResponse\x12\x1f\n" +
 	"\vfinalize_id\x18\x01 \x01(\tR\n" +
 	"finalizeId\x12#\n" +

@@ -202,6 +202,11 @@ func (c *client) SegmentShipper() tools.SegmentShipper {
 // change here.
 type segmentShipperAdapter struct{ *segmentdist.Manager }
 
+// ForStorage binds methods without a context to the same owner as wire calls.
+func (a segmentShipperAdapter) ForStorage(ctx context.Context) tools.SegmentShipper {
+	return segmentShipperAdapter{Manager: a.ForDestination(ctx)}
+}
+
 // FinalizeRebuild maps the Manager's reset-finalize result onto the tools-local
 // struct. The values are carried across UNCHANGED; the two vocabularies exist only
 // because neither package may import the other.
@@ -330,6 +335,11 @@ func (c *client) ClearHealLatch(gt kgtypes.GraphType, name string) {
 	c.healBreaker.ClearHealLatch(gt, name)
 }
 
+// ClearStorageHealLatch rearms only the copy rebuilt by this operation.
+func (c *client) ClearStorageHealLatch(ctx context.Context, gt kgtypes.GraphType, name string) {
+	c.healBreaker.ForDestination(ctx).ClearHealLatch(gt, name)
+}
+
 // buildHealFactory constructs the auto-heal closure factory the pipeline
 // injects into each collector (Pipeline.AttachHealFactory). It is the ONLY layer
 // where the pipeline, the segmentdist probe, and the tools rebuild driver are all
@@ -400,7 +410,7 @@ func (c *client) buildHealFactory() func(kgtypes.GraphType, string) func(context
 			// Breaker gate: a graph latched disarmed after healBreakerTripThreshold
 			// no-progress rebuilds stops firing. Return ErrHealDisarmed so the collector
 			// latches its own healDisarmed flag and stops re-arming this closure per wake.
-			if !c.healBreaker.Allow(gt, name) {
+			if !c.healBreaker.ForDestination(ctx).Allow(gt, name) {
 				return pipeline.ErrHealDisarmed
 			}
 			needsRebuild, err := c.healNeedsRebuild(ctx, gt, name)
@@ -438,9 +448,9 @@ func (c *client) buildHealFactory() func(kgtypes.GraphType, string) func(context
 			// consumes the BM25 arm's no-progress shot, then classifies against the
 			// breaker — scanned==0, or no shipped-completeness gain, is no-progress.
 			if out.Ran {
-				c.armBM25HealProgress(gt, name)
+				c.armStorageBM25HealProgress(ctx, gt, name)
 			}
-			c.classifyHealOutcome(gt, name, out.Ran, out.Scanned)
+			c.classifyStorageHealOutcome(ctx, gt, name, out.Ran, out.Scanned)
 			return nil
 		}
 	}

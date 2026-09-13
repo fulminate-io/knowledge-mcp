@@ -38,6 +38,7 @@ import (
 // no grouping at all — the identity permutation trivially keeps every hash with
 // its node.
 func TestWriteResult_NodeHashesStayWithTheirOwnNodesAfterFileGrouping(t *testing.T) {
+	isolateDiscoveryStore(t)
 	client, rec := startRecordingIngest(t)
 	sink := NewUploadSink(client)
 

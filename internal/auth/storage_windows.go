@@ -1,44 +1,35 @@
 // SPDX-License-Identifier: Apache-2.0
-
 //go:build windows
 
 package auth
 
-import "context"
+import (
+	"errors"
 
-// windowsStore is the placeholder Windows implementation. Every method
-// returns ErrNotImplementedOS so callers can detect the "no secret storage
-// on this OS" condition.
-//
-// A real Windows backend (Credential Manager via DPAPI) is planned for a
-// future release; until then paid features are inaccessible on Windows.
-type windowsStore struct{}
+	keyring "github.com/zalando/go-keyring"
+)
 
-// NewStore returns the platform-appropriate Store implementation.
-//
-// Outside a test binary the windows stub is always constructed successfully;
-// the ErrNotImplementedOS signal is surfaced per-call. Inside one it fails
-// like every other platform, so the constructor is one seam on every OS:
-// tests must use in-memory fakes; the real credential store is off-limits to
-// test binaries.
+// NewStore uses Windows Credential Manager, with native parts for credentials
+// exceeding its per-entry byte limit. Tests cannot open the real user store.
 func NewStore() (Store, error) {
 	if err := refuseRealStoreInTest(); err != nil {
 		return nil, err
 	}
-	return windowsStore{}, nil
-}
-
-// Get is not implemented on Windows.
-func (windowsStore) Get(_ context.Context, _ string) (string, error) {
-	return "", ErrNotImplementedOS
-}
-
-// Set is not implemented on Windows.
-func (windowsStore) Set(_ context.Context, _, _ string) error {
-	return ErrNotImplementedOS
-}
-
-// Delete is not implemented on Windows.
-func (windowsStore) Delete(_ context.Context, _ string) error {
-	return ErrNotImplementedOS
+	return chunkStore{
+		get: func(key string) (string, error) {
+			value, err := keyring.Get(ServiceName, key)
+			if errors.Is(err, keyring.ErrNotFound) {
+				err = ErrNotFound
+			}
+			return value, err
+		},
+		set: func(key, value string) error { return keyring.Set(ServiceName, key, value) },
+		remove: func(key string) error {
+			err := keyring.Delete(ServiceName, key)
+			if errors.Is(err, keyring.ErrNotFound) {
+				return ErrNotFound
+			}
+			return err
+		},
+	}, nil
 }

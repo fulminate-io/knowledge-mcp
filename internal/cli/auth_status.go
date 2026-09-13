@@ -117,7 +117,7 @@ func AuthStatusCmd(args []string) error {
 // A read failure is not a verdict: it prints a note and returns, leaving the
 // caller's error (and therefore the exit code) untouched.
 func printSelectedAccount(out io.Writer) {
-	path, pathErr := config.DefaultPath()
+	path, pathErr := authConfigPath()
 	if pathErr != nil {
 		fmt.Fprintln(out, "Account: (could not read ~/.knowledge/config)")
 		return

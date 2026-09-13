@@ -5,6 +5,7 @@ package pipeline
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
@@ -144,7 +145,36 @@ func (p *Pipeline) genPollOnce(ctx context.Context) (time.Duration, bool) {
 		keys = append(keys, k)
 	}
 	p.collectorMu.Unlock()
+	groups := make(map[graphclient.Destination][]graphKey)
+	for _, key := range keys {
+		groups[key.Destination] = append(groups[key.Destination], key)
+	}
+	var workers sync.WaitGroup
+	var mu sync.Mutex
+	var retry time.Duration
+	var throttled bool
+	for destination, group := range groups {
+		workers.Go(func() {
+			bound := ctx
+			if destination.Storage != "" {
+				bound = graphclient.WithDestination(ctx, destination)
+			}
+			hint, limited := p.genPollKeys(bound, group)
+			mu.Lock()
+			retry = max(retry, hint)
+			throttled = throttled || limited
+			mu.Unlock()
+		})
+	}
+	workers.Wait()
+	if len(keys) == 0 {
+		p.wakeCatalog()
+	}
+	return retry, throttled
+}
 
+// genPollKeys batches only graph instances owned by the same storage destination.
+func (p *Pipeline) genPollKeys(ctx context.Context, keys []graphKey) (time.Duration, bool) {
 	if len(keys) == 0 {
 		// No collectors means a gen poll can teach us nothing — there are no graphs to
 		// sample. Look at the CATALOG directly instead, which is the only thing that can
@@ -178,7 +208,8 @@ func (p *Pipeline) genPollOnce(ctx context.Context) (time.Duration, bool) {
 	// (3) Update the shared snapshot and compute which (graph,axis) pairs advanced
 	// past the loop's own poke watermark — all under genMu, which is RELEASED before
 	// any collectorMu access below.
-	pokes, segmentNudges, catalogMoved := p.applyGenPollResponse(resp)
+	destination, _ := graphclient.StorageDestination(ctx)
+	pokes, segmentNudges, catalogMoved := p.applyStorageGenPollResponse(destination, resp)
 
 	// (4) Deliver the selective pokes under collectorMu (genMu already released).
 	// Each poke is a non-blocking coalescing send — identical to WakeAll — so a
@@ -201,7 +232,7 @@ func (p *Pipeline) genPollOnce(ctx context.Context) (time.Duration, bool) {
 	// than a swallowed failure: there is nothing to nudge.
 	if nudge := p.segmentNudger(); nudge != nil {
 		for _, key := range segmentNudges {
-			nudge(key.GraphType, key.GraphName)
+			nudge(key.bind(ctx), key.GraphType, key.GraphName)
 		}
 	}
 	return 0, false
@@ -224,9 +255,8 @@ type genPoke struct {
 // delivery its caller makes afterwards happens with genMu already released. Deliver
 // nothing from in here — a wake sent under genMu is the exact inversion the caller's
 // doc comment forbids.
-func (p *Pipeline) applyGenPollResponse(
-	resp *knowledgev1.PipelineGenPollResponse,
-) (pokes []genPoke, segmentNudges []graphKey, catalogMoved bool) {
+
+func (p *Pipeline) applyStorageGenPollResponse(destination graphclient.Destination, resp *knowledgev1.PipelineGenPollResponse) (pokes []genPoke, segmentNudges []graphKey, catalogMoved bool) {
 	// Segment nudges are collected SEPARATELY from collector pokes because they
 	// travel to a different destination — the segment manager's reconcile-nudge
 	// recorder, not a collector wake channel — and, like the pokes, they are
@@ -234,7 +264,7 @@ func (p *Pipeline) applyGenPollResponse(
 	p.genMu.Lock()
 	defer p.genMu.Unlock()
 	for _, e := range resp.GetEntries() {
-		key := graphKey{GraphType: kgtypes.GraphType(e.GetGraphType()), GraphName: e.GetGraphName()}
+		key := graphKey{GraphType: kgtypes.GraphType(e.GetGraphType()), GraphName: e.GetGraphName(), Destination: destination}
 		cur := p.genSnapshot[key]
 		poked := p.lastPokedGen[key]
 		switch e.GetAxis() {
@@ -300,11 +330,14 @@ func (p *Pipeline) applyGenPollResponse(
 	// The FIRST observation records without waking: the boot pass already
 	// enumerated the catalog.
 	if cg := resp.GetCatalogGen(); cg != 0 {
-		if p.lastCatalogGenSet && cg != p.lastCatalogGen {
+		previous, seen := p.catalogGens[destination]
+		if seen && cg != previous {
 			catalogMoved = true
 		}
-		p.lastCatalogGen = cg
-		p.lastCatalogGenSet = true
+		if p.catalogGens == nil {
+			p.catalogGens = make(map[graphclient.Destination]uint64)
+		}
+		p.catalogGens[destination] = cg
 	}
 	return pokes, segmentNudges, catalogMoved
 }

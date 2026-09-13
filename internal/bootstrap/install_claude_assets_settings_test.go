@@ -24,10 +24,10 @@ func installSettingsArgs(dir, settings string) []string {
 }
 
 // TestResolveClaudeSettings asserts the resolver: empty flag → the default
-// ~/.claude/settings.json under HOME; a non-empty flag is tilde-expanded.
+// ~/.claude/settings.json under the selected home; a non-empty flag is tilde-expanded.
 func TestResolveClaudeSettings(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setBootstrapHome(t, home)
 
 	got, err := resolveClaudeSettings("")
 	if err != nil {

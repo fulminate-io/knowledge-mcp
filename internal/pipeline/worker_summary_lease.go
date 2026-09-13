@@ -31,6 +31,7 @@ import (
 // writeback, so they stay summary-eligible for the next scan. Do NOT abort the
 // lease on a stride failure.
 func processSummaryLeaseGroup(ctx context.Context, p *Pipeline, key groupKey, items []SummaryWork) {
+	ctx = key.Key.bind(ctx)
 	gk := key.Key
 	be := backendOr(p, key.Backend)
 	stride := max(p.cfg.SummaryBatchSizeOrDefault(), 1)

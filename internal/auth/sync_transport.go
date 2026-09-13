@@ -42,6 +42,8 @@ type Transport struct {
 	// [WithAccountSelection]; nil in production, where [Transport.selection]
 	// falls back to [SelectedAccount].
 	sel *AccountSelection
+	// fixedAccount is set only on a request-scoped management transport.
+	fixedAccount string
 	// proveAnswer enables the one-shot prove-on-refusal recovery and supplies
 	// the possession-proof answer function. nil (the default) disables it
 	// entirely: the daemon owns proving through its background loop and must
@@ -313,7 +315,9 @@ func (t *Transport) issueBytes(
 	// recovery routes: a user whose selection has been rejected must still be
 	// able to run the command that lists the accounts they may pick.
 	var acct string
-	if bypassAccountRefusal {
+	if t.fixedAccount != "" {
+		acct = t.fixedAccount
+	} else if bypassAccountRefusal {
 		acct = t.selection().ID(ctx)
 	} else {
 		var acctErr error

@@ -290,7 +290,7 @@ func TestRouter_Backend_RoutesByLogin(t *testing.T) {
 	be2, err := r.Backend(ctx)
 	require.NoError(t, err)
 	r.mu.Lock()
-	cloudGC := r.cloud
+	cloudGC := r.boundCloud[Destination{Storage: "cloud", AccountID: r.SelectedAccountID(ctx)}]
 	r.mu.Unlock()
 	require.NotNil(t, cloudGC, "cloud client must be built after login")
 	assert.Same(t, cloudGC, be2, "Backend must return the cloud *GraphClient when logged in")

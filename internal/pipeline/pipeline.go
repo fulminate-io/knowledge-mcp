@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/llmproviders"
 	"github.com/fulminate-io/knowledge-mcp/internal/workingset"
@@ -145,14 +146,8 @@ type Pipeline struct {
 	// tracks its own poke watermark; a redundant poke is an RPC-free no-op). A
 	// collector wake fires only when a returned gen ADVANCES past this. Guarded by genMu.
 	lastPokedGen map[graphKey]axisGens
-	// lastCatalogGen is the account CATALOG watermark last seen on a gen-poll
-	// response. Compared for CHANGE, never for increase: the served value is a
-	// per-replica SAMPLE and may move backward across replicas or restarts
-	// (engine.proto freshness_gen). Guarded by genMu.
-	lastCatalogGen uint64
-	// lastCatalogGenSet records whether lastCatalogGen holds an observation yet, so
-	// the FIRST sample is recorded without waking. Guarded by genMu.
-	lastCatalogGenSet bool
+	// catalogGens holds each storage/account catalog observation under genMu.
+	catalogGens map[graphclient.Destination]uint64
 	// genPollWake is the buffered(1) coalescing trigger the central bulk gen-poll
 	// loop (RunGenPollLoop) waits on. Signaled by WakeAll — a collect or any bulk
 	// write, a new graph's registration, a login flip, and the client's activity
@@ -178,7 +173,9 @@ type Pipeline struct {
 	// search index: a dropped ship leaves the affected nodes temporarily
 	// unsearchable until the next ship or rebuild, but writeback liveness takes
 	// priority and it self-heals on the next embed dirty-gen. nil for test fakes.
-	segmentMgr ShipManager
+	segmentMgr        ShipManager
+	segmentManagerFor func(context.Context) ShipManager
+	collectStateFor   func(context.Context, kgtypes.GraphType, string) (func() bool, func() uint64)
 
 	// healFactory builds the per-graph auto-heal closure RegisterGraph injects
 	// into each collector. Built by BOOTSTRAP (the only layer where pipeline +
@@ -210,7 +207,7 @@ type Pipeline struct {
 	// or logged — the same reason AttachWorkingSet takes the set behind an
 	// accessor. nil when nothing is wired (test fakes) → the collector's
 	// durable-not-found arm still ENDS the lane, it just evicts nothing.
-	evictGraph func(gt kgtypes.GraphType, name, reason string)
+	evictGraph func(context.Context, kgtypes.GraphType, string, string)
 
 	// workingSet is the set of graphs THIS client process has directly interacted
 	// with, and it is the sole source of the catalog pass's wanted set: the
@@ -268,7 +265,7 @@ type Pipeline struct {
 	// GUARDED BY genMu because RunGenPollLoop reads it while the wiring layer may
 	// still be installing it — the same publication hazard the rest of this struct's
 	// late-wired fields have, and the poll is the only reader.
-	segmentNudge func(gt kgtypes.GraphType, name string)
+	segmentNudge func(context.Context, kgtypes.GraphType, string)
 
 	stopOnce sync.Once
 	stopErr  error
@@ -276,8 +273,9 @@ type Pipeline struct {
 
 // graphKey is the Pipeline-internal map key for collector tracking.
 type graphKey struct {
-	GraphType kgtypes.GraphType
-	GraphName string
+	GraphType   kgtypes.GraphType
+	GraphName   string
+	Destination graphclient.Destination
 }
 
 // SummarizerFunc is the abstraction worker code uses to call the

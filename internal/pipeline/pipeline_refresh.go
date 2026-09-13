@@ -5,6 +5,8 @@ package pipeline
 import (
 	"context"
 	"log/slog"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
 // pipeline_refresh.go holds the client-side collector-registration pass on
@@ -135,7 +137,7 @@ func (p *Pipeline) wantedGraphs() []GraphRef {
 		if p.localPresence != nil && !p.localPresence(m.GraphType, m.Name) {
 			continue // this machine cannot serve it — e.g. a code graph with no checkout here.
 		}
-		out = append(out, GraphRef{GraphType: m.GraphType, GraphName: m.Name})
+		out = append(out, GraphRef{GraphType: m.GraphType, GraphName: m.Name, Destination: graphclient.Destination{Storage: m.Storage, AccountID: m.Account}})
 	}
 	return out
 }
@@ -177,13 +179,17 @@ func (p *Pipeline) refreshOnce(ctx context.Context) {
 	registered := 0
 	for k := range wanted {
 		if _, exists := have[k]; !exists {
-			p.RegisterGraph(ctx, k.GraphType, k.GraphName)
+			bound := ctx
+			if k.Destination.Storage != "" {
+				bound = graphclient.WithDestination(ctx, k.Destination)
+			}
+			p.RegisterGraph(bound, k.GraphType, k.GraphName)
 			registered++
 		}
 	}
 	for k := range have {
 		if _, still := wanted[k]; !still {
-			p.UnregisterGraph(k.GraphType, k.GraphName)
+			p.unregisterKey(k)
 		}
 	}
 	// A freshly-registered graph has no entry in the central gen snapshot yet, so

@@ -77,6 +77,9 @@ func InterceptCollect(ctx context.Context, deps ClientDeps, params kgtools.CallT
 	var rt *CollectRuntime
 	if p, ok := deps.(collectRuntimeProvider); ok {
 		rt = p.CollectRuntime()
+		if destination, bound := graphclient.StorageDestination(ctx); bound {
+			rt = rt.ForDestination(destination)
+		}
 	}
 
 	// ctx is hoisted above the registered-type probe (which needs it for the
@@ -95,6 +98,9 @@ func InterceptCollect(ctx context.Context, deps ClientDeps, params kgtools.CallT
 		// for the rest of the collect — including the registered-type ByName wire
 		// lookup below, which issues a covered RPC.
 		base = graphclient.WithOperation(rt.BaseContext(), graphclient.OperationForTool(params.Name))
+		if destination, ok := graphclient.StorageDestination(ctx); ok {
+			base = graphclient.WithDestination(base, destination)
+		}
 	}
 	ctx = base
 

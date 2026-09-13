@@ -41,6 +41,10 @@ import (
 // connect-go surfaces 401 + 5xx normally and the retry budget on those classes
 // belongs to the auth-refresh logic above, not a generic backoff loop.
 func NewCloudGraphClient(baseURL string, ts auth.TokenSource) *GraphClient {
+	return newCloudGraphClient(baseURL, ts, nil)
+}
+
+func newCloudGraphClient(baseURL string, ts auth.TokenSource, destination *Destination) *GraphClient {
 	sel := auth.SelectedAccount()
 	httpClient := &http.Client{
 		Transport: &bearerRoundTripper{
@@ -75,6 +79,14 @@ func NewCloudGraphClient(baseURL string, ts auth.TokenSource) *GraphClient {
 	gens := &atomic.Uint64{}
 	stamp := connect.WithInterceptors(
 		newFreshnessObserver(gens),
+		connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
+			return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+				if destination != nil {
+					ctx = WithDestination(ctx, *destination)
+				}
+				return next(ctx, req)
+			}
+		}),
 		newOperationInterceptor(),
 		newAccountInterceptor(sel),
 	)
@@ -104,6 +116,13 @@ type bearerRoundTripper struct {
 	// This round-tripper is the one place on the Connect chain holding the raw
 	// *http.Response, so response classification lives here.
 	sel *auth.AccountSelection
+}
+
+// CloseIdleConnections releases the pool owned by the wrapped transport.
+func (b *bearerRoundTripper) CloseIdleConnections() {
+	if closer, ok := b.base.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
 }
 
 // RoundTrip implements http.RoundTripper. It acquires a token, sends the

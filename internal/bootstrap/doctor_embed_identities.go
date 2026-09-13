@@ -5,7 +5,6 @@ package bootstrap
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -162,7 +161,7 @@ func doctorConfigPath(configFile string) string {
 	if configFile != "" {
 		return configFile
 	}
-	home, err := os.UserHomeDir()
+	home, err := bootstrapHomeDir()
 	if err != nil {
 		return ""
 	}

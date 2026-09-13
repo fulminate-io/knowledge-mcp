@@ -157,7 +157,7 @@ func installLaunchdUnits() (serviceOutcome, error) {
 	if err != nil {
 		return outcomeBare, err
 	}
-	home, err := os.UserHomeDir()
+	home, err := bootstrapHomeDir()
 	if err != nil {
 		return outcomeBare, fmt.Errorf("resolve home directory: %w", err)
 	}
@@ -209,7 +209,7 @@ func installSystemdUnits() (serviceOutcome, error) {
 	if err != nil {
 		return outcomeBare, err
 	}
-	home, err := os.UserHomeDir()
+	home, err := bootstrapHomeDir()
 	if err != nil {
 		return outcomeBare, fmt.Errorf("resolve home directory: %w", err)
 	}
@@ -298,7 +298,7 @@ func resolveServiceBins() (clientBin, serverBin, logDir string, err error) {
 	if err != nil {
 		return "", "", "", fmt.Errorf("locate knowledge-server: %w", err)
 	}
-	home, err := os.UserHomeDir()
+	home, err := bootstrapHomeDir()
 	if err != nil {
 		return "", "", "", fmt.Errorf("resolve home directory: %w", err)
 	}

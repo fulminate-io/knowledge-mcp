@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
@@ -38,7 +39,7 @@ import (
 // Manager construction, so a zero-valued nudgeState is immediately usable.
 type nudgeState struct {
 	mu     sync.Mutex
-	graphs map[graphKey]struct{}
+	graphs map[NudgedGraph]struct{}
 	wake   chan struct{} // buffered, capacity 1 — see the coalescing note above.
 	// lastNudge records when each graph last asked for an earlier DELTA PULL, so the
 	// search-driven recorder can be rate-limited per graph. It is guarded by the same
@@ -52,7 +53,7 @@ type nudgeState struct {
 // channel before the first recording would never wake.
 func (n *nudgeState) ensure() {
 	if n.graphs == nil {
-		n.graphs = make(map[graphKey]struct{})
+		n.graphs = make(map[NudgedGraph]struct{})
 	}
 	if n.wake == nil {
 		n.wake = make(chan struct{}, 1)
@@ -64,8 +65,9 @@ func (n *nudgeState) ensure() {
 
 // NudgedGraph identifies one graph that asked for an earlier reconcile look.
 type NudgedGraph struct {
-	GraphType kgtypes.GraphType
-	Name      string
+	GraphType   kgtypes.GraphType
+	Name        string
+	Destination graphclient.Destination
 }
 
 // ReconcileNudge returns the receive end of the wake channel. A periodic reconcile
@@ -90,7 +92,7 @@ func (m *Manager) TakeReconcileNudges() []NudgedGraph {
 	defer m.nudges.mu.Unlock()
 	out := make([]NudgedGraph, 0, len(m.nudges.graphs))
 	for k := range m.nudges.graphs {
-		out = append(out, NudgedGraph{GraphType: k.graphType, Name: k.graphName})
+		out = append(out, k)
 	}
 	clear(m.nudges.graphs)
 	return out
@@ -107,9 +109,16 @@ func (m *Manager) TakeReconcileNudges() []NudgedGraph {
 // cost is one map insert plus one non-blocking send, and the send never blocks
 // even when no consumer is running.
 func (m *Manager) flagReconcileNudge(gt kgtypes.GraphType, name string) {
+	key := NudgedGraph{GraphType: gt, Name: name}
+	if m.destination != nil {
+		key.Destination = *m.destination
+	}
+	if m.storageRoot != nil {
+		m = m.storageRoot
+	}
 	m.nudges.mu.Lock()
 	m.nudges.ensure()
-	m.nudges.graphs[graphKey{graphType: gt, graphName: name}] = struct{}{}
+	m.nudges.graphs[key] = struct{}{}
 	wake := m.nudges.wake
 	m.nudges.mu.Unlock()
 

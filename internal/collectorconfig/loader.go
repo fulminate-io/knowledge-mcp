@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // loader.go — the two scopes, their precedence, and where each file lives.
@@ -55,7 +56,22 @@ func ProjectPathIn(root string) string {
 // A cwd is NOT a git root: two concurrent sessions standing in two different
 // repositories legitimately resolve two different project files, and a session
 // carrying no workspace cwd resolves from the daemon's --root instead.
-func FindProjectPath(cwd string) string {
+func FindProjectPath(cwd string) string { return findProjectPath(cwd, "") }
+
+// FindProjectPathWithin includes boundary itself but never reads above it.
+// A cwd outside the boundary cannot contribute a project configuration.
+func FindProjectPathWithin(cwd, boundary string) string {
+	if cwd == "" || !filepath.IsAbs(boundary) {
+		return ""
+	}
+	relative, err := filepath.Rel(boundary, cwd)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return findProjectPath(cwd, filepath.Clean(boundary))
+}
+
+func findProjectPath(cwd, boundary string) string {
 	if cwd == "" {
 		return ""
 	}
@@ -66,7 +82,7 @@ func FindProjectPath(cwd string) string {
 			return candidate
 		}
 		parent := filepath.Dir(dir)
-		if parent == dir {
+		if parent == dir || dir == boundary {
 			return ""
 		}
 		dir = parent

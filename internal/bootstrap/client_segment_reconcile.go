@@ -160,7 +160,7 @@ func (c *client) segmentBearingGraphs() []segmentGraphRef {
 		if !c.graphLocallyPresent(m.GraphType, m.Name) {
 			continue // code graph whose checkout this machine does not hold.
 		}
-		graphs = append(graphs, segmentGraphRef{gt: m.GraphType, name: m.Name})
+		graphs = append(graphs, segmentGraphRef{gt: m.GraphType, name: m.Name, destination: graphclient.Destination{Storage: m.Storage, AccountID: m.Account}})
 	}
 	return graphs
 }
@@ -248,7 +248,7 @@ func (c *client) drainSegmentBacklog(ctx context.Context) {
 			skipped = append(skipped, label)
 			continue
 		}
-		if err := c.segmentMgr.ReEmitDirtyBuckets(ctx, g.gt, g.name); err != nil {
+		if err := c.segmentMgr.ReEmitDirtyBuckets(g.bind(ctx), g.gt, g.name); err != nil {
 			slog.Warn("bootstrap: shutdown backlog drain failed for a graph (continuing; the repair arm picks it up next boot)",
 				"graph_type", g.gt, "name", g.name, "error", err)
 			skipped = append(skipped, label)
@@ -344,7 +344,7 @@ func (c *client) runSegmentReconcileLoop(ctx context.Context, interval time.Dura
 			nudged := c.segmentMgr.TakeReconcileNudges()
 			scope := make(map[segmentGraphRef]struct{}, len(nudged))
 			for _, n := range nudged {
-				scope[segmentGraphRef{gt: n.GraphType, name: n.Name}] = struct{}{}
+				scope[segmentGraphRef{gt: n.GraphType, name: n.Name, destination: n.Destination}] = struct{}{}
 			}
 			// The message names the MECHANISM rather than any one recorder: THREE
 			// different conditions reach this wake — a backlog crossing the re-emit byte

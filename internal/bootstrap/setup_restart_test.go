@@ -74,7 +74,7 @@ func shortReadiness(t *testing.T) {
 func knowledgeDir(t *testing.T) {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setBootstrapHome(t, home)
 	if err := os.MkdirAll(filepath.Join(home, ".knowledge"), 0o750); err != nil {
 		t.Fatalf("mkdir ~/.knowledge: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestRestart_BareSpawnsDaemon(t *testing.T) {
 	// terminal while the file is what remains — and is where the daemon records
 	// the notice if the stream dies under it. The argv half of the same property
 	// is asserted by TestSpawnedChildrenAreToldTheirLogFile.
-	home, err := os.UserHomeDir()
+	home, err := bootstrapHomeDir()
 	if err != nil {
 		t.Fatalf("resolve home: %v", err)
 	}

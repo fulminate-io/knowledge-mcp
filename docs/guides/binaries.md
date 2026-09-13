@@ -37,12 +37,13 @@ offline or low-noise development.
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--auth-token` |  | Opaque machine bearer token presented on every request, bypassing the interactive browser login and the platform keychain. Defaults to the KNOWLEDGE_AUTH_TOKEN environment variable; an explicit flag value wins. Empty leaves the interactive login path intact. |
+| `--config-file` |  | Explicit configuration file; missing or malformed files are startup errors |
 | `--embed-batch-size` | `100` | Client-side LLM pipeline: items per embed worker batch (under voyageEmbedder's 128 internal cap) |
 | `--embed-channel-size` | `10000` | Client-side LLM pipeline: EmbedWork channel buffer size (full = collector blocks) |
 | `--embed-rpm` | `0` | Client-side LLM pipeline: max embed (Voyage) API requests per MINUTE across all embed workers; 0 = unlimited (default, preserves current 20-worker behavior). Proactive throttle for low-tier Voyage accounts — paces the opening burst so it respects the account RPM before the first 429. Companion to the reactive Retry-After backoff. |
 | `--embed-workers` | `20` | Client-side LLM pipeline: count of embed worker goroutines |
 | `--graph-storage` | `~/.knowledge/` | Directory for graph storage: the server writes its .bin here, and the client roots its segment cache under it (default ~/.knowledge/) |
-| `--headless` | `false` | Run as an embedded/supervisor-managed daemon: serve the loopback /mcp endpoint and resolve query embeddings, but skip every background content + coordination loop. Implies --no-propagation-runtime, --skip-llm-precheck and --no-llm-pipeline, and additionally disables the transcript upload loops. Still loads ~/.knowledge/config (so [credentials] resolve config-first). Does not change auth. |
+| `--headless` | `false` | Run as an embedded/supervisor-managed daemon: serve the loopback /mcp endpoint and resolve query embeddings, but skip every background content + coordination loop. Implies --no-propagation-runtime, --skip-llm-precheck and --no-llm-pipeline, and additionally disables the transcript upload loops. Loads the selected --config-file, or ~/.knowledge/config when none is supplied (so [credentials] resolve config-first). Does not change auth. |
 | `--log-file` |  | Log file path (logs to both stderr and file when set) |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
 | `--log-rotate-compress` | `true` | Gzip rotated log files. Default true — disk savings outweigh the ~10ms compression cost on rotation. |
@@ -62,6 +63,7 @@ offline or low-noise development.
 | `--root` | `.` | Project root the client walks for ast + topology, and the current-tree fallback for resolving a bare repo name (default ".") |
 | `--segment-residency-budget-bytes` | `1073741824` | Client-side segment residency ceiling, in RESIDENT HEAP BYTES summed across every per-graph segment pool: once the total crosses it, the coldest pools are unloaded from memory and reload from the local L2 disk cache on their next search. 0 disables eviction entirely. This counts modeled Go-heap bytes — the per-segment membership index, the liveness bitset, and whatever each payload declares it holds. A mapped segment's blob is page cache and is NOT counted, so the budget is not a bound on a pool's on-disk size. Defaults to the KNOWLEDGE_SEGMENT_RESIDENCY_BUDGET_BYTES environment variable and otherwise to 1073741824; an explicit flag value wins. |
 | `--skip-llm-precheck` | `false` | Skip the live-ping check that runs against every configured (provider, model) tuple at client startup. Use for offline development or CI sandboxes; default is to fail-fast at boot rather than at first tool call. |
+| `--state-dir` |  | Absolute installation state directory for supervised runtimes |
 | `--summary-batch-size` | `20` | Client-side LLM pipeline: items per summary worker batch |
 | `--summary-channel-size` | `10000` | Client-side LLM pipeline: SummaryWork channel buffer size (full = collector blocks) |
 | `--summary-workers` | `25` | Client-side LLM pipeline: count of summary worker goroutines |
@@ -82,12 +84,13 @@ outlives any single session.
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--auth-token` |  | Opaque machine bearer token presented on every request, bypassing the interactive browser login and the platform keychain. Defaults to the KNOWLEDGE_AUTH_TOKEN environment variable; an explicit flag value wins. Empty leaves the interactive login path intact. |
+| `--config-file` |  | Explicit configuration file; missing or malformed files are startup errors |
 | `--embed-batch-size` | `100` | Client-side LLM pipeline: items per embed worker batch (under voyageEmbedder's 128 internal cap) |
 | `--embed-channel-size` | `10000` | Client-side LLM pipeline: EmbedWork channel buffer size (full = collector blocks) |
 | `--embed-rpm` | `0` | Client-side LLM pipeline: max embed (Voyage) API requests per MINUTE across all embed workers; 0 = unlimited (default, preserves current 20-worker behavior). Proactive throttle for low-tier Voyage accounts — paces the opening burst so it respects the account RPM before the first 429. Companion to the reactive Retry-After backoff. |
 | `--embed-workers` | `20` | Client-side LLM pipeline: count of embed worker goroutines |
 | `--graph-storage` | `~/.knowledge/` | Directory for graph storage: the server writes its .bin here, and the client roots its segment cache under it (default ~/.knowledge/) |
-| `--headless` | `false` | Run as an embedded/supervisor-managed daemon: serve the loopback /mcp endpoint and resolve query embeddings, but skip every background content + coordination loop. Implies --no-propagation-runtime, --skip-llm-precheck and --no-llm-pipeline, and additionally disables the transcript upload loops. Still loads ~/.knowledge/config (so [credentials] resolve config-first). Does not change auth. |
+| `--headless` | `false` | Run as an embedded/supervisor-managed daemon: serve the loopback /mcp endpoint and resolve query embeddings, but skip every background content + coordination loop. Implies --no-propagation-runtime, --skip-llm-precheck and --no-llm-pipeline, and additionally disables the transcript upload loops. Loads the selected --config-file, or ~/.knowledge/config when none is supplied (so [credentials] resolve config-first). Does not change auth. |
 | `--http-port` | `15023` | Loopback TCP port for the streamable-HTTP MCP endpoint (/mcp). Distinct from --port (the graph server). |
 | `--log-file` |  | Log file path (logs to both stderr and file when set) |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
@@ -108,6 +111,7 @@ outlives any single session.
 | `--root` | `.` | Project root the client walks for ast + topology, and the current-tree fallback for resolving a bare repo name (default ".") |
 | `--segment-residency-budget-bytes` | `1073741824` | Client-side segment residency ceiling, in RESIDENT HEAP BYTES summed across every per-graph segment pool: once the total crosses it, the coldest pools are unloaded from memory and reload from the local L2 disk cache on their next search. 0 disables eviction entirely. This counts modeled Go-heap bytes — the per-segment membership index, the liveness bitset, and whatever each payload declares it holds. A mapped segment's blob is page cache and is NOT counted, so the budget is not a bound on a pool's on-disk size. Defaults to the KNOWLEDGE_SEGMENT_RESIDENCY_BUDGET_BYTES environment variable and otherwise to 1073741824; an explicit flag value wins. |
 | `--skip-llm-precheck` | `false` | Skip the live-ping check that runs against every configured (provider, model) tuple at client startup. Use for offline development or CI sandboxes; default is to fail-fast at boot rather than at first tool call. |
+| `--state-dir` |  | Absolute installation state directory for supervised runtimes |
 | `--summary-batch-size` | `20` | Client-side LLM pipeline: items per summary worker batch |
 | `--summary-channel-size` | `10000` | Client-side LLM pipeline: SummaryWork channel buffer size (full = collector blocks) |
 | `--summary-workers` | `25` | Client-side LLM pipeline: count of summary worker goroutines |
@@ -274,6 +278,8 @@ auto-generated like the client tables above):
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--graph-storage` | `~/.knowledge/` | Directory for graph storage (`knowledge.bin` + `code/*.bin`). |
+| `--machine-id-cache` |  | Absolute installation identity-cache path; empty retains the standard identity cache. Rejected when an external store backend is installed. |
+| `--pid-file` |  | Absolute diagnostic PID file path, independent of the identity cache; empty retains the standard PID location. |
 | `--root` | `.` | Project root directory for collectors and the default active repo. |
 | `--port` | `15022` | TCP port for server mode. |
 | `--drain-timeout` | `0` | Max wait for in-flight requests on shutdown (`0` = default of 5 minutes). |

@@ -5,6 +5,7 @@ package cli
 import (
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -28,7 +29,7 @@ func serveAccounts(t *testing.T, body string) {
 
 	prior := buildSyncTransportFn
 	buildSyncTransportFn = func() (*auth.Transport, error) {
-		return auth.NewSyncTransport(srv.URL, auth.StaticTokenSource{AccessToken: "tok"}), nil
+		return auth.NewSyncTransport(srv.URL, auth.StaticTokenSource{AccessToken: "tok"}, auth.WithAccountSelection(auth.NewAccountSelection(filepath.Join(t.TempDir(), "config"), 0))), nil
 	}
 	t.Cleanup(func() { buildSyncTransportFn = prior })
 }

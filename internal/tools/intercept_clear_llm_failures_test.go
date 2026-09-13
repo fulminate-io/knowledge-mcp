@@ -5,6 +5,7 @@ package tools
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -34,9 +35,14 @@ func mutationExecRequests(fc *fakeGraphCaller) []*knowledgev1.ExecuteRequest {
 }
 
 // TestMutateComposers_ClearLLMFailures_SingleGraph asserts the composer issues
-// exactly TWO predicate UPDATEs against a single named graph: one OP_EXISTS
-// predicate + set_metadata empty clear per failure marker. Matches the server
+// ONE predicate UPDATE PER MARKER KEY against a single named graph: an OP_EXISTS
+// predicate + set_metadata empty clear per key. Matches the server
 // clearLLMFailuresInGraph node-selection semantics via generic MutationPlans.
+//
+// THE EXPECTED COUNT IS DERIVED FROM llmFailureKeys, never written as a literal.
+// The set gained a third key when the terminal summary marker landed, and a
+// literal 2 here would have made every row in this file red for a reason that has
+// nothing to do with what the row asserts.
 func TestMutateComposers_ClearLLMFailures_SingleGraph(t *testing.T) {
 	// The named target must resolve against the enumerated catalog before any
 	// UPDATE (the unresolvable-name loud-miss guard), so seed code/knowledge.
@@ -52,7 +58,7 @@ func TestMutateComposers_ClearLLMFailures_SingleGraph(t *testing.T) {
 	require.True(t, handled, "clear_llm_failures is claimed client-side")
 	require.False(t, res.IsError, "clear: %s", toolResultText(res))
 
-	require.Len(t, fc.execMutations, 2, "exactly two predicate UPDATEs (one per failure marker)")
+	require.Len(t, fc.execMutations, len(llmFailureKeys), "one predicate UPDATE per marker key in llmFailureKeys")
 	gotKeys := map[string]bool{}
 	for _, plan := range fc.execMutations {
 		assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_UPDATE, plan.GetKind())
@@ -67,8 +73,16 @@ func TestMutateComposers_ClearLLMFailures_SingleGraph(t *testing.T) {
 		assert.Empty(t, md[key], "clear writes empty string, not a delete")
 		gotKeys[key] = true
 	}
+	for _, key := range llmFailureKeys {
+		assert.True(t, gotKeys[key], "%s must be cleared: every key on llmFailureKeys gets its UPDATE", key)
+	}
+	// SPELLED OUT TOO, so a set that silently lost a key does not make the loop
+	// above vacuous. The terminal summary marker is the one that MUST be here: the
+	// collect self-heal keeps it across an unchanged collect, so this clear is the
+	// only way a node whose content never changes re-enters the pipeline.
 	assert.True(t, gotKeys[kgtypes.MetaKeySummaryFailureReason], "summary_failure_reason cleared")
 	assert.True(t, gotKeys[kgtypes.MetaKeyEmbedFailureReason], "embed_failure_reason cleared")
+	assert.True(t, gotKeys[kgtypes.MetaKeySummaryFailureTerminal], "summary_failure_terminal cleared")
 
 	// Each mutation Execute request targets the named graph. The code graph routes
 	// its name via Repo (not Name) — the engine's resolveCode rejects sel.Name on a
@@ -76,27 +90,30 @@ func TestMutateComposers_ClearLLMFailures_SingleGraph(t *testing.T) {
 	// which is the bug clearTarget previously tripped silently. (execRequests also
 	// carries the catalog-enumeration GRAPH_NAMES reads; filter to the mutations.)
 	mutReqs := mutationExecRequests(fc)
-	require.Len(t, mutReqs, 2)
+	require.Len(t, mutReqs, len(llmFailureKeys))
 	for _, req := range mutReqs {
 		require.NotNil(t, req.GetTarget())
 		assert.Equal(t, "code", req.GetTarget().GetGraph())
 		assert.Equal(t, "knowledge", req.GetTarget().GetRepo())
 		assert.Empty(t, req.GetTarget().GetName(), "code selector must NOT also carry Name")
 	}
-	// 2 markers * 3 affected each = "cleared 3 summary marker(s) + 3 embed marker(s)".
-	assert.Contains(t, toolResultText(res), "cleared 3 summary marker(s) + 3 embed marker(s)")
+	// One UPDATE per key * 3 affected each, with the per-key breakdown beside the
+	// total so an operator can see WHICH marker cleared.
+	assert.Contains(t, toolResultText(res), fmt.Sprintf("cleared %d marker(s)", 3*len(llmFailureKeys)))
+	assert.Contains(t, toolResultText(res), kgtypes.MetaKeySummaryFailureTerminal+"=3",
+		"the terminal marker's own cleared count must be reported, not folded away")
 }
 
 // TestMutateComposers_ClearLLMFailures_SkippedCountSurfaced asserts the
 // not_found skip count (ExecuteResponse.skipped_count) is aggregated
 // across the per-marker UPDATEs and surfaced in the operator-visible result text
-// when > 0. The fake reports mutateSkipped=2 per UPDATE; with TWO marker UPDATEs
-// the total reaches "skipped 4 not_found marker(s)". Fails-when-absent: drop the
-// totalSkipped accumulation/append and this assertion goes red.
+// when > 0. The fake reports mutateSkipped=2 per UPDATE, so the expected total is
+// 2 * len(llmFailureKeys), derived rather than written. Fails-when-absent: drop
+// the totalSkipped accumulation/append and this assertion goes red.
 func TestMutateComposers_ClearLLMFailures_SkippedCountSurfaced(t *testing.T) {
 	fc := &fakeGraphCaller{
 		mutateAffected:   3,
-		mutateSkipped:    2, // each of the two marker UPDATEs skips 2 not_found nodes.
+		mutateSkipped:    2, // each marker UPDATE skips 2 not_found nodes.
 		listGraphsResult: listGraphsResultJSON(t, [2]string{"code", "knowledge"}),
 	}
 	deps := interceptTestDeps{gc: fc}
@@ -107,10 +124,9 @@ func TestMutateComposers_ClearLLMFailures_SkippedCountSurfaced(t *testing.T) {
 	require.True(t, handled)
 	require.False(t, res.IsError, "clear: %s", toolResultText(res))
 	txt := toolResultText(res)
-	// 2 marker UPDATEs * 2 skipped each = 4 skipped surfaced in the result.
-	assert.Contains(t, txt, "skipped 4 not_found marker(s)",
+	assert.Contains(t, txt, fmt.Sprintf("skipped %d not_found marker(s)", 2*len(llmFailureKeys)),
 		"the aggregated skipped count must surface in the operator-visible result")
-	assert.Contains(t, txt, "cleared 3 summary marker(s) + 3 embed marker(s)",
+	assert.Contains(t, txt, fmt.Sprintf("cleared %d marker(s)", 3*len(llmFailureKeys)),
 		"the cleared counts are still reported alongside the skip count")
 }
 
@@ -153,7 +169,7 @@ func TestMutateComposers_ClearLLMFailures_OnlyPhantomMarkers(t *testing.T) {
 	require.True(t, handled)
 	require.False(t, res.IsError, "an all-skip sweep is not an error")
 	txt := toolResultText(res)
-	assert.Contains(t, txt, "skipped 2 not_found marker(s)",
+	assert.Contains(t, txt, fmt.Sprintf("skipped %d not_found marker(s)", len(llmFailureKeys)),
 		"the zero-cleared path must still surface the skip count")
 	assert.NotContains(t, txt, "no failure markers found",
 		"a pure-phantom sweep must NOT read as a clean nothing-to-clear")
@@ -179,7 +195,7 @@ func TestMutateComposers_ClearLLMFailures_KnowledgeRootNilTarget(t *testing.T) {
 	// Filter to the mutation requests (execRequests also carries the catalog
 	// GRAPH_NAMES reads, which DO carry a {graph:"knowledge"} target).
 	mutReqs := mutationExecRequests(fc)
-	require.Len(t, mutReqs, 2)
+	require.Len(t, mutReqs, len(llmFailureKeys))
 	for _, req := range mutReqs {
 		assert.Nil(t, req.GetTarget(), "knowledge root clears against the nil/default selector")
 	}
@@ -203,10 +219,11 @@ func TestMutateComposers_ClearLLMFailures_KnowledgeOverlayNilTarget(t *testing.T
 	})
 	require.True(t, handled)
 	require.False(t, res.IsError, "clear: %s", toolResultText(res))
-	// 2 markers * 2 resolved keys (base knowledge + overlay knowledge@session-x)
-	// = 4 UPDATEs. Fixture-derived, not set-derived.
+	// One UPDATE per marker key * 2 resolved keys (base knowledge + overlay
+	// knowledge@session-x). The RESOLVED-KEY count is the fixture's; the marker
+	// count is derived from the declaration.
 	mutReqs := mutationExecRequests(fc)
-	require.Len(t, mutReqs, 4, "two markers per resolved key (base + overlay)")
+	require.Len(t, mutReqs, 2*len(llmFailureKeys), "one UPDATE per marker key per resolved key (base + overlay)")
 	for _, req := range mutReqs {
 		assert.Nil(t, req.GetTarget(), "every knowledge clear target resolves to the nil selector")
 	}
@@ -214,7 +231,7 @@ func TestMutateComposers_ClearLLMFailures_KnowledgeOverlayNilTarget(t *testing.T
 
 // TestMutateComposers_ClearLLMFailures_MultiGraphFanOut asserts the empty-graph
 // case resolves the loaded graphs via pipeline_list_graphs then issues the two
-// predicate UPDATEs PER resolved graph (two graphs → 4 UPDATEs).
+// predicate UPDATEs PER resolved graph (two graphs → 2 * len(llmFailureKeys)).
 func TestMutateComposers_ClearLLMFailures_MultiGraphFanOut(t *testing.T) {
 	listResult := kgtools.ToolResult{Content: []kgtools.ContentBlock{{Type: "text", Text: `{"graphs":[
 		{"graph_type":"code","graph_name":"knowledge"},
@@ -228,8 +245,7 @@ func TestMutateComposers_ClearLLMFailures_MultiGraphFanOut(t *testing.T) {
 	})
 	require.True(t, handled)
 	require.False(t, res.IsError, "clear: %s", toolResultText(res))
-	// 2 resolved graphs * 2 markers = 4 UPDATEs.
-	assert.Len(t, fc.execMutations, 4, "two markers per resolved graph")
+	assert.Len(t, fc.execMutations, 2*len(llmFailureKeys), "one UPDATE per marker key per resolved graph")
 
 	// THE PREDICATE UPDATES ONLY. The sweep also issues catalog QUERIES, whose
 	// practice target carries no instance field whatever clearTarget does — so a
@@ -266,7 +282,7 @@ func TestMutateComposers_ClearLLMFailures_MultiGraphFanOut(t *testing.T) {
 
 // TestMutateComposers_ClearLLMFailures_OverlayFanOut asserts the clear fans a
 // resolved base out across its overlay keys: for code/agent with one overlay key,
-// it issues 2 predicate UPDATEs per resolved key (4 total), and the overlay
+// it issues one predicate UPDATE per marker key per resolved key, and the overlay
 // UPDATE's GraphSelector carries Branch=feature-x (the code overlay routes via
 // Branch → server repo@branch Scope), while the base UPDATE carries an empty
 // Branch. Fails-when-absent: a base-only fan-out leaves the overlay markers
@@ -303,8 +319,9 @@ func TestMutateComposers_ClearLLMFailures_OverlayFanOut(t *testing.T) {
 			require.True(t, handled)
 			require.False(t, res.IsError, "clear: %s", toolResultText(res))
 
-			// 2 resolved keys (base agent + the overlay) * 2 markers = 4 UPDATEs.
-			require.Len(t, fc.execMutations, 4, "two markers per resolved key (base + overlay)")
+			// 2 resolved keys (base agent + the overlay), one UPDATE per marker key.
+			require.Len(t, fc.execMutations, 2*len(llmFailureKeys),
+				"one UPDATE per marker key per resolved key (base + overlay)")
 
 			var baseUpdates, overlayUpdates int
 			for _, req := range mutationExecRequests(fc) {
@@ -321,8 +338,9 @@ func TestMutateComposers_ClearLLMFailures_OverlayFanOut(t *testing.T) {
 					t.Errorf("unexpected branch %q on clear UPDATE", tgt.GetBranch())
 				}
 			}
-			assert.Equal(t, 2, baseUpdates, "two base UPDATEs (one per marker)")
-			assert.Equal(t, 2, overlayUpdates, "two overlay UPDATEs carrying Branch=feature-x")
+			assert.Equal(t, len(llmFailureKeys), baseUpdates, "one base UPDATE per marker key")
+			assert.Equal(t, len(llmFailureKeys), overlayUpdates,
+				"one overlay UPDATE per marker key, carrying Branch=feature-x")
 		})
 	}
 }

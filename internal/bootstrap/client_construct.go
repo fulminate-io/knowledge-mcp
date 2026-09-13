@@ -11,7 +11,6 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/remote"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphtypecrud"
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/tools"
 	"github.com/fulminate-io/knowledge-mcp/internal/workingset"
 )
@@ -134,13 +133,15 @@ func constructClient(f Config) *client {
 	router := graphclient.NewRouterWithMachineAuth(tcp, cli.CloudEndpoint, tokenSource, authState, machineAuth)
 
 	c := &client{
-		rootDir:    f.RootDir,
-		rootDirSet: f.RootDirSet,
-		port:       f.Port,
-		version:    Version,
-		local:      tcp,
-		router:     router,
-		authState:  authState,
+		runtimeStateDir:   f.StateDir,
+		runtimeConfigFile: f.ConfigFile,
+		rootDir:           f.RootDir,
+		rootDirSet:        f.RootDirSet,
+		port:              f.Port,
+		version:           Version,
+		local:             tcp,
+		router:            router,
+		authState:         authState,
 		// Retain the ONE token source selectAuthSources just built for the
 		// Router so the segment/sync/transcript control transports share it
 		// (via buildCloudSyncTransport) instead of each minting a fresh cold
@@ -160,19 +161,17 @@ func constructClient(f Config) *client {
 	// recorder sits on Router.Execute so every routed call is judged by the same
 	// (operation, instance) rule; the Router keeps returning c.router from
 	// GraphCaller(), so no type-assertion seam is disturbed.
-	c.router.AttachWorkingSet(c.AdmitGraph)
-	// Per-call login-aware routing: the sink re-picks the IngestService
-	// backend on every CollectChunk/Finalize via the
-	// Router (cloud when logged in, local otherwise), so a mid-session
-	// `knowledge login` flip routes the next collect to cloud without a
-	// restart. Do NOT capture a fixed tcp.IngestClient() here.
+	c.router.AttachDestinationWorkingSet(c.AdmitDestinationGraph)
+	// The sink resolves IngestService through the Router for each chunk while
+	// retaining the collect context's storage/account binding. A later collect
+	// may select a new default without retargeting work already in flight.
 	//
 	// It is WRAPPED so a collect of any graph family admits the graph it just
 	// produced. DefaultSinkFactory below closes over c.sink, so wrapping here
 	// covers the handler that forgets opts.Sink too.
 	c.sink = admittingSink{
-		inner: remote.NewUploadSinkFunc(c.router.IngestClient),
-		admit: func(gt kgtypes.GraphType, name string) { c.AdmitGraph(gt, name, "collect") },
+		inner:            remote.NewUploadSinkFunc(c.router.IngestClient),
+		admitDestination: c.AdmitDestinationGraph,
 	}
 	// Wire the graph-type CRUD client through the login-aware Router so a
 	// logged-in (cloud-only, no local server) daemon serves graph-type CRUD

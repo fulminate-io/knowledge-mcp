@@ -34,6 +34,89 @@ func TestShouldAdvanceFallback(t *testing.T) {
 	}
 }
 
+// TestClassify_OversizeInputIsDeterministicTerminal is R3's cell: the oversize
+// reason classifies ClassInvalidRequest, that class IS deterministic-terminal,
+// and the fallback chain therefore does NOT advance on it. Advancing would send
+// an input NO provider can accept to a second provider, billing a round trip to
+// learn what the first one already reported.
+//
+// The three assertions are separate on purpose: the mapping, the predicate over
+// the class, and the predicate over the ERROR are three different functions, and
+// a change to any one of them alone would break requirement 3 while the other
+// two still read correctly.
+func TestClassify_OversizeInputIsDeterministicTerminal(t *testing.T) {
+	err := &llm.LLMError{Reason: llm.ReasonInputTooLarge, InputChars: 1608836, MaxInputChars: 1048576}
+
+	if got := classify(err); got != ClassInvalidRequest {
+		t.Errorf("classify(Reason=%q) = %v; want ClassInvalidRequest", llm.ReasonInputTooLarge, got)
+	}
+	if !IsDeterministicTerminal(classify(err)) {
+		t.Errorf("IsDeterministicTerminal(classify(%q)) = false; want true — the same input is refused identically on a retry",
+			llm.ReasonInputTooLarge)
+	}
+	if ShouldAdvanceFallback(err) {
+		t.Errorf("ShouldAdvanceFallback(%q) = true; want false — no provider can accept an input this size, so advancing bills a round trip to re-learn it",
+			llm.ReasonInputTooLarge)
+	}
+
+	// CONTROL, in the same run: a class that is NOT deterministic-terminal still
+	// advances. Without it an IsDeterministicTerminal that returned true for
+	// everything would satisfy every assertion above.
+	quota := &llm.LLMError{Reason: "http_429"}
+	if !ShouldAdvanceFallback(quota) {
+		t.Errorf("control: ShouldAdvanceFallback(http_429) = false; want true — a quota wall may be served by another provider")
+	}
+}
+
+// TestClassify_HTTP400AlreadyMeetsRequirement3 is R3's HTTP arm (T12), and it is
+// a must-NOT-change row rather than a change: no oversize body signature is
+// observed for anthropic, openai or gemini, so those transports keep stamping
+// http_<status> and an oversize prompt there arrives as http_400 — which already
+// classifies deterministic-terminal and already refuses to advance the fallback
+// chain. Requirement 3 is therefore met on those transports with no edit at all,
+// and this row is what says so out loud instead of leaving a reader to infer it
+// from the absence of a change.
+//
+// A detecting half for those providers would need a documented body signature
+// from the pinned version's error vocabulary. Inventing a fixture body would
+// assert the matcher against its own answer key, so the arm stays negative until
+// a signature is observed and cited.
+func TestClassify_HTTP400AlreadyMeetsRequirement3(t *testing.T) {
+	err := &llm.LLMError{Transient: false, Reason: "http_400"}
+	if got := classify(err); got != ClassInvalidRequest {
+		t.Errorf("classify(http_400) = %v; want ClassInvalidRequest (unchanged)", got)
+	}
+	if !IsDeterministicTerminal(classify(err)) {
+		t.Error("IsDeterministicTerminal(classify(http_400)) = false; want true (unchanged)")
+	}
+	if ShouldAdvanceFallback(err) {
+		t.Error("ShouldAdvanceFallback(http_400) = true; want false (unchanged) — an HTTP oversize rejection arrives here and must not advance")
+	}
+	// The two are DISTINGUISHABLE classes of the same ErrClass: http_400 is not
+	// the oversize condition and must not be read as one, because the worker's
+	// split reads the condition, not the class.
+	if _, _, ok := llm.InputTooLargeOf(err); ok {
+		t.Error("InputTooLargeOf(http_400) ok = true; want false — a 400 is not a size refusal and must not trigger a split")
+	}
+}
+
+// TestClassify_CLIExecKeepsAuthQuotaMapping is R3's must-NOT-change cell (T13).
+// claude-cli stamps cli_exec for every non-zero exit and NO oversize signature is
+// observed for it — nothing in this tree records what a claude-cli oversize
+// rejection looks like — so its mapping stays ClassAuthQuota and its fallback
+// advances. The row exists so a later sweep cannot "fix" the mapping to
+// deterministic-terminal on the strength of this ticket rather than on evidence:
+// that would stop a real quota wall from reaching a second provider.
+func TestClassify_CLIExecKeepsAuthQuotaMapping(t *testing.T) {
+	err := &llm.LLMError{Reason: "cli_exec"}
+	if got := classify(err); got != ClassAuthQuota {
+		t.Errorf("classify(cli_exec) = %v; want ClassAuthQuota (unchanged: no oversize signature is observed for claude-cli)", got)
+	}
+	if !ShouldAdvanceFallback(err) {
+		t.Errorf("ShouldAdvanceFallback(cli_exec) = false; want true (unchanged) — a claude-cli exit is a quota/auth family failure another provider may serve")
+	}
+}
+
 // TestClassify_MapsRealReasonVocabulary is the EXHAUSTIVE antidote to silent
 // ClassOther fallthrough: it enumerates every live LLMError.Reason literal found
 // by the grep census over internal/llm + internal/llmproviders + internal/embed.
@@ -74,6 +157,7 @@ func TestClassify_MapsRealReasonVocabulary(t *testing.T) {
 		{"http_400", ClassInvalidRequest},
 		{"http_404", ClassInvalidRequest},
 		{"http_422", ClassInvalidRequest},
+		{llm.ReasonInputTooLarge, ClassInvalidRequest},
 		// Other (each KNOWN reason is a deliberate ClassOther, not a fallthrough).
 		{"config", ClassOther},
 		{"marshal_request", ClassOther},

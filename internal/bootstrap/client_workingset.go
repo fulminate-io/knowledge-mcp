@@ -20,6 +20,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/collectorwire"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/workingset"
 )
@@ -48,6 +49,19 @@ func (c *client) AdmitGraph(gt kgtypes.GraphType, name, reason string) {
 		slog.Info("working set: graph admitted by user interaction",
 			"graph_type", ref.GraphType, "graph", ref.Name, "reason", reason)
 	}
+}
+
+// AdmitDestinationGraph retains the operation's storage identity in membership.
+func (c *client) AdmitDestinationGraph(ctx context.Context, gt kgtypes.GraphType, name, reason string) {
+	if c == nil {
+		return
+	}
+	d, bound := graphclient.StorageDestination(ctx)
+	if !bound {
+		c.AdmitGraph(gt, name, reason)
+		return
+	}
+	c.workingSet.AdmitRef(workingset.Ref{GraphType: gt, Name: name, Storage: d.Storage, Account: d.AccountID}, reason)
 }
 
 // InWorkingSet reports whether this client maintains (gt, name) — the membership
@@ -79,6 +93,15 @@ func (c *client) RemoveFromWorkingSet(gt kgtypes.GraphType, name string) bool {
 		return false
 	}
 	return c.workingSet.Remove(gt, name)
+}
+
+// RemoveStorageFromWorkingSet removes the exact copy that was dropped or evicted.
+func (c *client) RemoveStorageFromWorkingSet(ctx context.Context, gt kgtypes.GraphType, name string) bool {
+	if c == nil {
+		return false
+	}
+	d, _ := graphclient.StorageDestination(ctx)
+	return c.workingSet.RemoveRef(workingset.Ref{GraphType: gt, Name: name, Storage: d.Storage, Account: d.AccountID})
 }
 
 // SegmentStalledSince reports when (gt, name) stopped being able to recover its
@@ -117,8 +140,9 @@ func (c *client) SegmentStalledSince(gt kgtypes.GraphType, name string) int64 {
 // non-code collector — so a web or pdf collect would silently never admit its
 // own graph and would then never be enriched.
 type admittingSink struct {
-	inner collector.Sink
-	admit func(gt kgtypes.GraphType, name string)
+	inner            collector.Sink
+	admit            func(gt kgtypes.GraphType, name string)
+	admitDestination func(context.Context, kgtypes.GraphType, string, string)
 }
 
 // WriteResult records the admission BEFORE delegating, deliberately. A collect
@@ -129,7 +153,9 @@ type admittingSink struct {
 func (s admittingSink) WriteResult(
 	ctx context.Context, collectorName string, result *collectorwire.CollectResult,
 ) error {
-	if s.admit != nil && result != nil {
+	if s.admitDestination != nil && result != nil {
+		s.admitDestination(ctx, result.GraphType, result.GraphName, "collect")
+	} else if s.admit != nil && result != nil {
 		s.admit(result.GraphType, result.GraphName)
 	}
 	return s.inner.WriteResult(ctx, collectorName, result)

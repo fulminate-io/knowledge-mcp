@@ -17,6 +17,10 @@ import (
 // MCPClientConfig holds all dependencies needed by the MCP client backing the
 // HTTP daemon.
 type MCPClientConfig struct {
+	// BindStorage freezes the destination before any interceptor can issue work.
+	BindStorage func(context.Context, string) (context.Context, error)
+	// BindSearch enables federation when storage was omitted on a search.
+	BindSearch func(context.Context) (context.Context, error)
 	// Client is the TCP client used for server liveness checks (EnsureServer →
 	// Healthy). Tool calls route exclusively through Dispatch.
 	Client *GraphClient
@@ -235,6 +239,14 @@ func (m *MCPClient) dispatchToolCall(ctx context.Context, req kgtools.JSONRPCReq
 	// forgotten. A sub-path that wants finer attribution (a fallback scan, a
 	// hydrate pass) re-stamps a refinement term on its own derived ctx.
 	ctx = WithOperation(ctx, OperationForTool(params.Name))
+	if m.cfg.BindStorage != nil {
+		bound, prepared, err := m.prepareStorageCall(ctx, params)
+		if err != nil {
+			return &kgtools.JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: kgtools.ErrorResult(err.Error())}
+		}
+		ctx = bound
+		params = prepared
+	}
 
 	// Run the client-side intercept chain. The chain may handle the call
 	// inline OR rewrite params (e.g. repo:+branch: injection for code-graph
@@ -261,7 +273,8 @@ func (m *MCPClient) dispatchToolCall(ctx context.Context, req kgtools.JSONRPCReq
 	// so this gate is skipped for them (cfg.LoggedIn(ctx) == true); a nil
 	// LoggedIn always gates, preserving the logged-out / test-fixture default.
 	slog.Info("mcpClient: ensuring server for tool", "tool", logSafe(params.Name))
-	if m.cfg.LoggedIn == nil || !m.cfg.LoggedIn(ctx) {
+	destination, bound := StorageDestination(ctx)
+	if (bound && destination.Storage == "local") || (!bound && (m.cfg.LoggedIn == nil || !m.cfg.LoggedIn(ctx))) {
 		if err := m.EnsureServer(); err != nil {
 			slog.Error("mcpClient: ensureServer failed", "tool", logSafe(params.Name), "error", logSafeErr(err))
 			return &kgtools.JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: kgtools.ToolResult{

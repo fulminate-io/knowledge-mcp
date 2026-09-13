@@ -44,6 +44,7 @@ import (
 // memoized instance a prior write constructed); for a graph never added to, the
 // lazily-constructed engine's buffer is empty and Flush is a no-op.
 func (m *Manager) Flush(ctx context.Context, gt kgtypes.GraphType, name string) error {
+	m = m.ForDestination(ctx)
 	// Fail closed on an in-session account switch: shipping from a manager
 	// bound to the previous account would publish it under the new tenancy.
 	if err := m.checkAccountBinding(ctx); err != nil {
@@ -197,6 +198,7 @@ type RebuildFinalizeResult struct {
 func (m *Manager) FinalizeRebuild(
 	ctx context.Context, gt kgtypes.GraphType, name string,
 ) (RebuildFinalizeResult, error) {
+	m = m.ForDestination(ctx)
 	staged := m.takeRebuildWork(gt, name)
 
 	hnswDM := m.managerFor(gt, name)

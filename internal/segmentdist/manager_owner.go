@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/bm25"
@@ -27,8 +29,12 @@ import (
 // constructed and rooted under a format-distinct L2 cache directory so they never
 // collide.
 type Manager struct {
-	cacheDir string
-	maxBytes int64
+	destination     *graphclient.Destination
+	storageRoot     *Manager
+	storageManagers map[graphclient.Destination]*Manager
+	storageOptions  []ManagerOption
+	cacheDir        string
+	maxBytes        int64
 	// residencyBudgetBytes is the ceiling, in RESIDENT HEAP BYTES, that every
 	// constructed pool's imported segments may occupy together. Crossing it evicts
 	// the coldest pools until the total is back under (manager_residency.go).
@@ -370,8 +376,9 @@ type graphKey struct {
 // opts are optional construction knobs; see the With* functions.
 func NewManager(cacheDir string, maxBytes int64, opts ...ManagerOption) *Manager {
 	m := &Manager{
-		cacheDir: cacheDir,
-		maxBytes: maxBytes,
+		storageOptions: append([]ManagerOption(nil), opts...),
+		cacheDir:       cacheDir,
+		maxBytes:       maxBytes,
 		// Sampled ONCE here, alongside the cacheDir it belongs to.
 		boundAccountID:     accountSelectionID(context.Background()),
 		managers:           make(map[graphKey]*constructionGate[[]byte, struct{}]),

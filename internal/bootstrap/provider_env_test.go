@@ -25,7 +25,12 @@ package bootstrap
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/auth"
+	"github.com/fulminate-io/knowledge-mcp/internal/tools"
 
 	"go.uber.org/goleak"
 
@@ -57,6 +62,30 @@ func TestMain(m *testing.M) {
 	// provider before writing, and this binary re-execed under an argv marker IS
 	// that provider. It returns immediately in a normal run.
 	maybeRunCollectorStubProvider()
+	scratch, err := os.MkdirTemp("", "bootstrap-suite-")
+	if err != nil {
+		panic(err)
+	}
+	bootstrapHomeDir = func() (string, error) { return scratch, nil }
+	if err := tools.ConfigureRuntimeState(scratch); err != nil {
+		panic(err)
+	}
+	auth.SetSelectedAccountForTest(auth.NewAccountSelection(filepath.Join(scratch, "config"), auth.DefaultAccountCheckTTL))
+	// PATH lookup itself stats each candidate. Exclude the operator's hidden
+	// application directories even for intentionally nonexistent test commands.
+	actualHome, err := os.UserHomeDir()
+	if err != nil {
+		panic(err)
+	}
+	var testPath []string
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if !strings.HasPrefix(filepath.Clean(dir), actualHome+string(filepath.Separator)+".") {
+			testPath = append(testPath, dir)
+		}
+	}
+	if err := os.Setenv("PATH", strings.Join(testPath, string(os.PathListSeparator))); err != nil {
+		panic(err)
+	}
 	for _, k := range providerKeyEnv {
 		if err := os.Unsetenv(k); err != nil {
 			panic("clearing " + k + " for the test suite: " + err.Error())

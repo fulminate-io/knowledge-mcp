@@ -109,7 +109,7 @@ func handleClientDropGraph(ctx context.Context, deps ClientDeps, a manageArgs) k
 	if eerr != nil {
 		return errorResult("manage(drop_graph): " + eerr.Error())
 	}
-	return textResult(dropGraphAck(deps, a))
+	return textResult(dropGraphAck(ctx, deps, a))
 }
 
 // dropGraphAck tears down the dropped graph's LOCAL L2 segment cache and renders
@@ -145,12 +145,17 @@ func handleClientDropGraph(ctx context.Context, deps ClientDeps, a manageArgs) k
 // IT CANNOT REACH THE DRY-RUN BRANCH. handleClientDropGraph returns inside its
 // DryRun branch well above the Execute, and this function has exactly one
 // production call site, on the success path after that Execute succeeded.
-func dropGraphAck(deps ClientDeps, a manageArgs) string {
+func dropGraphAck(ctx context.Context, deps ClientDeps, a manageArgs) string {
 	label := dropGraphLabel(a)
 	gt, cacheName := dropGraphCacheTarget(a)
-	removeFromWorkingSetFor(deps, gt, cacheName)
+	removeStorageFromWorkingSetFor(ctx, deps, gt, cacheName)
 
 	dropper := deps.SegmentCacheDropper()
+	if scoped, ok := dropper.(interface {
+		ForStorage(context.Context) SegmentCacheDropper
+	}); ok {
+		dropper = scoped.ForStorage(ctx)
+	}
 	if dropper == nil {
 		return fmt.Sprintf(
 			"Dropped graph %s — server-side graph removed; "+

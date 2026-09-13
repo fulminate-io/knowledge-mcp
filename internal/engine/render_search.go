@@ -396,6 +396,9 @@ func renderText(query string, results []SearchResult, searchMode string) kgtools
 			name = r.Node.Id
 		}
 		fmt.Fprintf(&sb, "%d. [%s] %s (score=%.3f)\n", i+1, r.Node.Type, name, r.Score)
+		if strings.HasPrefix(r.Node.Id, "kgref:") {
+			fmt.Fprintf(&sb, "   ID: %s\n", r.Node.Id)
+		}
 		if r.Node.FilePath != "" {
 			fmt.Fprintf(&sb, "   %s:%d\n", r.Node.FilePath, r.Node.StartLine)
 		}

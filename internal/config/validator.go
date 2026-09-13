@@ -98,7 +98,8 @@ func ValidateEmbedCredential(provider EmbedProvider, apiKey, baseURL string) err
 //
 //  1. Provider and Model must resolve (per [default] inheritance).
 //  2. For API providers (anthropic/openai/gemini), the corresponding
-//     <PROVIDER>_API_KEY environment variable must be non-empty.
+//     receiver credentials or the matching environment key must be non-empty,
+//     unless a compatible base_url is configured.
 //  3. For CLI providers (claude-cli/codex-cli), the section's cli_bin
 //     field MUST be set to an absolute path that exists and is
 //     executable. There is NO PATH fallback — config self-contains the
@@ -143,7 +144,8 @@ func (c *Config) validateConsumer(consumer Consumer) error {
 		if !ok {
 			return fmt.Errorf("config: consumer %q: internal: no env-var mapping for API provider %q", consumer, section.Provider)
 		}
-		// Resolve the key the SAME way the runtime does (APIKeyForProvider:
+		// Resolve against this candidate rather than the active singleton. Use
+		// the same precedence as runtime APIKeyForProvider:
 		// [credentials].<provider>_api_key file-first, env var fallback) so a key
 		// set only in [credentials] passes validation as it does at runtime —
 		// previously this checked os.Getenv directly and rejected [credentials]-only
@@ -152,7 +154,7 @@ func (c *Config) validateConsumer(consumer Consumer) error {
 		// A non-empty base_url is the keyless alternative: pointing an API
 		// provider at a local/compatible endpoint that handles auth out-of-band
 		// needs no key, so a resolved section with BaseURL set passes.
-		if APIKeyForProvider(section.Provider) == "" && section.BaseURL == "" {
+		if apiKeyForCredentials(c.Credentials, section.Provider) == "" && section.BaseURL == "" {
 			return fmt.Errorf("config: consumer %q uses provider %q but no API key or base_url is set — set [credentials].%s_api_key, the %s env var, or [%s].base_url", consumer, section.Provider, section.Provider, envVar, consumer)
 		}
 		return nil

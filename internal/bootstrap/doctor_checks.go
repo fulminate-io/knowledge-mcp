@@ -118,7 +118,7 @@ func checkConfig(configFile string) checkResult {
 func checkConsumerCLIs(configFile string) []checkResult {
 	path := configFile
 	if path == "" {
-		home, _ := os.UserHomeDir()
+		home, _ := bootstrapHomeDir()
 		path = filepath.Join(home, ".knowledge", "config")
 	}
 	cfg, err := config.Load(path)
@@ -189,7 +189,7 @@ func checkConsumerCLI(cfg *config.Config, consumer config.Consumer) checkResult 
 func checkVoyage(configFile string) checkResult {
 	path := configFile
 	if path == "" {
-		home, _ := os.UserHomeDir()
+		home, _ := bootstrapHomeDir()
 		path = filepath.Join(home, ".knowledge", "config")
 	}
 	_, _ = config.Load(path)
@@ -273,7 +273,7 @@ func checkFulminateAuth() checkResult {
 // Reports the count of missing or out-of-date files so the user
 // knows whether to run `knowledge install-claude-assets`.
 func checkClaudeAssets() checkResult {
-	home, err := os.UserHomeDir()
+	home, err := bootstrapHomeDir()
 	if err != nil {
 		return checkResult{name: "claude-assets", status: statusWarn, msg: "cannot resolve home dir: " + err.Error()}
 	}
@@ -326,7 +326,7 @@ func checkClaudeAssets() checkResult {
 // (via managedBlockInSync), so a user's own prose around the block never
 // trips the warning.
 func checkClaudeMD() checkResult {
-	home, err := os.UserHomeDir()
+	home, err := bootstrapHomeDir()
 	if err != nil {
 		return checkResult{name: "claude-md", status: statusWarn, msg: "cannot resolve home dir: " + err.Error()}
 	}
@@ -359,7 +359,7 @@ func checkClaudeMD() checkResult {
 // Only the managed entry is compared (via settingsInSync), so a user's own
 // settings and other hooks never trip the warning. Mirrors checkClaudeMD.
 func checkClaudeSettings() checkResult {
-	home, err := os.UserHomeDir()
+	home, err := bootstrapHomeDir()
 	if err != nil {
 		return checkResult{name: "claude-settings", status: statusWarn, msg: "cannot resolve home dir: " + err.Error()}
 	}

@@ -196,8 +196,9 @@ func pipelineDrainsType(gt kgtypes.GraphType) bool {
 // into RegisterGraph / the diff set. Public so the refresh pass can hand these
 // around without exposing a wire-shape entry type.
 type GraphRef struct {
-	GraphType kgtypes.GraphType
-	GraphName string
+	GraphType   kgtypes.GraphType
+	GraphName   string
+	Destination graphclient.Destination
 }
 
 // updateBatchItem is one row in a mutate(update_batch) call. Mirrors the

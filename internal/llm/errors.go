@@ -32,9 +32,14 @@ type LLMError struct {
 	// errors, and unknown failure modes.
 	Transient bool
 
-	// Reason is a short human-readable category ("http_429",
-	// "http_400", "context_too_large", "config", "network"). Logged on
-	// every failure for operator triage; not used for control flow.
+	// Reason is a short category ("http_429", "http_400",
+	// "context_too_large", "config", "network"). Logged on every failure for
+	// operator triage, AND IT IS THE CONTROL-FLOW SEAM: the pipeline's
+	// classifier switches on this string alone and imports no provider package,
+	// so Reason is the only provider-agnostic way a transport can tell the
+	// pipeline WHICH failure it saw. A consumer therefore never matches on the
+	// rendered message text. Adding a condition means adding a Reason value and
+	// mapping it there, not sniffing Cause.
 	Reason string
 
 	// RetryAfter carries the server's stated retry delay, parsed from the
@@ -45,9 +50,60 @@ type LLMError struct {
 	// leave it zero.
 	RetryAfter time.Duration
 
+	// InputChars and MaxInputChars carry the size the provider counted and the
+	// size it allows, in characters, when it rejected the request for being too
+	// large. ZERO MEANS UNKNOWN on either field, and a consumer must behave
+	// correctly with zero: only a transport that reads a numeric limit out of the
+	// rejection populates them, which today is codex-cli alone (its rejection
+	// carries a machine-readable `data:` suffix). The documentation shape is
+	// RetryAfter's above — which providers populate it, and that the rest leave
+	// it at the zero value.
+	//
+	// They are NOT the caller's own measurement: a summary worker already knows
+	// the size it sent. MaxInputChars is the value it cannot know any other way,
+	// and it is what lets a retry pack sub-requests against the real limit
+	// instead of blindly halving.
+	InputChars    int
+	MaxInputChars int
+
 	// Cause wraps the underlying error so callers can drill into
 	// provider-specific detail. errors.As / Unwrap both honor it.
 	Cause error
+}
+
+// ReasonInputTooLarge is the Reason a transport stamps when the provider refused
+// the request because its input exceeded a size limit — a deterministic fault of
+// the request itself, so a retry of the SAME input on ANY provider fails
+// identically and the only useful retry is a SMALLER one.
+//
+// IT IS A CONSTANT RATHER THAN A LITERAL SPELLED PER SIDE, unlike the older
+// Reason vocabulary. A mis-spelling here cannot be caught by a compiler or by a
+// test of either side alone: the transport would stamp a string the classifier
+// does not know, the error would classify as unclassified-Other, the fallback
+// chain would advance to a provider that must also refuse it, and the summary
+// axis would go on re-attempting an input nothing can accept — the exact latch
+// this reason exists to end, wearing a different hat. The declaring package is
+// imported by every transport AND by the pipeline classifier, so one spelling
+// costs nothing.
+const ReasonInputTooLarge = "input_too_large"
+
+// InputTooLargeOf reports whether err is (or wraps) an *LLMError stamped
+// ReasonInputTooLarge, returning the sizes it carried. actual and limit are the
+// provider's own counts and are ZERO WHEN UNKNOWN — ok tells you the condition
+// was detected, never that the numbers are populated, and those are genuinely
+// different facts: a transport can recognize the refusal without being told a
+// number. Callers that need a size always have their own.
+//
+// This is the TYPED read of the condition. A caller must not reach the same
+// conclusion by matching err.Error() for a provider's phrasing: the message text
+// is not a contract, drifts per provider and per version, and a match on it
+// silently stops working rather than failing loudly.
+func InputTooLargeOf(err error) (actual, limit int, ok bool) {
+	le, isLLM := errors.AsType[*LLMError](err)
+	if !isLLM || le.Reason != ReasonInputTooLarge {
+		return 0, 0, false
+	}
+	return le.InputChars, le.MaxInputChars, true
 }
 
 // Error returns a Reason-prefixed string suitable for slog.

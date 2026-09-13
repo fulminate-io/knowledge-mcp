@@ -10,6 +10,8 @@ import (
 	"runtime/debug"
 	"sync"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/bm25"
@@ -48,6 +50,7 @@ func (m *Manager) Search(
 	queryVec []byte,
 	k int,
 ) ([]searchengine.Hit, error) {
+	m = m.ForDestination(ctx)
 	return m.SearchAccepting(ctx, gt, name, queryText, queryVec, k, nil)
 }
 
@@ -73,6 +76,12 @@ func (m *Manager) SearchAccepting(
 	k int,
 	accepts func(searchengine.ExternalID) bool,
 ) ([]searchengine.Hit, error) {
+	if len(graphclient.SearchDestinations(ctx)) > 0 {
+		return m.searchDestinations(ctx, gt, name, func(leg context.Context) ([]searchengine.Hit, error) {
+			return m.SearchAccepting(leg, gt, name, queryText, queryVec, k, accepts)
+		}, k)
+	}
+	m = m.ForDestination(ctx)
 	if k <= 0 {
 		return nil, nil
 	}
@@ -162,6 +171,7 @@ func (m *Manager) searchPoolArms(
 	k int,
 	accepts func(searchengine.ExternalID) bool,
 ) ([]searchengine.Hit, []searchengine.Hit, error) {
+	m = m.ForDestination(ctx)
 	// Fail closed on an in-session account switch: this Manager's cacheDir and
 	// per-graph sources belong to the account it was built under, so serving
 	// from them after the selection moved would hand account A's segments to a
@@ -297,6 +307,7 @@ func (m *Manager) VectorByID(
 	gt kgtypes.GraphType,
 	name, externalID string,
 ) ([]byte, bool, error) {
+	m = m.ForDestination(ctx)
 	dm := m.managerFor(gt, name)
 	dm.residencyMu.RLock()
 	defer dm.residencyMu.RUnlock()

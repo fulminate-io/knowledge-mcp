@@ -118,7 +118,7 @@ func TestSetup_Assets_CuratedArgs(t *testing.T) {
 
 	t.Run("real installer accepts [--no-mcp] with a fake claude", func(t *testing.T) {
 		home := t.TempDir()
-		t.Setenv("HOME", home)
+		setBootstrapHome(t, home)
 		fakeBinsOnPATH(t, "claude")
 		if err := runInstallClaudeAssets([]string{"--no-mcp"}); err != nil {
 			t.Fatalf("runInstallClaudeAssets([--no-mcp]) = %v; want nil (no flag error)", err)

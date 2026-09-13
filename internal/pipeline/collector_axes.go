@@ -6,6 +6,8 @@ import (
 	"context"
 	"sync/atomic"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
@@ -40,6 +42,7 @@ type loopAxis struct {
 // empty items for non-summarizable graph types, so a redundant client gate
 // would only duplicate that decision.
 func (c *collector) runSummaryLoop(ctx context.Context) {
+	destination, _ := graphclient.StorageDestination(ctx)
 	c.runLoop(ctx, loopAxis{
 		axis:           "summary",
 		lastGen:        &c.lastSummaryGen,
@@ -52,7 +55,8 @@ func (c *collector) runSummaryLoop(ctx context.Context) {
 			case <-ctx.Done():
 				return false
 			case c.summaryCh <- SummaryWork{
-				GraphType: c.gt, GraphName: item.GetGraphName(), NodeID: item.GetNodeId(),
+				Destination: destination,
+				GraphType:   c.gt, GraphName: item.GetGraphName(), NodeID: item.GetNodeId(),
 				SummarizeText: item.GetSummarizeText(), Release: release, Backend: c.client,
 			}:
 				return true
@@ -65,6 +69,7 @@ func (c *collector) runSummaryLoop(ctx context.Context) {
 // wiring). The graph-type note above applies identically (NodeIDsByEmbedGap
 // short-circuits server-side).
 func (c *collector) runEmbedLoop(ctx context.Context) {
+	destination, _ := graphclient.StorageDestination(ctx)
 	c.runLoop(ctx, loopAxis{
 		axis:           "embed",
 		lastGen:        &c.lastEmbedGen,
@@ -77,7 +82,8 @@ func (c *collector) runEmbedLoop(ctx context.Context) {
 			case <-ctx.Done():
 				return false
 			case c.embedCh <- EmbedWork{
-				GraphType: c.gt, GraphName: item.GetGraphName(), NodeID: item.GetNodeId(),
+				Destination: destination,
+				GraphType:   c.gt, GraphName: item.GetGraphName(), NodeID: item.GetNodeId(),
 				EmbedText: item.GetEmbedText(),
 				Release:   release, Backend: c.client,
 			}:

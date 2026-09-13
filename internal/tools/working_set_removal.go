@@ -21,6 +21,8 @@ package tools
 // client that had no membership to forget in the first place.
 
 import (
+	"context"
+
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
@@ -38,7 +40,13 @@ type workingSetRemover interface {
 // Callers use the boolean for logging and for tests, never to decide whether the
 // drop succeeded — the drop is the server-side Execute, and this is local
 // bookkeeping that follows it.
-func removeFromWorkingSetFor(deps ClientDeps, gt kgtypes.GraphType, name string) bool {
+
+func removeStorageFromWorkingSetFor(ctx context.Context, deps ClientDeps, gt kgtypes.GraphType, name string) bool {
+	if scoped, ok := deps.(interface {
+		RemoveStorageFromWorkingSet(context.Context, kgtypes.GraphType, string) bool
+	}); ok {
+		return scoped.RemoveStorageFromWorkingSet(ctx, gt, name)
+	}
 	r, ok := deps.(workingSetRemover)
 	if !ok {
 		return false

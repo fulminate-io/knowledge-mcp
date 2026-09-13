@@ -42,7 +42,7 @@ func TestRestartDaemonVerb_LogsOnlyUnderTheDirectoryItIsGiven(t *testing.T) {
 	withRestoredDefaultLogger(t)
 	stubRestartWork(t)
 
-	home, err := os.UserHomeDir()
+	home, err := bootstrapHomeDir()
 	require.NoError(t, err)
 	ambient := daemonLogPath(filepath.Join(home, ".knowledge"))
 	given := t.TempDir()
@@ -90,7 +90,7 @@ func TestRestartDaemonVerb_RefusesAnUnnamedLogDirectory(t *testing.T) {
 	require.Contains(t, err.Error(), "graph storage directory")
 	require.Zero(t, reached, "the restart must not run when the outcome has nowhere to be recorded")
 
-	home, herr := os.UserHomeDir()
+	home, herr := bootstrapHomeDir()
 	require.NoError(t, herr)
 	require.NoFileExists(t, daemonLogPath(filepath.Join(home, ".knowledge")),
 		"a refused call must not have created the ambient sink on its way out")
@@ -116,7 +116,7 @@ func TestHandOffRestart_RefusesBeforeForkingWhenTheChildCouldNotRecordIt(t *test
 
 	t.Run("the durable sink cannot be opened", func(t *testing.T) {
 		knowledgeDir(t)
-		home, err := os.UserHomeDir()
+		home, err := bootstrapHomeDir()
 		require.NoError(t, err)
 		// A DIRECTORY standing where the log FILE must go: it satisfies a stat and
 		// fails the open, which is why the probe opens rather than stats.
@@ -133,7 +133,7 @@ func TestHandOffRestart_RefusesBeforeForkingWhenTheChildCouldNotRecordIt(t *test
 	})
 
 	t.Run("the graph storage directory cannot be resolved", func(t *testing.T) {
-		t.Setenv("HOME", "")
+		setBootstrapHome(t, "")
 		spawned := 0
 		stubSpawn(t, &spawned)
 
@@ -161,12 +161,12 @@ func TestHandOffRestart_RefusesBeforeForkingWhenTheChildCouldNotRecordIt(t *test
 // client_update_restart.go's runRestartDaemon; debug.SetCrashOutput has exactly
 // ONE, inside openDurableLogSink, which only setupLogging reaches. Those are
 // every client path that installs a logger or crash output, and each is driven
-// here under an isolated HOME.
+// here under an injected scratch home.
 func TestClientLoggingEntryPointsWriteOnlyWhereTheyAreTold(t *testing.T) {
 	t.Run("serve with no --log-file installs no ambient sink", func(t *testing.T) {
 		knowledgeDir(t)
 		withRestoredDefaultLogger(t)
-		home, err := os.UserHomeDir()
+		home, err := bootstrapHomeDir()
 		require.NoError(t, err)
 
 		// runServe's default: the flag is registered empty, so a daemon started
@@ -179,7 +179,7 @@ func TestClientLoggingEntryPointsWriteOnlyWhereTheyAreTold(t *testing.T) {
 	t.Run("serve with an explicit --log-file writes only there", func(t *testing.T) {
 		knowledgeDir(t)
 		withRestoredDefaultLogger(t)
-		home, err := os.UserHomeDir()
+		home, err := bootstrapHomeDir()
 		require.NoError(t, err)
 		given := filepath.Join(t.TempDir(), "explicit.log")
 
@@ -195,7 +195,7 @@ func TestClientLoggingEntryPointsWriteOnlyWhereTheyAreTold(t *testing.T) {
 		knowledgeDir(t)
 		withRestoredDefaultLogger(t)
 		stubRestartWork(t)
-		home, err := os.UserHomeDir()
+		home, err := bootstrapHomeDir()
 		require.NoError(t, err)
 
 		prevArgs := os.Args

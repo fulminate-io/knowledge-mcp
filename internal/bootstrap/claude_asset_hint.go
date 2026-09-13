@@ -36,7 +36,7 @@ import (
 // counts and the recovery command. No-op when everything matches or
 // when the home dir can't be resolved.
 func hintClaudeAssetsIfStale() {
-	home, err := os.UserHomeDir()
+	home, err := bootstrapHomeDir()
 	if err != nil {
 		return
 	}
@@ -86,7 +86,7 @@ func hintClaudeAssetsIfStale() {
 // No-op when the home dir can't be resolved or the read errors (courtesy
 // hint, not load-bearing).
 func hintClaudeMDIfStale() {
-	home, err := os.UserHomeDir()
+	home, err := bootstrapHomeDir()
 	if err != nil {
 		return
 	}

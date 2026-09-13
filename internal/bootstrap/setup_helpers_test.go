@@ -13,12 +13,12 @@ import (
 
 // --- test seams -----------------------------------------------------------
 
-// setupHome points HOME at a fresh temp dir and returns the config path
+// setupHome injects a fresh scratch home directory and returns the config path
 // under it. Also resets the config singleton on cleanup.
 func setupHome(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setBootstrapHome(t, dir)
 	t.Cleanup(config.SetForTest(nil))
 	return filepath.Join(dir, ".knowledge", "config")
 }

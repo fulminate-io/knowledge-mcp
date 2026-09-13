@@ -66,48 +66,44 @@ func RefreshAccessToken(
 	return nil, classifyOAuthError(resp)
 }
 
-// RevokeRefreshToken revokes the refresh token on AuthKit's revocation
-// endpoint per RFC 7009. Best-effort: network or server errors are
-// logged at WARN level but never returned to the caller. The local-only
-// half of logout (deleting the token from the keychain) is performed by
-// the caller regardless — a failed revoke must not block a logout.
-//
-// revocationEndpoint may be "" when the AuthKit deployment doesn't
-// expose RFC 7009 (per the authorization-server metadata document); in
-// that case the call is a no-op and local cleanup is the only signal.
-//
-// Per RFC 7009 §2.2 the server returns 200 for both successful
-// revocation and for unknown tokens, so we only warn on transport
-// errors.
+// RevokeRefreshToken logs and returns the provider's revocation outcome.
+// An unadvertised endpoint is an expected no-op logged at Debug. Other
+// failures are logged at WARN and returned; the logout caller still performs
+// local cleanup. Callers needing the explicit provider outcome, including a
+// missing endpoint, use RevokeRefreshTokenResult.
 func RevokeRefreshToken(
 	ctx context.Context,
 	revocationEndpoint, refreshToken string,
 ) error {
 	if revocationEndpoint == "" {
-		slog.Debug("auth: revoke: no revocation_endpoint advertised; skipping server revoke")
+		slog.Debug("auth: no revocation endpoint; continuing local cleanup")
 		return nil
 	}
+	if err := RevokeRefreshTokenResult(ctx, revocationEndpoint, refreshToken); err != nil {
+		slog.Warn("auth: revoke unconfirmed; continuing local cleanup", "error", err)
+		return err
+	}
+	return nil
+}
 
-	form := url.Values{}
-	form.Set("token", refreshToken)
-	form.Set("token_type_hint", "refresh_token")
-
+// RevokeRefreshTokenResult reports whether the provider confirmed revocation.
+// Local credential cleanup remains the caller's responsibility on every result.
+func RevokeRefreshTokenResult(ctx context.Context, revocationEndpoint, refreshToken string) error {
+	if revocationEndpoint == "" {
+		return fmt.Errorf("auth: no revocation endpoint")
+	}
+	form := url.Values{"token": {refreshToken}, "token_type_hint": {"refresh_token"}}
 	req, err := buildFormPOST(ctx, revocationEndpoint, form)
 	if err != nil {
-		slog.Warn("auth: revoke: failed to build request", "error", err)
-		return nil
+		return fmt.Errorf("auth: invalid revocation endpoint: %w", err)
 	}
-
 	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
-		slog.Warn("auth: revoke: network error (continuing with local logout)", "error", err)
-		return nil
+		return fmt.Errorf("auth: revocation unavailable: %w", err)
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
-		slog.Warn("auth: revoke: unexpected status (continuing with local logout)",
-			"status", resp.StatusCode)
+		return fmt.Errorf("auth: revocation not confirmed: HTTP %d", resp.StatusCode)
 	}
 	return nil
 }

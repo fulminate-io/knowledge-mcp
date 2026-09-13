@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
@@ -59,12 +60,13 @@ const collectGateMaxHold = 30 * time.Minute
 // run — either the in-flight state (State=="running", FinishedAt zero) or the
 // last completed/failed outcome. manage(status) renders these.
 type CollectRunStatus struct {
-	Target     string // the single-flight key (collector type + normalized id)
-	Label      string // human-facing "<type> <id>"
-	State      string // running | completed | failed
-	StartedAt  time.Time
-	FinishedAt time.Time // zero while running
-	Err        string    // non-empty only for State=="failed"
+	Destination graphclient.Destination
+	Target      string // the single-flight key (collector type + normalized id)
+	Label       string // human-facing "<type> <id>"
+	State       string // running | completed | failed
+	StartedAt   time.Time
+	FinishedAt  time.Time // zero while running
+	Err         string    // non-empty only for State=="failed"
 	// Composition is the run's rendered node-type census — what the harvest
 	// actually produced. It is the carrier that makes a DETACHED run's
 	// composition readable, since past the 60s cap the tool has already returned
@@ -140,6 +142,8 @@ func (h *CollectRunHandle) ProducedGraph() string { return h.producedGraph }
 // tracks per-target run status. Constructed once at boot (NewCollectRuntime),
 // drained once at shutdown (Stop).
 type CollectRuntime struct {
+	destinations map[graphclient.Destination]*CollectRuntime
+	destination  graphclient.Destination
 	// baseCtx/baseCancel are the daemon-lifetime ctx every detached run's ctx
 	// ultimately derives from (via BaseContext); Stop cancels baseCtx before the
 	// inFlight drain so an in-flight collect unwinds at its next RPC boundary.
@@ -405,6 +409,10 @@ func (r *CollectRuntime) CompletedCollectsForGraph(gt kgtypes.GraphType, name st
 // completed/failed outcome, sorted by Label for a stable render.
 func (r *CollectRuntime) Snapshot() []CollectRunStatus {
 	r.mu.Lock()
+	children := make([]*CollectRuntime, 0, len(r.destinations))
+	for _, child := range r.destinations {
+		children = append(children, child)
+	}
 	out := make([]CollectRunStatus, 0, len(r.running)+len(r.last))
 	for key, run := range r.running {
 		out = append(out, CollectRunStatus{
@@ -418,6 +426,12 @@ func (r *CollectRuntime) Snapshot() []CollectRunStatus {
 		out = append(out, st)
 	}
 	r.mu.Unlock()
+	for i := range out {
+		out[i].Destination = r.destination
+	}
+	for _, child := range children {
+		out = append(out, child.Snapshot()...)
+	}
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Label < out[j].Label })
 	return out
@@ -435,6 +449,17 @@ func (r *CollectRuntime) Stop(deadline time.Duration) {
 			r.baseCancel()
 		}
 	})
+	r.mu.Lock()
+	children := make([]*CollectRuntime, 0, len(r.destinations))
+	for _, child := range r.destinations {
+		children = append(children, child)
+	}
+	r.mu.Unlock()
+	var childStops sync.WaitGroup
+	for _, child := range children {
+		childStops.Go(func() { child.Stop(deadline) })
+	}
+	childStops.Wait()
 	done := make(chan struct{})
 	go func() {
 		r.inFlight.Wait()

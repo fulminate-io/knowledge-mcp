@@ -96,6 +96,12 @@ var edgeWeightConsumerCensus = []weightReaderRow{
 			"knowledge-graph edge, with no error and no signal.",
 	},
 	{
+		Path:        "internal/crossgraph/storage.go",
+		Disposition: dispositionOptsIn,
+		Reason: "The storage-qualified link path copies caller-supplied Weight from LinkRequest " +
+			"onto EdgeSpec without filtering edge types, matching the ordinary crossgraph link path.",
+	},
+	{
 		Path:        "internal/engine/compile_mutate_link.go",
 		Disposition: dispositionOptsIn,
 		Reason:      "A USER-FACING mutate(link, weight:) path; see the crossgraph row for the decline reason.",

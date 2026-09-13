@@ -32,6 +32,12 @@ type fakeWireClient struct {
 	// Each batch is appended as one element in the outer slice.
 	recordedWrites [][]updateBatchItem
 
+	// mutateErr, when set, makes every update_batch Execute FAIL. The marker
+	// write is best-effort in production, so this is how a test asserts that a
+	// dropped marker is reported rather than presenting itself as a durable
+	// terminal mark.
+	mutateErr error
+
 	// Captured ExecuteRequests, in call order. The update_batch write rides the
 	// engine Execute seam; a graph-names read would too, which is why counting
 	// these is how a test proves the catalog is never read.
@@ -206,6 +212,13 @@ func (f *fakeWireClient) Execute(_ context.Context, req *knowledgev1.ExecuteRequ
 	if m := req.GetMutation(); m != nil && m.GetKind() == knowledgev1.MutationPlan_MUTATION_KIND_UPDATE_ITEMS {
 		f.mu.Lock()
 		f.calls["mutate"]++
+		if err := f.mutateErr; err != nil {
+			// A FAILED write records NOTHING, which is the point: a test asserting
+			// on recordedWrites after a failed marker write must see the marker
+			// absent, exactly as the server would not have it.
+			f.mu.Unlock()
+			return nil, err
+		}
 		items := make([]updateBatchItem, 0, len(m.GetUpdateItems()))
 		for _, ui := range m.GetUpdateItems() {
 			items = append(items, updateBatchItem{

@@ -87,6 +87,9 @@ var Version = "dev"
 // callers either let bootstrap.ParseFlags populate the struct from argv or
 // build it by hand (tests).
 type Config struct {
+	// StateDir isolates installation-local metadata; empty retains standard paths.
+	StateDir     string
+	ConfigFile   string
 	GraphStorage string
 	RootDir      string
 	// RootDirSet reports whether --root was explicitly passed (vs the built-in
@@ -199,6 +202,8 @@ type Config struct {
 // runServe (the `serve` daemon entry) so both accept an identical client-flag
 // surface from one definition — adding a knob in one place covers both.
 func registerConfigFlags(fs *flag.FlagSet, cfg *Config) {
+	fs.StringVar(&cfg.StateDir, "state-dir", "", "Absolute installation state directory for supervised runtimes")
+	fs.StringVar(&cfg.ConfigFile, "config-file", "", "Explicit configuration file; missing or malformed files are startup errors")
 	fs.StringVar(&cfg.GraphStorage, "graph-storage", "~/.knowledge/", "Directory for graph storage: the server writes its .bin here, and the client roots its segment cache under it (default ~/.knowledge/)")
 	fs.StringVar(&cfg.RootDir, "root", ".", "Project root the client walks for ast + topology, and the current-tree fallback for resolving a bare repo name (default \".\")")
 	fs.IntVar(&cfg.Port, "port", graphclient.DefaultPort, "TCP port the graph server listens on")
@@ -223,7 +228,7 @@ func registerConfigFlags(fs *flag.FlagSet, cfg *Config) {
 	fs.IntVar(&cfg.PprofPort, "pprof-port", profiling.DefaultPort, "TCP port for this process's pprof profiling HTTP endpoint (loopback only). Applied when --pprof is set; the spawned knowledge-server serves its own /debug/pprof/ on --port instead.")
 	fs.BoolVar(&cfg.SkipLLMPrecheck, "skip-llm-precheck", false, "Skip the live-ping check that runs against every configured (provider, model) tuple at client startup. Use for offline development or CI sandboxes; default is to fail-fast at boot rather than at first tool call.")
 	fs.BoolVar(&cfg.NoLLMPipeline, "no-llm-pipeline", false, "Skip client-side LLM pipeline (summarize + embed) wiring. The MCP daemon and other tools continue to work; only background summarization/embedding stops.")
-	fs.BoolVar(&cfg.Headless, "headless", false, "Run as an embedded/supervisor-managed daemon: serve the loopback /mcp endpoint and resolve query embeddings, but skip every background content + coordination loop. Implies --no-propagation-runtime, --skip-llm-precheck and --no-llm-pipeline, and additionally disables the transcript upload loops. Still loads ~/.knowledge/config (so [credentials] resolve config-first). Does not change auth.")
+	fs.BoolVar(&cfg.Headless, "headless", false, "Run as an embedded/supervisor-managed daemon: serve the loopback /mcp endpoint and resolve query embeddings, but skip every background content + coordination loop. Implies --no-propagation-runtime, --skip-llm-precheck and --no-llm-pipeline, and additionally disables the transcript upload loops. Loads the selected --config-file, or ~/.knowledge/config when none is supplied (so [credentials] resolve config-first). Does not change auth.")
 	fs.BoolVar(&cfg.NoTranscriptUpload, "no-transcript-upload", false, "Skip the background transcript-upload loops, including their HOME-side transcript cache writes. Individually addressable form of one of the gates --headless implies — for daemons that need the LLM pipeline (which --headless disables) but must not run coordination loops (e.g. the bench harness's corpus-pull daemon).")
 	// The default comes from the environment so a supervisor-managed daemon
 	// that CAN carry an env var has a surface; an explicit flag wins. A

@@ -7,6 +7,13 @@ const helpManage = `# manage — Server operations
 ## Server status
   manage({ "operation": "status" })  — pipeline metrics (summary/embed queued/running/succeeded/failed) per graph
 
+## Graph inventory
+  manage({ "operation": "graph_inventory", "format": "json" })
+
+  Returns graph family, instance, placement, selectors and available node/edge counts.
+  Local and cloud copies remain distinct. Catalog and count failures return an error
+  instead of an incomplete successful inventory. This operation reads existing graphs.
+
 ## CPU profiling (client-side)
   manage({ "operation": "pprof_start" })  — start a CPU profile of the knowledge CLIENT (where the collectors run)
   manage({ "operation": "pprof_stop" })   — stop it and report where to pull the profile

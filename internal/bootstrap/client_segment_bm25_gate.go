@@ -4,9 +4,11 @@ package bootstrap
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/bm25"
 	"github.com/fulminate-io/knowledge-mcp/internal/segmentdist"
@@ -62,6 +64,14 @@ var (
 // rebuild single-flight builds for the same (graph type, name) pair.
 func bm25HealKey(gt kgtypes.GraphType, name string) string { return string(gt) + "/" + name }
 
+func storageBM25HealKey(ctx context.Context, gt kgtypes.GraphType, name string) string {
+	key := bm25HealKey(gt, name)
+	if d, bound := graphclient.StorageDestination(ctx); bound {
+		return fmt.Sprintf("%q/%q/%s", d.Storage, d.AccountID, key)
+	}
+	return key
+}
+
 // resetBM25HealProgress clears BOTH no-progress maps. TEST-ONLY: the maps are
 // package-level and do not self-clear, so every test that can reach the gate must
 // register this via t.Cleanup or it contaminates the tests that follow it.
@@ -74,8 +84,9 @@ func resetBM25HealProgress() {
 
 // clearBM25HealProgress drops both records for one graph — the arm recovered, so a
 // future collapse gets a fresh shot rather than inheriting a stale bound.
-func clearBM25HealProgress(gt kgtypes.GraphType, name string) {
-	key := bm25HealKey(gt, name)
+
+func clearStorageBM25HealProgress(ctx context.Context, gt kgtypes.GraphType, name string) {
+	key := storageBM25HealKey(ctx, gt, name)
 	bm25HealMu.Lock()
 	defer bm25HealMu.Unlock()
 	delete(bm25HealPending, key)
@@ -94,8 +105,9 @@ func clearBM25HealProgress(gt kgtypes.GraphType, name string) {
 // poisoning the next BM25 decision with a resident value it never chose. The guard is
 // on the pending record being present, not on which caller is arming — which is what
 // keeps it correct as the set of rebuild-reaching paths changes.
-func (c *client) armBM25HealProgress(gt kgtypes.GraphType, name string) {
-	key := bm25HealKey(gt, name)
+
+func (c *client) armStorageBM25HealProgress(ctx context.Context, gt kgtypes.GraphType, name string) {
+	key := storageBM25HealKey(ctx, gt, name)
 	bm25HealMu.Lock()
 	defer bm25HealMu.Unlock()
 	resident, pending := bm25HealPending[key]
@@ -164,7 +176,7 @@ func (c *client) healNeedsRebuildBM25With(
 	format := bm25.New().Name()
 
 	// 1. PRESENCE.
-	if c.segmentMgr.CachedSegmentCount(gt, name, format) == 0 {
+	if c.segmentMgr.ForDestination(ctx).CachedSegmentCount(gt, name, format) == 0 {
 		return false, nil // no BM25 corpus on disk — not this gate's to heal.
 	}
 
@@ -196,12 +208,12 @@ func (c *client) healNeedsRebuildBM25With(
 	// is per-FORMAT, which is exactly why the arms stay separately answerable off one
 	// read.
 	if !degenerateAgainstEmbedded(v.ResidentAfterLoad, embedded) {
-		clearBM25HealProgress(gt, name)
+		clearStorageBM25HealProgress(ctx, gt, name)
 		return false, nil
 	}
 
 	// 3. NO-PROGRESS BOUND.
-	key := bm25HealKey(gt, name)
+	key := storageBM25HealKey(ctx, gt, name)
 	bm25HealMu.Lock()
 	armed, isArmed := bm25HealArmed[key]
 	declined := isArmed && v.ResidentAfterLoad <= armed

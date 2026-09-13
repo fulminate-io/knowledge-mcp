@@ -324,7 +324,7 @@ func identifyServerOwner(runningPID int64) (owner, warning string) {
 // PID is returned regardless of whether the process is alive — the
 // caller decides whether to flag a stale file.
 func readMakePIDFile() int64 {
-	home, err := os.UserHomeDir()
+	home, err := bootstrapHomeDir()
 	if err != nil {
 		return 0
 	}

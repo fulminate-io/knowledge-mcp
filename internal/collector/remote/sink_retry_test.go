@@ -181,6 +181,13 @@ func oneChunkResult(graph string) *collectorwire.CollectResult {
 // produces — used to abort the whole collect. It must now cost one re-send and
 // nothing else.
 func TestCollectChunkRetry_AmbiguousInternalRetriedOnce(t *testing.T) {
+	// THE REAL ~/.knowledge DISCOVERY STORE IS NOT THIS TEST'S TO READ OR WRITE.
+	// These fixtures drive a SUCCESSFUL WriteResult, which records collect baselines,
+	// and without this they record them in the operator's own file — the key
+	// code/ambiguous-internal-repo@ in it can have come from nowhere else. The same
+	// omission is what made two sibling tests fail on their second run, reading the
+	// baselines their first run had written.
+	isolateDiscoveryStore(t)
 	eng := &scriptedIngest{
 		onCollectChunk: func(n int32) error {
 			if n == 1 {
@@ -204,6 +211,7 @@ func TestCollectChunkRetry_AmbiguousInternalRetriedOnce(t *testing.T) {
 // permission-denied case — the shape the production log actually contains —
 // proves an auth denial is never re-sent at all.
 func TestCollectChunkRetry_BudgetBoundedAndAppErrorsSurface(t *testing.T) {
+	isolateDiscoveryStore(t)
 	t.Run("permanent CodeInternal stops after the budget", func(t *testing.T) {
 		eng := &scriptedIngest{
 			onCollectChunk: func(int32) error {
@@ -340,6 +348,7 @@ func TestFinalizeRetry_ShedThenSucceeds(t *testing.T) {
 // green because the HEADER is absent, which is what keeps the new class from
 // swallowing a permanent refusal that happens to share the code.
 func TestFinalizeRetry_ShedWithoutRetryAfterStillSurfaces(t *testing.T) {
+	isolateDiscoveryStore(t)
 	eng := &scriptedIngest{
 		onFinalize: func(int32) error {
 			return connect.NewError(connect.CodeResourceExhausted, errors.New("permanent refusal"))

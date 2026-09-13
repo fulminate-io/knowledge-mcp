@@ -155,7 +155,7 @@ func loginBrowserPKCE(ctx context.Context) error {
 // daemon's account identity, and the subcommand dispatcher is what restarts it,
 // because bootstrap imports cli and not the other way round.
 func establishOrRevalidateAccount(ctx context.Context, out io.Writer) {
-	path, err := config.DefaultPath()
+	path, err := authConfigPath()
 	if err != nil {
 		return
 	}

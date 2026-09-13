@@ -164,6 +164,7 @@ func sealOne[Q, S any](
 // skips a graph with a non-empty write backlog, which stops an eviction landing
 // while writes are queued; this stops the damage from writes arriving AFTER one.
 func (m *Manager) AddAndMarkDirty(ctx context.Context, gt kgtypes.GraphType, name string, docs []searchengine.Document) error {
+	m = m.ForDestination(ctx)
 	if len(docs) == 0 {
 		return nil
 	}
@@ -204,6 +205,7 @@ func (m *Manager) AddAndMarkDirty(ctx context.Context, gt kgtypes.GraphType, nam
 // tail spanning many partitions closes a delete's constituency over all of them, and
 // there is no longer a second inline leg for that cost to be measured against.
 func (m *Manager) AddAndMarkDirtyFields(ctx context.Context, gt kgtypes.GraphType, name string, docs []searchengine.Document) error {
+	m = m.ForDestination(ctx)
 	if len(docs) == 0 {
 		return nil
 	}
@@ -262,6 +264,7 @@ func (m *Manager) AddAndMarkDirtyFields(ctx context.Context, gt kgtypes.GraphTyp
 // which recorded no tail — finishes with its entries discharged rather than queued
 // forever against the byte cap.
 func (m *Manager) ReEmitDirtyBuckets(ctx context.Context, gt kgtypes.GraphType, name string) error {
+	m = m.ForDestination(ctx)
 	// Fail closed on an in-session account switch, for the same reason Flush
 	// does: this manager's sources belong to the account it was built under.
 	if err := m.checkAccountBinding(ctx); err != nil {

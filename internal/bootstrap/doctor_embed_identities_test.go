@@ -20,7 +20,7 @@ func TestDoctorEmbedIdentities_Branches(t *testing.T) {
 
 	t.Run("an unconstructible identity is an ERROR naming the graphs", func(t *testing.T) {
 		t.Setenv("VOYAGE_API_KEY", "")
-		t.Setenv("HOME", t.TempDir())
+		setBootstrapHome(t, t.TempDir())
 
 		res, failed := assembleIdentityCheck(cfg, []config.LiveGraphIdentity{{
 			GraphType: "code", Name: "alpha",

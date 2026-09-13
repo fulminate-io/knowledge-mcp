@@ -23,6 +23,7 @@ import (
 // failure and the cascade continues or returns, because one graph's failure must
 // never stop the sweep over the others.
 func (c *client) reconcileOneGraph(ctx context.Context, g segmentGraphRef, deltaScope map[segmentGraphRef]struct{}) {
+	ctx = g.bind(ctx)
 	// Pull this graph's delta window FIRST and land both its halves: the deletes, so
 	// one learned this pass is already out of its routed buckets when the re-emit
 	// below ships them, and the live items a co-worker changed, so the drain below
@@ -73,13 +74,13 @@ func (c *client) reconcileOneGraph(ctx context.Context, g segmentGraphRef, delta
 	//
 	// The detection itself is two local reads per format: no source access, no lock
 	// beyond the engine's own snapshot load.
-	if candidate, current, needed := c.segmentMgr.ReBucketNeeded(g.gt, g.name); needed {
+	if candidate, current, needed := c.segmentMgr.ForDestination(g.bind(context.Background())).ReBucketNeeded(g.gt, g.name); needed {
 		// The SAME breaker the degenerate-graph path uses below. A crossing whose
 		// reset repeatedly fails to land would otherwise retry every tick forever,
 		// and the breaker already encodes that no-progress policy — a second bound
 		// beside it would be two policies to keep in agreement. Allow is a pure read,
 		// so consulting it costs the trigger nothing.
-		if c.healBreaker.Allow(g.gt, g.name) {
+		if c.healBreaker.ForDestination(ctx).Allow(g.gt, g.name) {
 			c.rebuildReBucketGraph(ctx, g.gt, g.name, candidate, current)
 		} else {
 			slog.Debug("bootstrap: segment reconcile — re-bucket crossing found but the auto-heal breaker is latched, skipping rebuild",
@@ -219,7 +220,7 @@ func (c *client) reconcileOneGraph(ctx context.Context, g segmentGraphRef, delta
 	// healBreakerTripThreshold no-progress rebuilds, skip the FUTILE RebuildSegments.
 	// The observation probe above still ran — only the rebuild is gated — so the
 	// legitimate ~5-min recovery path keeps working.
-	if !c.healBreaker.Allow(g.gt, g.name) {
+	if !c.healBreaker.ForDestination(ctx).Allow(g.gt, g.name) {
 		slog.Debug("bootstrap: segment reconcile — auto-heal breaker latched for graph, skipping rebuild (recovery probe still ran)",
 			"graph_type", g.gt, "name", g.name)
 		return
@@ -261,11 +262,11 @@ func (c *client) rebuildDegenerateGraph(ctx context.Context, gt kgtypes.GraphTyp
 	// A COMPLETED rebuild (ran; the error path returned above) consumes the BM25
 	// arm's no-progress shot — a no-op when this pass never consulted that gate.
 	if out.Ran {
-		c.armBM25HealProgress(gt, name)
+		c.armStorageBM25HealProgress(ctx, gt, name)
 	}
 	// Classify against the breaker (records ONLY on ran==true) — the same strict
 	// no-progress/progress rule the embed-drain trigger uses.
-	c.classifyHealOutcome(gt, name, out.Ran, out.Scanned)
+	c.classifyStorageHealOutcome(ctx, gt, name, out.Ran, out.Scanned)
 }
 
 // rebuildBehindWindowGraph runs the from-scratch rebuild for ONE graph the server
@@ -304,7 +305,7 @@ func (c *client) rebuildDegenerateGraph(ctx context.Context, gt kgtypes.GraphTyp
 // failed. There is deliberately NO compensating partial-merge path: no state exists
 // in which applying half a refused window is right.
 func (c *client) rebuildBehindWindowGraph(ctx context.Context, g segmentGraphRef, since int64) {
-	if !c.healBreaker.Allow(g.gt, g.name) {
+	if !c.healBreaker.ForDestination(ctx).Allow(g.gt, g.name) {
 		slog.Warn("bootstrap: segment delta REFUSED (behind the server's erasure retention floor) and the rebuild was SKIPPED — the auto-heal breaker is latched, so this graph stays behind and will be refused again next pass",
 			"graph_type", g.gt, "name", g.name, "client_position", since, "rebuild", "skipped-breaker-latched")
 		return
@@ -320,9 +321,9 @@ func (c *client) rebuildBehindWindowGraph(ctx context.Context, g segmentGraphRef
 		"ran", out.Ran, "scanned", out.Scanned, "built", out.Built,
 		"partial", out.Partial, "published", out.Published)
 	if out.Ran {
-		c.armBM25HealProgress(g.gt, g.name)
+		c.armStorageBM25HealProgress(ctx, g.gt, g.name)
 	}
-	c.classifyHealOutcome(g.gt, g.name, out.Ran, out.Scanned)
+	c.classifyStorageHealOutcome(ctx, g.gt, g.name, out.Ran, out.Scanned)
 }
 
 // rebuildUnreadableFloorGraph runs the ONE recovery rebuild for a graph whose delta
@@ -349,7 +350,7 @@ func (c *client) rebuildUnreadableFloorGraph(ctx context.Context, g segmentGraph
 			"graph_type", g.gt, "name", g.name, "client_position", since, "rebuild", "already-attempted")
 		return
 	}
-	if !c.healBreaker.Allow(g.gt, g.name) {
+	if !c.healBreaker.ForDestination(ctx).Allow(g.gt, g.name) {
 		slog.Warn("bootstrap: segment delta DECLINED (this client cannot read its own retention floor) and the recovery rebuild was SKIPPED — the auto-heal breaker is latched, so this graph learns no deletions until its rebuild-state record is readable again",
 			"graph_type", g.gt, "name", g.name, "client_position", since, "rebuild", "skipped-breaker-latched")
 		return
@@ -365,9 +366,9 @@ func (c *client) rebuildUnreadableFloorGraph(ctx context.Context, g segmentGraph
 		"ran", out.Ran, "scanned", out.Scanned, "built", out.Built,
 		"partial", out.Partial, "published", out.Published)
 	if out.Ran {
-		c.armBM25HealProgress(g.gt, g.name)
+		c.armStorageBM25HealProgress(ctx, g.gt, g.name)
 	}
-	c.classifyHealOutcome(g.gt, g.name, out.Ran, out.Scanned)
+	c.classifyStorageHealOutcome(ctx, g.gt, g.name, out.Ran, out.Scanned)
 }
 
 // rebuildReBucketGraph runs the one-time reset rebuild for ONE graph whose resident
@@ -414,9 +415,9 @@ func (c *client) rebuildReBucketGraph(ctx context.Context, gt kgtypes.GraphType,
 	// classified against the same breaker this arm consulted before firing — the same
 	// strict no-progress/progress rule the heal and embed-drain triggers use.
 	if out.Ran {
-		c.armBM25HealProgress(gt, name)
+		c.armStorageBM25HealProgress(ctx, gt, name)
 	}
-	c.classifyHealOutcome(gt, name, out.Ran, out.Scanned)
+	c.classifyStorageHealOutcome(ctx, gt, name, out.Ran, out.Scanned)
 }
 
 // untombstoneRecreatedWrites clears the persisted record's tombstone for every id that
@@ -426,7 +427,7 @@ func (c *client) rebuildReBucketGraph(ctx context.Context, gt kgtypes.GraphType,
 // other arm of the cascade: a failure here costs this pass's re-creations and nothing
 // else, and the next tick tries again.
 func (c *client) untombstoneRecreatedWrites(g segmentGraphRef) {
-	ids := c.segmentMgr.TombstonedPendingWriteIDs(g.gt, g.name)
+	ids := c.segmentMgr.ForDestination(g.bind(context.Background())).TombstonedPendingWriteIDs(g.gt, g.name)
 	if len(ids) == 0 {
 		return
 	}

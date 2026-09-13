@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/llm"
 	"github.com/fulminate-io/knowledge-mcp/internal/llmproviders"
 )
 
@@ -22,11 +23,31 @@ import (
 
 // strideSummarizer records the size of every summarizer call and can fail a
 // chosen one.
+//
+// charBudget makes it a SIZE-REFUSING provider, which is what the oversize split
+// is tested against: when set, a call whose summed chunk content (plus
+// overheadPerCall) exceeds the budget is refused with the typed oversize error
+// carrying the budget as its limit — the shape codex-cli produces. overheadPerCall
+// models the prompt scaffolding a real provider counts on top of the content, so a
+// sub-batch packed to exactly the limit can still be refused and the split has to
+// make progress a second way.
+//
+// onCall runs after each call is recorded, before its result is decided, so a
+// test can perturb the world mid-split (cancel a context, for instance).
 type strideSummarizer struct {
-	mu       sync.Mutex
-	sizes    []int
-	failCall int // 1-based index of the call that errors; 0 = none
-	calls    int
+	mu              sync.Mutex
+	sizes           []int
+	chunkSets       [][]llmproviders.BatchChunk
+	failCall        int // 1-based index of the call that errors; 0 = none
+	calls           int
+	charBudget      int
+	overheadPerCall int
+	// hideLimit refuses over the budget WITHOUT reporting it, which is the arm
+	// every transport but codex-cli would take: the condition is detected, the
+	// number is not supplied. Zero means unknown on the wire, so a consumer that
+	// rendered or packed against the zero is caught here.
+	hideLimit bool
+	onCall    func(call int)
 }
 
 func (s *strideSummarizer) call(_ context.Context, chunks []llmproviders.BatchChunk) (map[string]llmproviders.SummarizeResult, error) {
@@ -34,9 +55,33 @@ func (s *strideSummarizer) call(_ context.Context, chunks []llmproviders.BatchCh
 	s.calls++
 	n := s.calls
 	s.sizes = append(s.sizes, len(chunks))
+	s.chunkSets = append(s.chunkSets, append([]llmproviders.BatchChunk(nil), chunks...))
+	budget, overhead, hook, hide := s.charBudget, s.overheadPerCall, s.onCall, s.hideLimit
 	s.mu.Unlock()
+	if hook != nil {
+		hook(n)
+	}
 	if n == s.failCall {
 		return nil, errTerminalNonDeterministic
+	}
+	if budget > 0 {
+		total := overhead
+		for _, c := range chunks {
+			total += len(c.Content)
+		}
+		if total > budget {
+			reported := budget
+			if hide {
+				reported = 0
+			}
+			return nil, &llm.LLMError{
+				Transient:     false,
+				Reason:        llm.ReasonInputTooLarge,
+				InputChars:    total,
+				MaxInputChars: reported,
+				Cause:         fmt.Errorf("fake provider: %d characters over the %d limit", total, budget),
+			}
+		}
 	}
 	out := make(map[string]llmproviders.SummarizeResult, len(chunks))
 	for _, c := range chunks {
@@ -49,6 +94,14 @@ func (s *strideSummarizer) callSizes() []int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]int(nil), s.sizes...)
+}
+
+// sentChunks returns every chunk of every call, in call order. The no-truncation
+// row compares each one's content against the fixture's own text.
+func (s *strideSummarizer) sentChunks() [][]llmproviders.BatchChunk {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([][]llmproviders.BatchChunk(nil), s.chunkSets...)
 }
 
 // summaryLeaseFixture builds n SummaryWork items for ONE (graphType, graphName,

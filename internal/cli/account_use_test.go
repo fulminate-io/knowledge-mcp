@@ -18,13 +18,10 @@ const twoAccountsBody = `{"accounts":[
 	{"id":"acct_01HOBBY","name":"Hobby Co","slug":"hobby","role":"member","has_active_subscription":false}
 ],"count":2}`
 
-// useHomeWithConfig points $HOME at a temp dir holding a config file, and
-// returns the config path. config.DefaultPath resolves under $HOME, so this
-// keeps the test off the developer's real config.
+// useHomeWithConfig supplies an explicit scratch configuration dependency.
 func useHomeWithConfig(t *testing.T, seedSelection string) string {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
 	dir := filepath.Join(home, ".knowledge")
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -39,9 +36,10 @@ func useHomeWithConfig(t *testing.T, seedSelection string) string {
 			t.Fatalf("seed selection: %v", err)
 		}
 	}
-	// Confirm DefaultPath agrees, so a failure to resolve $HOME cannot make
-	// these tests silently assert against the wrong file.
-	got, err := config.DefaultPath()
+	prior := authConfigPath
+	authConfigPath = func() (string, error) { return path, nil }
+	t.Cleanup(func() { authConfigPath = prior })
+	got, err := authConfigPath()
 	if err != nil {
 		t.Fatalf("DefaultPath: %v", err)
 	}

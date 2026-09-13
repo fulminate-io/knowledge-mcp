@@ -269,13 +269,13 @@ func TestPromoteGuardCommand_ParamConditional(t *testing.T) {
 	}
 }
 
-// TestCheckClaudeSettings drives checkClaudeSettings against a temp HOME for
+// TestCheckClaudeSettings drives checkClaudeSettings against a scratch home for
 // each of the three outcomes (modeled on TestCheckClaudeMD): missing
 // settings.json → warn; after writeClaudeSettings → ok; drifted (managed
 // entry edited) → warn.
 func TestCheckClaudeSettings(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setBootstrapHome(t, home)
 
 	// Missing settings.json → warn.
 	if got := checkClaudeSettings(); got.status != statusWarn {

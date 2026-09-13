@@ -28,7 +28,7 @@ import (
 // from no selection for the purpose of "did it move?", and this must never
 // fail a command.
 func storedSelection() string {
-	path, err := config.DefaultPath()
+	path, err := defaultConfigPath()
 	if err != nil {
 		return ""
 	}

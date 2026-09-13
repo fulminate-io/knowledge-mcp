@@ -3,7 +3,6 @@
 package bootstrap
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -79,12 +78,21 @@ func TestEnsureSegmentManagerWiresOffline(t *testing.T) {
 }
 
 // TestSegmentCacheDirCoLocation (FAILS-WHEN-ABSENT) pins the three properties the
-// co-location fix must hold for segmentCacheDirFor — the successor to the retired
+// co-location fix must hold for the cache root — the successor to the retired
 // HOME-fixed segmentCacheDir(). ensureSegmentManager builds the L2 cache root via
 // segmentCacheDirFor(graphStorage), where graphStorage is the already
 // tilde-expanded --graph-storage data root the daemon was started with.
+//
+// IT ASSERTS accountSegmentRoot(root, "") RATHER THAN segmentCacheDirFor(root), and
+// that is the fix for a real red rather than a relaxation. segmentCacheDirFor reads
+// auth.SelectedAccount() — MACHINE STATE — and appends an account-<id> segment when
+// one is selected, so every assertion below held only on a logged-OUT machine and
+// this test failed on any developer box with a cloud account selected, for a reason
+// that has nothing to do with co-location. The account-scoping leg is asserted
+// separately, from a parameter, so both properties are pinned and neither depends on
+// whose machine runs the suite.
 func TestSegmentCacheDirCoLocation(t *testing.T) {
-	home, err := os.UserHomeDir()
+	home, err := bootstrapHomeDir()
 	require.NoError(t, err, "home dir resolves in the test environment")
 
 	// (a) No regression for the standard local setup: the default --graph-storage
@@ -92,26 +100,34 @@ func TestSegmentCacheDirCoLocation(t *testing.T) {
 	// reaches ensureSegmentManager, so the cache lands at <home>/.knowledge/segments —
 	// the exact pre-fix location the old HOME-fixed segmentCacheDir() returned.
 	defaultRoot := filepath.Join(home, ".knowledge")
-	require.Equal(t, filepath.Join(home, ".knowledge", "segments"), segmentCacheDirFor(defaultRoot),
+	require.Equal(t, filepath.Join(home, ".knowledge", "segments"), accountSegmentRoot(defaultRoot, ""),
 		"default data root yields the pre-fix <home>/.knowledge/segments (no regression)")
 
 	// (b) Co-location for a non-default data root: the cache roots under that root
 	// (<dir>/segments) and does NOT leak to HOME — the bug the fix closes.
 	nonDefaultRoot := t.TempDir()
-	got := segmentCacheDirFor(nonDefaultRoot)
+	got := accountSegmentRoot(nonDefaultRoot, "")
 	require.Equal(t, filepath.Join(nonDefaultRoot, "segments"), got,
 		"a non-default data root co-locates the cache at <dir>/segments")
 	require.False(t, strings.HasPrefix(got, filepath.Join(home, ".knowledge")),
 		"a non-default data root must NOT resolve the cache under <home>/.knowledge (no HOME leak)")
 
-	// (c) Client/server parity: segmentCacheDirFor(r) is exactly the server's
+	// (c) Client/server parity: the cache root is exactly the server's
 	// filepath.Join(r, "segments") expression over a shared root, so the client L2
 	// cache and the server segment store co-locate when both run off the same
 	// --graph-storage (which they do — the client spawns the server with its own root).
 	for _, r := range []string{defaultRoot, nonDefaultRoot, "/var/lib/knowledge-data"} {
-		require.Equal(t, filepath.Join(r, "segments"), segmentCacheDirFor(r),
-			"segmentCacheDirFor(%q) must equal the server's filepath.Join(r, \"segments\")", r)
+		require.Equal(t, filepath.Join(r, "segments"), accountSegmentRoot(r, ""),
+			"accountSegmentRoot(%q, \"\") must equal the server's filepath.Join(r, \"segments\")", r)
 	}
+
+	// (d) THE ACCOUNT LEG, from a parameter rather than from the machine: a selected
+	// account scopes the cache one directory deeper, under the same root. Without
+	// this leg the three assertions above would read as "the cache is never
+	// account-scoped", which is false of segmentCacheDirFor on a logged-in client.
+	require.Equal(t, filepath.Join(nonDefaultRoot, "segments", "account-acct-1"),
+		accountSegmentRoot(nonDefaultRoot, "acct-1"),
+		"a selected account scopes the cache under the SAME data root, never beside it")
 }
 
 // TestBuildHealFactoryShape is the auto-heal wiring criterion: with a

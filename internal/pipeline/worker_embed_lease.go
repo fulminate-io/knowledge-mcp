@@ -44,6 +44,7 @@ import (
 // path, rare in steady state, and coupling it to the lease size would couple the
 // failure model to the batching decision.
 func processEmbedLeaseGroup(ctx context.Context, p *Pipeline, key groupKey, items []EmbedWork) {
+	ctx = key.Key.bind(ctx)
 	gk := key.Key
 	be := backendOr(p, key.Backend)
 	stride := max(p.cfg.EmbedBatchSizeOrDefault(), 1)

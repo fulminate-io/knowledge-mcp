@@ -11,7 +11,7 @@
 //
 //   - darwin  → storage_darwin.go  (macOS Keychain via zalando/go-keyring)
 //   - linux   → storage_linux.go   (SecretService / libsecret via zalando/go-keyring)
-//   - windows → storage_windows.go (stub returning ErrNotImplementedOS)
+//   - windows → storage_windows.go (Windows Credential Manager)
 //
 // Tests in this package use the internal `testStore` fixture in
 // teststore_test.go. External packages that need a Store fake must construct
@@ -69,8 +69,8 @@ var (
 	// not present in the backing store.
 	ErrNotFound = errors.New("auth: key not found")
 
-	// ErrNotImplementedOS is returned by every method of the Windows stub
-	// (and any future platform without a real backend). Callers should treat
+	// ErrNotImplementedOS is returned by platforms without a real backend.
+	// Callers should treat
 	// this as a non-retriable "feature unavailable on this OS" signal —
 	// paid features are inaccessible until a real backend is added.
 	ErrNotImplementedOS = errors.New(

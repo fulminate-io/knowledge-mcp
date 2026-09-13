@@ -61,6 +61,7 @@ import (
 func (m *Manager) ReEmitRebuiltDelta(
 	ctx context.Context, gt kgtypes.GraphType, name string, hnswDocs, bm25Docs []searchengine.Document,
 ) (swapped, applicable bool, derivedBucketCount int, err error) {
+	m = m.ForDestination(ctx)
 	dm := m.managerFor(gt, name)
 	bm := m.bm25ManagerFor(gt, name)
 	// BOTH RESIDENCY READ LOCKS, HELD ACROSS load() AND EVERY ENGINE READ, AND RELEASED

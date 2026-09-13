@@ -370,7 +370,7 @@ func spawnDaemonProcess(graphStorage string) error {
 // serviceGraphStorage returns ~/.knowledge — the daemon's graph storage
 // + log directory.
 func serviceGraphStorage() (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := bootstrapHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}

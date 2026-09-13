@@ -46,6 +46,7 @@ import (
 func (m *Manager) ShippedSegmentDocCount(
 	ctx context.Context, gt kgtypes.GraphType, name string,
 ) (covered int, err error) {
+	m = m.ForDestination(ctx)
 	return m.LoadResidentDocCount(ctx, gt, name)
 }
 
@@ -94,6 +95,7 @@ func (m *Manager) ResidentDocCount(gt kgtypes.GraphType, name string) int {
 // read that lands in the window reports a graph with a full L2 pool as having no
 // resident corpus at all.
 func (m *Manager) LoadResidentDocCount(ctx context.Context, gt kgtypes.GraphType, name string) (int, error) {
+	m = m.ForDestination(ctx)
 	dm := m.managerFor(gt, name)
 	dm.residencyMu.RLock()
 	defer dm.residencyMu.RUnlock()
@@ -134,6 +136,7 @@ func (m *Manager) LiveResidentDocCount(gt kgtypes.GraphType, name string) int {
 // healNeedsRebuildLocal (bootstrap client_segment_heal_need.go) is the caller that
 // does.
 func (m *Manager) LoadLiveResidentDocCount(ctx context.Context, gt kgtypes.GraphType, name string) (int, error) {
+	m = m.ForDestination(ctx)
 	dm := m.managerFor(gt, name)
 	skipped, err := dm.loadIfResident(ctx)
 	if err != nil {
@@ -168,6 +171,7 @@ func (m *Manager) LoadLiveResidentDocCount(ctx context.Context, gt kgtypes.Graph
 func (m *Manager) LoadSegmentDocCounts(
 	ctx context.Context, gt kgtypes.GraphType, name string,
 ) (shipped, live int, skipped bool, err error) {
+	m = m.ForDestination(ctx)
 	dm := m.managerFor(gt, name)
 	dm.residencyMu.RLock()
 	defer dm.residencyMu.RUnlock()
@@ -203,6 +207,7 @@ func (m *Manager) LoadSegmentDocCounts(
 func (m *Manager) UncoveredMembers(
 	ctx context.Context, gt kgtypes.GraphType, name string, ids []searchengine.ExternalID,
 ) (missingHNSW, missingBM25 []searchengine.ExternalID, err error) {
+	m = m.ForDestination(ctx)
 	hdm := m.managerFor(gt, name)
 	hnswSkipped, err := hdm.loadIfResident(ctx)
 	if err != nil {

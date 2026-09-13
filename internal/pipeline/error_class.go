@@ -91,6 +91,17 @@ func classify(err error) ErrClass {
 		"subprocess_error":  // codexcli run failure (codex run failed): transport-class CLI-exit sibling of subprocess_timeout.
 		return ClassTimeoutTransport
 
+	// Invalid request: the provider refused the INPUT for its size. It is the one
+	// named (non-http_) reason in this class, and it is deliberately not in the
+	// transport family beside the CLI-exit reasons even though a CLI transport is
+	// what detects it: nothing about the transport failed, the request itself is
+	// unacceptable, and the class is what makes the fallback chain stop rather
+	// than bill a second provider to refuse the same bytes. The worker's split
+	// reads the CONDITION through llm.InputTooLargeOf, never through this class —
+	// an http_400 is invalid-request too and is not a size refusal.
+	case llm.ReasonInputTooLarge:
+		return ClassInvalidRequest
+
 	// Other: config / request-construction faults and an unclassified Generate
 	// error. Each KNOWN reason is named here so the mapping is a deliberate
 	// ClassOther, not an accidental fallthrough.

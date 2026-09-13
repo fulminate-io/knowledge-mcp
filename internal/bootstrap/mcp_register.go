@@ -124,7 +124,7 @@ func addArgvFor(clientBin string, scopeArgs []string, url string) ([]string, err
 // codexConfigPath returns the path to the codex config.toml the
 // tool_timeout_sec patch targets (~/.codex/config.toml).
 func codexConfigPath() (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := bootstrapHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}

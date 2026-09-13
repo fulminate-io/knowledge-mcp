@@ -8,6 +8,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
@@ -40,6 +41,12 @@ func (m *Manager) SearchOverlay(
 	queryVec []byte,
 	k int,
 ) ([]searchengine.Hit, error) {
+	if len(graphclient.SearchDestinations(ctx)) > 0 {
+		return m.searchDestinations(ctx, gt, overlay, func(bound context.Context) ([]searchengine.Hit, error) {
+			return m.SearchOverlay(bound, gt, base, overlay, queryText, queryVec, k)
+		}, k)
+	}
+	m = m.ForDestination(ctx)
 	if k <= 0 {
 		return nil, nil
 	}

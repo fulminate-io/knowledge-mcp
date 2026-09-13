@@ -128,6 +128,12 @@ func runDoctor(args []string) error {
 // a remote backend (no local server by design) each probe slept through the
 // reconnect interceptor's retry ladder — ~13s of a ~14.5s manage(status).
 func defaultChecks(port int, configFile string) []checkResult {
+	return scopedChecks(port, configFile, false)
+}
+
+// scopedChecks limits explicit installations to their own runtime and config.
+// Host integration diagnostics belong to the standalone installation.
+func scopedChecks(port int, configFile string, isolated bool) []checkResult {
 	// routing: local by design — the local install is the subject. Liveness is
 	// only part of what this client does, and calling it the whole reason would
 	// under-describe the site: besides the HealthyCtx probe below, two of the
@@ -151,6 +157,9 @@ func defaultChecks(port int, configFile string) []checkResult {
 		checkCodeStaleness(gc, healthy),
 		checkConfig(configFile),
 		checkEmbedIdentities(gc, configFile, healthy),
+	}
+	if isolated {
+		return append(checks, checkResult{name: "host-integrations", status: statusInfo, msg: "not applicable to an isolated runtime"})
 	}
 	checks = append(checks, checkConsumerCLIs(configFile)...)
 	checks = append(checks,

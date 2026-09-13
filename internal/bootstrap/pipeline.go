@@ -208,8 +208,8 @@ func attachSegmentDependentHooks(p *pipeline.Pipeline, c *client) {
 	// without a segment manager there is nothing to nudge, and the poll simply
 	// samples the axis without acting on it.
 	mgr := c.segmentMgr
-	p.SetSegmentNudger(func(gt kgtypes.GraphType, name string) {
-		mgr.NudgeSegmentDelta(gt, name)
+	p.SetStorageSegmentNudger(func(ctx context.Context, gt kgtypes.GraphType, name string) {
+		mgr.ForDestination(ctx).NudgeSegmentDelta(gt, name)
 	})
 }
 
@@ -273,11 +273,8 @@ func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 		EmbedIdentity:      embedIdentity,
 	}
 
-	// Login-aware routing: the pipeline scans + writes back through the Router
-	// (cloud when logged in, local otherwise) instead of the fixed local client,
-	// and rebinds collectors on a login flip — paid = cloud-only per the locked
-	// model. The routedWireClient also satisfies pipeline.BackendResolver, which
-	// the Pipeline type-asserts for per-collector backend binding + flip detection.
+	// Each collector binds its storage/account through the Router; queued work
+	// retains that backend while later admissions can select another destination.
 	p := pipeline.New(pcfg, routedWireClient{router: c.router}, adaptSummarizer(sum), adaptEmbedder(emb))
 
 	// Wire the optional client-side HNSW segment owner: at embed writeback the
@@ -302,13 +299,14 @@ func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 	// path is visible to the next pass. Attached BEFORE Start so the boot
 	// registration pass below already reads it.
 	p.AttachWorkingSet(c.workingSet)
+	wireStoragePipelineOwners(c, p)
 
 	// Wire the working-set EVICTION the collector's durable-not-found arm reaches.
 	// The landed RemoveFromWorkingSet takes no reason argument, so the reason is
 	// logged HERE rather than passed down; logging on the true return preserves the
 	// log-exactly-once property the reason string exists for.
-	p.AttachGraphEvictor(func(gt kgtypes.GraphType, name, reason string) {
-		if c.RemoveFromWorkingSet(gt, name) {
+	p.AttachStorageGraphEvictor(func(ctx context.Context, gt kgtypes.GraphType, name, reason string) {
+		if c.RemoveStorageFromWorkingSet(ctx, gt, name) {
 			slog.Info("working set: graph evicted",
 				"graph_type", gt, "name", name, "reason", reason)
 		}
@@ -421,4 +419,17 @@ func adaptEmbedder(e embed.BinaryEmbedder) pipeline.EmbedderFunc {
 		}
 		return out, nil
 	}
+}
+
+func wireStoragePipelineOwners(c *client, p *pipeline.Pipeline) {
+	p.AttachStorageOwners(func(ctx context.Context) pipeline.ShipManager {
+		return c.segmentMgr.ForDestination(ctx)
+	}, func(ctx context.Context, gt kgtypes.GraphType, name string) (func() bool, func() uint64) {
+		d, _ := graphclient.StorageDestination(ctx)
+		rt := c.collectRuntime.ForDestination(d)
+		if rt == nil {
+			return nil, nil
+		}
+		return func() bool { return rt.CollectInFlightForGraph(gt, name) }, func() uint64 { return rt.CompletedCollectsForGraph(gt, name) }
+	})
 }

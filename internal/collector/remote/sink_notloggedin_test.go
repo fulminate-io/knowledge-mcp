@@ -56,6 +56,7 @@ func startIngestServer(t *testing.T) (string, *atomic.Int32) {
 // The cloud URL is unreachable, so a mis-route to cloud would fail the
 // WriteResult rather than pass silently.
 func TestUploadSink_NotLoggedIn_RoutesLocal(t *testing.T) {
+	isolateDiscoveryStore(t)
 	localURL, localFinalize := startIngestServer(t)
 
 	as := auth.NewAuthState(emptyAuthStore{}, time.Hour) // empty store → not logged in

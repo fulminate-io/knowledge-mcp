@@ -66,6 +66,10 @@ type recordingIngest struct {
 	// finalizeID is set. UNSPECIFIED (the default) is reported as UNKNOWN, the
 	// honest answer for a server that tracks nothing.
 	tailState knowledgev1.FinalizeState
+	// deletionRefusedReason is what Finalize reports as the guard that stopped this
+	// collect's deletion phase. Empty (the default) is the admitted answer every
+	// test written before the client read this field expects.
+	deletionRefusedReason string
 }
 
 var _ knowledgev1connect.IngestServiceHandler = (*recordingIngest)(nil)
@@ -95,9 +99,11 @@ func (e *recordingIngest) Finalize(
 ) (*connect.Response[knowledgev1.FinalizeResponse], error) {
 	e.mu.Lock()
 	e.finalize = proto.Clone(req.Msg).(*knowledgev1.FinalizeRequest)
-	id := e.finalizeID
+	id, refused := e.finalizeID, e.deletionRefusedReason
 	e.mu.Unlock()
-	return connect.NewResponse(&knowledgev1.FinalizeResponse{FinalizeId: id}), nil
+	return connect.NewResponse(&knowledgev1.FinalizeResponse{
+		FinalizeId: id, DeletionRefusedReason: refused,
+	}), nil
 }
 
 // finalizeRequest returns the captured FinalizeRequest, failing the test if the
@@ -199,6 +205,13 @@ const partitionSanityBound = 90 << 20 // 94371840 bytes — well under Cloudflar
 //	(c) the union of all captured Nodes equals the input nodes and the union of all
 //	    captured Edges equals the input edges — none dropped, regardless of input size.
 func TestWriteResult_PartitionsOversizedEdgesAndReassembles(t *testing.T) {
+	// THE REAL ~/.knowledge DISCOVERY STORE IS NOT THIS TEST'S TO READ OR WRITE.
+	// Without this the collect consults the operator's own recorded baselines and
+	// leaves its fixture repo's baselines behind in them: the second run of this
+	// test then reads the record the FIRST run wrote, resolves to a DIFF, has its
+	// unchanged files declined, and fails on a chunk census that has nothing to do
+	// with what it asserts. Measured as exactly that failure.
+	isolateDiscoveryStore(t)
 	client, rec := startRecordingIngest(t)
 	sink := NewUploadSink(client)
 

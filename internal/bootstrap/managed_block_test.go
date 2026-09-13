@@ -159,11 +159,11 @@ func TestManagedBlockInSync(t *testing.T) {
 	}
 }
 
-// TestCheckClaudeMD drives checkClaudeMD against a temp HOME for each of
+// TestCheckClaudeMD drives checkClaudeMD against a scratch home for each of
 // the three outcomes.
 func TestCheckClaudeMD(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setBootstrapHome(t, home)
 
 	// Missing file → warn.
 	if got := checkClaudeMD(); got.status != statusWarn {

@@ -9,6 +9,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/tools"
 )
@@ -25,8 +26,16 @@ import (
 // segmentGraphRef names one segment-bearing graph instance. It is the key the
 // reconcile pass enumerates and the key the per-graph delta horizons are held under.
 type segmentGraphRef struct {
-	gt   kgtypes.GraphType
-	name string
+	gt          kgtypes.GraphType
+	name        string
+	destination graphclient.Destination
+}
+
+func (g segmentGraphRef) bind(ctx context.Context) context.Context {
+	if g.destination.Storage == "" {
+		return ctx
+	}
+	return graphclient.WithDestination(ctx, g.destination)
 }
 
 // mergePending is what one delta pull produced and what the caller must commit ONLY
@@ -67,8 +76,12 @@ type mergePending struct {
 // machine, against a full-corpus read on EVERY boot today.
 //
 // THE CONSEQUENCE, stated rather than hidden: until a graph's horizon is seeded it
-// learns no server-side deletes from this feed either. Hard deletes never rode this
-// feed at all, so nothing about that story changes.
+// learns no server-side deletes from this feed either — AND THAT NOW INCLUDES HARD
+// DELETES. A code graph's collect-driven deletion is journalled and hard-deleted,
+// and the journal arm rides this very delta page with the delete flag set
+// (segmentRebuildWalk.erasureStream emits each erased id as a GapItem carrying
+// Tombstoned, on the DELTA scan of a CODE graph only). So an unseeded graph misses
+// erasures exactly as it misses tombstones, until the backstop's rotation seeds it.
 //
 // Best-effort throughout, like every other arm of this pass: a failure WARNs and the
 // pass moves on. A window that does not land this tick lands on the next one, because
@@ -164,7 +177,7 @@ func (c *client) mergeHorizonFor(g segmentGraphRef) (int64, bool) {
 	// The durable merge horizon: what the last landed merge for this graph was
 	// scanned up to, which survives a restart precisely so the next process re-merges
 	// one bounded window rather than the corpus.
-	if h, err := c.segmentMgr.LoadMergeWatermark(g.gt, g.name); err != nil {
+	if h, err := c.segmentMgr.ForDestination(g.bind(context.Background())).LoadMergeWatermark(g.gt, g.name); err != nil {
 		slog.Warn("bootstrap: segment delta could not read the merge horizon (skipping this graph this pass)",
 			"graph_type", g.gt, "name", g.name, "error", err)
 		return 0, false
@@ -174,7 +187,7 @@ func (c *client) mergeHorizonFor(g segmentGraphRef) (int64, bool) {
 
 	// The durable rebuild watermark: the last horizon a landed rebuild published up
 	// to. A graph that has landed one has a genuine bound to read from.
-	w, _, err := c.segmentMgr.LoadRebuildState(g.gt, g.name)
+	w, _, err := c.segmentMgr.ForDestination(g.bind(context.Background())).LoadRebuildState(g.gt, g.name)
 	if err != nil {
 		slog.Warn("bootstrap: segment delta could not read the rebuild state to seed its horizon (skipping this graph this pass)",
 			"graph_type", g.gt, "name", g.name, "error", err)
@@ -206,7 +219,7 @@ func (c *client) commitMergeWatermark(g segmentGraphRef, pending mergePending) {
 	if !advanced {
 		return
 	}
-	if err := c.segmentMgr.SaveMergeWatermark(g.gt, g.name, pending.Horizon); err != nil {
+	if err := c.segmentMgr.ForDestination(g.bind(context.Background())).SaveMergeWatermark(g.gt, g.name, pending.Horizon); err != nil {
 		slog.Warn("bootstrap: segment delta could not persist the merge horizon (continuing; the window is re-read next process)",
 			"graph_type", g.gt, "name", g.name, "error", err)
 	}

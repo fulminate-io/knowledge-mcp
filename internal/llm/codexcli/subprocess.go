@@ -74,16 +74,7 @@ func runCLI(ctx context.Context, cliBin string, args []string, stdin string, inh
 			}
 		}
 		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
-			// Classification stays terminal (Transient:false) to match the
-			// codex-cli quota contract pinned by
-			// TestParseResponse_TurnFailedQuotaIsTerminal — a quota wall is shed,
-			// not retried forever. codexFailureDetail mines stdout for the cause.
-			return nil, &llm.LLMError{
-				Transient: false,
-				Reason:    "subprocess_failed",
-				Cause: fmt.Errorf("codex exited %d: %s",
-					exitErr.ExitCode(), codexFailureDetail(stdoutBuf.Bytes(), stderrBuf.String())),
-			}
+			return nil, nonZeroExitError(exitErr, stdoutBuf.Bytes(), stderrBuf.String())
 		}
 		return nil, &llm.LLMError{
 			Transient: false,
@@ -93,6 +84,42 @@ func runCLI(ctx context.Context, cliBin string, args []string, stdin string, inh
 	}
 
 	return stdoutBuf.Bytes(), nil
+}
+
+// nonZeroExitError classifies a codex non-zero exit into its typed *llm.LLMError.
+// It is a function rather than a branch inside runCLI because the two arms below
+// nest three deep inside the run-failure handler otherwise, which the lint matrix
+// refuses (nestif) and which reads worse than it measures.
+//
+// Classification stays TERMINAL (Transient:false) on both arms, to match the
+// codex-cli quota contract pinned by TestParseResponse_TurnFailedQuotaIsTerminal
+// — a quota wall is shed, not retried forever. codexFailureDetail mines stdout
+// for the cause, because codex writes its real diagnostic there and exits
+// non-zero with an empty stderr.
+//
+// AN OVERSIZE REFUSAL IS A DIFFERENT CONDITION WEARING THE SAME EXIT CODE, and it
+// is the one non-zero exit a caller can act on: codex refuses the turn before any
+// model call and names the size and its limit in the detail's `data:` suffix, so
+// the caller can retry with a SMALLER request. Every other non-zero exit keeps
+// subprocess_failed. It is detected HERE, in the transport, so the typed Reason
+// is the only thing that crosses to the pipeline — see llm.ReasonInputTooLarge.
+func nonZeroExitError(exitErr *exec.ExitError, stdout []byte, stderr string) *llm.LLMError {
+	detail := codexFailureDetail(stdout, stderr)
+	cause := fmt.Errorf("codex exited %d: %s", exitErr.ExitCode(), detail)
+	if actual, limit, oversize := parseOversizeRejection(detail); oversize {
+		return &llm.LLMError{
+			Transient:     false,
+			Reason:        llm.ReasonInputTooLarge,
+			InputChars:    actual,
+			MaxInputChars: limit,
+			Cause:         cause,
+		}
+	}
+	return &llm.LLMError{
+		Transient: false,
+		Reason:    "subprocess_failed",
+		Cause:     cause,
+	}
 }
 
 // codexFailureDetail builds the diagnostic for a non-zero codex exit. Codex

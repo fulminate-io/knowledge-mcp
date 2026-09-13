@@ -126,7 +126,7 @@ func groupSummaryByGraph(batch []SummaryWork) map[groupKey][]SummaryWork {
 	groups := make(map[groupKey][]SummaryWork)
 	for _, w := range batch {
 		k := groupKey{
-			Key:     graphKey{GraphType: w.GraphType, GraphName: w.GraphName},
+			Key:     graphKey{GraphType: w.GraphType, GraphName: w.GraphName, Destination: w.Destination},
 			Backend: w.Backend,
 		}
 		groups[k] = append(groups[k], w)
@@ -194,6 +194,17 @@ func summaryGroupOnce(ctx context.Context, p *Pipeline, key groupKey, items []Su
 	slog.Debug("pipeline.summary: invoking summarizer", "chunks", len(chunks), "graph_type", gk.GraphType, "graph_name", gk.GraphName)
 	results, err := p.summarizer(ctx, chunks)
 	if err != nil {
+		// A SIZE REFUSAL IS NOT A FAILED CALL, it is a call that was too big, and
+		// the answer is smaller calls rather than a durable failure marker on
+		// twenty documents that would each have summarized fine. It is read from
+		// the transport's TYPED reason (llm.InputTooLargeOf), never from the
+		// message text, and it short-circuits BEFORE handleSummarizerError so the
+		// breaker, the backoff gate and the failure counter never see it — see
+		// worker_summary_split.go for why each of those three matters.
+		if reported, limit, oversize := llm.InputTooLargeOf(err); oversize {
+			logOversizeRejection(gk, items, reported, limit)
+			return splitOversizeSummaryGroup(ctx, p, key, items, limit)
+		}
 		slog.Warn("pipeline.summary: summarizer call failed",
 			"graph_type", gk.GraphType, "graph_name", gk.GraphName, "chunks", len(chunks), "error", err)
 		handleSummarizerError(ctx, p, be, gk, items, err)
@@ -256,7 +267,13 @@ func writeSummaryResults(ctx context.Context, p *Pipeline, be WireClient, key gr
 			Summary:  &summary,
 			Keywords: &keywords,
 			Metadata: map[string]string{
-				kgtypes.MetaKeySummaryFailureReason: "",
+				// BOTH marker keys are cleared, not just the reason. A node that
+				// carried the TERMINAL key and then summarizes successfully — its
+				// content shrank, or the provider's limit moved — must lose that key
+				// too, or the marker outlives the condition it recorded and the
+				// collect self-heal goes on skipping a row that is no longer failed.
+				kgtypes.MetaKeySummaryFailureReason:   "",
+				kgtypes.MetaKeySummaryFailureTerminal: "",
 			},
 		})
 	}
@@ -343,20 +360,55 @@ func handleSummarizerError(ctx context.Context, p *Pipeline, be WireClient, key 
 // tick, which is strictly safer than blocking the worker. Mirrors the embed
 // side's markEmbedItemsWithReason.
 func markSummaryItemsWithReason(ctx context.Context, p *Pipeline, be WireClient, key graphKey, ids []string, reason string) {
-	batchItems := make([]updateBatchItem, 0, len(ids))
+	marks := make([]summaryMarkerItem, 0, len(ids))
 	for _, id := range ids {
-		batchItems = append(batchItems, updateBatchItem{
-			ID: id,
-			Metadata: map[string]string{
-				kgtypes.MetaKeySummaryFailureReason: reason,
-			},
+		marks = append(marks, summaryMarkerItem{
+			ID:   id,
+			Meta: map[string]string{kgtypes.MetaKeySummaryFailureReason: reason},
 		})
 	}
+	writeSummaryMarkers(ctx, p, be, key, marks)
+}
+
+// summaryMarkerItem is one node's failure-marker write: the id, and the metadata
+// keys to stamp on it.
+//
+// THE METADATA IS PER ITEM rather than one map for the whole set, and that is
+// what the terminal oversize marker needs: each marked document names its OWN
+// composed size, so a stride isolating several of them writes several different
+// values — in ONE update_batch, which is the property the per-batch RPC budget
+// pins.
+type summaryMarkerItem struct {
+	ID   string
+	Meta map[string]string
+}
+
+// writeSummaryMarkers is the ONE durable marker write on the summary axis: it
+// stamps each item's metadata via a single mutate(update_batch) RPC scoped to
+// (graphType, graphName) and bumps summaryFail once per item. Every terminal
+// summary condition routes here — a terminal summarizer error
+// (handleSummarizerError), a recovered batch panic (markPanickedSummaryBatch),
+// and an oversize document (markOversizeSummaryItems) — so the eligibility-loop
+// circuit breaker has a single implementation.
+//
+// A WRITE ERROR ONLY WARNS, and it does NOT present itself as a successful
+// terminal mark: a missed marker re-surfaces the node next tick, which is
+// strictly safer than blocking the worker, and the WARN is the only record that
+// the node was NOT durably marked. Mirrors the embed side's
+// markEmbedItemsWithReason.
+func writeSummaryMarkers(ctx context.Context, p *Pipeline, be WireClient, key graphKey, marks []summaryMarkerItem) {
+	if len(marks) == 0 {
+		return
+	}
+	batchItems := make([]updateBatchItem, 0, len(marks))
+	for _, m := range marks {
+		batchItems = append(batchItems, updateBatchItem{ID: m.ID, Metadata: m.Meta})
+	}
 	if werr := writeBatchUpdates(ctx, be, key.GraphType, key.GraphName, batchItems); werr != nil {
-		slog.Warn("pipeline.summary: write failure markers failed",
+		slog.Warn("pipeline.summary: write failure markers failed — these nodes are NOT durably marked and will re-surface next tick",
 			"items", len(batchItems), "error", werr, "graph_type", key.GraphType, "graph_name", key.GraphName)
 	}
-	for range ids {
+	for range marks {
 		p.metrics.summaryFail()
 	}
 }

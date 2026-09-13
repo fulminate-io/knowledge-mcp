@@ -61,14 +61,9 @@ func LogoutCmd(args []string) error {
 
 	revokeIfPresent(ctx, store)
 
-	deleteIgnoringMissing(ctx, store, auth.KeyRefreshToken)
-	deleteIgnoringMissing(ctx, store, auth.KeyClientID)
-	// The published session must go too. It is independently usable by any
-	// process that can read the store, so leaving it behind would let a
-	// reader keep authenticating as the logged-out operator until the access
-	// token lapsed on its own.
-	deleteIgnoringMissing(ctx, store, auth.KeyAccessToken)
-	deleteIgnoringMissing(ctx, store, auth.KeyAccessTokenExpiry)
+	if err := deleteCredentials(ctx, store); err != nil {
+		return err
+	}
 
 	fmt.Fprintln(os.Stdout, "Logged out.")
 	return nil
@@ -106,23 +101,5 @@ func revokeIfPresent(ctx context.Context, store auth.Store) {
 	default:
 		slog.Warn("logout: keychain read failed (continuing)",
 			"error", err)
-	}
-}
-
-// deleteIgnoringMissing deletes a keychain entry and swallows the
-// ErrNotFound case so logout stays idempotent. Any other error is
-// logged at WARN — local cleanup is best-effort by design, and a
-// dbus/Keychain glitch shouldn't leave the user stuck with a non-zero
-// exit they can't resolve.
-func deleteIgnoringMissing(
-	ctx context.Context, store auth.Store, key string,
-) {
-	err := store.Delete(ctx, key)
-	switch {
-	case err == nil, errors.Is(err, auth.ErrNotFound):
-		return
-	default:
-		slog.Warn("logout: keychain delete failed",
-			"key", key, "error", err)
 	}
 }

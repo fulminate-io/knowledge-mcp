@@ -238,6 +238,7 @@ func (m *distManager[Q, S]) forceCompleteLiveSet(ctx context.Context) ([]searche
 // The force-load re-imports the engine's corpus, which is safe-by-idempotence on a
 // daemon-served live engine (load() dedups by segment id — see forceCompleteLiveSet).
 func (m *Manager) completeHNSWLiveSet(ctx context.Context, gt kgtypes.GraphType, name string) (map[searchengine.SegmentID]struct{}, error) {
+	m = m.ForDestination(ctx)
 	live := make(map[searchengine.SegmentID]struct{})
 
 	ids, err := m.managerFor(gt, name).forceCompleteLiveSet(ctx)
@@ -256,6 +257,7 @@ func (m *Manager) completeHNSWLiveSet(ctx context.Context, gt kgtypes.GraphType,
 // (the rebuild path's deterministic split is HNSW-only — manager_owner.go), so there
 // is exactly one engine per graph for this root and NO union.
 func (m *Manager) completeBM25LiveSet(ctx context.Context, gt kgtypes.GraphType, name string) (map[searchengine.SegmentID]struct{}, error) {
+	m = m.ForDestination(ctx)
 	ids, err := m.bm25ManagerFor(gt, name).forceCompleteLiveSet(ctx)
 	if err != nil {
 		return nil, err
@@ -324,6 +326,7 @@ func listOnDiskSegIDs(dir string) ([]onDiskSeg, error) {
 // is RPC-bound, so a per-graph worker pool would contend on m.mu for no real gain on
 // a one-shot operator command.
 func (m *Manager) PruneCache(ctx context.Context, graphs []PruneCacheTarget, execute bool) (PruneCacheReport, error) {
+	m = m.ForDestination(ctx)
 	var report PruneCacheReport
 	for _, g := range graphs {
 		// HNSW pool — embed ∪ deterministic live set, shared HNSW L2 root.

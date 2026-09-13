@@ -3,12 +3,15 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -132,8 +135,8 @@ func TestRevokeRefreshToken_Success(t *testing.T) {
 	}
 }
 
-// TestRevokeRefreshToken_EmptyEndpoint asserts the no-op short-circuit
-// when AuthKit doesn't advertise a revocation_endpoint.
+// TestRevokeRefreshToken_EmptyEndpoint asserts the expected no-op when
+// AuthKit does not advertise a revocation_endpoint.
 func TestRevokeRefreshToken_EmptyEndpoint(t *testing.T) {
 	if err := RevokeRefreshToken(context.Background(), "", "frt_x"); err != nil {
 		t.Fatalf("expected nil on empty endpoint, got %v", err)
@@ -141,23 +144,58 @@ func TestRevokeRefreshToken_EmptyEndpoint(t *testing.T) {
 }
 
 // TestRevokeRefreshToken_NetworkError asserts transport failures are
-// swallowed (returning nil) so local logout can continue.
+// returned for diagnostics; the logout caller still performs local cleanup.
 func TestRevokeRefreshToken_NetworkError(t *testing.T) {
 	// Unused address — connection refused.
-	if err := RevokeRefreshToken(context.Background(), "http://127.0.0.1:1/revoke", "frt_x"); err != nil {
-		t.Fatalf("expected nil on network error, got %v", err)
+	if err := RevokeRefreshToken(context.Background(), "http://127.0.0.1:1/revoke", "frt_x"); err == nil {
+		t.Fatalf("expected error on network error, got %v", err)
 	}
 }
 
-// TestRevokeRefreshToken_Non200 asserts non-200 responses also return
-// nil (best-effort semantics).
+// TestRevokeRefreshToken_Non200 asserts non-200 responses report failure.
 func TestRevokeRefreshToken_Non200(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	defer srv.Close()
 
-	if err := RevokeRefreshToken(context.Background(), srv.URL, "frt_x"); err != nil {
-		t.Fatalf("expected nil on non-200, got %v", err)
+	if err := RevokeRefreshToken(context.Background(), srv.URL, "frt_x"); err == nil {
+		t.Fatalf("expected error on non-200, got %v", err)
+	}
+}
+
+func TestRevocationDiagnostics(t *testing.T) {
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }))
+	defer srv.Close()
+	if err := RevokeRefreshToken(context.Background(), srv.URL, "secret-token"); err == nil {
+		t.Fatal("wrapper swallowed revocation failure")
+	}
+	if !strings.Contains(logs.String(), "503") || !strings.Contains(logs.String(), "error=") || strings.Contains(logs.String(), "secret-token") {
+		t.Fatalf("missing or unsafe revocation log: %s", logs.String())
+	}
+	if err := RevokeRefreshTokenResult(context.Background(), srv.URL, "secret-token"); err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("missing HTTP diagnostic: %v", err)
+	}
+	logs.Reset()
+	if err := RevokeRefreshToken(context.Background(), "", "secret-token"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "level=DEBUG") || strings.Contains(logs.String(), "level=WARN") {
+		t.Fatalf("expected no-endpoint debug log: %s", logs.String())
+	}
+	if err := RevokeRefreshTokenResult(context.Background(), "", "secret-token"); err == nil {
+		t.Fatal("explicit revocation result hid missing endpoint")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := RevokeRefreshTokenResult(ctx, srv.URL, "secret-token"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("lost transport cause: %v", err)
+	}
+	if err := RevokeRefreshTokenResult(context.Background(), ":invalid", "secret-token"); err == nil || !strings.Contains(err.Error(), "missing protocol") {
+		t.Fatalf("lost endpoint diagnostic: %v", err)
 	}
 }

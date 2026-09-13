@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
@@ -15,15 +16,27 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/projects/render"
 )
 
-// llmFailureKeys are the two LLM-pipeline failure markers cleared by
+// llmFailureKeys are the LLM-pipeline failure markers cleared by
 // clear_llm_failures. Stored as inline metadata; clearing means writing the
 // empty string (the explicit "no failure" state the discovery shim looks for —
 // NOT a delete). clear_llm_failures is fully CLIENT-SIDE: it composes generic
 // MutationPlan UPDATEs over the failure-marker predicate (clearLLMFailuresInGraph
 // below) — there is no server-side clear handler.
+//
+// THE TERMINAL SUMMARY MARKER IS ON THIS LIST, and it is the one entry that MUST
+// be: the collect self-heal deliberately keeps that marker across a
+// content-identical collect, so a node whose content never changes has no other
+// way back into the pipeline. This is the escape hatch that keeps "terminal" from
+// meaning "forever" — an operator who raises a provider's limit, or who wants the
+// document attempted once more, clears it here.
+//
+// It is a deliberate DEPARTURE from the precedent: MetaKeySegmentShipFailureReason
+// is NOT on this list, because a ship-drop marker clears itself on the node's next
+// content change. The terminal summary marker does not.
 var llmFailureKeys = []string{
 	kgtypes.MetaKeySummaryFailureReason,
 	kgtypes.MetaKeyEmbedFailureReason,
+	kgtypes.MetaKeySummaryFailureTerminal,
 }
 
 // llmFailureGraphTypes are the LLM-eligible graph types swept when no graph is
@@ -36,9 +49,9 @@ var llmFailureGraphTypes = []string{
 	string(kgtypes.GraphPractice),
 }
 
-// handleClientClearLLMFailures clears the two LLM-pipeline failure markers
-// (summary_failure_reason + embed_failure_reason) across the resolved graph
-// target(s) by composing TWO generic MutationPlan UPDATEs per graph — each an
+// handleClientClearLLMFailures clears the LLM-pipeline failure markers named by
+// llmFailureKeys across the resolved graph target(s) by composing one generic
+// MutationPlan UPDATE per key per graph — each an
 // OP_EXISTS predicate write-WHERE (select nodes carrying the marker) plus a
 // set_metadata empty-string clear. The clear is entirely client-composed from
 // the generic Execute toolbox (the predicate UPDATE engine path); there is NO
@@ -52,8 +65,8 @@ var llmFailureGraphTypes = []string{
 //   - graph only: every loaded base of that type, each plus its overlay keys.
 //   - neither: every loaded base across the LLM-eligible types, each plus overlays.
 //
-// Per-graph clear is bounded-constant: exactly TWO Execute UPDATEs per resolved
-// key regardless of how many nodes carry the marker (the engine resolves the
+// Per-graph clear is bounded-constant: one Execute UPDATE per marker key per
+// resolved key, regardless of how many nodes carry a marker (the engine resolves the
 // predicate write-WHERE id-set inside one serializable txn — engine
 // executeMutationPlan).
 func handleClientClearLLMFailures(ctx context.Context, deps ClientDeps, a manageArgs) kgtools.ToolResult {
@@ -74,15 +87,18 @@ func handleClientClearLLMFailures(ctx context.Context, deps ClientDeps, a manage
 		return textResult("no loaded graphs match the request — nothing to clear")
 	}
 
+	// The per-key tally is declared with := because it is initialized to a
+	// non-zero value; the four accumulators below are zero values and belong in
+	// the var block.
+	totalByKey := make(map[string]int64, len(llmFailureKeys))
 	var (
-		totalSummaryCleared int64
-		totalEmbedCleared   int64
-		totalSkipped        int64
-		perGraph            []string
-		perGraphErrors      []string
+		totalCleared   int64
+		totalSkipped   int64
+		perGraph       []string
+		perGraphErrors []string
 	)
 	for _, tgt := range targets {
-		sum, emb, skipped, cerr := clearLLMFailuresInGraph(ctx, ex, tgt)
+		counts, cerr := clearLLMFailuresInGraph(ctx, ex, tgt)
 		if cerr != nil {
 			// Per-graph failures do not abort the sweep — operator usually wants
 			// partial results when one graph is unrecoverable (parity with the
@@ -95,15 +111,17 @@ func handleClientClearLLMFailures(ctx context.Context, deps ClientDeps, a manage
 				fmt.Sprintf("%s/%s=%v", tgt.graphType, targetLabel(tgt), cerr))
 			continue
 		}
-		totalSummaryCleared += sum
-		totalEmbedCleared += emb
-		totalSkipped += skipped
-		if sum > 0 || emb > 0 {
-			perGraph = append(perGraph, fmt.Sprintf("%s/%s=%d/%d", tgt.graphType, targetLabel(tgt), sum, emb))
+		for key, n := range counts.byKey {
+			totalByKey[key] += n
+		}
+		totalCleared += counts.total()
+		totalSkipped += counts.skipped
+		if counts.total() > 0 {
+			perGraph = append(perGraph, fmt.Sprintf("%s/%s=%d", tgt.graphType, targetLabel(tgt), counts.total()))
 		}
 	}
 
-	if totalSummaryCleared == 0 && totalEmbedCleared == 0 {
+	if totalCleared == 0 {
 		if len(perGraphErrors) > 0 {
 			// An all-zero sweep that hit errors is NOT a clean "nothing to clear" —
 			// surface it as an error naming every failing target.
@@ -123,8 +141,8 @@ func handleClientClearLLMFailures(ctx context.Context, deps ClientDeps, a manage
 	if pr, ok := deps.(pipelineResetter); ok {
 		pr.ResetPipelineFailedCounters()
 	}
-	summary := fmt.Sprintf("clear_llm_failures: cleared %d summary marker(s) + %d embed marker(s) across %d graph(s): %v",
-		totalSummaryCleared, totalEmbedCleared, len(perGraph), perGraph)
+	summary := fmt.Sprintf("clear_llm_failures: cleared %d marker(s) across %d graph(s) [%s]: %v",
+		totalCleared, len(perGraph), renderClearedByKey(totalByKey), perGraph)
 	if totalSkipped > 0 {
 		// not_found markers tolerated-and-skipped: surface the count so the
 		// operator knows phantom markers on moved/tombstoned nodes were passed over.
@@ -136,6 +154,19 @@ func handleClientClearLLMFailures(ctx context.Context, deps ClientDeps, a manage
 		summary += fmt.Sprintf("; errors: %v", perGraphErrors)
 	}
 	return textResult(summary)
+}
+
+// renderClearedByKey renders the per-marker-key breakdown for the operator
+// summary, in llmFailureKeys order so the line is stable across runs rather than
+// in Go map order. A key that cleared nothing is included: "0" is the answer to
+// "did that marker clear anything", and omitting it would make an absent key and
+// a zero indistinguishable.
+func renderClearedByKey(byKey map[string]int64) string {
+	parts := make([]string, 0, len(llmFailureKeys))
+	for _, key := range llmFailureKeys {
+		parts = append(parts, fmt.Sprintf("%s=%d", key, byKey[key]))
+	}
+	return strings.Join(parts, " ")
 }
 
 // clearLLMFailureTarget is one (graph_type, name, branch) triple to clear.
@@ -295,23 +326,50 @@ func atSplit(s string) (string, string, bool) {
 	return "", "", false
 }
 
-// clearLLMFailuresInGraph issues the TWO predicate UPDATEs (one per failure
-// marker) against a single graph and returns the summary-cleared and
-// embed-cleared affected counts plus the combined skipped total across both UPDATEs. Each
-// UPDATE is an OP_EXISTS predicate write-WHERE + set_metadata empty clear; the
-// skipped total is the count of phantom markers the engine tolerated-and-skipped
-// (not_found in the write-target layer).
-func clearLLMFailuresInGraph(ctx context.Context, ex render.Executor, tgt clearLLMFailureTarget) (sumCleared int64, embCleared int64, skipped int64, err error) {
-	counts := make([]int64, len(llmFailureKeys))
-	for i, key := range llmFailureKeys {
+// clearedMarkerCounts is one graph's clear result: the affected count PER MARKER
+// KEY, plus the combined skipped total across every UPDATE.
+//
+// IT IS KEYED BY THE MARKER KEY rather than returned positionally, and the shape
+// is forced rather than stylistic. The previous form returned counts[0],
+// counts[1] into two named results, so a THIRD key was cleared correctly and its
+// count silently discarded — a dropped number in an operator-facing summary,
+// which AGENTS.md admits no more than any other silent degrade. Keyed by the
+// constant, a key added to llmFailureKeys reaches the summary or fails to be
+// rendered loudly, never quietly.
+type clearedMarkerCounts struct {
+	byKey   map[string]int64
+	skipped int64
+}
+
+// total returns the sum over every key. It is the number an operator reads as
+// "markers cleared", and it is a SUM OF MARKERS rather than of nodes: a node
+// carrying both summary keys contributes two, which is what the per-key
+// breakdown beside it makes legible.
+func (c clearedMarkerCounts) total() int64 {
+	var n int64
+	for _, v := range c.byKey {
+		n += v
+	}
+	return n
+}
+
+// clearLLMFailuresInGraph issues one predicate UPDATE per marker key in
+// llmFailureKeys against a single graph and returns the per-key affected counts
+// plus the combined skipped total. Each UPDATE is an OP_EXISTS predicate
+// write-WHERE + set_metadata empty clear; the skipped total is the count of
+// phantom markers the engine tolerated-and-skipped (not_found in the
+// write-target layer).
+func clearLLMFailuresInGraph(ctx context.Context, ex render.Executor, tgt clearLLMFailureTarget) (clearedMarkerCounts, error) {
+	out := clearedMarkerCounts{byKey: make(map[string]int64, len(llmFailureKeys))}
+	for _, key := range llmFailureKeys {
 		n, sk, cerr := execClearMarkerUpdate(ctx, ex, tgt, key)
 		if cerr != nil {
-			return 0, 0, 0, cerr
+			return clearedMarkerCounts{}, cerr
 		}
-		counts[i] = n
-		skipped += sk
+		out.byKey[key] = n
+		out.skipped += sk
 	}
-	return counts[0], counts[1], skipped, nil
+	return out, nil
 }
 
 // execClearMarkerUpdate runs ONE predicate UPDATE clearing a single failure

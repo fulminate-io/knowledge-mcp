@@ -43,6 +43,26 @@ func newFallbackSummarizer(entries []Summarizer, health *chainHealth, advance fu
 	return &fallbackSummarizer{entries: entries, health: health, advance: advance}
 }
 
+// NewSelectionSummarizer builds the composite selection wrapper over the ordered
+// entries, the shared health state and the injected advance predicate. It is the
+// exported form of newFallbackSummarizer and it exists for ONE reason, stated
+// here because it has no production caller of its own: the advance predicate is
+// injected precisely because this package cannot import pipeline, so the only
+// place a test can run BOTH REAL SIDES of that seam — this wrapper's walk and
+// pipeline.ShouldAdvanceFallback's classification — is a package that imports
+// both, which means an external test package and an exported constructor. A test
+// that passed its own stand-in predicate instead would be asserting the wrapper
+// against a double on the far side of the very seam under test, and the two
+// halves could then disagree indefinitely. NewChainHealth above is exported on
+// the same terms.
+//
+// Production wiring goes through BuildSummarizerWithFallback, which calls the
+// unexported constructor; nothing outside this package should assemble a chain
+// by hand.
+func NewSelectionSummarizer(entries []Summarizer, health *chainHealth, advance func(error) bool) Summarizer {
+	return newFallbackSummarizer(entries, health, advance)
+}
+
 // SummarizeBatch summarizes chunks through the chain, advancing on a
 // non-deterministic-terminal failure.
 //

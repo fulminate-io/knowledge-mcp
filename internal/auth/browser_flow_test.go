@@ -407,3 +407,23 @@ func newTokenSrv(t *testing.T, seenForm *url.Values, accessToken, refreshToken s
 		})
 	}))
 }
+
+func TestDesktopBrowserQuiet(t *testing.T) {
+	t.Setenv(envLoginViaFrontend, "")
+	endpoints := loginFlowEndpoints(t)
+	out := capturePromptOut(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, _, err := RunBrowserPKCEFlowWithBrowser(ctx, endpoints, fakeBrowserDrivingListener(t, "", new(string))); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() != 0 {
+		t.Fatal("quiet browser flow disclosed a URL")
+	}
+	if _, _, err := RunBrowserPKCEFlowWithBrowser(ctx, endpoints, func(string) error { return errors.New("launcher secret") }); err == nil {
+		t.Fatal("browser launch failure hidden")
+	}
+	if out.Len() != 0 {
+		t.Fatal("quiet browser flow disclosed launch diagnostics")
+	}
+}

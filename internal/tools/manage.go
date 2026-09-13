@@ -87,6 +87,8 @@ func InterceptManage(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 		return true, *refusal
 	}
 	switch a.Operation {
+	case "graph_inventory":
+		return true, handleGraphInventory(ctx, deps)
 	case "status":
 		return true, handleServerStatus(ctx, deps, a.Format)
 	case "pprof_start":

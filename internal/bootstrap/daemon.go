@@ -78,20 +78,19 @@ const (
 // Returns the constructed *client, a cleanup closure, and an error. The cleanup
 // closure cancels the background wiring ctx, bounded-joins the wiring goroutine
 // (wireJoinDeadline), then drains ONLY the subsystems whose readiness flag is
-// set — so a SIGTERM mid-wiring never Stops a nil/half-wired handle. The error
-// return is always nil today — every wire failure is slog.Warn'd in
-// wireRuntimesBackground and degrades; the error slot is reserved for future
-// prefix wiring that genuinely cannot degrade.
+// set — so a SIGTERM mid-wiring never Stops a nil/half-wired handle. Explicit
+// path/configuration errors return before construction; later background wiring
+// retains its existing warning behavior.
 //
 // Startup timing instrumentation: each `stage` call emits elapsed-since-entry at
 // slog.Debug to help diagnose the MCP-host first-connect flake. Cheap (only fires
 // under --log-level=debug).
 //
-// Keeping the (always-nil-today) error in the signature avoids a caller-rippling
-// change when future wiring genuinely cannot degrade.
-//
-//nolint:unparam // error result reserved for future non-degradable wiring; see above.
+// Explicit runtime path/configuration failures return before constructors run.
 func buildClient(f Config) (*client, func(), error) {
+	if err := prepareRuntimePaths(f); err != nil {
+		return nil, nil, err
+	}
 	t0 := time.Now()
 	stage := func(name string) {
 		slog.Debug("client.startup", "stage", name, "elapsed", time.Since(t0))
@@ -115,7 +114,9 @@ func buildClient(f Config) (*client, func(), error) {
 	// cloud credential.
 	tools.SetSyncTransportBuilder(c.buildCloudSyncTransport)
 
-	maybeSpawnLocalServer(c, f)
+	if f.StateDir == "" {
+		maybeSpawnLocalServer(c, f)
+	}
 	stage("ensureServerReachable done")
 
 	// One-shot ~/.claude asset drift check. Logs a hint via slog
@@ -123,14 +124,20 @@ func buildClient(f Config) (*client, func(), error) {
 	// installed under ~/.claude — most MCP hosts surface stderr in
 	// their debug log, so users see the hint without having to know
 	// `knowledge doctor` exists. Cheap (~10ms file walk + sha256s).
-	hintClaudeAssetsIfStale()
+	if f.StateDir == "" {
+		hintClaudeAssetsIfStale()
+	}
 	// Managed-block drift check for ~/.claude/CLAUDE.md (managed region
 	// only, so user prose never false-positives).
-	hintClaudeMDIfStale()
+	if f.StateDir == "" {
+		hintClaudeMDIfStale()
+	}
 	// Same one-shot drift check for the codex twin: skills under
 	// ~/.agents/skills and agents under ~/.codex/agents. AGENTS.md is
 	// excluded (managed-block merge — a mismatch is expected).
-	hintCodexAssetsIfStale()
+	if f.StateDir == "" {
+		hintCodexAssetsIfStale()
+	}
 	stage("asset drift hints done")
 
 	// Set up the cancelable wiring ctx + done signal the background wiring
@@ -270,7 +277,9 @@ func (c *client) wireRuntimesBackground(ctx context.Context, f Config) {
 	// embedder + rerank resolve the config voyage_api_key rather than falling
 	// straight to VOYAGE_API_KEY, and it must precede the LLM precheck, which
 	// is gated on there being a config to precheck.
-	loadBootConfig(f)
+	if f.ConfigFile == "" {
+		loadBootConfig(f)
+	}
 
 	if ctx.Err() != nil {
 		return
@@ -453,6 +462,8 @@ func runServe(args []string) error {
 	// intercept chain + compile-or-DENY engineDispatch from mcp.go) so the
 	// HTTP transport routes through the same intercept + dispatch path.
 	c.mcpClient = graphclient.NewMCPClient(graphclient.MCPClientConfig{
+		BindStorage:     c.router.BindStorage,
+		BindSearch:      c.router.BindSearch,
 		Client:          c.local,
 		Port:            c.port,
 		Version:         c.version,

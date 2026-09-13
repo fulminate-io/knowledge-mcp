@@ -7,6 +7,7 @@ import (
 	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
@@ -37,7 +38,8 @@ import (
 // on their first tick, so registration is cheap and never blocks the refresh
 // loop on a backend round-trip.
 func (p *Pipeline) RegisterGraph(ctx context.Context, gt kgtypes.GraphType, name string) {
-	key := graphKey{GraphType: gt, GraphName: name}
+	destination, bound := graphclient.StorageDestination(ctx)
+	key := graphKey{GraphType: gt, GraphName: name, Destination: destination}
 	// Resolve the CONCRETE backend this collector scans + stamps. Login-routed
 	// via the resolver (cloud when logged in, local otherwise); falls back to
 	// the shared p.client when no resolver is wired (test fakes) or when the
@@ -50,6 +52,9 @@ func (p *Pipeline) RegisterGraph(ctx context.Context, gt kgtypes.GraphType, name
 		return
 	}
 	cctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // cancel is stored in collectorCancels and invoked by UnregisterGraph / stopSequence
+	if bound {
+		cctx = graphclient.WithDestination(cctx, destination)
+	}
 	p.collectorCancels[key] = cancel
 	base, idleMax := p.cadenceFor(ctx)
 	// Build the per-graph quiescence-flush closure over p.segmentMgr.
@@ -89,7 +94,11 @@ func (p *Pipeline) RegisterGraph(ctx context.Context, gt kgtypes.GraphType, name
 	if p.collectEpochFactory != nil {
 		collectEpoch = p.collectEpochFactory(gt, name)
 	}
-	c := newCollector(gt, name, p.cfg, p.summaryCh, p.embedCh, p.metrics, backend, base, idleMax, flush, heal, p.summaryEnabled(), p.embedEnabled(), p.genSnapshotFor, collectInFlight, collectEpoch)
+	if p.collectStateFor != nil {
+		collectInFlight, collectEpoch = p.collectStateFor(ctx, gt, name)
+	}
+	genSnapshot := func(k graphKey) (uint64, uint64, bool) { k.Destination = destination; return p.genSnapshotFor(k) }
+	c := newCollector(gt, name, p.cfg, p.summaryCh, p.embedCh, p.metrics, backend, base, idleMax, flush, heal, p.summaryEnabled(), p.embedEnabled(), genSnapshot, collectInFlight, collectEpoch)
 	// Build the per-graph QUIESCENCE-EDGE balance verdict from the bootstrap-supplied
 	// factory, over the same closure seam as flush and heal above. Assigned after
 	// construction rather than threaded through newCollector's already-long positional
@@ -113,7 +122,7 @@ func (p *Pipeline) RegisterGraph(ctx context.Context, gt kgtypes.GraphType, name
 	// admitted.
 	c.evictOnDurableNotFound = func(reason string) {
 		if p.evictGraph != nil {
-			p.evictGraph(gt, name, reason)
+			p.evictGraph(ctx, gt, name, reason)
 		}
 		p.wakeCatalog()
 	}
@@ -131,6 +140,9 @@ func (p *Pipeline) RegisterGraph(ctx context.Context, gt kgtypes.GraphType, name
 	// server-side per-graph node-type allow-list keeps their container nodes out.
 	if bm25ArmEnabledFor(gt, p.segmentMgr != nil) {
 		mgr := p.segmentMgr
+		if p.segmentManagerFor != nil {
+			mgr = p.segmentManagerFor(ctx)
+		}
 		c.bm25 = bm25Arm{
 			enabled:     true,
 			wake:        make(chan struct{}, 1),
@@ -223,6 +235,10 @@ func (p *Pipeline) resolveBackend(ctx context.Context) WireClient {
 // Safe if (gt, name) is not registered.
 func (p *Pipeline) UnregisterGraph(gt kgtypes.GraphType, name string) {
 	key := graphKey{GraphType: gt, GraphName: name}
+	p.unregisterKey(key)
+}
+
+func (p *Pipeline) unregisterKey(key graphKey) {
 	p.collectorMu.Lock()
 	cancel, exists := p.collectorCancels[key]
 	delete(p.collectorCancels, key)

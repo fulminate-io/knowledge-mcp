@@ -19,8 +19,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // stagedBinary is a binary written to a temp file beside its final destination,
@@ -93,21 +95,57 @@ func stageBinary(destDir string, binBytes []byte, goos, finalBase string) (stage
 // commitStaged renames a staged binary into its final place and returns that
 // path.
 //
-// Windows cannot rename onto an open file (ERROR_ACCESS_DENIED), so the
-// destination is removed first there; on unix the bare rename is what leaves an
-// already-open descriptor serving the ORIGINAL inode, which the running client's
-// own self-read depends on.
+// On Windows, move the old executable aside before publishing the staged one.
+// Deleting or replacing an image still mapped during shutdown can be denied.
+// Unix keeps its single rename and open-descriptor behavior unchanged.
 func commitStaged(s stagedBinary, goos string) (string, error) {
+	previous := ""
 	if goos == "windows" {
-		if err := os.Remove(s.finalPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return "", fmt.Errorf("remove existing %s: %w", s.finalPath, err)
+		var err error
+		previous, err = movePreviousExecutable(s.finalPath)
+		if err != nil {
+			return "", err
 		}
 	}
-	if err := os.Rename(s.tmpPath, s.finalPath); err != nil {
+	if err := renameStagedExecutable(s.tmpPath, s.finalPath); err != nil {
+		if previous != "" {
+			if restoreErr := renameStagedExecutable(previous, s.finalPath); restoreErr != nil {
+				return "", fmt.Errorf("publish %s; previous executable retained at %s: %w", s.finalPath, previous, errors.Join(err, fmt.Errorf("restore previous executable: %w", restoreErr)))
+			}
+			return "", fmt.Errorf("publish %s; restored previous executable: %w", s.finalPath, err)
+		}
 		return "", err
+	}
+	if previous != "" {
+		if err := removePreviousExecutable(previous); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			// The new executable is published. Keep a still-locked recovery image
+			// and name it so cleanup is explicit, rather than hiding the failure.
+			slog.Warn("previous executable retained; remove after it is no longer in use", "path", previous, "error", err)
+		}
 	}
 	return s.finalPath, nil
 }
+
+func movePreviousExecutable(path string) (string, error) {
+	info, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("existing executable %s is not a regular file", path)
+	}
+	previous := path + fmt.Sprintf(".previous-%d", time.Now().UnixNano())
+	if err := os.Rename(path, previous); err != nil {
+		return "", fmt.Errorf("move previous executable %s: %w", path, err)
+	}
+	return previous, nil
+}
+
+var removePreviousExecutable = os.Remove
+var renameStagedExecutable = os.Rename
 
 // discardStaged removes every staged temp file, best effort. Every abort path
 // calls it, so no staged temp survives a failed install to be misattributed to

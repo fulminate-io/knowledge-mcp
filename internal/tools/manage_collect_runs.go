@@ -66,6 +66,13 @@ func renderCollectRunsText(runs []CollectRunStatus) string {
 	now := time.Now()
 	lines := make([]string, 0, len(runs))
 	for _, r := range runs {
+		if r.Destination.Storage != "" {
+			location := r.Destination.Storage
+			if r.Destination.AccountID != "" {
+				location += "/" + r.Destination.AccountID
+			}
+			r.Label = "[" + location + "] " + r.Label
+		}
 		switch {
 		case r.State == "running":
 			lines = append(lines, fmt.Sprintf("  %s: running (%s elapsed)", r.Label, now.Sub(r.StartedAt).Round(time.Second)))
@@ -94,6 +101,12 @@ func addCollectRunsJSON(m map[string]any, runs []CollectRunStatus) {
 	entries := make([]map[string]any, 0, len(runs))
 	for _, r := range runs {
 		e := map[string]any{"target": r.Target, "label": r.Label, "state": r.State}
+		if r.Destination.Storage != "" {
+			e["storage"] = r.Destination.Storage
+		}
+		if r.Destination.AccountID != "" {
+			e["account"] = r.Destination.AccountID
+		}
 		if r.State == "running" {
 			e["elapsed_seconds"] = now.Sub(r.StartedAt).Round(time.Second).Seconds()
 		} else {

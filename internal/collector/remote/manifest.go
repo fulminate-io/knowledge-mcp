@@ -65,32 +65,13 @@ const (
 	leverOff    diffLever = "off"
 )
 
-// collectDeletionRatioOverrideEnv opts a collect out of the server's
-// deletion-ratio bound. It is a SEPARATE lever from the diff mode above because
-// it answers a different question — not "should this collect send a diff" but
-// "is this repository's ordinary churn large enough that the bound refuses
-// legitimate work".
-const collectDeletionRatioOverrideEnv = "KNOWLEDGE_COLLECT_DELETION_RATIO_OVERRIDE"
-
-// collectDeletionRatioOverride reports whether the operator asked the server to
-// skip guard 3's deletion-ratio bound for this collect.
-//
-// UNSET IS OFF, and that default is the opposite of the diff lever's on purpose:
-// this one relaxes a refusal, so an unreadable or absent value must never arm
-// it. Only an affirmative value counts; anything else — including a typo, an
-// empty string, or the variable being absent entirely — leaves the bound armed.
-func collectDeletionRatioOverride() bool {
-	v, ok := os.LookupEnv(collectDeletionRatioOverrideEnv)
-	if !ok {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "1", "on", "true", "yes":
-		return true
-	default:
-		return false
-	}
-}
+// THERE IS NO DELETION-RATIO LEVER ANY MORE. A second environment variable
+// (KNOWLEDGE_COLLECT_DELETION_RATIO_OVERRIDE) once opted a collect out of the
+// server's size-based deletion refusal, for repositories whose ordinary churn the
+// bound refused. The BOUND is gone — it refused a deleted directory's rows
+// silently and permanently — so the opt-out went with it, along with the wire
+// field it rode (FinalizeRequest tag 11, now reserved). Nothing about the diff
+// lever below changed.
 
 // collectDiffEnv is the break-glass lever: it forces the degradation lane.
 const collectDiffEnv = "KNOWLEDGE_COLLECT_DIFF"

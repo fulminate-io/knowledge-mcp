@@ -17,11 +17,11 @@ import (
 // shared with setup_restart_test.go, so parallel tests would race each other's
 // stubs. These tests never touch a real daemon or a real service manager.
 
-// selectAccount writes id into the temp-HOME config.
+// selectAccount writes id into the scratch-home config.
 // knowledgeDir(t) must have run first.
 func selectAccount(t *testing.T, id string) {
 	t.Helper()
-	home, err := os.UserHomeDir()
+	home, err := bootstrapHomeDir()
 	if err != nil {
 		t.Fatalf("home: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestRestartDaemonIfSelectionChanged_FailureIsNonFatal(t *testing.T) {
 		t.Errorf("output %q is not actionable", out)
 	}
 	// The selection survived the failed restart.
-	home, _ := os.UserHomeDir()
+	home, _ := bootstrapHomeDir()
 	got, err := config.ReadSelectedAccountID(filepath.Join(home, ".knowledge", "config"))
 	if err != nil {
 		t.Fatalf("ReadSelectedAccountID: %v", err)

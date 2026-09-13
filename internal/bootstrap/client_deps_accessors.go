@@ -15,6 +15,9 @@ package bootstrap
 import (
 	"context"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/backends"
@@ -87,12 +90,16 @@ func (c *client) CloudStatusInfo() (bool, string) {
 func (c *client) ClientVersion() string { return Version }
 
 // DaemonVersion best-effort probes the running local `knowledge serve` daemon
-// for its version, REUSING the existing probeDaemonVersion MCP-initialize
+// for its version; supervised installations report this process directly.
+// Standalone clients reuse the existing probeDaemonVersion MCP-initialize
 // round-trip (version_subcommand.go) against graphclient.DefaultMCPHTTPPort.
 // Satisfies the optional tools.versionInfo interface; returns ("", false) on
 // ANY failure (no daemon, timeout, malformed reply) so manage(status) degrades
 // to a client-version-only render with no error.
 func (c *client) DaemonVersion() (string, bool) {
+	if c.runtimeStateDir != "" {
+		return c.version, c.version != ""
+	}
 	return probeDaemonVersion(graphclient.DefaultMCPHTTPPort)
 }
 
@@ -103,7 +110,8 @@ func (c *client) DaemonVersion() (string, bool) {
 const serverBinaryVersionBudget = 2 * time.Second
 
 // ServerBinaryVersion reads the version of the INSTALLED knowledge-server
-// binary on disk. Satisfies the optional tools.versionInfo interface.
+// binary on disk, restricted to the running client's sibling in supervised
+// installations. Satisfies the optional tools.versionInfo interface.
 //
 // It answers a DIFFERENT question from DaemonVersion: that one reports the
 // version of the daemon PROCESS currently running, while this reports what is
@@ -118,6 +126,18 @@ const serverBinaryVersionBudget = 2 * time.Second
 func (c *client) ServerBinaryVersion() (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), serverBinaryVersionBudget)
 	defer cancel()
+	if c.runtimeStateDir != "" {
+		executable, err := os.Executable()
+		if err != nil {
+			return "", false
+		}
+		name := "knowledge-server"
+		if runtime.GOOS == "windows" {
+			name += ".exe"
+		}
+		version, err := readServerBinaryVersion(ctx, filepath.Join(filepath.Dir(executable), name))
+		return version, err == nil && version != ""
+	}
 	return serverBinaryVersion(ctx)
 }
 
@@ -177,7 +197,8 @@ func (c *client) RootDir() string { return c.rootDir }
 func (c *client) RootDirSet() bool { return c.rootDirSet }
 
 // UsageAnalyzer returns the client-side agent-flow analyzer, lazily constructing it on
-// first use. It is built over the default ~/.knowledge/transcripts-cache root (no
+// first use. It uses installation-local transcripts-cache when configured,
+// otherwise the default ~/.knowledge/transcripts-cache root (no
 // router/network dependency). Returns a nil interface when the cache root cannot be
 // resolved, so InterceptAnalyzeUsage's nil-check fires and renders the cold-cache hint
 // rather than carrying a typed-nil.
@@ -185,7 +206,11 @@ func (c *client) UsageAnalyzer() tools.UsageAnalyzerAPI {
 	c.usageAnalyzerMu.Lock()
 	defer c.usageAnalyzerMu.Unlock()
 	if !c.usageAnalyzerDone {
-		svc, err := transcriptanalytics.NewService("")
+		root := ""
+		if c.runtimeStateDir != "" {
+			root = filepath.Join(c.runtimeStateDir, "transcripts-cache")
+		}
+		svc, err := transcriptanalytics.NewService(root)
 		if err != nil {
 			slog.Warn("bootstrap: usage analyzer unavailable (cache root unresolvable)", "err", err)
 		}

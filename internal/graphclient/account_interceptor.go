@@ -4,6 +4,7 @@ package graphclient
 
 import (
 	"context"
+	"fmt"
 
 	"connectrpc.com/connect"
 
@@ -40,6 +41,11 @@ func newAccountInterceptor(sel *auth.AccountSelection) connect.Interceptor {
 			id, err := sel.IDForRequest(ctx)
 			if err != nil {
 				return nil, connect.NewError(connect.CodePermissionDenied, err)
+			}
+			if d, ok := StorageDestination(ctx); ok {
+				if d.Storage != "cloud" || d.AccountID != id {
+					return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("bound cloud account changed; select the original account and retry"))
+				}
 			}
 			if id != "" {
 				req.Header().Set(auth.AccountHeaderName, id)

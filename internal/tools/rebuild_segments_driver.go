@@ -141,7 +141,7 @@ func RebuildSegments(
 	// Single-flight per (graphType, name): claim or bail with ran=false (no error →
 	// coalesce). Keyed on the threaded gt so a custom graph and a code graph of the
 	// same name never collide.
-	key := string(gt) + "/" + name
+	key, shipper := storageRebuildInputs(ctx, gt, name, shipper)
 	rebuildSegmentsInFlightMu.Lock()
 	if _, busy := rebuildSegmentsInFlight[key]; busy {
 		rebuildSegmentsInFlightMu.Unlock()

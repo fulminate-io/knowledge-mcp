@@ -71,7 +71,10 @@ func LinearAPIKey() string {
 // cmd/knowledge/internal/transcriptanalytics/synthesis.go — resolve the key
 // straight off the loaded config with no further dependency.
 func APIKeyForProvider(p Provider) string {
-	cr := credentials()
+	return apiKeyForCredentials(credentials(), p)
+}
+
+func apiKeyForCredentials(cr *Credentials, p Provider) string {
 	switch p {
 	case ProviderAnthropic:
 		var c string

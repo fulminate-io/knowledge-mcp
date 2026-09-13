@@ -20,6 +20,15 @@ package cli
 // deliberately NOT a line number: a line number rots on every edit above it and
 // would turn this gate red on changes that touch no call path.
 var fulminateCallPathManifest = []censusRow{
+	// Dashboard relay setup reaches the existing stamped websocket handshake.
+	{File: "internal/cli/desktop_dashboard_http.go", Symbol: "proxyWSURL#1", Disposition: dispReaches, Reaches: "internal/cli/tunnel_proxy.go:<recv>.DialContext#1"},
+	// The SSH channel and HTTP request target the user's saved environment service,
+	// not a Fulminate API. Never forward account credentials or identity headers.
+	{File: "internal/cli/desktop_dashboard_http.go", Symbol: "client.DialContext#1", Disposition: dispExcluded},
+	{File: "internal/cli/desktop_dashboard_http.go", Symbol: "http.NewRequestWithContext#1", Disposition: dispExcluded},
+	// Native management uses the same stamped transport and AuthKit credential source.
+	{File: "internal/cli/desktop_remote.go", Symbol: "auth.NewSyncTransport#1", Disposition: dispReaches, Reaches: "internal/auth/sync_transport.go:http.NewRequestWithContext#1"},
+	{File: "internal/cli/desktop_remote.go", Symbol: "auth.NewOAuthTokenSource#1", Disposition: dispExcluded},
 	// ---------------------------------------------------------------------
 	// FULMINATE-BOUND. The population this gate exists to cover.
 	// ---------------------------------------------------------------------
@@ -61,6 +70,10 @@ var fulminateCallPathManifest = []censusRow{
 	{File: "internal/bootstrap/client_construct.go", Symbol: "graphclient.NewRouterWithMachineAuth#1", Disposition: dispReaches,
 		Reaches: "internal/graphclient/cloud_auth.go:req.Clone#1"},
 	{File: "internal/cli/auth_login.go", Symbol: "discoverFn#1", Disposition: dispReaches,
+		Reaches: "internal/auth/discovery.go:http.NewRequestWithContext#1"},
+	{File: "internal/cli/desktop_auth.go", Symbol: "discoverFn#1", Disposition: dispReaches,
+		Reaches: "internal/auth/discovery.go:http.NewRequestWithContext#1"},
+	{File: "internal/cli/desktop_auth.go", Symbol: "discoverFn#2", Disposition: dispReaches,
 		Reaches: "internal/auth/discovery.go:http.NewRequestWithContext#1"},
 	{File: "internal/cli/auth_logout.go", Symbol: "discoverFn#1", Disposition: dispReaches,
 		Reaches: "internal/auth/discovery.go:http.NewRequestWithContext#1"},
@@ -134,6 +147,11 @@ var fulminateCallPathManifest = []censusRow{
 	{File: "internal/bootstrap/check_daemon_route.go", Symbol: "http.NewRequestWithContext#1", Disposition: dispExcluded},
 	{File: "internal/bootstrap/check_daemon_route.go", Symbol: "d.DialContext#1", Disposition: dispExcluded},
 	{File: "internal/bootstrap/lifecycle.go", Symbol: "net.DialTimeout#1", Disposition: dispExcluded},
+	// Service lifecycle probes use literal 127.0.0.1 with the requested local
+	// port: TCP listener detection and MCP initialize for runtime identity.
+	// Neither targets a Fulminate service.
+	{File: "internal/bootstrap/service_command.go", Symbol: "net.DialTimeout#1", Disposition: dispExcluded},
+	{File: "internal/bootstrap/service_runtime.go", Symbol: "http.NewRequestWithContext#1", Disposition: dispExcluded},
 	{File: "internal/graphclient/client.go", Symbol: "d.DialContext#1", Disposition: dispExcluded},
 	{File: "internal/graphclient/upload_meter.go", Symbol: "<recv>.DialContext#1", Disposition: dispExcluded},
 }

@@ -10,16 +10,17 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/config"
 )
 
-// writeBootConfigHome points HOME at a fresh temp dir and, when body is
+// writeBootConfigHome injects a fresh scratch home directory and, when body is
 // non-empty, writes it to <home>/.knowledge/config. Returns the home dir so a
 // caller can stat the config path. It also resets the config singleton for the
 // duration of the test, so each case starts unloaded.
 func writeBootConfigHome(t *testing.T, body string) string {
 	t.Helper()
 	t.Cleanup(config.SetForTest(nil))
+	emptyPATH(t)
 
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setBootstrapHome(t, home)
 	if body == "" {
 		return home
 	}

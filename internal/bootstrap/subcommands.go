@@ -59,6 +59,8 @@ func RunSubcommand() (handled bool, exitCode int) {
 // gate; RunSubcommand keeps the argv read and the exit-code translation.
 func dispatchSubcommand(sub string, rest []string) (err error, recognized bool) {
 	switch sub {
+	case "desktop-settings", "desktop-auth", "desktop-remote":
+		err = dispatchDesktopSettings(sub, rest)
 	case "login":
 		err = withSelectionRestart(func() error { return cli.LoginCmd(rest) })
 	case "logout":
@@ -73,6 +75,8 @@ func dispatchSubcommand(sub string, rest []string) (err error, recognized bool) 
 		err = runCheckVerb(rest)
 	case "collector":
 		err = runCollectorVerb(rest)
+	case "service":
+		err = runService(rest)
 	case "start":
 		err = runStart(rest)
 	case "stop":
@@ -198,7 +202,7 @@ func subcommandExit(err error) (code int, printMessage bool) {
 // expandTilde expands a leading '~/' to the user's home directory.
 func expandTilde(path string) string {
 	if len(path) > 1 && path[0] == '~' {
-		home, err := os.UserHomeDir()
+		home, err := bootstrapHomeDir()
 		if err != nil {
 			slog.Warn("failed to resolve home directory", "error", err)
 			return path
@@ -206,4 +210,14 @@ func expandTilde(path string) string {
 		return filepath.Join(home, path[2:])
 	}
 	return path
+}
+
+func dispatchDesktopSettings(sub string, rest []string) error {
+	if sub == "desktop-remote" {
+		return cli.DesktopRemoteCmd(rest)
+	}
+	if sub == "desktop-settings" {
+		return cli.DesktopSettingsCmd(rest)
+	}
+	return cli.DesktopAuthCmd(rest)
 }

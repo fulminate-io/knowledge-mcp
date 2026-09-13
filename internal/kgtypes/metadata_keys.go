@@ -32,6 +32,28 @@ const (
 	// as MetaKeySummaryFailureReason.
 	MetaKeyEmbedFailureReason = "embed_failure_reason"
 
+	// MetaKeySummaryFailureTerminal marks a summary failure as TERMINAL — one
+	// that a re-collect of byte-identical content cannot resolve, so the marker
+	// must survive that collect instead of being wiped and re-queued. Its value
+	// carries the reason, the node's composed size and the provider limit, for an
+	// operator reading the node by id with a metadata projection.
+	//
+	// It is a SEPARATE key rather than a value convention on
+	// MetaKeySummaryFailureReason, and it is written BESIDE that key rather than
+	// instead of it. Both halves are load-bearing. A separate key keeps the
+	// discrimination expressible as one jsonb presence test in the collect skip
+	// predicate and in the two blocked-set statements, with no value parsing in
+	// SQL; and keeping MetaKeySummaryFailureReason set is what leaves every OTHER
+	// reader of the marker — the four summary gap-scan sites and the status
+	// coverage count — working untouched. Writing this key ALONE would blind them
+	// and re-queue the node on every scan tick, which is the latch this marker
+	// exists to end, at a higher frequency.
+	//
+	// Only the oversize-input condition writes it today: a transient failure
+	// writes no marker at all, and every other terminal condition still heals
+	// through the re-land, which is the behaviour the collect self-heal exists for.
+	MetaKeySummaryFailureTerminal = "summary_failure_terminal"
+
 	// MetaKeySegmentShipFailureReason records that a node's binary vector was
 	// written but its client segment ship was DROPPED. It is deliberately a
 	// SEPARATE key from MetaKeyEmbedFailureReason: both rebuild scans exclude

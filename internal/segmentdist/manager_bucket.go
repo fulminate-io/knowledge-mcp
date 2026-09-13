@@ -37,6 +37,7 @@ func (m *Manager) ReplaceBucket(
 	ctx context.Context, gt kgtypes.GraphType, name string,
 	superseded []searchengine.ExternalID, docs []searchengine.Document,
 ) error {
+	m = m.ForDestination(ctx)
 	dm := m.managerFor(gt, name)
 	// The incoming documents are NOT yet resident on this path, so the corpus they
 	// will form is the resident set plus them.
@@ -129,6 +130,7 @@ func (m *Manager) ReplaceBucketFields(
 	ctx context.Context, gt kgtypes.GraphType, name string,
 	superseded []searchengine.ExternalID, docs []searchengine.Document,
 ) error {
+	m = m.ForDestination(ctx)
 	return m.replaceBucketFields(gt, name, superseded, docs, singleL2WriteAttempt, logAbortedReclaimOnly)
 }
 
@@ -258,6 +260,7 @@ func (m *Manager) replaceBucketFields(
 func (m *Manager) DeleteFromBuckets(
 	ctx context.Context, gt kgtypes.GraphType, name string, ids []searchengine.ExternalID,
 ) error {
+	m = m.ForDestination(ctx)
 	if len(ids) == 0 {
 		return nil
 	}

@@ -11,11 +11,10 @@ import (
 )
 
 // withHOME points os.UserHomeDir at dir for the duration of the test by
-// setting HOME (POSIX) and USERPROFILE (Windows). Restored on cleanup.
+// injecting the bootstrap home resolver. Restored on cleanup.
 func withHOME(t *testing.T, dir string) {
 	t.Helper()
-	t.Setenv("HOME", dir)
-	t.Setenv("USERPROFILE", dir)
+	setBootstrapHome(t, dir)
 }
 
 // TestPatchCodexToolTimeout_SetsAndPreserves: the patch lands

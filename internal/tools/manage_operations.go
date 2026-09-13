@@ -26,6 +26,7 @@ var manageOperations = []string{
 	"clear_llm_failures",
 	"delete_branch",
 	"drop_graph",
+	"graph_inventory",
 	"import_style_rules",
 	"link",
 	"list_branches",

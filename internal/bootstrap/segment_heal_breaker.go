@@ -3,10 +3,12 @@
 package bootstrap
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
@@ -52,8 +54,26 @@ const healBreakerTripThreshold = 2
 // usable (the map is lazily allocated under mu), so a test-built *client that never
 // runs constructClient participates without extra wiring. All state is guarded by mu.
 type segmentHealBreaker struct {
-	mu    sync.Mutex
-	state map[string]*healBreakerEntry
+	mu           sync.Mutex
+	state        map[string]*healBreakerEntry
+	destinations map[graphclient.Destination]*segmentHealBreaker
+}
+
+// ForDestination isolates repair latches for independently stored graph copies.
+func (b *segmentHealBreaker) ForDestination(ctx context.Context) *segmentHealBreaker {
+	d, bound := graphclient.StorageDestination(ctx)
+	if !bound {
+		return b
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.destinations == nil {
+		b.destinations = make(map[graphclient.Destination]*segmentHealBreaker)
+	}
+	if b.destinations[d] == nil {
+		b.destinations[d] = &segmentHealBreaker{}
+	}
+	return b.destinations[d]
 }
 
 // healBreakerEntry is one graph's breaker state: the consecutive no-progress streak,
@@ -201,6 +221,10 @@ func (b *segmentHealBreaker) LatchedSince(gt kgtypes.GraphType, name string) int
 func (c *client) classifyHealOutcome(
 	gt kgtypes.GraphType, name string, ran bool, scanned int,
 ) {
+	c.classifyStorageHealOutcome(context.Background(), gt, name, ran, scanned)
+}
+
+func (c *client) classifyStorageHealOutcome(ctx context.Context, gt kgtypes.GraphType, name string, ran bool, scanned int) {
 	if !ran {
 		// ran==false is a benign coalesce (another rebuild already in flight) or a
 		// nil-deps "pipeline not wired" no-op — neither is a heal outcome, so never record.
@@ -209,9 +233,9 @@ func (c *client) classifyHealOutcome(
 	if scanned == 0 {
 		slog.Warn("bootstrap: auto-heal ran but scanned 0 nodes with retrievable vectors — no-progress heal (shipped nothing, coverage cannot recover)",
 			"graph_type", gt, "name", name)
-		c.healBreaker.RecordNoProgress(gt, name)
+		c.healBreaker.ForDestination(ctx).RecordNoProgress(gt, name)
 		return
 	}
 	// scanned>0 — a real scan is progress.
-	c.healBreaker.RecordProgress(gt, name)
+	c.healBreaker.ForDestination(ctx).RecordProgress(gt, name)
 }

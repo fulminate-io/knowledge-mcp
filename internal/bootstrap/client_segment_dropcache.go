@@ -7,6 +7,8 @@
 package bootstrap
 
 import (
+	"context"
+
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/segmentdist"
 	"github.com/fulminate-io/knowledge-mcp/internal/tools"
@@ -34,6 +36,11 @@ type segmentCacheDropperAdapter struct {
 }
 
 var _ tools.SegmentCacheDropper = segmentCacheDropperAdapter{}
+
+// ForStorage scopes cache teardown to the graph copy removed by the server.
+func (a segmentCacheDropperAdapter) ForStorage(ctx context.Context) tools.SegmentCacheDropper {
+	return segmentCacheDropperAdapter{mgr: a.mgr.ForDestination(ctx)}
+}
 
 // DropGraphCache forwards to the Manager and copies the native report back
 // field-for-field into the tools-local report.

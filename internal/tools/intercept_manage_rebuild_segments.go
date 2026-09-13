@@ -186,7 +186,13 @@ func handleClientRebuildSegments(ctx context.Context, deps ClientDeps, a manageA
 	// disarm so the automatic embed-drain / reconcile heal resumes — the deliberate
 	// manual→clear→auto-refire re-arm (keyed on scanned>0, NOT built>0: built is
 	// routinely 0 on a legit sub-1024 heal).
-	deps.ClearHealLatch(kgtypes.GraphType(a.Graph), a.Name)
+	if scoped, ok := deps.(interface {
+		ClearStorageHealLatch(context.Context, kgtypes.GraphType, string)
+	}); ok {
+		scoped.ClearStorageHealLatch(ctx, kgtypes.GraphType(a.Graph), a.Name)
+	} else {
+		deps.ClearHealLatch(kgtypes.GraphType(a.Graph), a.Name)
+	}
 
 	// SHIPPED IS NOT PUBLISHED, and the operator-facing text is where that has to be
 	// said. A refused publish returns a NIL ERROR — the coverage gate skips a

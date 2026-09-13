@@ -66,6 +66,16 @@ func fetchAccounts(ctx context.Context) ([]accountEntry, error) {
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return nil, fmt.Errorf("could not read the accounts response: %w", err)
 	}
+	if parsed.Accounts == nil || parsed.Count != len(parsed.Accounts) {
+		return nil, errors.New("incomplete accounts response")
+	}
+	seen := make(map[string]bool, len(parsed.Accounts))
+	for _, account := range parsed.Accounts {
+		if account.ID == "" || account.Name == "" || account.Slug == "" || account.Role == "" || seen[account.ID] {
+			return nil, errors.New("invalid account membership")
+		}
+		seen[account.ID] = true
+	}
 	return parsed.Accounts, nil
 }
 

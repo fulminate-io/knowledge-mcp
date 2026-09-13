@@ -66,6 +66,13 @@ type ShipManager interface {
 // additive client-side build+ship.
 func (p *Pipeline) AttachSegmentManager(m ShipManager) { p.segmentMgr = m }
 
+// AttachStorageOwners binds non-contextual cursor and gate operations to the
+// same destination as the collector that invokes them.
+func (p *Pipeline) AttachStorageOwners(segments func(context.Context) ShipManager, collect func(context.Context, kgtypes.GraphType, string) (func() bool, func() uint64)) {
+	p.segmentManagerFor = segments
+	p.collectStateFor = collect
+}
+
 // AttachHealFactory wires the auto-heal closure factory. Called once at
 // construction (bootstrap) before Start, after AttachSegmentManager; nil-safe —
 // leaving it unset means RegisterGraph builds a nil per-collector heal closure
@@ -100,6 +107,15 @@ func (p *Pipeline) AttachBalanceFactory(fn func(kgtypes.GraphType, string) func(
 // its collector on the next refresh, so the phantom would come back — which is
 // why bootstrap wires it rather than treating it as optional.
 func (p *Pipeline) AttachGraphEvictor(fn func(gt kgtypes.GraphType, name, reason string)) {
+	if fn == nil {
+		p.evictGraph = nil
+		return
+	}
+	p.evictGraph = func(_ context.Context, gt kgtypes.GraphType, name, reason string) { fn(gt, name, reason) }
+}
+
+// AttachStorageGraphEvictor keeps durable-not-found eviction in its own store.
+func (p *Pipeline) AttachStorageGraphEvictor(fn func(context.Context, kgtypes.GraphType, string, string)) {
 	p.evictGraph = fn
 }
 

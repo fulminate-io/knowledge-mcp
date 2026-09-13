@@ -20,57 +20,33 @@ import (
 // `knowledge login`") rather than the raw error string.
 var ErrNoBackend = errors.New("graphclient: no backend available — run `knowledge install` to start the local server or `knowledge login` for Fulminate Cloud")
 
-// Router dispatches EngineService RPCs (Execute, Index, MetadataStats,
-// ExportGraph, Stats) to either a local *GraphClient on 127.0.0.1 or a
-// lazily-constructed cloud *GraphClient, per the live auth state cached in
-// the embedded *auth.AuthState.
-//
-// Per-call dispatch contract: every forwarder method calls pick(ctx) at
-// invocation time (not at construction time, not at type-assertion time).
-// A user can `knowledge login` mid-MCP-session and the next forwarder call
-// (after the AuthState TTL expires) routes to cloud without a process restart.
-//
-// Lazy cloud construction: the cloud *GraphClient is built once under mu
-// the first time pick() sees AuthState=true, then reused for every
-// subsequent cloud-routed call. The constructor reads tokenSource on
-// every RPC (via bearerRoundTripper.RoundTrip), so token refreshes take
-// effect transparently.
-//
-// Zero local + zero auth: ErrNoBackend is returned without dispatching.
-//
-// Local() accessor: the three callers that MUST bypass routing call
-// Router.Local() and operate on the bare local *GraphClient — sync push (source
-// bytes always come from the local graph), sync list, and sync pull (the
-// OverwriteGraph apply target is always the local .bin). The post-collect linker
-// and postpopulate are NOT local-only; they route through the cloud-aware
-// GraphCaller. May return nil for cloud-first users without a local install;
-// those callsites must nil-check and surface a "no local server" error
-// appropriately.
+// Router dispatches graph operations to a request-bound storage destination.
+// Unbound requests default to cloud while signed in and local otherwise.
+// Bound cloud clients retain the selected account and reject account changes;
+// collection and queued work keep that binding for their entire operation.
+// Local is available independently for explicit local requests and sync.
 type Router struct {
 	local       *GraphClient
 	cloudURL    string
 	tokenSource auth.TokenSource
 	authState   *auth.AuthState
 
-	// machineAuth, when true, forces cloud selection unconditionally —
-	// independent of the keychain auth state. It is set when the client was
-	// started with a machine bearer token (the headless, non-interactive auth
-	// path): such a client routes every op to cloud and runs with no local
-	// server, exactly like a logged-in interactive client, but without any
-	// keychain involvement. Reached only via NewRouterWithMachineAuth.
+	// machineAuth selects the cloud default without consulting the keychain.
+	// Explicitly bound local requests still use the configured local client.
 	machineAuth bool
 
-	mu    sync.Mutex
-	cloud *GraphClient
+	mu         sync.Mutex
+	cloud      *GraphClient
+	boundCloud map[Destination]*GraphClient
 	// admitGraph records a user interaction with a concrete graph instance into
 	// the working set. Installed by AttachWorkingSet; nil until then, and a nil
 	// admitter records nothing. See router_admission.go.
-	admitGraph func(gt kgtypes.GraphType, name, reason string)
+	admitGraph            func(gt kgtypes.GraphType, name, reason string)
+	admitDestinationGraph func(context.Context, kgtypes.GraphType, string, string)
 }
 
-// CloseIdleConnections releases the pooled connections of BOTH clients the Router
-// can hold: the local one it was constructed with, and the cloud one it builds
-// lazily on first cloud routing.
+// CloseIdleConnections releases pooled connections for the local client and
+// every lazily constructed cloud account client.
 //
 // THE LAZY CLOUD CLIENT IS THE REASON THIS EXISTS. A caller holding only the local
 // *GraphClient it passed to NewRouter cannot reach the cloud client at all — the
@@ -92,11 +68,14 @@ func (r *Router) CloseIdleConnections() {
 	r.local.CloseIdleConnections()
 	r.mu.Lock()
 	cloud := r.cloud
+	for _, client := range r.boundCloud {
+		client.CloseIdleConnections()
+	}
 	r.mu.Unlock()
 	cloud.CloseIdleConnections()
 }
 
-// Close tears down the connections of BOTH clients the Router can hold, whether
+// Close tears down the connections of every client the Router holds, whether
 // their transports consider them idle or not — the router-shaped counterpart of
 // GraphClient.Close, and for the same reason: a caller discarding a router wants
 // its connections gone as a fact rather than as the outcome of a race with the
@@ -111,6 +90,9 @@ func (r *Router) Close() {
 	r.local.Close()
 	r.mu.Lock()
 	cloud := r.cloud
+	for _, client := range r.boundCloud {
+		client.Close()
+	}
 	r.mu.Unlock()
 	cloud.Close()
 }
@@ -168,13 +150,8 @@ func (r *Router) Local() *GraphClient {
 	return r.local
 }
 
-// IngestClient is the per-call-routed IngestService picker. It resolves the
-// backend *GraphClient via pick(ctx) — cloud when logged-in, local
-// otherwise — and returns that backend's IngestServiceClient (client.go:88).
-// The collect UploadSink invokes this per CollectChunk/Finalize so a
-// mid-session login flip re-routes the next chunk without a restart.
-// Mirrors the Execute/Stats forwarder shape, but returns the IngestService
-// client rather than driving an RPC (the sink owns the CollectChunk flow).
+// IngestClient returns the request-bound backend's ingestion client. A collect
+// retains its destination across chunks, including after authentication changes.
 func (r *Router) IngestClient(ctx context.Context) (knowledgev1connect.IngestServiceClient, error) {
 	gc, err := r.pick(ctx)
 	if err != nil {
@@ -197,32 +174,33 @@ func (r *Router) LoggedIn(ctx context.Context) bool {
 	return r.machineAuth || (r.authState != nil && r.authState.IsLoggedIn(ctx))
 }
 
-// Backend is the per-call-routed concrete-backend resolver. It returns the
-// *GraphClient that should service this call — cloud when logged-in (built
-// lazily via ensureCloud), local otherwise, ErrNoBackend when neither — by
-// delegating to the same pick(ctx) the EngineService forwarders use. The
-// client-side LLM pipeline holds a routedWireClient over this so each scan +
-// writeback binds the CURRENT backend; the per-graph collector resolves one
-// concrete backend here at construction and stamps it on every emitted work
-// item. *GraphClient satisfies pipeline.WireClient (PipelineScan + Execute),
-// so the result is usable as a WireClient directly. Re-picks per call so a
-// mid-session login flip re-routes the next scan/write without a restart.
+// Backend resolves a concrete client for the request's destination. Unbound
+// requests select the current default; bound background work retains its account.
 func (r *Router) Backend(ctx context.Context) (*GraphClient, error) {
+	bound, err := r.BindStorage(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	ctx = bound
 	return r.pick(ctx)
 }
 
-// pick returns the *GraphClient that should service this call.
-//   - machine-auth OR AuthState=true → cloud (built lazily on first cloud call).
-//   - otherwise, local non-nil        → local.
-//   - neither                         → ErrNoBackend.
-//
-// Cloud selection fires when EITHER a machine bearer token was supplied at
-// construction (headless auth — fixed) OR the keychain reports a live login
-// (set by `knowledge login`).
-//
-// pick must be called per-RPC; forwarders MUST NOT cache the *GraphClient
-// across calls or the mid-session login swap would not land.
+// pick honors a bound destination first, then the current authenticated default.
+// It returns ErrNoBackend when the selected local backend is unavailable.
 func (r *Router) pick(ctx context.Context) (*GraphClient, error) {
+	if d, ok := StorageDestination(ctx); ok {
+		switch d.Storage {
+		case "local":
+			if r.local == nil {
+				return nil, ErrNoBackend
+			}
+			return r.local, nil
+		case "cloud":
+			return r.cloudForDestination(d), nil
+		default:
+			return nil, ErrNoBackend
+		}
+	}
 	if r.machineAuth || (r.authState != nil && r.authState.IsLoggedIn(ctx)) {
 		return r.ensureCloud(), nil
 	}
@@ -256,12 +234,36 @@ func (r *Router) Execute(
 	ctx context.Context,
 	req *knowledgev1.ExecuteRequest,
 ) (*knowledgev1.ExecuteResponse, error) {
+	// Response addresses belong to this read, never to a parent proxy lookup.
+	ctx = context.WithValue(ctx, responseReferenceKey{}, nil)
+	if response, handled, err := r.searchCatalog(ctx, req); handled {
+		return response, err
+	}
+	if response, handled, err := r.executeReferenceRead(ctx, req); handled {
+		return response, err
+	}
+	if response, handled, err := r.executeReferenceMutation(ctx, req); handled {
+		return response, err
+	}
+	ctx, req, refErr := resolveRequestReferences(ctx, req)
+	if refErr != nil {
+		return nil, refErr
+	}
 	// SELECTOR VALIDATION COMES FIRST — before the pick and before the wire
 	// call. A target naming a family this binary cannot honor is bad input, so
 	// it is refused at the boundary rather than after a backend has answered and
 	// its response has been thrown away.
 	gt, instance, err := resolveAdmissionTarget(req)
 	if err != nil {
+		return nil, err
+	}
+	if err := r.validateStorageRetarget(ctx, req); err != nil {
+		return nil, err
+	}
+	if err := r.validateStorageRelationships(ctx, req); err != nil {
+		return nil, err
+	}
+	if err := r.materializeStorageTargets(ctx, req); err != nil {
 		return nil, err
 	}
 	gc, err := r.pick(ctx)
@@ -272,6 +274,12 @@ func (r *Router) Execute(
 	if err != nil {
 		return nil, err
 	}
+	if req.GetQuery() != nil {
+		if err := r.prepareStorageResponse(ctx, resp); err != nil {
+			return nil, err
+		}
+	}
+
 	// ADMISSION FOLLOWS A SUCCESSFUL DISPATCH, AND THE ORDERING IS THE POINT.
 	// Admission is not an existence check, so recording it BEFORE the call
 	// admitted a read of a graph that does not exist exactly as it admitted a

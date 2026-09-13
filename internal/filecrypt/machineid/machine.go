@@ -80,9 +80,11 @@ func MachineID() string {
 	return cachedID
 }
 
+// replication: process-local by design — the once latch caches this machine identity, not shared graph work.
 var (
-	cachedOnce sync.Once
-	cachedID   string
+	cachedOnce  sync.Once
+	cachedID    string
+	userHomeDir = os.UserHomeDir
 )
 
 // resolveAndCache walks the resolution chain and returns a 16-char hex ID.
@@ -108,7 +110,7 @@ func resolveAndCache() string {
 // Empty string when the user's home directory cannot be resolved
 // (extremely unusual; signals a broken environment).
 func cachePath() string {
-	home, err := os.UserHomeDir()
+	home, err := userHomeDir()
 	if err != nil {
 		return ""
 	}

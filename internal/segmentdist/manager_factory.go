@@ -285,6 +285,10 @@ func (m *Manager) bm25ManagerFor(gt kgtypes.GraphType, name string) *distManager
 // left as they are so a post-Close read still reports what this process built.
 func (m *Manager) Close() {
 	m.mu.Lock()
+	children := make([]*Manager, 0, len(m.storageManagers))
+	for _, child := range m.storageManagers {
+		children = append(children, child)
+	}
 	hnswEngines := make([]*searchengine.SegmentedIndex[[]byte, struct{}], 0, len(m.managers))
 	for _, gate := range m.managers {
 		hnswEngines = append(hnswEngines, gate.dm.engine)
@@ -294,6 +298,9 @@ func (m *Manager) Close() {
 		bm25Engines = append(bm25Engines, gate.dm.engine)
 	}
 	m.mu.Unlock()
+	for _, child := range children {
+		child.Close()
+	}
 
 	// Off the lock: Close takes no lock of this package's, but holding m.mu across
 	// it would serialize shutdown against any construction still in flight.

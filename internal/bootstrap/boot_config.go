@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"os"
 	"path/filepath"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/config"
@@ -84,7 +83,7 @@ func loadBootConfig(f Config) {
 // defaultConfigPath returns the path to ~/.knowledge/config, mirroring
 // cmd/knowledge-server/server.go::loadConfigForListener.
 func defaultConfigPath() (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := bootstrapHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}

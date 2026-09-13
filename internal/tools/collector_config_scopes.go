@@ -17,6 +17,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collectorconfig"
 )
@@ -59,8 +61,20 @@ func collectorLoader(ctx context.Context, deps ClientDeps) (collectorconfig.Load
 	if collectorUserConfigErr != nil {
 		return collectorconfig.Loader{}, collectorUserConfigErr
 	}
+	cwd := effectiveCwd(ctx, deps)
+	projectPath := ""
+	if collectorRuntimeBoundary != "" {
+		relative, err := filepath.Rel(collectorRuntimeBoundary, cwd)
+		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			projectPath = collectorconfig.FindProjectPathWithin(cwd, collectorRuntimeBoundary)
+		} else {
+			projectPath = collectorconfig.FindProjectPath(cwd)
+		}
+	} else {
+		projectPath = collectorconfig.FindProjectPath(cwd)
+	}
 	return collectorconfig.Loader{
 		UserPath:    collectorUserConfigPath,
-		ProjectPath: collectorconfig.FindProjectPath(effectiveCwd(ctx, deps)),
+		ProjectPath: projectPath,
 	}, nil
 }

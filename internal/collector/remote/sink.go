@@ -461,9 +461,6 @@ func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, resu
 		// whose non-empty state FAILS the collect client-side, so the wire
 		// assertion and the client's own refusal cannot disagree.
 		WalkComplete: result.WalkComplete,
-		// Rides Finalize ONLY: it decides a server-side guard, not anything about
-		// what the chunks carry.
-		DeletionRatioOverride: collectDeletionRatioOverride(),
 	})
 	finStart := time.Now()
 	// Finalize does the epoch GC and promotion work, a different load shape from
@@ -474,6 +471,12 @@ func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, resu
 	}
 	slog.Debug("remote sink: finalize accepted", "graph", result.GraphName, "branch", result.CurrentBranch,
 		"epoch", epoch, "dur", time.Since(finStart).Round(time.Millisecond))
+	// THE SERVER'S ANSWER ABOUT THE DELETION PHASE IS READ, NOT DISCARDED. A
+	// refused deletion is not a failed collect — every row this collect uploaded
+	// landed — so it is reported rather than returned as an error, and reported at
+	// Error rather than logged at Debug beside "accepted": the graph is keeping
+	// rows the client named as gone, which is a state an operator has to act on.
+	reportDeletionRefusal(ctx, result, finReq.Msg, finResp.Msg.GetDeletionRefusedReason())
 	tailState, tailErr := awaitFinalizeTail(ctx, client, finResp.Msg.GetFinalizeId(), result.GraphName, finStart)
 	if tailErr != nil {
 		return tailErr

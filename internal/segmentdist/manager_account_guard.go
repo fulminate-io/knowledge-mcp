@@ -49,6 +49,9 @@ var accountSelectionID = func(ctx context.Context) string {
 // the account this Manager was constructed under. Nil in every other case,
 // including when neither is set.
 func (m *Manager) checkAccountBinding(ctx context.Context) error {
+	if m.destination != nil && m.destination.Storage == "local" {
+		return nil
+	}
 	live := accountSelectionID(ctx)
 	if live == m.boundAccountID {
 		return nil

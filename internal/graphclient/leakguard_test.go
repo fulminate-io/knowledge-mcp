@@ -8,8 +8,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/require"
@@ -19,6 +22,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
+	"github.com/fulminate-io/knowledge-mcp/internal/auth"
 )
 
 // closeIdleOnCleanup registers a teardown that closes the client's HTTP/2
@@ -145,6 +149,30 @@ func TestNewOwnedH2CClient_CleanupClosesWhatItDialed(t *testing.T) {
 //
 // The allowlist is deliberately EMPTY. An entry added here later must name the
 // goroutine and say why its lifetime legitimately exceeds the test that started it.
+//
+// IT ALSO PINS THE PACKAGE'S ACCOUNT SELECTION TO AN EMPTY SCRATCH CONFIG. The
+// router tests build cloud clients against stub gateways that know no account.
+// With the selection read from the operator's own config, every cloud request
+// carried that account and the stub rejected it, so the package went red on a
+// machine whose selected account the logged-in user is not a member of, and
+// green everywhere else. A suite that reads the home directory takes its
+// directories as parameters; here the parameter is the process-wide selection,
+// installed once for the package. A test that needs a selection installs its
+// own through installSelection, which restores this one on cleanup.
 func TestMain(m *testing.M) {
-	goleak.VerifyTestMain(m)
+	dir, err := os.MkdirTemp("", "graphclient-selection-")
+	if err != nil {
+		panic(err)
+	}
+	cfgPath := filepath.Join(dir, "config")
+	body := "[default]\nprovider = \"anthropic\"\nmodel = \"claude-haiku-5\"\n"
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		panic(err)
+	}
+	restore := auth.SetSelectedAccountForTest(auth.NewAccountSelection(cfgPath, time.Second))
+	goleak.VerifyTestMain(m, goleak.Cleanup(func(code int) {
+		restore()
+		_ = os.RemoveAll(dir)
+		os.Exit(code)
+	}))
 }

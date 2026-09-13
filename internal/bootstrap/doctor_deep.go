@@ -10,7 +10,6 @@ package bootstrap
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -27,7 +26,7 @@ import (
 func checkProvidersDeep(configFile string) checkResult {
 	path := configFile
 	if path == "" {
-		home, _ := os.UserHomeDir()
+		home, _ := bootstrapHomeDir()
 		path = filepath.Join(home, ".knowledge", "config")
 	}
 	cfg, err := config.Load(path)

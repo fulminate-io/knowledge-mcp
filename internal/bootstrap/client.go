@@ -39,10 +39,12 @@ type toolSchema struct {
 // no graph store, no tool handler, no propagation loop (those live in the
 // server binary).
 type client struct {
-	rootDir    string // project root (--root); the ast intercept walks source files under it locally
-	rootDirSet bool   // whether --root was explicitly set (vs the "." default) — gates the ast walk-root fail-loud guard
-	port       int    // TCP port the server listens on
-	version    string // binary version (reported in MCP initialize)
+	runtimeConfigFile string // explicit daemon config used by diagnostics
+	runtimeStateDir   string // explicit installation-local metadata; empty keeps standalone defaults
+	rootDir           string // project root (--root); the ast intercept walks source files under it locally
+	rootDirSet        bool   // whether --root was explicitly set (vs the "." default) — gates the ast walk-root fail-loud guard
+	port              int    // TCP port the server listens on
+	version           string // binary version (reported in MCP initialize)
 	// local is the connect-go client to the LOCAL graph server (127.0.0.1).
 	// Replaces the prior `client` field as part of the routing rework. The
 	// genuinely always-local callers (sync push, sync list) reach it via the

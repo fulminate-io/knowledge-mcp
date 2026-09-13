@@ -5,6 +5,8 @@ package pipeline
 import (
 	"time"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
@@ -30,9 +32,10 @@ type EmbedItem struct {
 // the next discovery cycle can re-queue transient-failed items. May be nil
 // for callers (e.g. tests) that don't track in-flight state.
 type SummaryWork struct {
-	GraphType kgtypes.GraphType
-	GraphName string
-	NodeID    string
+	Destination graphclient.Destination
+	GraphType   kgtypes.GraphType
+	GraphName   string
+	NodeID      string
 	// SummarizeText is the server-composed chunkInput JSON envelope
 	// (item.GetSummarizeText()) the worker feeds straight to the
 	// summarizer — it no longer re-fetches the node or composes the envelope
@@ -59,11 +62,12 @@ type SummaryWork struct {
 // markStuckEmbedItems path can stamp the durable failure marker). Release
 // semantics match SummaryWork.
 type EmbedWork struct {
-	GraphType kgtypes.GraphType
-	GraphName string
-	NodeID    string
-	EmbedText string // server-composed embed input (item.GetEmbedText()); may be empty
-	Release   chan<- string
+	Destination graphclient.Destination
+	GraphType   kgtypes.GraphType
+	GraphName   string
+	NodeID      string
+	EmbedText   string // server-composed embed input (item.GetEmbedText()); may be empty
+	Release     chan<- string
 	// Backend is the CONCRETE backend the originating collector scanned this
 	// item from. See SummaryWork.Backend — same login-routed-writeback contract
 	// on the embed axis. Constant per collector; may be nil for collector-less

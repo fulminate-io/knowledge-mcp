@@ -36,6 +36,7 @@ import (
 
 	"go.uber.org/goleak"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/auth"
 	"github.com/fulminate-io/knowledge-mcp/internal/config"
 )
 
@@ -74,6 +75,9 @@ var providerKeyEnv = []string{
 // write — the operator's real ~/.knowledge/collectors.json. Every test that
 // needs entries repoints it again at its own t.TempDir().
 func TestMain(m *testing.M) {
+	// An empty fixture selection must not inherit the operator's account or
+	// latch fake gateway refusals against it for the rest of the suite.
+	auth.SetSelectedAccountForTest(auth.NewAccountSelection(os.DevNull, 0))
 	for _, k := range providerKeyEnv {
 		if err := os.Unsetenv(k); err != nil {
 			panic("clearing " + k + " for the test suite: " + err.Error())

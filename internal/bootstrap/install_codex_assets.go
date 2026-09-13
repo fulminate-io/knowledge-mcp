@@ -165,7 +165,7 @@ func runInstallCodexAssets(args []string) error {
 // default to ~/.agents/skills (skills) and ~/.codex/agents (agents).
 // Non-empty flags are tilde-expanded via the shared expandTilde helper.
 func resolveCodexDest(skillsFlag, agentsFlag string) (codexDest, error) {
-	home, err := os.UserHomeDir()
+	home, err := bootstrapHomeDir()
 	if err != nil {
 		return codexDest{}, fmt.Errorf("resolve home directory: %w", err)
 	}

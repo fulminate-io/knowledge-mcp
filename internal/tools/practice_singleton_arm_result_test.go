@@ -105,8 +105,8 @@ func TestClearLLMFailures_PracticeWriteTargetsCarryNoInstanceField(t *testing.T)
 	}
 	// A ZERO NEEDS A CONTROL: without this the loop above passes vacuously on a
 	// sweep that never reached practice at all.
-	require.Equal(t, 2, practiceWrites,
-		"the practice graph is swept by default and takes one predicate UPDATE per failure marker")
+	require.Equal(t, len(llmFailureKeys), practiceWrites,
+		"the practice graph is swept by default and takes one predicate UPDATE per marker key in llmFailureKeys")
 }
 
 // TestPromoteMetadata_PracticeMigrationTargetCarriesNoInstanceField is the

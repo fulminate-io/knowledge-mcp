@@ -75,6 +75,9 @@ func ResolveAndLink(ctx context.Context, gc GraphCaller, ex render.Executor, req
 	if gc == nil || ex == nil {
 		return false, kgtools.ToolResult{}, fmt.Errorf("crossgraph: graph client / Execute seam unavailable")
 	}
+	if handled, result, err := resolveStorageLink(ctx, ex, req); handled {
+		return handled, result, err
+	}
 	target := req.TargetGraph
 	if target == "" {
 		target = "knowledge"

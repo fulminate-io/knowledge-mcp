@@ -46,6 +46,16 @@ func (r *Router) AttachWorkingSet(admit func(gt kgtypes.GraphType, name, reason 
 	r.admitGraph = admit
 }
 
+// AttachDestinationWorkingSet installs the storage-aware admission recorder.
+func (r *Router) AttachDestinationWorkingSet(admit func(context.Context, kgtypes.GraphType, string, string)) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.admitDestinationGraph = admit
+}
+
 // recordAdmission admits req's target graph when BOTH halves of the gate agree:
 //
 //  1. the ctx-stamped operation is one that may admit at all. An unstamped ctx
@@ -97,11 +107,16 @@ func (r *Router) recordAdmission(ctx context.Context, gt kgtypes.GraphType, name
 	}
 	r.mu.Lock()
 	admit := r.admitGraph
+	admitDestination := r.admitDestinationGraph
 	r.mu.Unlock()
-	if admit == nil {
+	if admit == nil && admitDestination == nil {
 		return
 	}
 	if _, ok := workingset.Normalize(gt, name); !ok {
+		return
+	}
+	if admitDestination != nil {
+		admitDestination(ctx, gt, name, string(op))
 		return
 	}
 	admit(gt, name, string(op))

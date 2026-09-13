@@ -47,6 +47,8 @@ import (
 type Ref struct {
 	GraphType kgtypes.GraphType
 	Name      string
+	Storage   string
+	Account   string
 }
 
 // admission records why and when a Ref entered the set. The reason is the
@@ -97,6 +99,19 @@ func (s *Set) Admit(gt kgtypes.GraphType, name, reason string) bool {
 	if !ok {
 		return false
 	}
+	return s.AdmitRef(ref, reason)
+}
+
+// AdmitRef records a graph without discarding its storage or account identity.
+func (s *Set) AdmitRef(ref Ref, reason string) bool {
+	if s == nil {
+		return false
+	}
+	normalized, ok := Normalize(ref.GraphType, ref.Name)
+	if !ok {
+		return false
+	}
+	ref.Name = normalized.Name
 	s.mu.Lock()
 	if _, exists := s.members[ref]; exists {
 		s.mu.Unlock()
@@ -136,6 +151,19 @@ func (s *Set) Remove(gt kgtypes.GraphType, name string) bool {
 	if !ok {
 		return false
 	}
+	return s.RemoveRef(ref)
+}
+
+// RemoveRef forgets exactly one storage copy.
+func (s *Set) RemoveRef(ref Ref) bool {
+	if s == nil {
+		return false
+	}
+	normalized, ok := Normalize(ref.GraphType, ref.Name)
+	if !ok {
+		return false
+	}
+	ref.Name = normalized.Name
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.members[ref]; !exists {
@@ -156,6 +184,19 @@ func (s *Set) Has(gt kgtypes.GraphType, name string) bool {
 	if !ok {
 		return false
 	}
+	return s.HasRef(ref)
+}
+
+// HasRef tests membership for one storage copy.
+func (s *Set) HasRef(ref Ref) bool {
+	if s == nil {
+		return false
+	}
+	normalized, ok := Normalize(ref.GraphType, ref.Name)
+	if !ok {
+		return false
+	}
+	ref.Name = normalized.Name
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, exists := s.members[ref]
@@ -178,6 +219,12 @@ func (s *Set) Members() []Ref {
 	s.mu.Unlock()
 
 	sort.Slice(out, func(i, j int) bool {
+		if out[i].Storage != out[j].Storage {
+			return out[i].Storage < out[j].Storage
+		}
+		if out[i].Account != out[j].Account {
+			return out[i].Account < out[j].Account
+		}
 		if out[i].GraphType != out[j].GraphType {
 			return out[i].GraphType < out[j].GraphType
 		}

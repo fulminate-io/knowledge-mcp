@@ -73,6 +73,19 @@ func (c *client) handleToolsList(req kgtools.JSONRPCRequest) *kgtools.JSONRPCRes
 	tools := make([]mcpToolJSON, len(schemas))
 	for i, s := range schemas {
 		tools[i] = mcpToolJSON(s)
+		var schema kgtools.InputSchema
+		if err := json.Unmarshal(s.InputSchema, &schema); err != nil {
+			return &kgtools.JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &kgtools.RPCError{Code: -32603, Message: err.Error()}}
+		}
+		if schema.Properties == nil {
+			schema.Properties = make(map[string]kgtools.Property)
+		}
+		schema.Properties["storage"] = kgtools.Property{Type: "string", Enum: []string{"local", "cloud"}, Description: "Optional duplicate disambiguation. Signed-in target operations default to cloud; account-free operations use local storage. Use local to address a local duplicate. Search without storage searches both configured stores. Returned kgref references can be reused as node IDs."}
+		encoded, err := json.Marshal(schema)
+		if err != nil {
+			return &kgtools.JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &kgtools.RPCError{Code: -32603, Message: err.Error()}}
+		}
+		tools[i].InputSchema = encoded
 	}
 	return &kgtools.JSONRPCResponse{
 		JSONRPC: "2.0",

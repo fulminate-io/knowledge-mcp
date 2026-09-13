@@ -70,7 +70,7 @@ func stubSystemdAvailable(t *testing.T, avail bool) {
 func stubServiceBins(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setBootstrapHome(t, home)
 	bin := filepath.Join(home, "bin")
 	if err := os.MkdirAll(bin, 0o750); err != nil {
 		t.Fatalf("mkdir bin: %v", err)

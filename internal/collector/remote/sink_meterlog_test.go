@@ -85,6 +85,7 @@ func installRecorder(t *testing.T) *recordingHandler {
 // before this change a chunk that exhausted its budget returned with no meter
 // reading at all, which is precisely the event the instrument exists to explain.
 func TestChunkLog_MeterDeltaOnSendAndFailure(t *testing.T) {
+	isolateDiscoveryStore(t)
 	t.Run("success carries the delta on the chunk-sent record", func(t *testing.T) {
 		rec := installRecorder(t)
 		sink := NewUploadSink(startScriptedIngest(t, &scriptedIngest{}))
@@ -133,6 +134,7 @@ func TestChunkLog_MeterDeltaOnSendAndFailure(t *testing.T) {
 // daemon's default level would swallow it, is a real defect and both are shapes
 // a substring search over rendered output would miss.
 func TestClientSideStallLog_EmitsLoudLine(t *testing.T) {
+	isolateDiscoveryStore(t)
 	rec := installRecorder(t)
 
 	// MEASURED pair: 15.3s elapsed, 6.3ms inside Write — the reproduced

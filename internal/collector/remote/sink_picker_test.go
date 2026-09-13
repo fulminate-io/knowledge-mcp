@@ -104,6 +104,7 @@ func startCountingIngest(t *testing.T) (knowledgev1connect.IngestServiceClient, 
 // re-resolves the IngestService client per call (mid-session login-flip at the
 // sink layer), never caching the resolved client.
 func TestUploadSink_PickerRepicksPerCall(t *testing.T) {
+	isolateDiscoveryStore(t)
 	localClient, localEng := startCountingIngest(t)
 	cloudClient, cloudEng := startCountingIngest(t)
 

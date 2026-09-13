@@ -3,6 +3,8 @@
 package pipeline
 
 import (
+	"context"
+
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
@@ -63,13 +65,22 @@ func (p *Pipeline) SetActiveSummarizer(fn func() string) {
 // Called once at wiring time, before the poll loop starts. Takes genMu because the
 // poll reads the field.
 func (p *Pipeline) SetSegmentNudger(fn func(gt kgtypes.GraphType, name string)) {
+	if fn == nil {
+		p.SetStorageSegmentNudger(nil)
+		return
+	}
+	p.SetStorageSegmentNudger(func(_ context.Context, gt kgtypes.GraphType, name string) { fn(gt, name) })
+}
+
+// SetStorageSegmentNudger preserves the polled destination through the wake.
+func (p *Pipeline) SetStorageSegmentNudger(fn func(context.Context, kgtypes.GraphType, string)) {
 	p.genMu.Lock()
 	defer p.genMu.Unlock()
 	p.segmentNudge = fn
 }
 
 // segmentNudger reads the installed recorder under genMu.
-func (p *Pipeline) segmentNudger() func(gt kgtypes.GraphType, name string) {
+func (p *Pipeline) segmentNudger() func(context.Context, kgtypes.GraphType, string) {
 	p.genMu.Lock()
 	defer p.genMu.Unlock()
 	return p.segmentNudge

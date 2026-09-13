@@ -273,7 +273,7 @@ func resolveClaudeDest(flagDest string) (string, error) {
 	if flagDest != "" {
 		return expandTilde(flagDest), nil
 	}
-	home, err := os.UserHomeDir()
+	home, err := bootstrapHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
@@ -288,7 +288,7 @@ func resolveClaudeMD(flagDest string) (string, error) {
 	if flagDest != "" {
 		return expandTilde(flagDest), nil
 	}
-	home, err := os.UserHomeDir()
+	home, err := bootstrapHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
@@ -304,7 +304,7 @@ func resolveClaudeSettings(flagDest string) (string, error) {
 	if flagDest != "" {
 		return expandTilde(flagDest), nil
 	}
-	home, err := os.UserHomeDir()
+	home, err := bootstrapHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}

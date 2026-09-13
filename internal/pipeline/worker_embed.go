@@ -98,7 +98,7 @@ func groupEmbedByGraph(batch []EmbedWork) map[groupKey][]EmbedWork {
 	groups := make(map[groupKey][]EmbedWork)
 	for _, w := range batch {
 		k := groupKey{
-			Key:     graphKey{GraphType: w.GraphType, GraphName: w.GraphName},
+			Key:     graphKey{GraphType: w.GraphType, GraphName: w.GraphName, Destination: w.Destination},
 			Backend: w.Backend,
 		}
 		groups[k] = append(groups[k], w)

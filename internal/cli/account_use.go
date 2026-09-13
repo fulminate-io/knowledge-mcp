@@ -83,7 +83,7 @@ func runAccountUse(ctx context.Context, out io.Writer, arg string) error {
 		return fmt.Errorf("account %q has no active subscription, so it has no cloud graph access at all — subscribe from the Fulminate billing settings for that account, or pick an account that already has one", matched.Slug)
 	}
 
-	path, err := config.DefaultPath()
+	path, err := authConfigPath()
 	if err != nil {
 		return fmt.Errorf("knowledge account use: %w", err)
 	}

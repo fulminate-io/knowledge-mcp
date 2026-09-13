@@ -92,6 +92,8 @@ var spawnImporters = map[string]string{
 	"internal/bootstrap/lifecycle.go":                  "starts the local daemon this CLI manages",
 	"internal/bootstrap/lifecycle_subcommand.go":       "reads launchctl list to report the managed service's state",
 	"internal/bootstrap/mcp_register.go":               "resolves this CLI's own binary to write into the MCP client registration",
+	"internal/bootstrap/service_manager.go":            "runs launchctl, systemctl, brew, lsof or netstat for Knowledge lifecycle management, and probes installed Knowledge binary capabilities",
+	"internal/bootstrap/service_runtime.go":            "starts the locally resolved Knowledge client or backend for the service subcommand; no registered collector record supplies the command",
 	"internal/bootstrap/setup.go":                      "looks up the operator's installed agent CLIs during setup",
 	"internal/bootstrap/setup_restart.go":              "reads lsof and systemctl to find and restart the running daemon",
 	"internal/bootstrap/setup_service.go":              "drives launchctl / systemctl / loginctl for the managed service definition",
@@ -105,15 +107,17 @@ var spawnImporters = map[string]string{
 	"internal/llm/codexcli/codexcli.go":                "resolves the operator's own installed agent CLI on PATH",
 	"internal/llm/codexcli/subprocess.go":              "runs the operator's own installed agent CLI",
 
-	// THESE THREE SPAWN NOTHING AT ALL, and they are on the list because the
+	// THESE FILES SPAWN NOTHING AT ALL, and they are on the list because the
 	// census is an IMPORT census: importing the package is the thing it can
 	// see, and a file that only names a sentinel or a function value imports it
 	// exactly as a file that runs a command does. Listing them with what they
 	// actually do is the honest form — pretending the import implies a spawn
 	// would make the list say something untrue about them.
-	"internal/auth/storage_select.go":   "compares an error against exec.ErrNotFound; spawns nothing",
-	"internal/bootstrap/subcommands.go": "unwraps an *exec.ExitError to propagate a child's exit code; spawns nothing itself",
-	"internal/config/autodetect.go":     "takes exec.LookPath as an injectable function value for PATH detection; spawns nothing",
+	"internal/auth/storage_select.go":               "compares an error against exec.ErrNotFound; spawns nothing",
+	"internal/bootstrap/subcommands.go":             "unwraps an *exec.ExitError to propagate a child's exit code; spawns nothing itself",
+	"internal/config/autodetect.go":                 "takes exec.LookPath as an injectable function value for PATH detection; spawns nothing",
+	"internal/bootstrap/service_process_unix.go":    "names *exec.Cmd in the Unix service configuration hook; spawns nothing itself",
+	"internal/bootstrap/service_process_windows.go": "sets *exec.Cmd creation flags for independent Knowledge sessions on Windows; spawns nothing itself",
 }
 
 func TestSpawningPackagesAreImportedOnlyWhereTheyBelong(t *testing.T) {

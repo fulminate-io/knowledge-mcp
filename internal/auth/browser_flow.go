@@ -108,6 +108,22 @@ func RunBrowserPKCEFlow(
 	ctx context.Context,
 	endpoints *DiscoveredEndpoints,
 ) (clientID string, tr *TokenResponse, err error) {
+	return runBrowserPKCEFlow(ctx, endpoints, false, openBrowser)
+}
+
+// RunBrowserPKCEFlowQuiet uses the same PKCE exchange without printing URLs or
+// launcher diagnostics. A failed browser launch is an actionable failure.
+func RunBrowserPKCEFlowQuiet(ctx context.Context, endpoints *DiscoveredEndpoints) (string, *TokenResponse, error) {
+	return runBrowserPKCEFlow(ctx, endpoints, true, openBrowser)
+}
+
+// RunBrowserPKCEFlowWithBrowser supplies the browser integration explicitly.
+// It has the same quiet and strict-launch behavior as the Desktop flow.
+func RunBrowserPKCEFlowWithBrowser(ctx context.Context, endpoints *DiscoveredEndpoints, browser func(string) error) (string, *TokenResponse, error) {
+	return runBrowserPKCEFlow(ctx, endpoints, true, browser)
+}
+
+func runBrowserPKCEFlow(ctx context.Context, endpoints *DiscoveredEndpoints, quiet bool, browser func(string) error) (clientID string, tr *TokenResponse, err error) {
 	verifier, challenge, err := newPKCE()
 	if err != nil {
 		return "", nil, fmt.Errorf("auth: pkce: %w", err)
@@ -142,8 +158,13 @@ func RunBrowserPKCEFlow(
 	// succeeds, fails, or succeeds without opening anything — the last of
 	// which is what a headless host with xdg-open installed but no DISPLAY
 	// does, since cmd.Start() returns nil as soon as the binary exists.
-	fmt.Fprintf(promptOut, "\nTo authenticate, open this URL:\n\n  %s\n\n", authorizeURL)
-	if err := openBrowser(authorizeURL); err != nil {
+	if !quiet {
+		fmt.Fprintf(promptOut, "\nTo authenticate, open this URL:\n\n  %s\n\n", authorizeURL)
+	}
+	if err := browser(authorizeURL); err != nil {
+		if quiet {
+			return "", nil, errors.New("auth: browser could not open")
+		}
 		fmt.Fprintf(promptOut, "Could not open a browser automatically (%v). Open the URL above.\n", err)
 	}
 
