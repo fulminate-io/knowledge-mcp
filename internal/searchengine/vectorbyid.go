@@ -12,9 +12,9 @@
 package searchengine
 
 // VectorByID resolves a LIVE member's stored vector by external id, or (nil,false)
-// when no sealed segment holds it live. It mirrors Delete's route-map walk
-// (set.route → owning entry) for an O(1) lookup + O(#segments) entryByID scan — no
-// full-corpus walk — then reads the vector off the segment's concrete payload via a
+// when no sealed segment holds it live. It mirrors Delete's walk (entryOf: the
+// snapshot's unflattened tail newest-first, then the flat base plus one entryByID
+// scan) — no full-corpus walk — then reads the vector off the payload via a
 // runtime type-assert to the by-id accessor. The inline-interface assert keeps the
 // method generic-safe across [Q,S]: the HNSW instantiation's payload (*hnswSegment)
 // satisfies it; a payload without the accessor (e.g. bm25) fails the assert and
@@ -40,13 +40,9 @@ package searchengine
 // drawn from a live-node browse, so for it the consult is a no-op.
 func (e *SegmentedIndex[Q, S]) VectorByID(externalID ExternalID) ([]byte, bool) {
 	set := e.set.Load()
-	sid, routed := set.route[externalID]
-	if !routed {
-		return nil, false
-	}
 	// residentMemberIn (engine.go) is the package's ONE searchability predicate, and
-	// it absorbs the nil-entry case, so entry is non-nil below by construction.
-	entry := set.entryByID(sid)
+	// it absorbs the nil-entry case, so an unrouted id needs no separate arm.
+	entry := set.entryOf(externalID)
 	if !residentMemberIn(entry, externalID) {
 		return nil, false
 	}

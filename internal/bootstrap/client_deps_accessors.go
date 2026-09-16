@@ -39,6 +39,18 @@ import (
 // *graphclient.GraphClient satisfies tools.LocalLiveness structurally.
 func (c *client) LocalLiveness() tools.LocalLiveness { return c.local }
 
+// SessionAccountBindings returns the per-harness-session account binding store —
+// the same instance constructClient installed as the session rung of the account
+// ladder, so the manage arm that WRITES a binding and the resolver that READS one
+// can never be two different stores over two different files.
+//
+// Returns nil for a directly-built test fixture that never went through
+// constructClient; the manage arms report the store unavailable on nil rather
+// than binding into something no read path consults. Satisfies the optional
+// tools sessionAccountBinder seam, with the same structural-typing discipline as
+// PipelineMetrics below.
+func (c *client) SessionAccountBindings() *tools.SessionAccountStore { return c.sessionAccounts }
+
 // PipelineMetrics returns a snapshot of the client-side LLM pipeline
 // counters (summary + embed queue depth, running workers, cumulative
 // successes / terminal failures). Satisfies the optional

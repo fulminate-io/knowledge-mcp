@@ -3,10 +3,13 @@
 package bm25
 
 import (
+	"fmt"
 	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
 // merge_structural_gate_test.go — the producer-side gate: a merge must never
@@ -125,4 +128,80 @@ func TestMergeStructuralGate_IgnoresEmptyRunsAndTerms(t *testing.T) {
 	require.NoError(t, e.verifyWithin(tail),
 		"a zero-length run or term is unconstrained for the reader and must be unconstrained here")
 	require.Nil(t, e.misaligned, "an empty run must not be recorded as misaligned")
+}
+
+// TestMergeStructuralGate_RefusesABlockIndexEntryOutsideTheStreamedTail is the
+// gate's BLOCK-INDEX leg, which is the reference class it used to be blind to.
+//
+// THE VALUE IT REFUSES IS THE INCIDENT'S OWN. A zero entry is what the preserved
+// artifact and the RC's corrupt segment both carry, and it is what makes a reader
+// resolve a block's postings at blob offset 0 — inside the v2 header, which is where
+// "posting run of N at offset 327938" comes from. The check is written as a FLOOR
+// rather than a zero test, because an entry pointing anywhere inside the fixed
+// prefix is equally unreadable; the second row proves the floor and not merely the
+// zero.
+func TestMergeStructuralGate_RefusesABlockIndexEntryOutsideTheStreamedTail(t *testing.T) {
+	for _, at := range []int{0, 8, 64} {
+		t.Run(fmt.Sprintf("entry=%d", at), func(t *testing.T) {
+			e, tail := realMergeEmitterState(t, dictBlocked)
+			require.NoError(t, e.verifyWithin(tail), "control: the honest merge passes")
+			require.Less(t, at, e.p.prefixEnd, "the fixture's offset must be inside the fixed prefix to test the floor")
+
+			e.noteBlock(2, 1, at, 8)
+			err := e.verifyWithin(tail)
+			require.Error(t, err, "a block-index entry pointing into the fixed prefix must be refused")
+			require.Contains(t, err.Error(), "REFUSING to emit a structurally invalid segment")
+			require.Contains(t, err.Error(), fmt.Sprintf("field 2 block 1 has its block-index entry at offset %d", at))
+			require.Contains(t, err.Error(), "The merge is abandoned and its constituents are untouched")
+		})
+	}
+}
+
+// TestMergeStructuralGate_RefusesABlockPayloadPastTheBlob is the block index's other
+// direction, and it is the same rule the term and posting-run legs apply: a
+// reference reaching past the bytes the merge produced is one every reader refuses.
+func TestMergeStructuralGate_RefusesABlockPayloadPastTheBlob(t *testing.T) {
+	e, tail := realMergeEmitterState(t, dictBlocked)
+	require.NoError(t, e.verifyWithin(tail), "control: the honest merge passes")
+	require.NotZero(t, e.blockFurthest.size, "the merge recorded no block payload, so the row below would pass vacuously")
+
+	err := e.verifyWithin(int64(e.blockFurthest.at+e.blockFurthest.size) - 1)
+	require.Error(t, err, "a block payload reaching past the declared length must be refused")
+	require.Contains(t, err.Error(), "has a block payload reaching byte")
+}
+
+// TestMergeStructuralGate_RecordsEveryBlockClose is what keeps the leg above from
+// being unreachable in production: the gate can only refuse references the emitter
+// hands it, so every block close must reach noteBlock.
+//
+// THE EXPECTATION IS DERIVED FROM THE FIXTURE, not written down: a field of n terms
+// closes ceil(n/blockedBlockTerms) blocks, so the count is arithmetic over the shape
+// the test built. A closeBlock that stopped recording would leave every other
+// assertion in this package green.
+func TestMergeStructuralGate_RecordsEveryBlockClose(t *testing.T) {
+	shape := map[string]int{
+		searchengine.FieldSymbolName:  200,
+		searchengine.FieldSummary:     90,
+		searchengine.FieldDescription: 33,
+		searchengine.FieldContent:     1,
+	}
+	ins := shapeInputs(t, 2, 2, shape)
+
+	sink, err := os.CreateTemp(t.TempDir(), "blocks-*.seg")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sink.Close() })
+	e, w := realMergeMachinery(t, ins, acceptEvery(len(ins)), dictBlocked, sink)
+
+	want := 0
+	for _, terms := range shape {
+		want += (terms + blockedBlockTerms - 1) / blockedBlockTerms
+	}
+	// The keywords field shapeDocs fills per document contributes its own blocks:
+	// two documents per constituent, two terms each, one block.
+	want += 1
+	require.Equal(t, want, e.blocksNoted,
+		"every block close must reach noteBlock, or the gate has nothing to check")
+	require.Nil(t, e.blockOutside, "an honest merge lands every block payload in the streamed tail")
+	require.LessOrEqual(t, int64(e.blockFurthest.at+e.blockFurthest.size), w.tail,
+		"an honest merge's furthest block payload lies inside what it wrote")
 }

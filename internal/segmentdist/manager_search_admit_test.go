@@ -24,7 +24,7 @@ func TestSearch_RecordsGraphAdmission(t *testing.T) {
 		mu       sync.Mutex
 		admitted []string
 	)
-	record := func(gt kgtypes.GraphType, name string) {
+	record := func(_ context.Context, gt kgtypes.GraphType, name string) {
 		mu.Lock()
 		defer mu.Unlock()
 		admitted = append(admitted, string(gt)+"/"+name)

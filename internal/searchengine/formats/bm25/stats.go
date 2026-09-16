@@ -50,11 +50,27 @@ type CorpusStats struct {
 	// avgDocLen 0, which disables normalization for that term contribution.
 	FieldAvgLen map[string]float64
 
+	// fieldTokens is the RAW per-field token total FieldAvgLen is derived from, kept
+	// because an average cannot be extended and a total can. AppendStats derives the
+	// next generation's averages from this plus the one segment being appended; from
+	// the averages alone it would have to re-fold every resident segment, which is
+	// the O(resident) publish cost this field exists to remove.
+	fieldTokens map[string]int64
+
 	// probes are the segments a document-frequency question is answered from.
 	// There is no corpus-wide DocFreq map: AggregateStats reads segment HEADERS
 	// only, and a term's frequency is resolved on first use by probing each
 	// segment's own sorted dictionary.
-	probes []docFreqProbe
+	//
+	// IT IS A CHAIN AND NOT A SLICE, and that is what makes an incremental publish
+	// O(1) rather than O(resident). A slice cannot be extended for the next
+	// generation without either copying it — one allocation per resident segment on
+	// every publish, the cost this change exists to remove — or appending into shared
+	// spare capacity, which writes memory a published snapshot is concurrently
+	// reading. A chain node is written once at construction and never afterwards, so
+	// every generation shares its predecessor's nodes by reference under exactly the
+	// copy-on-write contract the engine's route map states for its flat base.
+	probes *probeChain
 	// mu guards memo. The engine fans Search out across one goroutine per
 	// segment, so the memo is written concurrently on a cold term.
 	mu sync.Mutex
@@ -72,10 +88,20 @@ type docFreqProbe interface {
 	segmentDocFreq(term string) int64
 }
 
+// probeChain is one immutable node of the probe list: a segment, and the list that
+// preceded it. Nothing is ever written to a node after it is constructed, so a
+// generation derived by appending shares its whole predecessor list by reference
+// and allocates exactly one node.
+type probeChain struct {
+	probe docFreqProbe
+	prev  *probeChain
+}
+
 // newCorpusStats allocates an empty CorpusStats with initialized maps.
 func newCorpusStats() *CorpusStats {
 	return &CorpusStats{
 		FieldAvgLen: make(map[string]float64),
+		fieldTokens: make(map[string]int64),
 		memo:        make(map[string]int64),
 	}
 }
@@ -83,7 +109,34 @@ func newCorpusStats() *CorpusStats {
 // attach registers a segment as a source of document frequency. Holding the
 // segment keeps it reachable, which is exactly the lifetime the stats object
 // needs: a probe must not outlive the bytes it reads.
-func (s *CorpusStats) attach(p docFreqProbe) { s.probes = append(s.probes, p) }
+func (s *CorpusStats) attach(p docFreqProbe) { s.probes = &probeChain{probe: p, prev: s.probes} }
+
+// addSegmentCounts folds ONE segment's header counts into this stats object: its
+// document count, its probe registration and its per-field token totals. It is the
+// single definition the whole-set fold and the incremental append both run, so the
+// two cannot answer differently for the same segments.
+//
+// IT MUTATES THE RECEIVER AND IS THEREFORE CALLED ONLY DURING CONSTRUCTION, before
+// the object is reachable from a published snapshot. A published CorpusStats is
+// immutable but for its memo.
+func (s *CorpusStats) addSegmentCounts(ms *mappedSegment) {
+	s.TotalDocs += int64(ms.docCount)
+	s.attach(ms)
+	for _, mf := range ms.fields {
+		s.fieldTokens[mf.config.Name] += mf.totalTokens
+	}
+}
+
+// deriveAvgLen recomputes FieldAvgLen from the raw token totals. It costs one
+// division per FIELD — a handful — and never touches a segment.
+func (s *CorpusStats) deriveAvgLen() {
+	if s.TotalDocs <= 0 {
+		return
+	}
+	for name, total := range s.fieldTokens {
+		s.FieldAvgLen[name] = float64(total) / float64(s.TotalDocs)
+	}
+}
 
 // docFreqOf returns the CORPUS-GLOBAL number of documents containing term — the
 // same value the eager per-segment fold summed, resolved on demand instead.
@@ -102,8 +155,8 @@ func (s *CorpusStats) docFreqOf(term string) int64 {
 		return df
 	}
 	var df int64
-	for _, p := range s.probes {
-		df += p.segmentDocFreq(term)
+	for node := s.probes; node != nil; node = node.prev {
+		df += node.probe.segmentDocFreq(term)
 	}
 	if s.memo == nil {
 		s.memo = make(map[string]int64)

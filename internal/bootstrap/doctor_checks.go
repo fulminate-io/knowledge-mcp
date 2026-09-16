@@ -246,8 +246,17 @@ func axisCredentialClause(axis string, provider config.EmbedProvider, key, featu
 // credential store — the platform keychain when it is available, the
 // ~/.knowledge/credentials file otherwise. Not-logged-in is info, not
 // warning — paid features being unavailable is a fully-supported state.
+//
+// A malformed credential-namespace selector is NOT that state: it is bad
+// configuration that blocks `serve` startup too, so it renders at statusErr,
+// the same severity checkConfig uses for a config file that fails to validate.
+// The two are told apart by the sentinel rather than by the message, because
+// the message is prose and will be reworded.
 func checkFulminateAuth() checkResult {
 	store, err := auth.OpenStore()
+	if errors.Is(err, auth.ErrCredentialNamespaceInvalid) {
+		return checkResult{name: "fulminate", status: statusErr, msg: err.Error()}
+	}
 	if err != nil {
 		return checkResult{
 			name: "fulminate", status: statusInfo,
@@ -352,37 +361,100 @@ func checkClaudeMD() checkResult {
 	return checkResult{name: "claude-md", status: statusOK, msg: "managed block in sync with embedded reference"}
 }
 
-// checkClaudeSettings reports whether the knowledge-managed promote-guard
-// hook in ~/.claude/settings.json matches the embedded asset. statusOK when
-// the managed entry equals assets.ClaudeHooks; statusWarn (with the
-// install-claude-assets remediation) when it drifts or the file is absent.
-// Only the managed entry is compared (via settingsInSync), so a user's own
+// checkClaudeSettings reports whether the knowledge-managed PreToolUse hooks in
+// ~/.claude/settings.json match the embedded asset. statusOK when both managed
+// entries equal the rendered assets.ClaudeHooks; statusWarn (with the
+// install-claude-assets remediation) when they drift or the file is absent.
+// Only the managed entries are compared (via settingsInSync), so a user's own
 // settings and other hooks never trip the warning. Mirrors checkClaudeMD.
-func checkClaudeSettings() checkResult {
+//
+// THE COMPARISON IS RENDERED AT THE PORT THE FILE ITSELF NAMES, read back out
+// of the installed session hook's url. The asset is port-rendered now, and
+// comparing against a default-port rendering would warn permanently for every
+// user who installed on another port — which is a user-visible regression, not
+// a drift report. The port is a per-install parameter; the SHAPE is what drift
+// means. With no entry installed there is no port to read and the default is
+// used, which is the honest comparison for a file that has none.
+func checkClaudeSettings(mcpPort int, mcpPortKnown bool) checkResult {
 	home, err := bootstrapHomeDir()
 	if err != nil {
 		return checkResult{name: "claude-settings", status: statusWarn, msg: "cannot resolve home dir: " + err.Error()}
 	}
 	path := filepath.Join(home, ".claude", "settings.json")
-	inSync, exists, err := settingsInSync(path, assets.ClaudeHooks)
+	renderPort, installedPort, portKnown := claudeHookRenderPort(path, mcpPort, mcpPortKnown)
+	hookEntries, err := renderClaudeHooks(assets.ClaudeHooks, renderPort)
 	if err != nil {
 		return checkResult{name: "claude-settings", status: statusWarn, msg: err.Error()}
 	}
-	if !exists {
-		return checkResult{
-			name: "claude-settings", status: statusWarn,
-			msg:    "no knowledge-managed collect-promote hook in ~/.claude/settings.json",
-			detail: "run `knowledge install-claude-assets` to install it",
+	inSync, exists, err := settingsInSync(path, hookEntries)
+	if err != nil {
+		return checkResult{name: "claude-settings", status: statusWarn, msg: err.Error()}
+	}
+	return claudeSettingsResult(inSync, exists, portKnown && mcpPortKnown, installedPort, mcpPort)
+}
+
+// claudeHookRenderPort resolves the port the SHAPE comparison renders at, plus
+// the port the installed hook names and whether one was found.
+//
+// The shape is always compared at the installed port when there is one, so a
+// user on any port is never told their hooks drifted merely because the port
+// differs. With nothing installed there is no port to read: the caller's port
+// is used when it KNOWS one, and the documented default otherwise — and in that
+// case there is no managed entry for the comparison to be wrong about.
+func claudeHookRenderPort(path string, mcpPort int, mcpPortKnown bool) (renderPort, installedPort int, portKnown bool) {
+	renderPort = graphclient.DefaultMCPHTTPPort
+	if mcpPortKnown {
+		renderPort = mcpPort
+	}
+	if data, readErr := os.ReadFile(path); readErr == nil { //nolint:gosec // the user's own ~/.claude/settings.json, resolved through bootstrapHomeDir
+		if installed, ok := claudeHookPortFromSettings(data); ok {
+			return installed, installed, true
 		}
 	}
-	if !inSync {
+	return renderPort, 0, false
+}
+
+// claudeSettingsResult maps the check's observations onto the rendered result,
+// naming the remediation on every warning arm.
+//
+// THE PORT IS TWO QUESTIONS, not one. Rendering the comparison at the port the
+// FILE names keeps a user on a non-default --mcp-port from being told their
+// hooks drifted when only the port differs; but a hook whose port no daemon
+// serves delivers nowhere, and that is exactly what this diagnostic exists to
+// catch. So the shape is compared at the installed port AND the installed port
+// is compared to the port this daemon actually serves on, as a separate arm
+// that names both numbers.
+//
+// comparable is FALSE unless BOTH ports are known — the installed one read off
+// the file, the served one supplied by a caller that actually knows it. A
+// caller that does not know the served port gets the shape verdict and no port
+// verdict, because comparing against a default would warn on every correctly
+// installed non-default hook and tell the user to reinstall it at a port
+// nothing serves.
+func claudeSettingsResult(inSync, exists, comparable bool, installedPort, mcpPort int) checkResult {
+	switch {
+	case !exists:
 		return checkResult{
 			name: "claude-settings", status: statusWarn,
-			msg:    "knowledge-managed collect-promote hook out of date",
+			msg:    "no knowledge-managed hooks in ~/.claude/settings.json",
+			detail: "run `knowledge install-claude-assets` to install the collect-promote and session hooks",
+		}
+	case !inSync:
+		return checkResult{
+			name: "claude-settings", status: statusWarn,
+			msg:    "knowledge-managed hooks out of date",
 			detail: "run `knowledge install-claude-assets` to update",
 		}
+	case comparable && installedPort != mcpPort:
+		return checkResult{
+			name: "claude-settings", status: statusWarn,
+			msg: fmt.Sprintf("the session hook posts to port %d but this daemon serves MCP on %d — deliveries reach nothing and sessions resolve to none",
+				installedPort, mcpPort),
+			detail: fmt.Sprintf("run `knowledge install-claude-assets --mcp-port %d`", mcpPort),
+		}
+	default:
+		return checkResult{name: "claude-settings", status: statusOK, msg: "collect-promote + session hooks in sync"}
 	}
-	return checkResult{name: "claude-settings", status: statusOK, msg: "collect-promote hook in sync"}
 }
 
 // hashEqual returns true when the two byte slices have the same

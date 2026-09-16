@@ -45,6 +45,29 @@ type mergeEmitter struct {
 	// noteSpan and noteRun.
 	furthest   dictRef
 	misaligned *dictRef
+
+	// blockOutside is the first BLOCK-INDEX entry whose payload did not land in the
+	// streamed tail, and blockFurthest is the block payload reaching furthest into
+	// the blob. Two fixed slots: nothing recorded here grows with the corpus.
+	//
+	// THE BLOCK INDEX IS THE ONE ADDRESSED STRUCTURE verifyWithin COULD NOT SEE. Term
+	// views and posting runs reach it through noteSpan/noteRun, but a block-index
+	// entry is written by a bare patchU32 in closeBlock and was recorded nowhere — so
+	// the gate built to refuse a dictionary that points outside the blob was silent
+	// about the exact reference the incident's segments got wrong. See noteBlock.
+	blockOutside  *blockRef
+	blockFurthest blockRef
+	// blocksNoted is how many block closes reached noteBlock. It is the observable
+	// that keeps the recording honest: a merge emits ceil(terms/blockedBlockTerms)
+	// blocks per field by construction, so a closeBlock that stopped recording would
+	// leave the gate silent while every other assertion still passed.
+	blocksNoted int
+}
+
+// blockRef is one front-coded BLOCK's reference: which field and block it belongs
+// to, where its payload landed and how long it is.
+type blockRef struct {
+	field, block, at, size int
 }
 
 // dictRef is one reference a dictionary row makes into the blob: where the run
@@ -186,12 +209,39 @@ func (e *mergeEmitter) appendBlocked(term string, field, postOff, count int) {
 	}
 }
 
-// closeBlock appends a finished block payload and records where it landed.
+// closeBlock appends a finished block payload and records where it landed — in the
+// blob's block index, and with the write-side gate.
 func (e *mergeEmitter) closeBlock(field int) {
 	block := (e.next[field] - 1) / blockedBlockTerms
 	at := e.w.appendAligned(e.payload[field], 1)
 	e.w.patchU32(e.p.blockIdxOff[field]+4*block, uint32(at))
+	e.noteBlock(field, block, at, len(e.payload[field]))
 	e.inBlock[field] = 0
+}
+
+// noteBlock records a BLOCK-INDEX reference so verifyWithin can apply the reader's
+// rule to it, exactly as noteRun and noteSpan do for the two reference kinds that
+// were already covered.
+//
+// IT APPLIES A FLOOR AS WELL AS A CEILING, and the floor is the half that matters
+// here. A term view or a posting run is wrong when it reaches PAST the blob; a block
+// index entry is wrong in the other direction too, because every block payload is
+// appended to the STREAMED TAIL and an entry addressing anything below prefixEnd
+// points into the fixed prefix — at zero, into the header itself, which is precisely
+// what made a reader announce "posting run of N at offset 327938".
+//
+// A ZERO IS THEREFORE NOT A SPECIAL CASE but the extreme of the floor, and writing
+// it that way is deliberate: an entry pointing at the member table or a dictionary
+// header is just as unreadable as one pointing at the header, and a check that only
+// tested for zero would certify it.
+func (e *mergeEmitter) noteBlock(field, block, at, size int) {
+	e.blocksNoted++
+	if at < e.p.prefixEnd && e.blockOutside == nil {
+		e.blockOutside = &blockRef{field: field, block: block, at: at, size: size}
+	}
+	if at+size > e.blockFurthest.at+e.blockFurthest.size {
+		e.blockFurthest = blockRef{field: field, block: block, at: at, size: size}
+	}
 }
 
 // appendU32 appends a little-endian word.
@@ -290,6 +340,25 @@ func (e *mergeEmitter) verifyWithin(blobLen int64) error {
 			"bm25 merge: REFUSING to emit a structurally invalid segment: field %d term %q has its posting run at offset %d, which is not 4-aligned. "+
 				"Every reader bounds-checks this and would refuse the segment; emitting it would store bytes that crash a later read",
 			m.field, m.term, m.off)
+	}
+	// THE BLOCK INDEX, WHICH THIS GATE USED TO BE BLIND TO. Its entries are the
+	// references the incident's segments got wrong, and they are checked in both
+	// directions: a payload below the streamed tail (zero being the extreme) and a
+	// payload reaching past the bytes the merge produced.
+	if b := e.blockOutside; b != nil {
+		return fmt.Errorf(
+			"bm25 merge: REFUSING to emit a structurally invalid segment: field %d block %d has its block-index entry at offset %d, "+
+				"which is below the %d-byte fixed prefix — every block payload is appended to the streamed tail, so an entry pointing into "+
+				"the prefix (zero points at the header itself) makes a reader resolve that block's postings inside the header. The merge is "+
+				"abandoned and its constituents are untouched",
+			b.field, b.block, b.at, e.p.prefixEnd)
+	}
+	if int64(e.blockFurthest.at+e.blockFurthest.size) > blobLen {
+		return fmt.Errorf(
+			"bm25 merge: REFUSING to emit a structurally invalid segment: field %d block %d has a block payload reaching byte %d (offset %d) "+
+				"in a segment only %d bytes long. The merge is abandoned and its constituents are untouched",
+			e.blockFurthest.field, e.blockFurthest.block,
+			e.blockFurthest.at+e.blockFurthest.size, e.blockFurthest.at, blobLen)
 	}
 	if int64(e.furthest.end) > blobLen {
 		return fmt.Errorf(

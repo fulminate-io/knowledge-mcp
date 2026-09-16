@@ -90,12 +90,15 @@ func composeRawGraphSegmentSearch(
 	engineText, engineVec := segmentSearchEngineArms(mode, a.Query, queryVec)
 	// THE VECTOR REFUSAL MOVES HERE; IT IS NOT DELETED. Serving zero rows for a
 	// vector search with no embedder reads as "no matches" when the truth is
-	// "there is no semantic index to ask". Same wording and same reason as
-	// composeSegmentGraphSearch's arm. This is the surviving half of the retired
-	// TestInterceptSearch_WebPDFVectorModeRefused.
+	// "there is no semantic index to ask". Same CONDITION and same wording as
+	// composeSegmentGraphSearch's arm — both embed from this client's own
+	// embedder — and deliberately NOT the knowledge arm's sentence, which reports
+	// the target graph's missing record and would be false here. This is the
+	// surviving half of the retired TestInterceptSearch_WebPDFVectorModeRefused.
 	if mode == "vector" && len(engineVec) == 0 {
 		return errorResult(graph + " search: mode:vector needs a query embedding, " +
-			"but no embedder is configured — use mode:hybrid or mode:text instead")
+			"but this client has no embedder configured — use mode:text, " +
+			"or add the embedder credential to ~/.knowledge/config")
 	}
 
 	k := a.Limit

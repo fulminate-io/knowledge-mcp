@@ -181,6 +181,26 @@ func TestQueryArms_NoClientSideAccountRead(t *testing.T) {
 	allowed := map[string]map[string]bool{
 		".": {
 			"domainTarget": true, // the composite-mode arms' wire selector
+			// THE TWO ENTRIES BELOW READ A DIFFERENT PARAMETER THAT SHARES THE
+			// FIELD NAME. This census is about the QUERY family's `account`
+			// argument, which the owner ruled is accepted and ignored — so a
+			// client-side read of it changes the caller's answer and is the defect.
+			// manage's `account` is the OPERAND of two operations whose entire
+			// purpose is to act on the account named: account_for_session binds it
+			// and account_use selects it. Not reading it would make both
+			// operations no-ops. The census cannot tell the two parameters apart
+			// (it matches a field name without type information), so the
+			// distinction is recorded here rather than evaded by renaming the
+			// field, which would leave the class matcher looking clean while the
+			// read moved one spelling over.
+			//
+			// The property that keeps these two honest is asserted directly, in
+			// manage_account_test.go: each arm REFUSES a call that names no
+			// account — the exact opposite of the ignore-it rule this census
+			// enforces for the query arms, and a read that stopped happening would
+			// turn those rows red.
+			"handleAccountForSession": true,
+			"handleAccountUse":        true,
 		},
 		// EVERY ENGINE ENTRY BELOW READS a.Account FOR EXACTLY ONE THING: it is
 		// the third positional argument of buildTarget, the wire GraphSelector.

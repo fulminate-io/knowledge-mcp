@@ -22,6 +22,23 @@ type SegmentedIndex[Q, S any] struct {
 	// atomic load and never takes a lock.
 	set atomic.Pointer[segmentSet[Q, S]]
 
+	// publishMu serializes APPEND PUBLISHERS against each other. Readers never
+	// touch it — e.set.Load() is unchanged — so the lock-free read path is exactly
+	// as it was; this is the writer-serialized variant of the same pattern.
+	//
+	// IT IS HERE BECAUSE A LOST CAS REPEATS THE BUILD. publishAppend loads,
+	// derives the next snapshot and swaps; a publisher that loses the swap starts
+	// over, and with twenty concurrent embed workers (the shipped default) that
+	// re-derivation was most of the CPU the reported host burned — the snapshot
+	// build re-copied the route and re-folded the corpus stats every time. Holding
+	// this across the build-and-swap makes the losers wait instead of work. The
+	// CAS loop stays, because a GROUP swap publishes without this lock.
+	//
+	// IT IS A sync.Mutex, NEVER AN RWMutex. Readers do not participate, so a
+	// reader-writer lock would add RLock cost to nothing and contend with the
+	// writer for no gain.
+	publishMu sync.Mutex
+
 	// activeMu guards ONLY the active coalescing buffer (the write side). The
 	// read path never touches it.
 	activeMu sync.Mutex
@@ -57,6 +74,12 @@ type SegmentedIndex[Q, S any] struct {
 	// exactly "merges published whose completion work is still running". Pure
 	// observability: nothing in the merge path reads it. See doMerge.
 	settleCnt atomic.Uint64
+	// mergeScanCnt counts the resident entries pickMergeTargets' dead-ratio loop has
+	// WALKED. It is the observable the merger-tick bound is asserted on, because a
+	// tick that selects nothing leaves no other trace: mergeCnt and settleCnt both
+	// stay at zero whether the tick walked the whole resident set or returned at its
+	// first line. Pure observability; nothing in the merge path reads it.
+	mergeScanCnt atomic.Int64
 }
 
 // New constructs an engine over the given format and options. It seeds an empty
@@ -146,7 +169,9 @@ func (e *SegmentedIndex[Q, S]) seal(docs []Document) (SegmentID, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	entry, err := e.newEntry(seg, nil)
+	// The seal's payload is the encoder's output and stays on the heap until the
+	// distribution layer makes it durable and remaps it over the stored file.
+	entry, err := e.newEntry(seg, nil, payloadBuilt)
 	if err != nil {
 		return "", false, err
 	}
@@ -201,10 +226,39 @@ func dedupeDocsByID(docs []Document) []Document {
 	return out
 }
 
+// payloadProvenance says where a new entry's payload bytes LIVE. It is the one
+// fact about a payload the payload itself cannot report, and the reason is the
+// same on every format: a decoded segment is constructed from an ordinary []byte
+// whether that slice is the encoder's output or a view over a mapping.
+//
+// IT IS A REQUIRED PARAMETER OF newEntry RATHER THAN A FIELD A SITE MAY SET. Every
+// publisher already knows which it holds — the four Build sites hand in their
+// encoder's output, mergeEntry hands in a payload decoded over the mapping it just
+// made — and a parameter makes a site that forgets a compile error instead of a
+// segment whose heap the residency budget cannot see.
+type payloadProvenance int
+
+const (
+	// payloadBuilt is the encoder's output: a heap slice the payload retains for
+	// its whole life, because the mapped formats read their postings, dictionaries
+	// and member offsets in place rather than copying them out.
+	payloadBuilt payloadProvenance = iota
+	// payloadMapped is a view over a memory mapping: page cache, evictable, shared
+	// between processes and invisible to the garbage collector. It is the state a
+	// built payload is meant to REACH — see RemapResident — not only the state a
+	// loaded one starts in.
+	payloadMapped
+)
+
 // newEntry wraps a sealed segment into a segmentEntry: content-hash SegmentID,
 // all-live (or tombstone-seeded) liveDocs, and the members route map. tombstones
 // is nil for locally-built segments and set at Import.
-func (e *SegmentedIndex[Q, S]) newEntry(seg Segment[Q, S], tombstones []ExternalID) (*segmentEntry[Q, S], error) {
+//
+// prov says whether the payload's bytes are heap or page cache; see
+// payloadProvenance and segmentEntry.heapPayload.
+func (e *SegmentedIndex[Q, S]) newEntry(
+	seg Segment[Q, S], tombstones []ExternalID, prov payloadProvenance,
+) (*segmentEntry[Q, S], error) {
 	blob, err := seg.Encode()
 	if err != nil {
 		return nil, err
@@ -268,10 +322,20 @@ func (e *SegmentedIndex[Q, S]) newEntry(seg Segment[Q, S], tombstones []External
 	//
 	// EXPECT THIS NUMBER TO DROP on a corpus that accumulated duplicate ids. That
 	// is the count becoming correct, not documents disappearing.
+	// THE BLOB THIS FUNCTION ALREADY HOLDS IS THE MEASUREMENT. seg.Encode returned
+	// the payload's own bytes — on every mapped format that is an identity rather
+	// than a re-serialization — so on a BUILT payload len(blob) is exactly the heap
+	// the entry will retain, taken from the object itself rather than modeled.
+	var heapPayload int64
+	if prov == payloadBuilt {
+		heapPayload = int64(len(blob))
+	}
+
 	return &segmentEntry[Q, S]{
-		payload: seg,
-		live:    live,
-		members: members,
+		payload:     seg,
+		live:        live,
+		members:     members,
+		heapPayload: heapPayload,
 		meta: SegmentMeta{
 			ID:        id,
 			Format:    e.format.Name(),
@@ -309,6 +373,14 @@ func (e *SegmentedIndex[Q, S]) newEntry(seg Segment[Q, S], tombstones []External
 // the answer is new, and a caller that later retires the segments a write produced
 // needs it to avoid dropping a segment it merely named.
 func (e *SegmentedIndex[Q, S]) publishAppend(entry *segmentEntry[Q, S]) bool {
+	// SERIALIZED, NOT LOCK-FREE, on the writer side only. See publishMu: concurrent
+	// appenders that raced here re-derived the whole snapshot on every lost swap,
+	// and the work a loser repeated was the work this fix exists to remove. The loop
+	// below is still a CAS retry because a group swap (ReplaceBucketGroup) publishes
+	// without this lock, so an append can still lose a race — it just no longer
+	// loses one to another append.
+	e.publishMu.Lock()
+	defer e.publishMu.Unlock()
 	for {
 		old := e.set.Load()
 		if old.entryByID(entry.meta.ID) != nil {
@@ -326,12 +398,10 @@ func (e *SegmentedIndex[Q, S]) publishAppend(entry *segmentEntry[Q, S]) bool {
 // An unknown id is a no-op. No indexed data mutates — only the liveDocs bit.
 func (e *SegmentedIndex[Q, S]) Delete(id ExternalID) {
 	set := e.set.Load()
-	if sid, ok := set.route[id]; ok {
-		if entry := set.entryByID(sid); entry != nil {
-			if ord, ok := entry.members[id]; ok {
-				entry.live.Kill(ord)
-				e.signalMerge()
-			}
+	if entry := set.entryOf(id); entry != nil {
+		if ord, ok := entry.members[id]; ok {
+			entry.live.Kill(ord)
+			e.signalMerge()
 		}
 		return
 	}
@@ -345,113 +415,6 @@ func (e *SegmentedIndex[Q, S]) Delete(id ExternalID) {
 		}
 	}
 	e.activeMu.Unlock()
-}
-
-// ResidentDocCount sums meta.DocCount across every sealed segment currently
-// resident in the searchable set — the in-memory engine's coverage. DocCount is
-// stamped on BOTH locally-sealed (seal → newEntry) and imported (entryFromDecoded)
-// segments, so the sum reflects all resident docs regardless of provenance. It is
-// the read-side coverage signal the degeneracy backstop compares against the
-// server's shipped doc count: a cold process whose load floor was poisoned ends up
-// with a near-empty set here while the server holds the full corpus. Counts the
-// SEALED set only (the lock-free atomic snapshot, same as Search/Export); the
-// sub-threshold active buffer is unsearchable and intentionally excluded.
-func (e *SegmentedIndex[Q, S]) ResidentDocCount() int {
-	set := e.set.Load()
-	total := 0
-	for _, entry := range set.entries {
-		total += entry.meta.DocCount
-	}
-	return total
-}
-
-// DistinctResidentDocCount reports how many DISTINCT documents the resident set
-// holds. It is the corpus size a partition count must be derived from.
-//
-// WHY NOT ResidentDocCount. That one sums each segment's DocCount, so a document
-// resident in more than one segment — the ordinary state after two rebuilds land
-// without the first being retired — is counted once per SEGMENT. Deriving a
-// partition count from it manufactures a crossing the real corpus never made,
-// which is what puts segments spanning several partitions in front of a swap.
-// DocCount counting distinct members within a segment does not fix that: the
-// duplication here is ACROSS segments, and summing per-segment counts cannot see
-// it.
-//
-// It is O(1) rather than a walk. The route map already indexes every resident id
-// to the segment answering for it, one entry per DISTINCT id by construction, so
-// its length IS the distinct corpus size. No pass over the corpus is added to any
-// path, which matters because a derivation that cost O(corpus) would tempt callers
-// back onto the cheap wrong number.
-func (e *SegmentedIndex[Q, S]) DistinctResidentDocCount() int {
-	return len(e.set.Load().route)
-}
-
-// residentMemberIn is the ONE searchability predicate. Every membership answer in
-// the PACKAGE derives from it — the aggregates below, and the by-id stored-vector
-// read in vectorbyid.go — so a count, a diff and a vector lookup can never disagree
-// about what "covered" means. It mirrors killSuperseded's route-then-kill walk and
-// Search's accept closure: a deleted id keeps its route and members entries and only
-// loses its live bit, so route presence alone is NOT membership.
-//
-// It takes the RESOLVED entry rather than looking it up, because entryByID is a
-// linear scan over the snapshot's entries and calling it per id would make every
-// aggregate below O(#resident x #segments).
-func residentMemberIn[Q, S any](entry *segmentEntry[Q, S], id ExternalID) bool {
-	if entry == nil {
-		return false
-	}
-	ord, ok := entry.members[id]
-	return ok && entry.live.Live(ord)
-}
-
-// entryIndex builds a SegmentID -> entry map over a snapshot so the aggregates
-// below resolve each id in O(1) instead of rescanning every entry. Built once per
-// aggregate call: O(#segments) here versus O(#resident x #segments) without it,
-// which at production scale is millions of comparisons for a single answer.
-func entryIndex[Q, S any](set *segmentSet[Q, S]) map[SegmentID]*segmentEntry[Q, S] {
-	idx := make(map[SegmentID]*segmentEntry[Q, S], len(set.entries))
-	for _, e := range set.entries {
-		idx[e.meta.ID] = e
-	}
-	return idx
-}
-
-// LiveResidentCount reports how many resident documents are actually SEARCHABLE —
-// distinct by construction (the route holds one entry per id) and live-true (a
-// deleted-but-unpurged id is excluded).
-//
-// WHY NOT ResidentDocCount or liveDocs.LiveCount. ResidentDocCount sums per-segment
-// DocCount, so an id resident in two segments counts twice. LiveCount is per-segment
-// and summing it double-counts the same way. This walk asks the one predicate once
-// per distinct id.
-func (e *SegmentedIndex[Q, S]) LiveResidentCount() int {
-	set := e.set.Load()
-	idx := entryIndex(set)
-	n := 0
-	for id, sid := range set.route {
-		if residentMemberIn(idx[sid], id) {
-			n++
-		}
-	}
-	return n
-}
-
-// UncoveredFrom returns the subset of ids that are NOT live-searchable in the
-// current snapshot — the ids a repair pass would have to re-ship.
-//
-// The result is deliberately NOT pre-sized to len(ids): on a converged graph it is
-// empty, and pre-sizing would allocate the whole corpus on every no-op pass.
-func (e *SegmentedIndex[Q, S]) UncoveredFrom(ids []ExternalID) []ExternalID {
-	set := e.set.Load()
-	idx := entryIndex(set)
-	var missing []ExternalID
-	for _, id := range ids {
-		sid, routed := set.route[id]
-		if !routed || !residentMemberIn(idx[sid], id) {
-			missing = append(missing, id)
-		}
-	}
-	return missing
 }
 
 // contentHash returns the sha256 hex digest of a segment blob — the SegmentID.

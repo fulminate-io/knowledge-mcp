@@ -3,8 +3,10 @@
 package searchengine
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 )
 
 // corruption.go — how a format reports an on-disk invariant it cannot honor,
@@ -47,7 +49,26 @@ type CorruptSegmentError struct {
 	ID SegmentID
 	// Detail is the format's own description of the invariant it violated.
 	Detail string
+	// reported latches the ONE report this condition owes, and it is on the VALUE
+	// rather than at each call site because one condition can reach the reporter
+	// down two different paths. containCorrupt reports what it CAUGHT and then
+	// RETURNS the same value as the error, so a caller that also classifies its
+	// error return — reportCorruptFrom — is handed a condition already reported.
+	// Reporting it twice is not free: the second WithdrawSegment misses, which
+	// logs the deliberately ambiguous "not in the published set" line that an
+	// operator reads as the DAMAGE-IN-PLACE mismatch, and the owner's hook fires
+	// a second time for one event. A marker here makes the rule one rule.
+	reported atomic.Bool
 }
+
+// markReported returns true for the FIRST caller and false for every later one,
+// so a condition that traveled to the reporter twice is reported once.
+//
+// IT IS AN ATOMIC RATHER THAN A PLAIN BOOL because the value can be read by more
+// than one goroutine: a merge raises on the merger's own goroutine while the
+// caller that started it waits, and nothing in this package promises which of
+// them reaches the reporter first.
+func (e *CorruptSegmentError) markReported() bool { return e.reported.CompareAndSwap(false, true) }
 
 func (e *CorruptSegmentError) Error() string {
 	if e.ID == "" {
@@ -183,6 +204,18 @@ func (e *SegmentedIndex[Q, S]) containCorrupt(id SegmentID, fn func() error) (er
 // on the way, because this corruption class hashes correctly. The published set
 // and the stored file have to leave together.
 func (e *SegmentedIndex[Q, S]) reportCorrupt(err *CorruptSegmentError) {
+	// ONE CONDITION, ONE REPORT. The latch is consulted HERE, at the single door
+	// every reporting path goes through, rather than at the call sites: a
+	// corruption that unwound into containCorrupt is reported by that boundary and
+	// then RETURNED to a caller which classifies error returns, and the second
+	// report would miss the withdrawal — printing the ambiguous "not in the
+	// published set" line that reads as the damage-in-place mismatch — and fire the
+	// owner's hook again for one event. A REPEAT from a different query is a
+	// different value and is still reported; this latches the value, not the
+	// segment.
+	if !err.markReported() {
+		return
+	}
 	// AN UNATTRIBUTED CORRUPTION WITHDRAWS NOTHING. An empty id names no segment,
 	// so there is nothing to withdraw and nothing a caller could safely resolve it
 	// into. The owner is still told, because a corruption nobody could attribute
@@ -210,6 +243,44 @@ func (e *SegmentedIndex[Q, S]) reportCorrupt(err *CorruptSegmentError) {
 		return
 	}
 	e.opts.OnCorruptSegment(err)
+}
+
+// reportCorruptFrom routes a FAILED OPERATION's error into reportCorrupt when that
+// error is a contained corruption, and reports whether it was one.
+//
+// IT EXISTS BECAUSE CONTAINMENT IS NOT REPORTING ON THIS PATH. containCorrupt
+// reports what it CAUGHT — a raise that unwound into it — but a format whose own
+// merge catches its raise and RETURNS the typed error (bm25's MergeTo does exactly
+// that) hands the engine an ordinary error return, and the corruption then reaches
+// the caller having been reported to nobody. Every caller of an operation that
+// merges segments owes this call on its error path, or a corrupt constituent stays
+// published and the same operation fails on it forever.
+//
+// THAT IS NOT HYPOTHETICAL. The background merger routed it and the BUCKET SWAPS did
+// not, so a corrupt segment found by the resident-count bound's per-partition
+// consolidation was reported by nothing: one graph's bound failed on the same
+// segment 19 consecutive times, the resident count climbed to 22,474 against a
+// budget of 4,096, and the segment was quarantined only when an unrelated SEARCH
+// happened to touch it.
+// A MERGE OUTPUT THAT FAILED VALIDATION IS NOT A STORED CORRUPTION, and this is the
+// ONE place that distinction can be made for every caller at once. The refusal WRAPS
+// the validator's *CorruptSegmentError — a real validator reports one — so the type
+// test below matches it through Unwrap and would hand the owner a corruption to
+// quarantine for a segment that was never published, has no id and does not exist on
+// disk. The owner's quarantine then refuses it loudly, or worse withdraws whatever id
+// it resolves. Declining it here makes every caller of a merging operation compose
+// correctly, rather than each one remembering to test the two types in the right
+// order: the background merger, both bucket swaps, and whatever calls them next.
+func (e *SegmentedIndex[Q, S]) reportCorruptFrom(err error) bool {
+	if _, refused := errors.AsType[*MergeOutputInvalidError](err); refused {
+		return false
+	}
+	corrupt, ok := errors.AsType[*CorruptSegmentError](err)
+	if !ok {
+		return false
+	}
+	e.reportCorrupt(corrupt)
+	return true
 }
 
 // WithdrawSegment removes one segment from the published set: its entry leaves

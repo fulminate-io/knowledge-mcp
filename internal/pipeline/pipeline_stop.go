@@ -4,6 +4,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"sync"
 )
 
@@ -42,8 +43,25 @@ func (p *Pipeline) Stop(ctx context.Context) error {
 // stopSequence is the body of Stop, factored out so the Stop method
 // itself stays under the 80-line cap.
 func (p *Pipeline) stopSequence(ctx context.Context) error {
-	// Step 1: cancel every collector.
+	// Step 1: cancel every collector, and LATCH THE REGISTRY CLOSED in the same
+	// critical section.
+	//
+	// THE LATCH IS WHAT MAKES STEP 2 TERMINATE. Without it a RegisterGraph taking
+	// this mutex after the Unlock below stores its cancel func in the fresh map
+	// nothing reads again and enlists its goroutine on the WaitGroup step 2 is about
+	// to wait on — so step 2 waits for a goroutine this function has no way to
+	// cancel. Setting the latch here, under the same lock as the cancel-and-clear,
+	// means a registration either happened BEFORE the snapshot (and was cancelled)
+	// or is refused. There is no third case.
+	//
+	// IT ALSO REMOVES A HIDDEN ORDERING REQUIREMENT ON CALLERS. The daemon's
+	// shutdown happens to cancel the wiring ctx before calling Stop, which stops the
+	// refresh loop that drives registrations, so production mostly escaped this.
+	// That was a property of ONE caller rather than of Stop, and nothing in Stop's
+	// contract said so; a caller stopping a pipeline whose refresh loop is still
+	// live had no way to know it was required.
 	p.collectorMu.Lock()
+	p.collectorsStopped = true
 	for _, cancel := range p.collectorCancels {
 		cancel()
 	}
@@ -53,7 +71,7 @@ func (p *Pipeline) stopSequence(ctx context.Context) error {
 
 	// Step 2: wait collectors, bounded by ctx.
 	if err := waitWithCtx(ctx, &p.collectorWG); err != nil {
-		return err
+		return fmt.Errorf("pipeline: collectors did not drain: %w", err)
 	}
 
 	// Step 3: close summary + embed channels (dispatcher EOF).
@@ -64,12 +82,21 @@ func (p *Pipeline) stopSequence(ctx context.Context) error {
 	// own output (batch) channels via deferred close — Step 5 below is
 	// implicit, NOT an explicit close here (would be double-close).
 	if err := waitWithCtx(ctx, &p.dispatcherWG); err != nil {
-		return err
+		return fmt.Errorf("pipeline: dispatchers did not drain: %w", err)
 	}
 
 	// Step 5: per-batch sub-channels are closed by dispatcher's defer.
 	// Step 6: wait workers (they observe EOF via the dispatcher's close).
-	return waitWithCtx(ctx, &p.workerWG)
+	//
+	// EACH WAIT NAMES ITS OWN STAGE, and that is the whole reason these three
+	// returns are wrapped. The bare ctx error the caller used to receive said that
+	// something did not drain inside the window and never which — collectors still
+	// pushing, dispatchers still batching, or workers still calling an LLM — which
+	// are three different operational problems with three different remedies.
+	if err := waitWithCtx(ctx, &p.workerWG); err != nil {
+		return fmt.Errorf("pipeline: workers did not drain: %w", err)
+	}
+	return nil
 }
 
 // waitWithCtx waits for wg to reach zero or ctx to fire. Returns ctx.Err

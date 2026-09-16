@@ -159,7 +159,7 @@ func TestBucketGroupFuseIsIdempotentOnRepeatedApply(t *testing.T) {
 	}
 
 	// (3) APPLY ONCE.
-	want, _, err := eng.ReplaceBucketGroup(idempotenceBucketCount, constituents(), work)
+	want, _, err := eng.ReplaceBucketGroup(t.Context(), idempotenceBucketCount, constituents(), work)
 	if err != nil {
 		t.Fatalf("first ReplaceBucketGroup: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestBucketGroupFuseIsIdempotentOnRepeatedApply(t *testing.T) {
 
 	// (4) APPLY AGAIN with the SAME work, re-resolving the constituents against the
 	// set the first apply published.
-	got, _, err := eng.ReplaceBucketGroup(idempotenceBucketCount, constituents(), work)
+	got, _, err := eng.ReplaceBucketGroup(t.Context(), idempotenceBucketCount, constituents(), work)
 	if err != nil {
 		t.Fatalf("second ReplaceBucketGroup: %v", err)
 	}

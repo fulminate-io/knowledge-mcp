@@ -158,6 +158,52 @@ func TestQueryEmbedderResolvesFromTargetGraph(t *testing.T) {
 	})
 }
 
+// TestKnowledgeQueryEmbedder_ResolvesFromTheGraphCatalog is the CLIENT HALF of
+// the seam this ticket fixes on the server: given a graph catalog that carries
+// an embed identity for knowledge/default, the knowledge arm builds a query
+// embedder from it and needs no local server to do so; given one that carries
+// none, it builds nothing and that is not an error.
+//
+// IT IS A SEAM PIN RATHER THAN A RED-TO-GREEN ROW. This half was already
+// correct — the defect was that a cloud-backed catalog never carried the field —
+// so the red for this seam is on the OTHER side of it, in the cloud store's
+// TestListGraphsLite_EmbedIdentitySurfacesFromGraphMeta, which observed a nil
+// against the same contract this pins. Together they say the two halves meet.
+func TestKnowledgeQueryEmbedder_ResolvesFromTheGraphCatalog(t *testing.T) {
+	t.Setenv("VOYAGE_API_KEY", "")
+	ctx := opCtx()
+
+	t.Run("catalog carrying an identity builds the embedder", func(t *testing.T) {
+		var execHits atomic.Int64
+		deps := &interceptDeps{gc: newInterceptHarness(t, &execHits, cannedEmbeddedNodesResp())}
+
+		emb, err := knowledgeQueryEmbedder(ctx, deps)
+		require.NoError(t, err)
+		require.NotNil(t, emb, "a catalog recording an identity must yield a query embedder")
+
+		// THE WIDTH IS WHAT PROVES THE SOURCE: the catalog's identity is a
+		// deliberately non-default dimension, so a resolver reading config
+		// instead would produce a different-sized vector here.
+		vec, eerr := emb.EmbedBinary(ctx, "some query")
+		require.NoError(t, eerr)
+		assert.Len(t, vec, cannedCatalogVecBytes,
+			"the embedder must be the GRAPH's, which its vector width is what shows")
+	})
+
+	t.Run("catalog carrying none resolves nothing and is not an error", func(t *testing.T) {
+		var execHits atomic.Int64
+		// cannedNodesResp carries NO GraphNames, which is a catalog that records
+		// no identity for knowledge/default — and, until this ticket, what every
+		// cloud-backed catalog read looked like.
+		deps := &interceptDeps{gc: newInterceptHarness(t, &execHits, cannedNodesResp())}
+
+		emb, err := knowledgeQueryEmbedder(ctx, deps)
+		require.NoError(t, err,
+			"a graph that was never embedded holds no vectors to compare against; that is not a failure")
+		assert.Nil(t, emb, "and nothing is built for it")
+	})
+}
+
 // mustProfile resolves a named profile or fails the test.
 func mustProfile(t *testing.T, cfg *config.Config, name string) config.EmbedProfile {
 	t.Helper()

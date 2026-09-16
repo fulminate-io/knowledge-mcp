@@ -46,7 +46,8 @@ func (m *Manager) SearchOverlay(
 			return m.SearchOverlay(bound, gt, base, overlay, queryText, queryVec, k)
 		}, k)
 	}
-	m = m.ForDestination(ctx)
+	m, releaseDestination := m.forRequest(ctx)
+	defer releaseDestination()
 	if k <= 0 {
 		return nil, nil
 	}

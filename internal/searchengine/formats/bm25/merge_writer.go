@@ -22,6 +22,10 @@ type mergeWriter struct {
 	f    searchengine.MergeSink
 	tail int64
 	err  error
+	// padFloor is the first offset at which zero padding is legitimate: the start
+	// of the streamed tail, which is where this writer was opened. See storeAppend
+	// for why a gap below it is never padded.
+	padFloor int64
 	// strBuf carries string payloads to WriteAt without a per-call conversion.
 	// Terms and member ids are written one at a time and in huge numbers, so a
 	// []byte(s) at each of them would allocate proportionally to the corpus —
@@ -101,7 +105,7 @@ const (
 // zero-length slice with cap exactly mergeRunBytes makes every append a copy
 // into memory that already exists.
 func newMergeWriter(f searchengine.MergeSink, tail int64) *mergeWriter {
-	w := &mergeWriter{f: f, tail: tail, backing: make([]byte, mergeRunSlots*mergeRunBytes)}
+	w := &mergeWriter{f: f, tail: tail, padFloor: tail, backing: make([]byte, mergeRunSlots*mergeRunBytes)}
 	for i := range w.runs {
 		lo := i * mergeRunBytes
 		w.runs[i].buf = w.backing[lo : lo : lo+mergeRunBytes]
@@ -116,11 +120,11 @@ func newMergeWriter(f searchengine.MergeSink, tail int64) *mergeWriter {
 // An in-range write is matched BEFORE everything else, so a write landing
 // exactly at another run's start is absorbed by that run rather than growing
 // this one on top of it, and the two runs cannot then disagree about those
-// bytes. That is a statement about this arm, not a global one: the extend arm
-// does not flush overlapping runs, so a store that extends one run across
-// another's range still leaves both live and overlapping. flushOverlapping on
-// arms (2) and (4) is what keeps such a pair from reaching the sink out of
-// order.
+// bytes. THE EXTEND ARM NOW FLUSHES OVERLAPPING RUNS TOO — it used to be the one
+// arm that did not, so a store extending one run across another's range left both
+// live and overlapping and the flush order decided the bytes. Every arm that can
+// cover a range another run holds flushes it first, so the sink sees the stores in
+// the order they were made.
 //
 // A pass-through write is matched BEFORE a contiguous-extend, and THAT relation
 // is what keeps every window inside the single backing array newMergeWriter
@@ -134,7 +138,51 @@ func newMergeWriter(f searchengine.MergeSink, tail int64) *mergeWriter {
 // detached at once. This order costs one extra sink write per contiguous
 // oversize store — 47 rather than 46 on a production-shape merge — and that is
 // the trade that buys back the fixed allocation.
-func (w *mergeWriter) store(off int64, b []byte) {
+// THE TWO STORE KINDS, AND WHY THE DISTINCTION IS THE FIX. A PATCH writes a value
+// into a byte range the plan reserved for it; an APPEND writes at the tail, past
+// everything written so far. Only the second may absorb a forward gap as zero
+// padding, because only the second's gap is genuinely unwritten — see storeAppend.
+func (w *mergeWriter) store(off int64, b []byte) { w.storeAt(off, b, false) }
+
+// storeAppend places b at the tail, and is the ONLY store permitted to pad a
+// forward gap with zeros.
+//
+// WHY THE KINDS ARE DISTINGUISHED, AND WHAT IT COST TO LEARN. mergeRunMaxGap exists
+// for ONE gap: the alignment hole appendAligned opens between the previous tail and
+// the next aligned offset. Nothing writes those bytes and a sparse file reads them
+// as zeros, so padding them changes nothing. A PATCH's forward gap is a different
+// fact wearing the same clothes: the bytes between two patched structures belong to
+// a THIRD structure some other patch owns, and filling them with zeros overwrites a
+// value this merge already produced. That is what shipped. planFieldDict lays a
+// field's first-term rows immediately before its block index, so the first
+// block-index patch landed 4*(blocks-1) bytes past the open first-term run, the gap
+// fitted inside mergeRunMaxGap, and the run absorbed the block-index entries as
+// zeros — after the run that carried their true values had already reached the sink.
+// A reader then resolved those blocks at blob offset 0 and read the v2 header as a
+// posting run: "posting run of N at offset 327938".
+//
+// IT IS A RULE ABOUT PROVENANCE, NOT ABOUT BLOCK COUNTS, and that is deliberate. Any
+// layout placing two patched structures within mergeRunMaxGap of each other
+// reproduces the defect — a 3-block field (gap 8) and a 2-block field (gap 4) were
+// both observed — so the rule is "zeros are written only where nothing is written",
+// never an arithmetic exception for one window.
+//
+// THE FLOOR IS CHECKED RATHER THAN ASSUMED. An append below the planned prefix end
+// is impossible by construction (w.tail starts there and only advances), so reaching
+// it means a caller has mistaken a patch for an append — and the consequence would
+// be the silent overwrite this rule exists to prevent. It fails the merge instead.
+func (w *mergeWriter) storeAppend(off int64, b []byte) {
+	if off < w.padFloor {
+		w.err = fmt.Errorf(
+			"bm25 merge: REFUSING a tail append at offset %d, which is below the planned prefix end %d. "+
+				"Only a tail append may pad a gap with zeros, and a gap inside the prefix belongs to a structure "+
+				"another patch owns; padding it would overwrite bytes this merge already produced", off, w.padFloor)
+		return
+	}
+	w.storeAt(off, b, true)
+}
+
+func (w *mergeWriter) storeAt(off int64, b []byte, mayPad bool) {
 	if w.err != nil || len(b) == 0 {
 		return
 	}
@@ -172,6 +220,16 @@ func (w *mergeWriter) store(off int64, b []byte) {
 		if gap < 0 || gap > mergeRunMaxGap {
 			continue
 		}
+		// A PATCH DOES NOT REACH ACROSS A GAP, whatever its size. It falls through
+		// to (4), which flushes whatever overlaps and opens its own run — one extra
+		// sink write, against a class of silent overwrite. Only storeAppend arrives
+		// here with mayPad set. An exactly-contiguous patch (gap == 0) still
+		// coalesces, which is the case that carries the dictionary and docFreq rows:
+		// they are adjacent by construction, so the coalescing this writer exists
+		// for is untouched.
+		if gap > 0 && !mayPad {
+			continue
+		}
 		// FLUSH BEFORE IT WOULD OVERFLOW, never after. Each window is a slice into
 		// one pre-sized backing array with cap exactly mergeRunBytes, so appending
 		// past that cap would make append allocate a fresh buffer — reintroducing
@@ -185,6 +243,13 @@ func (w *mergeWriter) store(off int64, b []byte) {
 			w.flushRun(r)
 			gap = off - r.start
 		}
+		// AND THE OTHER HALF OF THE ROUTING NOTE ABOVE IS NOW TRUE TOO: this arm
+		// flushes every other run holding bytes in the range it is about to cover,
+		// so an extend across another live run can no longer leave two runs
+		// disagreeing about those bytes with the flush order deciding the winner.
+		// r itself is never flushed here — the range starts exactly where r's
+		// buffered bytes end, so r does not overlap it.
+		w.flushOverlapping(r.start+int64(len(r.buf)), end)
 		for range gap {
 			r.buf = append(r.buf, 0)
 		}
@@ -279,12 +344,16 @@ func (w *mergeWriter) patchU64(off int, v uint64) {
 // what keeps the output byte-identical between runs — the run buffer writes
 // those gap bytes out as explicit zeros rather than leaving them unwritten, which
 // is the same bytes by a different route.
+//
+// IT IS THE ONLY CALLER OF storeAppend, and that is the whole reason the two store
+// kinds exist: this alignment hole is the one gap in the output that no other write
+// owns, so this is the one write allowed to fill a gap with zeros.
 func (w *mergeWriter) appendAligned(b []byte, alignTo int) int {
 	if w.err != nil {
 		return 0
 	}
 	at := int64(align(int(w.tail), alignTo))
-	w.store(at, b)
+	w.storeAppend(at, b)
 	w.tail = at + int64(len(b))
 	return int(at)
 }

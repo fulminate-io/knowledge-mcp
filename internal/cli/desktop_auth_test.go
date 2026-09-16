@@ -53,7 +53,7 @@ func TestDesktopAuthStatusAndCleanup(t *testing.T) {
 	}
 	s.values[auth.KeyAccessToken] = "access"
 	s.values[auth.KeyAccessTokenExpiry] = "2099-01-02T03:04:05Z"
-	if got := d.status(ctx); got.State != "signed_in" || got.Expiry != "2099-01-02T03:04:05Z" {
+	if got := d.status(ctx); got.State != "signed_in" || got.Expiry != "" {
 		t.Fatal(got)
 	}
 	s.values[auth.KeyAccessTokenExpiry] = "2000-01-02T03:04:05Z"
@@ -63,7 +63,7 @@ func TestDesktopAuthStatusAndCleanup(t *testing.T) {
 	for _, key := range []string{auth.KeyRefreshToken, auth.KeyAccessToken, auth.KeyAccessTokenExpiry, auth.KeyClientID} {
 		s.fail = "get:" + key
 		if got := d.status(ctx); got.State != "unavailable" {
-			t.Fatal(key, got)
+			t.Error(key, got)
 		}
 	}
 	s.fail = "delete:" + auth.KeyRefreshToken
@@ -105,21 +105,30 @@ func TestDesktopLoginSelectionAndFailures(t *testing.T) {
 	}
 	withFakeDiscovery(t, "http://revocation.invalid")
 	cases := []struct{ name, selected, body, want, code string }{
-		{"none", "", `{"accounts":[],"count":0}`, "", "account_ineligible"},
-		{"one", "", `{"accounts":[{"id":"acct_A","name":"A","slug":"a","role":"owner","has_active_subscription":true}],"count":1}`, "acct_A", ""},
-		{"multiple", "", `{"accounts":[{"id":"acct_A","name":"A","slug":"a","role":"owner","has_active_subscription":true},{"id":"acct_B","name":"B","slug":"b","role":"member","has_active_subscription":true}],"count":2}`, "acct_A", ""},
-		{"unsubscribed", "", `{"accounts":[{"id":"acct_A","name":"A","slug":"a","role":"owner","has_active_subscription":false}],"count":1}`, "acct_A", "account_ineligible"},
-		{"preserve healthy", "acct_A", `{"accounts":[{"id":"acct_A","name":"A","slug":"a","role":"owner","has_active_subscription":true}],"count":1}`, "acct_A", ""},
-		{"preserve lost membership", "acct_A", `{"accounts":[],"count":0}`, "acct_A", "account_ineligible"},
-		{"preserve lost subscription", "acct_A", `{"accounts":[{"id":"acct_A","name":"A","slug":"a","role":"owner","has_active_subscription":false}],"count":1}`, "acct_A", "account_ineligible"},
+		{name: "none", body: `{"accounts":[],"count":0}`, code: "account_ineligible"},
+		{name: "one", body: `{"accounts":[{"id":"acct_A","name":"A","slug":"a","role":"owner","has_active_subscription":true}],"count":1}`, want: "acct_A"},
+		{name: "multiple", body: `{"accounts":[{"id":"acct_A","name":"A","slug":"a","role":"owner","has_active_subscription":true},{"id":"acct_B","name":"B","slug":"b","role":"member","has_active_subscription":true}],"count":2}`, want: "acct_A"},
+		{name: "unsubscribed", body: `{"accounts":[{"id":"acct_A","name":"A","slug":"a","role":"owner","has_active_subscription":false}],"count":1}`, want: "acct_A", code: "account_ineligible"},
+		{name: "preserve healthy", selected: "acct_A", body: `{"accounts":[{"id":"acct_A","name":"A","slug":"a","role":"owner","has_active_subscription":true}],"count":1}`, want: "acct_A"},
+		{name: "preserve lost membership", selected: "acct_A", body: `{"accounts":[],"count":0}`, want: "acct_A", code: "account_ineligible"},
+		{name: "preserve lost subscription", selected: "acct_A", body: `{"accounts":[{"id":"acct_A","name":"A","slug":"a","role":"owner","has_active_subscription":false}],"count":1}`, want: "acct_A", code: "account_ineligible"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			serveAccounts(t, tc.body)
-			path := useHomeWithConfig(t, tc.selected)
+			path := filepath.Join(t.TempDir(), "config")
+			if tc.selected != "" {
+				if err := config.WriteSelectedAccountID(path, tc.selected); err != nil {
+					t.Fatal(err)
+				}
+			}
 			s := &desktopStore{values: map[string]string{}}
-			d := desktopAuth{store: s, configPath: path}
-			if code := d.login(ctx); code != tc.code {
+			tr, err := buildSyncTransportFn()
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := desktopAuth{store: s, configPath: path, transport: tr}
+			if _, code, err := d.login(ctx); code != tc.code || err != nil {
 				t.Fatal(code)
 			}
 			got, err := config.ReadSelectedAccountID(path)
@@ -135,7 +144,7 @@ func TestDesktopLoginSelectionAndFailures(t *testing.T) {
 		t.Run("write failure "+key, func(t *testing.T) {
 			s := &desktopStore{values: map[string]string{}, fail: "set:" + key}
 			d := desktopAuth{store: s, configPath: filepath.Join(t.TempDir(), "config")}
-			if code := d.login(ctx); code != "session_incomplete" {
+			if _, code, err := d.login(ctx); code != "session_incomplete" || err != nil {
 				t.Fatal("write failure hidden", code)
 			}
 		})
@@ -145,23 +154,31 @@ func TestDesktopLoginSelectionAndFailures(t *testing.T) {
 func TestDesktopAccountSelectionAndPublicErrors(t *testing.T) {
 	ctx := context.Background()
 	serveAccounts(t, twoAccountsBody)
-	path := useHomeWithConfig(t, "acct_01ACME")
+	path := filepath.Join(t.TempDir(), "config")
+	if err := config.WriteSelectedAccountID(path, "acct_01ACME"); err != nil {
+		t.Fatal(err)
+	}
 	s := &desktopStore{values: map[string]string{}}
-	d := desktopAuth{store: s, configPath: path}
+	tr, err := buildSyncTransportFn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := desktopAuth{store: s, configPath: path, transport: tr}
 	for _, id := range []string{"not-a-member", "acct_01HOBBY"} {
-		if code := d.selectAccount(ctx, id); code != "account_ineligible" {
-			t.Fatal(code)
+		if _, code, err := d.selectAccount(ctx, id); code != "account_ineligible" || err != nil {
+			t.Errorf("selecting %s: code=%s err=%v", id, code, err)
+			continue
 		}
 		got, err := config.ReadSelectedAccountID(path)
 		if err != nil || got != "acct_01ACME" {
-			t.Fatal("refusal changed selection")
+			t.Errorf("selecting %s changed the selection to %s (err=%v)", id, got, err)
 		}
 	}
 	d.configPath = t.TempDir()
 	if result := d.status(ctx); result.AccountCode != "account_unavailable" {
 		t.Fatal("config failure hidden")
 	}
-	if code := d.selectAccount(ctx, "acct_01ACME"); code != "account_write_failed" {
+	if _, code, err := d.selectAccount(ctx, "acct_01ACME"); code != "account_write_failed" || err != nil {
 		t.Fatal("config write failure hidden", code)
 	}
 	s.fail = "get:" + auth.KeyRefreshToken

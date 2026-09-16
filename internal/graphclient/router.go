@@ -38,6 +38,10 @@ type Router struct {
 	mu         sync.Mutex
 	cloud      *GraphClient
 	boundCloud map[Destination]*GraphClient
+	// boundUse records the last-use tick per destination and boundTick issues
+	// them: the recency order eviction reads. Guarded by mu, like boundCloud.
+	boundUse  map[Destination]uint64
+	boundTick uint64
 	// admitGraph records a user interaction with a concrete graph instance into
 	// the working set. Installed by AttachWorkingSet; nil until then, and a nil
 	// admitter records nothing. See router_admission.go.
@@ -196,7 +200,7 @@ func (r *Router) pick(ctx context.Context) (*GraphClient, error) {
 			}
 			return r.local, nil
 		case "cloud":
-			return r.cloudForDestination(d), nil
+			return r.cloudForDestination(ctx, d), nil
 		default:
 			return nil, ErrNoBackend
 		}

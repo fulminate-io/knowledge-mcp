@@ -153,7 +153,7 @@ func (b *bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusUnauthorized {
-		if refusal := b.classifyGatewayRejection(ctx, resp); refusal != nil {
+		if refusal := b.classifyGatewayRejection(resp); refusal != nil {
 			return nil, refusal
 		}
 		return resp, nil
@@ -179,7 +179,7 @@ func (b *bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	if retryErr != nil {
 		return nil, retryErr
 	}
-	if refusal := b.classifyGatewayRejection(ctx, retried); refusal != nil {
+	if refusal := b.classifyGatewayRejection(retried); refusal != nil {
 		return nil, refusal
 	}
 	return retried, nil
@@ -215,7 +215,7 @@ func (b *bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 // rejection body larger than the cap would otherwise leave the original body
 // unread and unclosed and the underlying connection would never be released —
 // the same reason the 401 branch above drains and closes.
-func (b *bearerRoundTripper) classifyGatewayRejection(ctx context.Context, resp *http.Response) error {
+func (b *bearerRoundTripper) classifyGatewayRejection(resp *http.Response) error {
 	if resp.StatusCode < 400 || resp.StatusCode >= 500 {
 		return nil
 	}
@@ -253,10 +253,32 @@ func (b *bearerRoundTripper) classifyGatewayRejection(ctx context.Context, resp 
 	if !latch {
 		return nil
 	}
-	if id := b.sel.ID(ctx); id != "" {
+	// THE LATCH IS KEYED TO THE ACCOUNT THIS REQUEST STAMPED, read off the
+	// request that produced this response, never off the process selection. A
+	// request can now name its own account, and marking the selection for a
+	// refusal that was ABOUT ANOTHER ACCOUNT disabled every cloud call in the
+	// daemon — one foreign 403 and the user's own account was refused locally
+	// until they re-selected it or restarted.
+	//
+	// The outgoing header is the honest key because it is literally what the
+	// gateway judged: the interceptor writes it from the bound destination, or
+	// from the selection when the request is unbound, so an unbound call still
+	// latches the selection exactly as it always did.
+	if id := stampedAccount(resp); id != "" {
 		b.sel.MarkInvalid(id, reason)
 	}
 	return nil
+}
+
+// stampedAccount reports the Fulminate account the request behind resp carried
+// to the gateway, or "" when it carried none (no selection, no binding — the
+// gateway then resolved the caller's primary account and there is no account
+// here to mark).
+func stampedAccount(resp *http.Response) string {
+	if resp.Request == nil {
+		return ""
+	}
+	return resp.Request.Header.Get(auth.AccountHeaderName)
 }
 
 // responsePath names the route a response came from, for error text. A

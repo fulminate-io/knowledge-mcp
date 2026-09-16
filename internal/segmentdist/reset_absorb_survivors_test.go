@@ -181,7 +181,7 @@ func TestResetSwapAbsorbsBuildWindowSurvivors(t *testing.T) {
 			"of its ids in one segment, and without a multi-span survivor the copy-rule subtest cannot "+
 			"discriminate a union-level priority from a per-partition one", tailHalf)
 
-	survivors, err := absorbBuildWindowSurvivors(dm, published)
+	survivors, err := absorbBuildWindowSurvivors(t.Context(), dm, published)
 	require.NoError(t, err)
 	require.NotEmpty(t, survivors,
 		"fixture control: the absorb must have had survivors to consolidate, or every subtest below is "+

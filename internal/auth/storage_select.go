@@ -14,6 +14,10 @@ import (
 // error class: the real backend is unavailable on CI runners, and on a
 // developer machine there is no other way to produce a keychain error without
 // touching the developer's own keychain.
+//
+// It takes the resolved service identifier, so a fake can record which service
+// the selection opened — the one observable that distinguishes an honored
+// credential namespace from an ignored one.
 var newKeychainStoreFn = NewStore
 
 // isBackendUnavailable reports whether err proves the platform keychain is
@@ -52,18 +56,27 @@ func isBackendUnavailable(err error) bool {
 }
 
 // OpenStore returns the credential store to use in this process: the one
-// selectStore picks, wrapped read-only when [CredentialStoreReadOnlyEnv] is
-// set so reads still work and every write refuses.
+// selectStore picks under the resolved credential namespace, wrapped read-only
+// when [CredentialStoreReadOnlyEnv] is set so reads still work and every write
+// refuses.
 //
 // The wrap is applied HERE, to whichever store was selected, rather than
 // inside a backend — the rule is "this process must not write the operator's
 // credentials", and it would not hold if the keychain refused writes while
 // the file fallback accepted them.
 //
-// The signature matches NewStore so the existing construction seams and their
-// test fakes keep compiling unchanged.
+// The namespace is read HERE for the identical reason: it must bind BOTH
+// backends, or a process whose keychain is unavailable would fall back to the
+// default namespace's file and read exactly the credentials the namespace
+// exists to keep it away from. A malformed value is refused rather than
+// defaulted, so no opener can silently reach the operator's credentials —
+// see [CredentialNamespace].
 func OpenStore() (Store, error) {
-	store, err := selectStore()
+	namespace, err := CredentialNamespace()
+	if err != nil {
+		return nil, err
+	}
+	store, err := selectStore(namespace)
 	if err != nil {
 		return nil, err
 	}
@@ -81,14 +94,19 @@ func OpenStore() (Store, error) {
 // on disk, so the fallback can never shadow a real keychain entry. A keychain
 // that is reachable but failing is returned as-is, letting the real error
 // surface on the caller's next operation rather than being swallowed by a
-// silent downgrade to plaintext. Windows takes that branch: its stub
-// constructs without error and every operation returns ErrNotImplementedOS,
-// which the CLI already handles.
-func selectStore() (Store, error) {
-	ks, err := newKeychainStoreFn()
+// silent downgrade to plaintext. Windows takes that branch on a failing
+// operation: its backend constructs without error, and an operation it cannot
+// serve surfaces the Credential Manager's own error, which the CLI already
+// handles.
+//
+// The namespace binds both branches: the keychain is opened against the
+// derived service and the fallback against the derived file, so the two can
+// never resolve to different namespaces within one process.
+func selectStore(namespace string) (Store, error) {
+	ks, err := newKeychainStoreFn(credentialServiceName(namespace))
 	if err != nil {
 		if isBackendUnavailable(err) {
-			return newFileStore()
+			return newFileStore(namespace)
 		}
 		return nil, err
 	}
@@ -99,7 +117,7 @@ func selectStore() (Store, error) {
 		return ks, nil
 	}
 	if isBackendUnavailable(perr) {
-		return newFileStore()
+		return newFileStore(namespace)
 	}
 	return ks, nil
 }

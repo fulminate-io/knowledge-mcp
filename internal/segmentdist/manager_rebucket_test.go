@@ -51,7 +51,7 @@ func TestReBucketTriggerFiresOnlyWhenADoublingBehind(t *testing.T) {
 		// 2049 documents laid out at the count a 1024-document corpus derives: ONE
 		// segment holding a corpus that now derives four.
 		docs := prefixIDs(hnswVecDocs(2049), "fire-a-")
-		_, _, err := replaceBucketGroups(dm, nil, docs, nil, 1024, nil)
+		_, _, err := replaceBucketGroups(t.Context(), dm, nil, docs, nil, 1024, nil)
 		require.NoError(t, err)
 
 		require.Len(t, dm.engine.ResidentSegmentIDs(), 1,
@@ -80,7 +80,7 @@ func TestReBucketTriggerFiresOnlyWhenADoublingBehind(t *testing.T) {
 		// than one short of it — a different shape from the one this leg rules on. It
 		// is aimed at the count the seal derives, BucketCountFor(2049+8) = 4.
 		docs := prefixIDs(hnswVecDocs(2049), "miss-b-")
-		_, _, err := replaceBucketGroups(dm, nil, docs, nil, 2048, nil)
+		_, _, err := replaceBucketGroups(t.Context(), dm, nil, docs, nil, 2048, nil)
 		require.NoError(t, err)
 		tail := docsInBucket(t, 0, 4, 8, "miss-b-tail-")
 		require.NoError(t, mgr.AddAndMarkDirty(context.Background(), gt, name, tail))
@@ -110,7 +110,7 @@ func TestReBucketTriggerFiresOnlyWhenADoublingBehind(t *testing.T) {
 		// 1024 documents spread over the eight partitions an 8192-document corpus
 		// derives: the layout is FINER than the corpus now needs.
 		docs := prefixIDs(hnswVecDocs(1024), "shrunk-c-")
-		_, _, err := replaceBucketGroups(dm, nil, docs, nil, 8192, nil)
+		_, _, err := replaceBucketGroups(t.Context(), dm, nil, docs, nil, 8192, nil)
 		require.NoError(t, err)
 
 		require.Len(t, dm.engine.ResidentSegmentIDs(), 8,

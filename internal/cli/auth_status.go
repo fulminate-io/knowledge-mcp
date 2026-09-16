@@ -48,6 +48,15 @@ routes cloud calls to (read from ~/.knowledge/config). Makes no network call,
 writes nothing, and prints no token material. Works unchanged under
 KNOWLEDGE_CREDENTIAL_STORE_READONLY, because it only ever reads.
 
+KNOWLEDGE_CREDENTIAL_NAMESPACE selects a credential namespace for every
+command, not just this one: the keychain service becomes
+io.fulminate.knowledge.<namespace> and the file-store fallback becomes
+~/.knowledge/credentials.<namespace>, so a development build can sign in
+without touching the login this machine already has. Accepted values match
+^[a-z0-9][a-z0-9-]{0,31}$; any other value, including an empty one, is a
+startup error rather than a fall back to the default namespace. Unset, every
+command behaves exactly as it did before the variable existed.
+
 This answers "am I logged in?" without side effects. It does NOT verify the
 session against the server — it reports what is stored and whether it has
 expired.

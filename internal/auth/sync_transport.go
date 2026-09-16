@@ -155,7 +155,7 @@ func (t *Transport) PushGraph(
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return t.readHTTPError(ctx, resp, syncPathPrefix+path)
+		return t.readHTTPError(resp, syncPathPrefix+path)
 	}
 	// Drain so the connection can be reused.
 	_, _ = io.Copy(io.Discard, resp.Body)
@@ -193,7 +193,7 @@ func (t *Transport) controlJSON(ctx context.Context, path string, reqBody []byte
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, t.readHTTPError(ctx, resp, syncPathPrefix+path)
+		return nil, t.readHTTPError(resp, syncPathPrefix+path)
 	}
 	out, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -320,8 +320,14 @@ func (t *Transport) issueBytes(
 	} else if bypassAccountRefusal {
 		acct = t.selection().ID(ctx)
 	} else {
+		// THE SAME LADDER THE CONNECT CHOKEPOINT READS (request_account.go):
+		// header, then the calling harness session's binding, then the
+		// selection. Resolving the selection alone here would stamp a different
+		// account on /v1/sync and the segment control plane than the one the
+		// request's graph reads went to — a split this surface has no way to
+		// detect and the user no way to see.
 		var acctErr error
-		acct, acctErr = t.selection().IDForRequest(ctx)
+		acct, _, acctErr = t.selection().RequestAccount(ctx)
 		if acctErr != nil {
 			return nil, fmt.Errorf("auth: %s %s: %w", method, path, acctErr)
 		}
@@ -346,13 +352,15 @@ const MaxErrorBodyBytes = 8 * 1024
 // it as a possible account rejection, and returns a *SyncHTTPError describing
 // the failure.
 //
-// When the rejection settles the selection's validity, the selection is marked
-// invalid here so the NEXT cloud-bound call fails fast locally instead of
-// round-tripping to a guaranteed rejection. There is deliberately NO
+// When the rejection settles an account's validity, THAT ACCOUNT is marked
+// invalid here so the next cloud-bound call naming it fails fast locally instead
+// of round-tripping to a guaranteed rejection. It takes no context: the account
+// it latches is read off the refused request rather than resolved afresh, which
+// is the whole of the fix that removed the last ctx-dependent read here. There is deliberately NO
 // retry-without-the-header path: dropping the header would route the user's
 // writes into a DIFFERENT account than the one they selected, which is the
 // data-splitting failure this feature exists to prevent.
-func (t *Transport) readHTTPError(ctx context.Context, resp *http.Response, path string) error {
+func (t *Transport) readHTTPError(resp *http.Response, path string) error {
 	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, MaxErrorBodyBytes))
 	body := ""
 	if readErr == nil {
@@ -374,7 +382,18 @@ func (t *Transport) readHTTPError(ctx context.Context, resp *http.Response, path
 	}
 	reason, latch := ClassifyAccountRejection(resp.StatusCode, raw)
 	if latch {
-		if id := t.selection().ID(ctx); id != "" {
+		// LATCH THE ACCOUNT THIS REQUEST ACTUALLY STAMPED, read back off the
+		// request the response answers — not the machine-wide selection.
+		// issueBytes resolves the ladder (header, then the calling session's
+		// binding, then the selection), so the refused account is frequently NOT
+		// the selection; marking the selection over a session-bound account's
+		// 403 would refuse every OTHER session's cloud calls, and the daemon's
+		// own, on the strength of one foreign refusal. The rejection marker only
+		// self-clears when the STORED selection moves, so nothing would undo it.
+		// An unbound call still latches the selection, because that is the id it
+		// stamped. This is the same resolution the Connect chokepoint makes in
+		// graphclient's stampedAccount, and the two must not disagree.
+		if id := stampedAccountFor(resp); id != "" {
 			t.selection().MarkInvalid(id, reason)
 		}
 	}
@@ -384,6 +403,17 @@ func (t *Transport) readHTTPError(ctx context.Context, resp *http.Response, path
 		Body:          body,
 		AccountReason: reason,
 	}
+}
+
+// stampedAccountFor reports the account id the refused request carried. An
+// http.Client response always carries its Request, but the type permits nil, and
+// a response with none names no account: latching one we cannot read would guess
+// at which account the gateway refused.
+func stampedAccountFor(resp *http.Response) string {
+	if resp.Request == nil {
+		return ""
+	}
+	return resp.Request.Header.Get(AccountHeaderName)
 }
 
 // SyncHTTPError is returned when a /v1/sync/* endpoint returns a non-2xx status

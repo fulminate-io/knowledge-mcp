@@ -13,6 +13,7 @@
 package searchengine
 
 import (
+	"context"
 	"runtime"
 	"sync"
 )
@@ -82,7 +83,17 @@ type GroupHarvestStats struct {
 //     so no reader observes a partition's members missing.
 //
 // PARTIAL FAILURE IS ALL-OR-NOTHING. If any partition's build or merge fails the
-// group publishes NOTHING and the resident set is unchanged. PUBLISHING THE
+// group publishes NOTHING. The resident set is unchanged EXCEPT for one deliberate
+// disposition: a failure that was a CORRUPTION withdraws the constituent it names
+// from the published set and hands it to the owner's hook, which quarantines the
+// stored file — so the next drain rebuilds from a set that is short that segment's
+// documents, which is the intended outcome rather than the untouched set this
+// paragraph used to promise. ONE WITHDRAWAL PER ATTEMPT: the fold below returns on
+// the first non-nil harvest error, so two partitions each holding a DIFFERENT
+// corrupt constituent cost one rebuild attempt each. Progress is monotone — every
+// attempt withdraws one more bad segment and none of them comes back — but a reader
+// should not expect one call to dispose of everything it could have found.
+// PUBLISHING THE
 // PARTITIONS THAT SUCCEEDED WOULD BE THE ORIGINAL DEFECT MADE DETERMINISTIC — the
 // removal set covers every constituent, so the failed partitions' members would
 // be discarded with segments nobody rebuilt them from. "Publish what we have"
@@ -103,8 +114,24 @@ type GroupHarvestStats struct {
 // else — the caller knows only the union it handed in, which the resolve step
 // filters.
 func (e *SegmentedIndex[Q, S]) ReplaceBucketGroup(
-	bucketCount int, constituents []SegmentID, work []BucketWork,
+	ctx context.Context, bucketCount int, constituents []SegmentID, work []BucketWork,
 ) (map[int]SegmentID, GroupHarvestStats, error) {
+	// IT TAKES A CONTEXT BECAUSE IT IS THE LONGEST CALL IN THE SHUTDOWN PATH. A
+	// clean stop drains the segment backlog under a bounded deadline, and before
+	// this parameter existed an in-flight group rebuild ran to completion whatever
+	// the deadline said — a reported daemon took 32.9 seconds to leave a 3-second
+	// window, and the reporter's 213-second rebuild outlived their service
+	// manager's kill timer entirely.
+	//
+	// ABANDONING IS SAFE BY CONSTRUCTION, and only because of the all-or-nothing
+	// contract above: a group that abandons publishes NOTHING, so the caller's
+	// backlog is untouched and the next drain rebuilds from it. Do not "improve"
+	// this by publishing the partitions that finished. (A group that abandons on a
+	// CORRUPTION has withdrawn that one constituent — see the contract above — so
+	// what the next drain rebuilds from is the backlog minus those documents.)
+	if err := ctx.Err(); err != nil {
+		return nil, GroupHarvestStats{}, err
+	}
 	set := e.set.Load()
 
 	// (1) RESOLVE ONCE. Every partition below harvests against exactly these
@@ -143,23 +170,10 @@ func (e *SegmentedIndex[Q, S]) ReplaceBucketGroup(
 	}
 
 	// (3a) SPAN EVERY RESOLVED CONSTITUENT ONCE, for the whole group, so the
-	// per-partition narrowing below is a map lookup rather than a rescan. Asking per
-	// partition would cost O(partitions x corpus) — the very shape this narrowing
-	// exists to remove — so it is computed here, once, and read by every harvest.
-	//
-	// MEMBERSHIP, NOT LIVENESS, and the asymmetry is deliberate. SegmentSpans does
-	// not consult liveness either, and a SUPERSET is safe: an entry whose only
-	// members in a partition are dead contributes nothing to that partition's merge,
-	// so including it is the same no-op the union form already paid for. A SUBSET
-	// would be data loss. Do not "tighten" this to live members only.
-	spans := make(map[SegmentID]map[int]bool, len(resolved))
-	for _, entry := range resolved {
-		held := make(map[int]bool)
-		for id := range entry.members {
-			held[BucketOf(id, bucketCount)] = true
-		}
-		spans[entry.meta.ID] = held
-	}
+	// per-partition narrowing below is a map lookup rather than a rescan. See
+	// bucketSpans for why it is computed here rather than per partition, and why it
+	// reads membership rather than liveness.
+	spans := bucketSpans(resolved, bucketCount)
 
 	// (3b) HARVEST THE PARTITIONS CONCURRENTLY, each against only the constituents
 	// that span it. Nothing in one partition's harvest depends on another's — the
@@ -169,7 +183,7 @@ func (e *SegmentedIndex[Q, S]) ReplaceBucketGroup(
 	// hands the group's whole survivor set to the FIRST entry in added and nothing to
 	// the rest, so a timing-dependent order would move the reclaim event between
 	// segments run to run.
-	harvested, freshIDs, harvestErrs, walked := e.harvestGroup(resolved, spans, work, bucketCount)
+	harvested, freshIDs, harvestErrs, walked := e.harvestGroup(ctx, resolved, spans, work, bucketCount)
 
 	// FOLD THE WALK COUNTERS AFTER THE JOIN, before the result fold, so the numbers
 	// are populated on the error return below as well as on success — a group that
@@ -185,6 +199,12 @@ func (e *SegmentedIndex[Q, S]) ReplaceBucketGroup(
 	// changed; which partition contributes what, and in what order, has not.
 	for i, w := range work {
 		if err := harvestErrs[i]; err != nil {
+			// THE GROUP FORM OWES THE SAME WITHDRAWAL AS THE PER-PARTITION SWAP. A
+			// group publishes nothing on a failure, so a corrupt constituent left
+			// published fails the NEXT rebuild too — and the group form is the only
+			// path that can consolidate a segment spanning several partitions, so a
+			// corruption it reports to nobody is a corpus that can never be re-emitted.
+			e.reportCorruptFrom(err)
 			return nil, stats, err
 		}
 		if freshIDs[i] != "" {
@@ -201,6 +221,14 @@ func (e *SegmentedIndex[Q, S]) ReplaceBucketGroup(
 		}
 		added = append(added, harvested[i])
 		publishedBy[w.Bucket] = harvested[i].meta.ID
+	}
+
+	// THE LAST CHECK BEFORE THE PUBLISH. Everything above is work that can be
+	// thrown away; from the CAS down it is not. A group whose window closed while
+	// it was harvesting abandons here rather than publishing, so the caller's
+	// backlog survives and the record says the work was skipped.
+	if err := ctx.Err(); err != nil {
+		return nil, stats, err
 	}
 
 	if len(added) == 0 {
@@ -235,6 +263,29 @@ func (e *SegmentedIndex[Q, S]) ReplaceBucketGroup(
 		survivors = nil
 	}
 	return publishedBy, stats, nil
+}
+
+// bucketSpans reports, per resolved constituent, which partitions of a
+// bucketCount-way split its members fall in. It is the map entriesSpanningBucket
+// reads, and ReplaceBucketGroup builds it ONCE for the whole group: asking per
+// partition would cost O(partitions x corpus), the very shape that narrowing exists
+// to remove.
+//
+// MEMBERSHIP, NOT LIVENESS, and the asymmetry is deliberate. SegmentSpans does not
+// consult liveness either, and a SUPERSET is safe: an entry whose only members in a
+// partition are dead contributes nothing to that partition's merge, so including it
+// is the same no-op the union form already paid for. A SUBSET would be data loss. Do
+// not "tighten" this to live members only.
+func bucketSpans[Q, S any](resolved []*segmentEntry[Q, S], bucketCount int) map[SegmentID]map[int]bool {
+	spans := make(map[SegmentID]map[int]bool, len(resolved))
+	for _, entry := range resolved {
+		held := make(map[int]bool)
+		for id := range entry.members {
+			held[BucketOf(id, bucketCount)] = true
+		}
+		spans[entry.meta.ID] = held
+	}
+	return spans
 }
 
 // entriesSpanningBucket returns the resolved constituents that hold at least one
@@ -273,7 +324,7 @@ func entriesSpanningBucket[Q, S any](
 // written into pre-sized index-addressed slices so the writes are disjoint and the
 // fold order stays the ORIGINAL work order rather than a completion order.
 func (e *SegmentedIndex[Q, S]) harvestGroup(
-	resolved []*segmentEntry[Q, S], spans map[SegmentID]map[int]bool,
+	ctx context.Context, resolved []*segmentEntry[Q, S], spans map[SegmentID]map[int]bool,
 	work []BucketWork, bucketCount int,
 ) (harvested []*segmentEntry[Q, S], freshIDs []SegmentID, harvestErrs []error, walked []int) {
 	harvested = make([]*segmentEntry[Q, S], len(work))
@@ -289,6 +340,16 @@ func (e *SegmentedIndex[Q, S]) harvestGroup(
 	for range workers {
 		wg.Go(func() {
 			for i := range idxCh {
+				// THE WINDOW IS CHECKED PER PARTITION, which is what makes the
+				// abandon granular: a worker that finds the context done records
+				// that error for its index and takes the next one, so the join
+				// below still happens and the fold still sees every slot. The
+				// cost of abandoning is therefore at most ONE partition harvest,
+				// the one already in flight in each worker.
+				if err := ctx.Err(); err != nil {
+					harvestErrs[i] = err
+					continue
+				}
 				// EACH PARTITION GETS ONLY THE CONSTITUENTS THAT SPAN IT. This is
 				// the narrowing: the accept predicate already discarded every
 				// non-member, so a constituent with nothing in this partition

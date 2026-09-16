@@ -52,6 +52,27 @@ type diskSegmentCache struct {
 	ll     *list.List               // front = MRU, back = LRU; element value = *cacheEntry
 	index  map[string]*list.Element // id -> element
 	curByt int64
+	// quarantined is the set of segment ids this cache has WITHDRAWN FROM SERVICE
+	// — moved into the quarantine subdirectory and dropped from the index. It is a
+	// SET rather than a counter because Quarantine is called repeatedly for one id
+	// (the engine reports a corruption from every concurrent query that touches the
+	// segment), so a counter would multiply one withdrawal by its report count.
+	//
+	// IT IS SEEDED FROM THE DIRECTORY AT CONSTRUCTION, which is what makes the
+	// reading survive a restart. The withdrawal itself already does: the file is
+	// moved out of the root and scanExisting does not re-adopt it, so the documents
+	// stay unreachable across restarts. A count that reset to zero would report a
+	// recovered graph while its documents were still gone.
+	//
+	// AND IT IS CLEARED WHEN THE CURE LANDS, which is the other half of the same
+	// statement. What this reports is CURRENT unreachability — manage(status) renders
+	// it beside "unreachable until this graph's segments are rebuilt" — so when a
+	// reset rebuild's layer swap lands for this graph and format, cureQuarantined
+	// empties this set and moves the files into a cured- subdirectory: the documents
+	// are searchable again, the evidence is kept, and the re-seed never counts it
+	// again. A number that could only ever rise would keep asserting a loss the
+	// operator has already repaired, which is noise rather than a reading.
+	quarantined map[string]bool
 }
 
 // cacheEntry is one LRU node: the content-hash id + the stored byte size.
@@ -78,11 +99,12 @@ var _ segmentL2Cache = (*diskSegmentCache)(nil)
 // network. The dir is created lazily on the first Put.
 func newDiskSegmentCache(root string, maxBytes int64, advice readAdvice) *diskSegmentCache {
 	c := &diskSegmentCache{
-		root:    root,
-		maxByte: maxBytes,
-		advice:  advice,
-		ll:      list.New(),
-		index:   make(map[string]*list.Element),
+		root:        root,
+		maxByte:     maxBytes,
+		advice:      advice,
+		ll:          list.New(),
+		index:       make(map[string]*list.Element),
+		quarantined: make(map[string]bool),
 	}
 	c.scanExisting()
 	return c
@@ -110,6 +132,7 @@ func (c *diskSegmentCache) scanExisting() {
 		c.index[id] = el
 		c.curByt += info.Size()
 	}
+	c.scanQuarantined()
 }
 
 // path returns the .seg file path for a content-hash id.

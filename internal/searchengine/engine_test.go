@@ -398,15 +398,20 @@ func TestSegmentSetCOW(t *testing.T) {
 	if len(base.entries) != 1 {
 		t.Fatalf("base mutated: %d entries", len(base.entries))
 	}
-	if _, ok := base.route["b"]; ok {
+	if _, ok := base.routeOf("b"); ok {
 		t.Fatal("base route gained b — COW violated")
 	}
 	// The new snapshot has both.
 	if len(next.entries) != 2 {
 		t.Fatalf("next has %d entries, want 2", len(next.entries))
 	}
-	if next.route["a"] != "seg1" || next.route["b"] != "seg2" {
-		t.Fatalf("next route wrong: %v", next.route)
+	// The route is resolved rather than indexed directly: the snapshot's route is
+	// two-level (segmentset.go), so a lookup is the thing a reader does. The
+	// assertion is the same one.
+	a, _ := next.routeOf("a")
+	b, _ := next.routeOf("b")
+	if a != "seg1" || b != "seg2" {
+		t.Fatalf("next route wrong: a=%v b=%v", a, b)
 	}
 }
 

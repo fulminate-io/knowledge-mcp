@@ -127,7 +127,7 @@ func TestGroupSwapIsAtomicAcrossPartitions(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := e.ReplaceBucketGroup(2, []SegmentID{shared}, []BucketWork{
+		_, _, err := e.ReplaceBucketGroup(t.Context(), 2, []SegmentID{shared}, []BucketWork{
 			{Bucket: 0}, {Bucket: 1},
 		})
 		done <- err
@@ -182,7 +182,7 @@ func TestGroupSwapPublishesNothingOnPartialFailure(t *testing.T) {
 	shared := sealSegment(t, e, spanning, "alpha")
 	before := residentSnapshot(e)
 
-	if _, _, err := e.ReplaceBucketGroup(2, []SegmentID{shared}, []BucketWork{
+	if _, _, err := e.ReplaceBucketGroup(t.Context(), 2, []SegmentID{shared}, []BucketWork{
 		{Bucket: 0}, {Bucket: 1},
 	}); err == nil {
 		t.Fatal("a failed partition build must return an error, not a partial publish")
@@ -231,7 +231,7 @@ func TestGroupReclaimSparesEveryPublishedID(t *testing.T) {
 	p0b := sealSegment(t, e, groupIDsFor(t, 0, 12)[6:], "beta")
 	p1 := sealSegment(t, e, groupIDsFor(t, 1, 6), "gamma")
 
-	published, _, err := e.ReplaceBucketGroup(2, []SegmentID{p0a, p0b, p1}, []BucketWork{
+	published, _, err := e.ReplaceBucketGroup(t.Context(), 2, []SegmentID{p0a, p0b, p1}, []BucketWork{
 		{Bucket: 0}, {Bucket: 1},
 	})
 	if err != nil {

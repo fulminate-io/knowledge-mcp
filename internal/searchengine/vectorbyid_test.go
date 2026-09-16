@@ -62,6 +62,12 @@ type vecFormat struct{}
 
 func (vecFormat) Name() string { return "vec" }
 
+// ValidateSegment is the format's structural self-check. A vec segment is a list of
+// rows with no internal offsets, so there is no reference that can point outside it
+// and nothing to refuse: the honest answer is nil, and the method exists because the
+// interface requires every format to say how its segments are validated.
+func (vecFormat) ValidateSegment(SegmentID, []byte) error { return nil }
+
 func (vecFormat) Build(docs []Document) (Segment[mockQuery, mockStats], BuildReport, error) {
 	rows := make([]vecRow, 0, len(docs))
 	for _, d := range docs {
@@ -93,6 +99,8 @@ func (vecFormat) MergeTo(dst MergeSink, segs []Segment[mockQuery, mockStats], ac
 }
 
 func (vecFormat) AggregateStats([]Segment[mockQuery, mockStats]) mockStats { return mockStats{} }
+
+func (vecFormat) AppendStats(mockStats, Segment[mockQuery, mockStats]) mockStats { return mockStats{} }
 
 func vecDoc(id string, vec []byte) Document { return Document{ID: id, Vector: vec} }
 
@@ -190,11 +198,10 @@ func TestVectorByIDDeclinesADeletedMember(t *testing.T) {
 	// segment. This is the control that makes the (nil,false) below mean "dead"
 	// rather than "gone".
 	set := e.set.Load()
-	sid, routed := set.route[deleted]
-	if !routed {
+	if _, routed := set.routeOf(deleted); !routed {
 		t.Fatalf("PRECONDITION: %s lost its route entry — Delete must keep routing and clear only the live bit", deleted)
 	}
-	entry := set.entryByID(sid)
+	entry := set.entryOf(deleted)
 	if entry == nil {
 		t.Fatalf("PRECONDITION: %s routes to a segment that is not resident", deleted)
 	}

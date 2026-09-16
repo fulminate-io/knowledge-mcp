@@ -172,10 +172,16 @@ func TestInterceptSearch_ModeVectorSkipsTheBM25Arm(t *testing.T) {
 	assert.NotEmpty(t, mgr.lastVec, "mode:vector must still supply the embedding")
 }
 
-// TestInterceptSearch_ModeVectorWithoutEmbedderRefused covers the install with
-// no semantic index: serving mode:vector there renders zero rows, which reads
-// as "no matches" when the truth is "no vector arm available". The refusal
+// TestInterceptSearch_ModeVectorWithoutEmbedderRefused covers the graph with no
+// recorded embed identity: serving mode:vector there renders zero rows, which
+// reads as "no matches" when the truth is "no vector arm available". The refusal
 // makes the difference legible.
+//
+// THE ARM IT COVERS IS THE REFUSAL, not the wording. It asserted "embedder" back
+// when all three arms shared one sentence; the knowledge arm now names the
+// graph's missing RECORD instead, because that is what it actually checked, so
+// the assertion moved with the message rather than the test being deleted. The
+// wording itself is pinned arm by arm in vector_refusal_condition_test.go.
 func TestInterceptSearch_ModeVectorWithoutEmbedderRefused(t *testing.T) {
 	t.Setenv("VOYAGE_API_KEY", "")
 	deps, _, _ := newModeHonorDeps(t, modeHonorNodes(), modeHonorHits(), false)
@@ -184,10 +190,10 @@ func TestInterceptSearch_ModeVectorWithoutEmbedderRefused(t *testing.T) {
 		"graph": "knowledge", "mode": "vector", "query": "x",
 	}))
 	require.True(t, handled)
-	require.True(t, out.IsError, "mode:vector with no embedder must be refused, not served empty")
+	require.True(t, out.IsError, "mode:vector with no recorded identity must be refused, not served empty")
 	msg := engine.FirstTextContent(out)
 	assert.Contains(t, msg, "vector", "the refusal names the requested mode")
-	assert.Contains(t, msg, "embedder", "the refusal names what is missing")
+	assert.Contains(t, msg, "embed identity", "the refusal names what is missing")
 }
 
 // TestInterceptSearch_ModeTemporalAppliesTheRecencyRerank closes the gap

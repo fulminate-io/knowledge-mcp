@@ -230,6 +230,22 @@ type coverageSegReader struct {
 	// verified formula reads. An absent key reports ok=false — this process never
 	// loaded that graph's record — which the column renders as cache-aged.
 	verificationByKey map[string]RepairVerification
+	// residentSegmentsByKey is the per-graph, per-FORMAT resident SEGMENT count —
+	// a different question from residentByKey above, which is a DOC count. An
+	// absent key reports nothing at all rather than a fabricated zero per format,
+	// which is the production seam's own contract.
+	residentSegmentsByKey map[string]map[string]int
+	// residentSegmentPeaksByKey is the seal-path high-water of that same count, held
+	// separately so a test can make the two DIFFER — which is the only way to prove
+	// which of them a surface renders.
+	residentSegmentPeaksByKey map[string]map[string]int
+	// residentSegmentDestinationsByKey is how many destinations each format's pair
+	// of readings was folded from, held separately for the same reason: a fixture
+	// that derived it from the counts could not tell a cell that NAMES it from one
+	// that computes it.
+	residentSegmentDestinationsByKey map[string]map[string]int
+	// quarantinedByKey is the per-graph, per-FORMAT withdrawal count; absent means unmeasured.
+	quarantinedByKey map[string]map[string]int
 }
 
 func (r *coverageSegReader) segKey(gt kgtypes.GraphType, name string) string {
@@ -468,7 +484,9 @@ func TestCoverageRowLiveResidentUsesLiveCount(t *testing.T) {
 	}
 	deps := &coverageDeps{gc: &coverageFake{}, segCov: seg}
 
-	_, live, hasSeg := segCoveredFor(context.Background(), deps, kgtypes.GraphKnowledge, "default")
+	// embedded=7: a graph WITH a vector corpus, so the probe takes the vector
+	// readers this test is about rather than the text-pool branch.
+	_, live, hasSeg := segCoveredFor(context.Background(), deps, kgtypes.GraphKnowledge, "default", 7)
 	require.True(t, hasSeg)
 	require.Equal(t, 100, live,
 		"the column must render the DISTINCT live-searchable count (100), not the summed residency figure (200)")

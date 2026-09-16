@@ -4,6 +4,8 @@ package pipeline
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
@@ -37,7 +39,7 @@ import (
 // Does no synchronous graph lookup: the collector goroutines lazy-Retrieve
 // on their first tick, so registration is cheap and never blocks the refresh
 // loop on a backend round-trip.
-func (p *Pipeline) RegisterGraph(ctx context.Context, gt kgtypes.GraphType, name string) {
+func (p *Pipeline) RegisterGraph(ctx context.Context, gt kgtypes.GraphType, name string) error {
 	destination, bound := graphclient.StorageDestination(ctx)
 	key := graphKey{GraphType: gt, GraphName: name, Destination: destination}
 	// Resolve the CONCRETE backend this collector scans + stamps. Login-routed
@@ -48,8 +50,19 @@ func (p *Pipeline) RegisterGraph(ctx context.Context, gt kgtypes.GraphType, name
 	backend := p.resolveBackend(ctx)
 	p.collectorMu.Lock()
 	defer p.collectorMu.Unlock()
+	// A STOPPED PIPELINE REFUSES, LOUDLY, and the loudness is the point. Enlisting
+	// here would put this collector's goroutine on the WaitGroup Stop is waiting on
+	// with its cancel func in a map Stop has already replaced, which is how Stop
+	// came to hang forever. A SILENT no-op would be worse than the hang in one
+	// respect: the caller would believe it had registered a collector for a graph
+	// nothing is draining, and nothing would say so. The latch and the cancel-and-
+	// clear are set in one critical section (stopSequence step 1), so this read
+	// cannot see a half-stopped registry.
+	if p.collectorsStopped {
+		return fmt.Errorf("%w: refusing to register %s/%s", ErrPipelineStopped, gt, name)
+	}
 	if _, exists := p.collectorCancels[key]; exists {
-		return
+		return nil
 	}
 	cctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // cancel is stored in collectorCancels and invoked by UnregisterGraph / stopSequence
 	if bound {
@@ -138,6 +151,14 @@ func (p *Pipeline) RegisterGraph(ctx context.Context, gt kgtypes.GraphType, name
 	// pdf ARE admitted too, and deliberately: server-side BM25 segments over the
 	// collected chunks are what make a raw graph keyword-searchable, and the same
 	// server-side per-graph node-type allow-list keeps their container nodes out.
+	// THE ARM'S WAKE CHANNEL IS CONSTRUCTED WHETHER OR NOT THE ARM IS, so the wake
+	// slice below is a fixed-length, nil-free positional slice for EVERY collector.
+	// That is not tidiness: the slice is iterated by callers other than
+	// pokeAxisWake, and a nil entry at a position they expect to be a channel makes
+	// a send vanish into the default arm while a len() reads zero. One buffered(1)
+	// channel per collector costs nothing, and a poke delivered to a graph whose arm
+	// is disabled simply sits there unread.
+	bm25Wake := make(chan struct{}, 1)
 	if bm25ArmEnabledFor(gt, p.segmentMgr != nil) {
 		mgr := p.segmentMgr
 		if p.segmentManagerFor != nil {
@@ -145,7 +166,7 @@ func (p *Pipeline) RegisterGraph(ctx context.Context, gt kgtypes.GraphType, name
 		}
 		c.bm25 = bm25Arm{
 			enabled:     true,
-			wake:        make(chan struct{}, 1),
+			wake:        bm25Wake,
 			loadCursors: func() ([]*knowledgev1.LayerCursor, error) { return mgr.LoadBM25Cursors(gt, name) },
 			saveCursors: func(cur []*knowledgev1.LayerCursor) error { return mgr.SaveBM25Cursors(gt, name, cur) },
 			corpusStamp: func() (int64, bool) { return p.corpusStampFor(key) },
@@ -157,11 +178,24 @@ func (p *Pipeline) RegisterGraph(ctx context.Context, gt kgtypes.GraphType, name
 			},
 		}
 	}
-	p.collectorWakes[key] = []chan struct{}{c.summaryWake, c.embedWake}
+	// THE THIRD ENTRY IS THE BM25 ARM'S, and it lands here together with
+	// bm25WakeIdx and the corpus-stamp poke in genpoll.go or the change does
+	// nothing: pokeAxisWake is silent past the end of the slice, so a registration
+	// with no poker and a poker with no registration are both inert and both keep
+	// every test green. bm25Wake is non-nil for every collector (see above), so
+	// this slice is the same length and the same shape whatever the arm's state.
+	p.collectorWakes[key] = []chan struct{}{c.summaryWake, c.embedWake, bm25Wake}
 	p.collectorWG.Go(func() {
 		c.run(cctx)
 	})
+	return nil
 }
+
+// ErrPipelineStopped is what RegisterGraph returns for a pipeline whose
+// collectors have been torn down. It is a sentinel so a caller branches on the
+// CONDITION rather than on a message: the refresh loop treats it as "this
+// pipeline is going away, stop registering", which is not a fault.
+var ErrPipelineStopped = errors.New("pipeline: collectors are stopped")
 
 // WakeAll triggers ONE immediate central bulk gen-poll (genPollWake) so a collect
 // (or any bulk write) re-polls every loaded graph's dirty-gen in a SINGLE RPC and

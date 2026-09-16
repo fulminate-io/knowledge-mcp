@@ -17,7 +17,7 @@ func newFileStoreInTempHome(t *testing.T) (*fileStore, string) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	s, err := newFileStore()
+	s, err := newFileStore("")
 	if err != nil {
 		t.Fatalf("newFileStore: %v", err)
 	}

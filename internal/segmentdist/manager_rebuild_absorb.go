@@ -3,6 +3,7 @@
 package segmentdist
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
@@ -38,7 +39,7 @@ import (
 // drain that touches their partitions — which is precisely today's behaviour, so no
 // new failure mode appears. Nothing is deleted before its replacement is published.
 func absorbBuildWindowSurvivors[Q, S any](
-	dm *distManager[Q, S], published []searchengine.SegmentID,
+	ctx context.Context, dm *distManager[Q, S], published []searchengine.SegmentID,
 ) (survivors []searchengine.SegmentID, err error) {
 	publishedSet := make(map[searchengine.SegmentID]bool, len(published))
 	for _, id := range published {
@@ -69,7 +70,7 @@ func absorbBuildWindowSurvivors[Q, S any](
 	// partition it spans. The absorb derives no spans and no ordering of its own:
 	// splitting them across two operands is how the seed and the priority would come to
 	// disagree about which segments they mean.
-	if _, _, err := replaceBucketGroups(dm, nil, nil, nil, corpusDocs, survivors); err != nil {
+	if _, _, err := replaceBucketGroups(ctx, dm, nil, nil, nil, corpusDocs, survivors); err != nil {
 		return nil, err
 	}
 	// SWAP THEN PERSIST, which is the DRAIN's order and not the reset's. The reset

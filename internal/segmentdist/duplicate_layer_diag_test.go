@@ -55,7 +55,7 @@ func TestDiagDuplicateLayerSurvivorComposition(t *testing.T) {
 
 		// Call the fan-out directly so the number of NON-EMPTY publishes is observable;
 		// ReEmitDirtyBuckets reports only an error.
-		published, _, err := replaceBucketGroups(dm, nil, base[:dupLayerWindow], nil, corpusDocs, nil)
+		published, _, err := replaceBucketGroups(t.Context(), dm, nil, base[:dupLayerWindow], nil, corpusDocs, nil)
 		require.NoError(t, err)
 		t.Logf("FANOUT partitions=%d nonEmptyPublishes=%d distinctPublishedIDs=%d",
 			partitions, len(published), len(uniqueIDs(published)))

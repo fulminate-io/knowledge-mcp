@@ -47,7 +47,8 @@ func TestConstructClient_KeepaliveGatedOnLogin(t *testing.T) {
 		startKeepaliveFn = func(_ *graphclient.GraphClient, _ context.Context) { called = true }
 		t.Cleanup(func() { startKeepaliveFn = origKeepalive })
 
-		c := constructClient(Config{LocalDialer: dialer})
+		c, err := constructClient(Config{LocalDialer: dialer})
+		require.NoError(t, err)
 		require.NotNil(t, c)
 		return called
 	}

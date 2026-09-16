@@ -19,6 +19,27 @@ import (
 // every outbound cloud call, and it changes at human speed.
 const DefaultAccountCheckTTL = 5 * time.Second
 
+// RejectedAccountTTL is how long a gateway rejection is remembered for ONE
+// account before the gateway is asked again.
+//
+// A 403 is a fact about a MOMENT, not a property of the account: the commonest
+// cause is membership lag — the user is added to the account a minute later and
+// the gateway would admit them — and a latch with no expiry turned that into a
+// daemon that refused the account until it was restarted, printing a remedy
+// ("select the original account") that a header-named account does not even
+// have. Sixty seconds is the window a membership change lands in at human
+// speed. It bounds the wasted round trips to one per minute per account, which
+// is the whole benefit the record was ever buying: this is a cache of calls
+// already watched fail, never an authorization decision, and the gateway
+// re-decides on every call that does go out.
+const RejectedAccountTTL = 60 * time.Second
+
+// maxRejectedAccounts bounds the per-account rejection record. The ids that can
+// enter it are caller-driven (a /mcp request may name any account), and the
+// record is a courtesy cache rather than an authorization decision, so it is
+// capped at a small fixed size and dropped whole when the cap is reached.
+const maxRejectedAccounts = 32
+
 // AccountHeaderName is the header the gateway reads to route a bearer call to
 // a specific Fulminate account. Absent header => the gateway resolves the
 // caller's primary account, which is the pre-selection behavior.
@@ -28,6 +49,13 @@ const AccountHeaderName = "Knowledge-Account-Id"
 // gateway rejection has been observed for the currently stored selection. Both
 // transports and the CLI match it with errors.Is.
 var ErrAccountSelectionRejected = errors.New("auth: selected Fulminate account was rejected by the gateway")
+
+// rejection is one observed gateway refusal: the gateway's own reason and the
+// moment it arrived, which is what RejectedAccountTTL is measured from.
+type rejection struct {
+	reason string
+	at     time.Time
+}
 
 // AccountSelection answers "which Fulminate account is this process routing
 // to?" with a short-lived in-memory cache around config.ReadSelectedAccountID,
@@ -44,9 +72,13 @@ var ErrAccountSelectionRejected = errors.New("auth: selected Fulminate account w
 //
 // THE REJECTION MARKER IS PER-PROCESS AND IN-MEMORY, deliberately. It records
 // that a gateway rejection HAS BEEN OBSERVED BY THIS PROCESS; it is not a
-// cross-process invalidation store, and its scope is not a defect. The marker
-// is keyed by account id, so it self-clears as soon as a cached read returns a
-// different id.
+// cross-process invalidation store, and its scope is not a defect. It is keyed
+// by ACCOUNT ID and holds one entry per account observed rejected, because a
+// request can name its own account: a refusal for an account this daemon merely
+// asked about must not refuse the account it actually selected. The whole
+// record is dropped when a config re-read shows the user deliberately switched
+// selections, which is what re-arms a long-lived daemon within one TTL, with no
+// IPC.
 //
 // The gateway remains the enforcement authority. This type only lets the
 // client decline a call it has already watched fail.
@@ -57,10 +89,11 @@ type AccountSelection struct {
 	mu        sync.Mutex
 	lastCheck time.Time
 	id        string
-	// invalidID / invalidReason record the gateway rejection observed for
-	// that specific account id. Cleared whenever the cached id moves off it.
-	invalidID     string
-	invalidReason string
+	// invalid records the gateway's own reason per account id observed
+	// rejected, with the moment it was observed: an entry older than
+	// RejectedAccountTTL is stale and the gateway is asked again. Bounded by
+	// maxRejectedAccounts; see MarkInvalid.
+	invalid map[string]rejection
 	// warnedOnce keeps config-read failures to one WARN per session so a
 	// transiently unreadable config does not flood the log. Mirrors
 	// AuthState.warnedOnce (state.go:47).
@@ -70,6 +103,15 @@ type AccountSelection struct {
 	// via setClockForTest so a cache-window assertion is a statement about the
 	// TTL rather than about how busy the machine was. Guarded by mu.
 	now func() time.Time
+	// sessions is the per-session binding source the request ladder consults
+	// between the header and this selection (request_account.go). Nil in a
+	// process with no per-session layer — a CLI invocation rather than the
+	// daemon — which makes the session rung absent, not degraded. Guarded by mu.
+	sessions SessionAccountResolver
+	// sessionsGen counts installs of that resolver, so a restore closure can
+	// tell whether its own install is still the current one. See
+	// SetSessionAccountResolver. Guarded by mu.
+	sessionsGen uint64
 }
 
 // NewAccountSelection wires an AccountSelection against a config path and TTL.
@@ -117,25 +159,74 @@ func (s *AccountSelection) IDForRequest(ctx context.Context) (string, error) {
 	if id == "" {
 		return "", nil
 	}
-	if s.invalidID == id {
-		return "", fmt.Errorf("%w: account %s: %s — run `knowledge accounts` to list the accounts you can use, then `knowledge account use <id>`",
-			ErrAccountSelectionRejected, id, s.invalidReason)
+	if err := s.rejectionForLocked(id); err != nil {
+		return "", err
 	}
 	return id, nil
 }
 
+// RejectionFor reports the gateway rejection observed for THAT account, or nil.
+//
+// It is the per-account half of the same decision IDForRequest makes for the
+// stored selection, and it exists because a request can now name its own
+// account: a call bound to account B must be refused when B has been rejected
+// and served when it has not, whatever the process selection is or has been
+// told about itself. Marking an account that is not the selection is harmless
+// for the same reason — the marker only ever fires on an exact id match.
+func (s *AccountSelection) RejectionFor(id string) error {
+	if id == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rejectionForLocked(id)
+}
+
+// rejectionForLocked is the shared body: the record for that account, rendered
+// as the caller's error with the gateway's own reason and the remedy. Caller
+// must hold s.mu.
+func (s *AccountSelection) rejectionForLocked(id string) error {
+	seen, rejected := s.invalid[id]
+	if !rejected {
+		return nil
+	}
+	if s.clockNow().Sub(seen.at) >= RejectedAccountTTL {
+		// Stale: the gateway decides again rather than this process deciding
+		// for it forever. Dropped here so the record does not keep an entry
+		// nobody will consult against the cap.
+		delete(s.invalid, id)
+		return nil
+	}
+	reason := seen.reason
+	return fmt.Errorf("%w: account %s: %s — run `knowledge accounts` to list the accounts you can use, then `knowledge account use <id>`",
+		ErrAccountSelectionRejected, id, reason)
+}
+
 // MarkInvalid records that the gateway rejected id, with the gateway's own
-// reason text. Subsequent IDForRequest calls refuse while that id is the
-// stored selection. Marking an id that is not (or is no longer) the selection
-// is harmless — the marker only ever fires on an exact id match.
+// reason text. Subsequent calls FOR THAT ACCOUNT are refused locally, whether
+// they come from the stored selection or from a request that named it.
+// Marking an account that is not the selection is harmless — the record only
+// ever fires on an exact id match.
+//
+// The record is BOUNDED. A request may name any account, so the set of ids that
+// can be rejected is caller-driven; at the cap the whole record is dropped
+// rather than grown. Nothing is lost but the courtesy: this is a cache of
+// "calls we have already watched fail", never an authorization decision, and a
+// forgotten entry costs one refused round trip to the gateway, which is the
+// authority on membership either way.
 func (s *AccountSelection) MarkInvalid(id, reason string) {
 	if id == "" {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.invalidID = id
-	s.invalidReason = reason
+	if s.invalid == nil {
+		s.invalid = make(map[string]rejection, 1)
+	}
+	if _, known := s.invalid[id]; !known && len(s.invalid) >= maxRejectedAccounts {
+		clear(s.invalid)
+	}
+	s.invalid[id] = rejection{reason: reason, at: s.clockNow()}
 }
 
 // currentLocked returns the cached id, refreshing it from the config file when
@@ -156,14 +247,19 @@ func (s *AccountSelection) currentLocked(ctx context.Context) string {
 		s.warnReadFailureOnce(err)
 		return s.id
 	}
-	s.id = id
-	if s.invalidID != "" && s.invalidID != id {
-		// The user selected a different account (possibly in another
-		// terminal): the rejection no longer applies. This is what re-arms a
+	if s.id != "" && s.id != id {
+		// The user selected a DIFFERENT account (possibly in another
+		// terminal): every rejection observed before that deliberate switch is
+		// stale, so the whole record is dropped. This is what re-arms a
 		// long-lived daemon within one TTL with no IPC.
-		s.invalidID = ""
-		s.invalidReason = ""
+		//
+		// It compares the previously cached id with the freshly read one,
+		// never a record entry with the selection: the record now holds
+		// accounts this process merely ASKED about, and the first config read
+		// of a process must not wipe a rejection observed before it.
+		clear(s.invalid)
 	}
+	s.id = id
 	return s.id
 }
 
@@ -191,6 +287,12 @@ func (s *AccountSelection) setClockForTest(now func() time.Time) {
 	defer s.mu.Unlock()
 	s.now = now
 }
+
+// SetClockForTest is setClockForTest for a test in ANOTHER package — the one
+// that must watch this daemon follow a selection change across the cache window
+// without sleeping through it. TEST ONLY, on the same terms as
+// SetSelectedAccountForTest.
+func (s *AccountSelection) SetClockForTest(now func() time.Time) { s.setClockForTest(now) }
 
 // warnReadFailureOnce emits a single WARN per session. Caller must hold s.mu.
 func (s *AccountSelection) warnReadFailureOnce(err error) {

@@ -146,6 +146,19 @@ func TestRemapPendingStopsReArmingAtTheBound(t *testing.T) {
 	require.Equal(t, l2Before, dm.l2Loaded.Load(), "the terminus must NOT clear l2Loaded")
 }
 
+// countAllOps counts recorded cache operations of one kind against ANY id. It is
+// the per-pass counterpart of countOps: what a drain costs is a function of how
+// many ids it walks, not of which one.
+func countAllOps(ic *instrumentedCache, kind string) int {
+	n := 0
+	for _, op := range ic.opLog() {
+		if op.kind == kind {
+			n++
+		}
+	}
+	return n
+}
+
 // countOps counts recorded cache operations of one kind against one id.
 func countOps(ic *instrumentedCache, kind string, id searchengine.SegmentID) int {
 	n := 0

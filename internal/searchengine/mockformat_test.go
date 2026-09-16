@@ -16,8 +16,34 @@ type mockQuery struct {
 
 // mockStats is the corpus statistic the mock format exposes: total live+dead doc
 // count across the set. It exercises AggregateStats and the engine's cached-S path.
+//
+// IT RETAINS THE SEGMENTS IT WAS FOLDED OVER, which is not decoration: the real
+// bm25 CorpusStats answers document frequency by probing the very payloads it was
+// built from and holds them in a chain for exactly that reason. A double whose
+// stats retained nothing cannot see the lifetime hazard that comes with it — a
+// snapshot whose stats probe a payload no longer in that snapshot keeps reading
+// bytes whose owning entry is free to be collected, and its mapping unmapped
+// underneath. The chain is a POINTER so mockStats stays comparable, matching the
+// value semantics every existing fixture relies on.
 type mockStats struct {
 	totalDocs int
+	probes    *mockProbeChain
+}
+
+// mockProbeChain mirrors bm25's probe chain: one immutable node per folded
+// segment, sharing its predecessor by reference.
+type mockProbeChain struct {
+	seg  Segment[mockQuery, mockStats]
+	prev *mockProbeChain
+}
+
+// probedSegments walks a stats object's retained payloads, newest first.
+func (s mockStats) probedSegments() []Segment[mockQuery, mockStats] {
+	var out []Segment[mockQuery, mockStats]
+	for node := s.probes; node != nil; node = node.prev {
+		out = append(out, node.seg)
+	}
+	return out
 }
 
 // mockRow is one indexed document row: the mock's "live indexed data". Build
@@ -39,6 +65,12 @@ type mockSegment struct {
 type mockFormat struct{}
 
 func (mockFormat) Name() string { return "mock" }
+
+// ValidateSegment is the format's structural self-check. A mock segment is a list of
+// rows with no internal offsets, so there is no reference that can point outside it
+// and nothing to refuse: the honest answer is nil, and the method exists because the
+// interface requires every format to say how its segments are validated.
+func (mockFormat) ValidateSegment(SegmentID, []byte) error { return nil }
 
 func (mockFormat) Build(docs []Document) (Segment[mockQuery, mockStats], BuildReport, error) {
 	rows := make([]mockRow, 0, len(docs))
@@ -143,10 +175,25 @@ func mergeMockSegments(
 
 func (mockFormat) AggregateStats(segs []Segment[mockQuery, mockStats]) mockStats {
 	total := 0
+	var probes *mockProbeChain
 	for _, s := range segs {
 		total += len(s.(*mockSegment).rows)
+		probes = &mockProbeChain{seg: s, prev: probes}
 	}
-	return mockStats{totalDocs: total}
+	return mockStats{totalDocs: total, probes: probes}
+}
+
+// AppendStats is the incremental counterpart of AggregateStats, and it is written
+// to AGREE with it rather than to be convenient: the total after appending one
+// segment is the previous total plus that segment's rows, which is exactly what the
+// fold over the same entries produces. A double whose two arms disagreed would make
+// the engine's flatten boundary observable in the statistics, which is the defect
+// the agreement gate exists to catch.
+func (mockFormat) AppendStats(prev mockStats, seg Segment[mockQuery, mockStats]) mockStats {
+	return mockStats{
+		totalDocs: prev.totalDocs + len(seg.(*mockSegment).rows),
+		probes:    &mockProbeChain{seg: seg, prev: prev.probes},
+	}
 }
 
 // Search linearly scans rows, honors the accept liveDocs filter, scores by term

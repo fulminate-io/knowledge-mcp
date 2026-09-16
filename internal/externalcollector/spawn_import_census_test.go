@@ -106,6 +106,7 @@ var spawnImporters = map[string]string{
 	"internal/llm/claudecli/subprocess.go":             "runs the operator's own installed agent CLI",
 	"internal/llm/codexcli/codexcli.go":                "resolves the operator's own installed agent CLI on PATH",
 	"internal/llm/codexcli/subprocess.go":              "runs the operator's own installed agent CLI",
+	"internal/llm/providercheck/providercheck.go":      "runs the operator's own installed agent CLI at its configured path for the sign-in probe of a CLI provider",
 
 	// THESE FILES SPAWN NOTHING AT ALL, and they are on the list because the
 	// census is an IMPORT census: importing the package is the thing it can

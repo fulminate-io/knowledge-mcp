@@ -17,13 +17,27 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
 
+// TestStorageBackendRetainsAccount pins what a BOUND backend does when the user
+// switches accounts underneath it: it keeps serving the account it was bound to
+// and keeps STAMPING that account, so an operation that started for one account
+// finishes there instead of half-landing in another.
+//
+// It used to refuse instead ("bound cloud account changed"), because the
+// interceptor compared the binding with the live selection. The binding is now
+// the SOURCE of the stamp: a request may name its own account, and comparing it
+// to the process selection is exactly what made that impossible. The refusal
+// this test asserted was never the protection — the user is still a member of
+// the account the operation began in, and membership is the gateway's call on
+// every request either way.
 func TestStorageBackendRetainsAccount(t *testing.T) {
+	const bound = "11111111-1111-4111-8111-111111111111"
+	const switched = "22222222-2222-4222-8222-222222222222"
 	path := filepath.Join(t.TempDir(), "config")
-	if err := config.WriteSelectedAccountID(path, "account-a"); err != nil {
+	if err := config.WriteSelectedAccountID(path, bound); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(auth.SetSelectedAccountForTest(auth.NewAccountSelection(path, time.Nanosecond)))
-	cloudURL, cloud := startCountingEngine(t)
+	cloudURL, cloud := startAccountRoutedEngine(t)
 	r := NewRouterWithMachineAuth(nil, cloudURL, auth.StaticTokenSource{}, nil, true)
 	t.Cleanup(r.Close)
 	ctx := WithOperation(t.Context(), OperationForTool("query"))
@@ -31,14 +45,17 @@ func TestStorageBackendRetainsAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := config.WriteSelectedAccountID(path, "account-b"); err != nil {
+	if err := config.WriteSelectedAccountID(path, switched); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := backend.Execute(ctx, &knowledgev1.ExecuteRequest{}); err == nil {
-		t.Fatal("bound backend followed account switch")
+	if _, err := backend.Execute(ctx, &knowledgev1.ExecuteRequest{}); err != nil {
+		t.Fatalf("the bound backend refused after an account switch: %v", err)
 	}
-	if cloud.execute.Load() != 0 {
-		t.Fatalf("sent %d requests after account switch", cloud.execute.Load())
+	if got := cloud.executesFor(bound); got != 1 {
+		t.Fatalf("executes stamped with the bound account = %d, want 1", got)
+	}
+	if got := cloud.executesFor(switched); got != 0 {
+		t.Fatalf("the bound backend followed the account switch: %d executes stamped with the new selection", got)
 	}
 }
 
@@ -216,8 +233,16 @@ func TestStorageFederationRequiresCloudEvenWithoutHits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.BindSearch(ctx); err == nil {
+	_, err = r.BindSearch(ctx)
+	if err == nil {
 		t.Fatal("unavailable cloud accepted as complete search")
+	}
+	// Both legs are dead here, so WHICH store the message names is the whole
+	// content of the answer: the REQUIRED cloud store is what stopped the
+	// search, and naming the optional local one is the confusion this row
+	// exists to keep out.
+	if !strings.Contains(err.Error(), "cloud storage unavailable") {
+		t.Fatalf("both stores down: error = %v, want it to name the REQUIRED cloud store, not the optional local one", err)
 	}
 }
 

@@ -85,12 +85,13 @@ type OAuthTokenSource struct {
 	fulminateEndpoint string
 	allowedAuthHosts  map[string]struct{}
 
-	mu          sync.Mutex
-	endpoints   *DiscoveredEndpoints // lazily populated on first refresh
-	accessToken string
-	expiresAt   time.Time
-	permissions PermissionSet
-	warnedOnce  bool
+	mu              sync.Mutex
+	endpoints       *DiscoveredEndpoints // lazily populated on first refresh
+	accessToken     string
+	expiresAt       time.Time
+	permissions     PermissionSet
+	warnedOnce      bool
+	publicationRead bool
 }
 
 // NewOAuthTokenSource wires a store-backed token source. fulminateEndpoint
@@ -115,11 +116,12 @@ func NewOAuthTokenSource(
 }
 
 // Token implements [TokenSource]. It returns a cached access token if
-// one is valid + >5min from expiry; otherwise it reads the refresh
-// token from the store, exchanges it for a new access/refresh pair,
-// caches the new access token, and then persists the rotated refresh
-// token (a persist failure is logged, not fatal — the freshly acquired
-// access token is already cached and served).
+// one is valid + >5min from expiry. A fresh source first loads the published
+// session so that a process start alone never forces a refresh. Otherwise it
+// reads the refresh token from the store, exchanges it for a new
+// access/refresh pair, caches the new access token, and then persists the
+// rotated refresh token (a persist failure is logged, not fatal — the freshly
+// acquired access token is already cached and served).
 //
 // On [ErrInvalidGrant] (refresh revoked/expired) the persisted token is
 // NOT cleared — that is the caller's decision (a `knowledge logout`
@@ -131,6 +133,15 @@ func (o *OAuthTokenSource) Token(ctx context.Context) (string, PermissionSet, er
 
 	if o.accessToken != "" && time.Until(o.expiresAt) > accessCacheMargin {
 		return o.accessToken, o.permissions, nil
+	}
+	if !o.publicationRead {
+		if err := o.loadPublishedLocked(ctx); err != nil {
+			return "", nil, err
+		}
+		o.publicationRead = true
+		if o.accessToken != "" && time.Until(o.expiresAt) > accessCacheMargin {
+			return o.accessToken, o.permissions, nil
+		}
 	}
 	return o.refreshLocked(ctx)
 }
@@ -147,10 +158,40 @@ func (o *OAuthTokenSource) Token(ctx context.Context) (string, PermissionSet, er
 func (o *OAuthTokenSource) ForceRefresh(ctx context.Context) (string, PermissionSet, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.publicationRead = true // Never reload a publication the server rejected.
 	o.accessToken = ""
 	o.expiresAt = time.Time{}
 	o.permissions = nil
 	return o.refreshLocked(ctx)
+}
+
+// loadPublishedLocked reads the initial publication without acquiring a new
+// credential. Absence can refresh; malformed expiry and store failures cannot
+// be silently treated as absence. Caller holds o.mu.
+func (o *OAuthTokenSource) loadPublishedLocked(ctx context.Context) error {
+	reader := NewReadOnlyTokenSource(o.store)
+	token, err := reader.read(ctx, KeyAccessToken)
+	if errors.Is(err, ErrNoSession) || (err == nil && token == "") {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	raw, err := reader.read(ctx, KeyAccessTokenExpiry)
+	if errors.Is(err, ErrNoSession) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	expiry, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return ErrSessionExpired
+	}
+	o.accessToken, o.expiresAt = token, expiry
+	// Opaque access is supported; only the server decides what it grants.
+	o.permissions, _, _ = ParsePermissionsFromJWT(token)
+	return nil
 }
 
 // ensureEndpointsLocked runs RFC 9728 + RFC 8414 discovery if it hasn't
@@ -170,12 +211,6 @@ func (o *OAuthTokenSource) ensureEndpointsLocked(ctx context.Context) (*Discover
 // refreshLocked performs the refresh flow. The caller must hold o.mu.
 // Extracted so Token stays short and the mutex contract is explicit.
 func (o *OAuthTokenSource) refreshLocked(ctx context.Context) (string, PermissionSet, error) {
-	eps, err := o.ensureEndpointsLocked(ctx)
-	if err != nil {
-		o.warnRefreshFailureOnce(err)
-		return "", nil, err
-	}
-
 	rt, err := o.store.Get(ctx, KeyRefreshToken)
 	if err != nil {
 		return "", nil, fmt.Errorf("auth: load refresh token: %w", err)
@@ -187,6 +222,12 @@ func (o *OAuthTokenSource) refreshLocked(ctx context.Context) (string, Permissio
 	clientID, err := o.store.Get(ctx, KeyClientID)
 	if err != nil {
 		return "", nil, fmt.Errorf("auth: load client id: %w", err)
+	}
+
+	eps, err := o.ensureEndpointsLocked(ctx)
+	if err != nil {
+		o.warnRefreshFailureOnce(err)
+		return "", nil, err
 	}
 
 	tr, err := RefreshAccessToken(ctx, eps.TokenEndpoint, clientID, rt, eps.Resource)
@@ -240,7 +281,7 @@ func (o *OAuthTokenSource) refreshLocked(ctx context.Context) (string, Permissio
 // Called by whichever process owns the session — the login command and the
 // refreshing token source — on the write paths those already perform, so
 // publishing adds no new writer to the store. [ReadOnlyTokenSource] is the
-// consumer.
+// consumer; a newly constructed OAuthTokenSource also reuses the publication.
 //
 // The expiry comes from the token's own `exp` claim, falling back to the
 // response's expires_in when the claim cannot be read. A session whose expiry

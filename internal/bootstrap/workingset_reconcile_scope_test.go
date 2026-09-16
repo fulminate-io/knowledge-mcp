@@ -3,6 +3,7 @@
 package bootstrap
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -161,8 +162,8 @@ func TestSearchAdmitsThenGraphIsWalked(t *testing.T) {
 
 	c, eng, dir := buildReconcileClientWithDir(t, 300)
 	c.segmentMgr = segmentdist.NewManager(dir, 0,
-		segmentdist.WithGraphAdmitter(func(gt kgtypes.GraphType, name string) {
-			c.AdmitGraph(gt, name, "search")
+		segmentdist.WithGraphAdmitter(func(actx context.Context, gt kgtypes.GraphType, name string) {
+			c.AdmitDestinationGraph(actx, gt, name, "search")
 		}))
 	// Only Manager.Close stops the per-engine merger goroutines this will spawn.
 	t.Cleanup(c.segmentMgr.Close)

@@ -61,7 +61,7 @@ offline or low-noise development.
 | `--pprof-port` | `15021` | TCP port for this process's pprof profiling HTTP endpoint (loopback only). Applied when --pprof is set; the spawned knowledge-server serves its own /debug/pprof/ on --port instead. |
 | `--reflect-backstop-interval` | `24h0m0s` | Client-side reflection: cadence of the full-corpus reflection backstop pass that resets DF-Leiden incremental drift. The hourly loop runs incrementally; once this interval elapses since the last full pass, the next tick forces a full Leiden recompute. Default 24h (nightly). |
 | `--root` | `.` | Project root the client walks for ast + topology, and the current-tree fallback for resolving a bare repo name (default ".") |
-| `--segment-residency-budget-bytes` | `1073741824` | Client-side segment residency ceiling, in RESIDENT HEAP BYTES summed across every per-graph segment pool: once the total crosses it, the coldest pools are unloaded from memory and reload from the local L2 disk cache on their next search. 0 disables eviction entirely. This counts modeled Go-heap bytes — the per-segment membership index, the liveness bitset, and whatever each payload declares it holds. A mapped segment's blob is page cache and is NOT counted, so the budget is not a bound on a pool's on-disk size. Defaults to the KNOWLEDGE_SEGMENT_RESIDENCY_BUDGET_BYTES environment variable and otherwise to 1073741824; an explicit flag value wins. |
+| `--segment-residency-budget-bytes` | `1073741824` | Client-side segment residency ceiling, in RESIDENT HEAP BYTES summed across every per-graph segment pool: once the total crosses it, the coldest pools are unloaded from memory and reload from the local L2 disk cache on their next search. 0 disables eviction entirely. This counts modeled Go-heap bytes — the per-segment membership index, the liveness bitset, the snapshot's route map, whatever each payload declares it holds, and a freshly sealed segment's retained encoder output for as long as it holds one. A MAPPED segment's blob is page cache and is NOT counted, so the budget is not a bound on a pool's on-disk size; a segment stops counting its blob as soon as the durability path has written it and republished the payload over the stored file. Defaults to the KNOWLEDGE_SEGMENT_RESIDENCY_BUDGET_BYTES environment variable and otherwise to 1073741824; an explicit flag value wins. |
 | `--skip-llm-precheck` | `false` | Skip the live-ping check that runs against every configured (provider, model) tuple at client startup. Use for offline development or CI sandboxes; default is to fail-fast at boot rather than at first tool call. |
 | `--state-dir` |  | Absolute installation state directory for supervised runtimes |
 | `--summary-batch-size` | `20` | Client-side LLM pipeline: items per summary worker batch |
@@ -109,7 +109,7 @@ outlives any single session.
 | `--pprof-port` | `15021` | TCP port for this process's pprof profiling HTTP endpoint (loopback only). Applied when --pprof is set; the spawned knowledge-server serves its own /debug/pprof/ on --port instead. |
 | `--reflect-backstop-interval` | `24h0m0s` | Client-side reflection: cadence of the full-corpus reflection backstop pass that resets DF-Leiden incremental drift. The hourly loop runs incrementally; once this interval elapses since the last full pass, the next tick forces a full Leiden recompute. Default 24h (nightly). |
 | `--root` | `.` | Project root the client walks for ast + topology, and the current-tree fallback for resolving a bare repo name (default ".") |
-| `--segment-residency-budget-bytes` | `1073741824` | Client-side segment residency ceiling, in RESIDENT HEAP BYTES summed across every per-graph segment pool: once the total crosses it, the coldest pools are unloaded from memory and reload from the local L2 disk cache on their next search. 0 disables eviction entirely. This counts modeled Go-heap bytes — the per-segment membership index, the liveness bitset, and whatever each payload declares it holds. A mapped segment's blob is page cache and is NOT counted, so the budget is not a bound on a pool's on-disk size. Defaults to the KNOWLEDGE_SEGMENT_RESIDENCY_BUDGET_BYTES environment variable and otherwise to 1073741824; an explicit flag value wins. |
+| `--segment-residency-budget-bytes` | `1073741824` | Client-side segment residency ceiling, in RESIDENT HEAP BYTES summed across every per-graph segment pool: once the total crosses it, the coldest pools are unloaded from memory and reload from the local L2 disk cache on their next search. 0 disables eviction entirely. This counts modeled Go-heap bytes — the per-segment membership index, the liveness bitset, the snapshot's route map, whatever each payload declares it holds, and a freshly sealed segment's retained encoder output for as long as it holds one. A MAPPED segment's blob is page cache and is NOT counted, so the budget is not a bound on a pool's on-disk size; a segment stops counting its blob as soon as the durability path has written it and republished the payload over the stored file. Defaults to the KNOWLEDGE_SEGMENT_RESIDENCY_BUDGET_BYTES environment variable and otherwise to 1073741824; an explicit flag value wins. |
 | `--skip-llm-precheck` | `false` | Skip the live-ping check that runs against every configured (provider, model) tuple at client startup. Use for offline development or CI sandboxes; default is to fail-fast at boot rather than at first tool call. |
 | `--state-dir` |  | Absolute installation state directory for supervised runtimes |
 | `--summary-batch-size` | `20` | Client-side LLM pipeline: items per summary worker batch |
@@ -216,6 +216,7 @@ because it makes live network calls.
 | --- | --- | --- |
 | `--config-file` |  | Path to the TOML config file (default ~/.knowledge/config) |
 | `--deep` | `false` | Exercise each configured provider's reachability/login (slower, makes network calls) |
+| `--mcp-port` | `15023` | Loopback TCP port the daemon serves MCP on — the port the installed harness session hooks must post to |
 | `--port` | `15022` | TCP port the graph server should be listening on |
 <!-- END GENERATED: flags-doctor -->
 
@@ -238,6 +239,7 @@ testing).
 | `--dest` |  | Destination directory (default ~/.claude) |
 | `--diff` | `false` | Print a unified diff of every file that differs (read-only; implies --dry-run) |
 | `--dry-run` | `false` | Print what would be written without touching disk |
+| `--mcp-port` | `15023` | Port the knowledge daemon serves MCP on, named in the registered URL (1024..65534) |
 | `--no-mcp` | `false` | Skip registering the knowledge MCP server with the client (default: register at user scope) |
 | `--verbose` | `false` | Print each file path written (default: summary only) |
 <!-- END GENERATED: flags-install-claude-assets -->
@@ -259,6 +261,7 @@ testing).
 | `--agents-md-dest` |  | AGENTS.md destination path (default ~/.codex/AGENTS.md) |
 | `--diff` | `false` | Print a unified diff of every file that differs (read-only; implies --dry-run) |
 | `--dry-run` | `false` | Print what would be written without touching disk |
+| `--mcp-port` | `15023` | Port the knowledge daemon serves MCP on, named in the registered URL (1024..65534) |
 | `--no-mcp` | `false` | Skip registering the knowledge MCP server with the client (default: register) |
 | `--skills-dest` |  | Skills destination root (default ~/.agents/skills) |
 | `--verbose` | `false` | Print each file path written (default: summary only) |

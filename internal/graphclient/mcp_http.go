@@ -66,8 +66,32 @@ type HTTPServer struct {
 	sessions map[string]*httpSession
 
 	// idleTTL is the per-session idle window the reaper enforces (Phase 3).
-	// Zero disables the reaper (used by tests that drive sessions directly).
+	// Zero disables the SESSION sweep (used by tests that drive sessions
+	// directly). It does NOT disable the sweeper: the hook sweep has its own
+	// window and rides the same goroutine.
 	idleTTL time.Duration
+
+	// sweepInterval is how often the sweeper runs. It defaults to
+	// hookCorrelationTTL, the shorter of the two windows; a test sets it short
+	// so the sweep it is observing happens inside the test rather than a
+	// minute later. A seam, like idleTTL above, not a knob any caller sets.
+	sweepInterval time.Duration
+
+	// hookMu guards the PreToolUse hook correlation map and its eviction
+	// order. It is a SEPARATE mutex from mu on purpose: mu is already taken on
+	// every POST for the session lookup, and a tool-call id has a lifetime
+	// measured in milliseconds while a session's is measured in minutes, so
+	// putting the two behind one lock would couple a hot, short critical
+	// section to a colder one for no gain. See mcp_http_hook.go.
+	hookMu sync.Mutex
+	// hooks maps a (harness, per-call id) pair to the hook delivery that named
+	// it. The harness is part of the key because the two id spaces are not
+	// shared — see hookKey. IN-MEMORY ONLY — never persisted, never logged: a
+	// delivery carries the user's cwd and transcript path.
+	hooks map[hookKey]*hookDelivery
+	// hookOrder is the insertion order of hooks' keys, so the size cap evicts
+	// the OLDEST delivery rather than an arbitrary map key.
+	hookOrder []hookKey
 }
 
 // NewHTTPServer builds an HTTPServer wrapping the given MCPClient (the
@@ -95,6 +119,8 @@ func NewHTTPServer(mc *MCPClient, port int, allowedOrigins []string) *HTTPServer
 		sessions:       make(map[string]*httpSession),
 		idleTTL:        defaultSessionIdleTTL,
 		allowedOrigins: originSet,
+		hooks:          make(map[hookKey]*hookDelivery),
+		sweepInterval:  hookCorrelationTTL,
 	}
 }
 
@@ -106,13 +132,17 @@ func NewHTTPServer(mc *MCPClient, port int, allowedOrigins []string) *HTTPServer
 // re-uses the http2/h2c std-ecosystem packages directly rather than
 // importing the server-internal package (client/server boundary, AGENTS.md).
 func (h *HTTPServer) Run(ctx context.Context) error {
-	// Idle-session reaper: Codex reconnects per turn and may skip DELETE
-	// /mcp, so its prior sessions go idle and must be swept to keep the
-	// client-side session map from growing unbounded. Skipped when idleTTL is
-	// zero (tests drive sessions directly). Stopped on ctx.Done.
-	if h.idleTTL > 0 {
-		go h.runReaper(ctx)
-	}
+	// The sweeper, started UNCONDITIONALLY. It sweeps two maps: idle sessions
+	// (Codex reconnects per turn and may skip DELETE /mcp, so its prior
+	// sessions go idle) and expired hook deliveries.
+	//
+	// IT IS NOT GATED ON idleTTL, and that is the point: idleTTL governs the
+	// SESSION sweep only, reapIdle already no-ops when it is zero, and gating
+	// the goroutine on it silently disabled the HOOK sweep too — leaving the
+	// correlation map to grow to its size cap and evict by age instead of
+	// expiring by time. Two maps, two windows, one goroutine, one lifetime:
+	// stopped on ctx.Done.
+	go h.runReaper(ctx)
 
 	// Loopback-only bind with an IsLoopback tripwire so a refactor that
 	// swaps the literal host can't quietly expose the daemon to the
@@ -167,13 +197,20 @@ func (h *HTTPServer) Run(ctx context.Context) error {
 	}
 }
 
-// mux builds the /mcp ServeMux with the method-switch handler. Extracted from
-// Run so the composed handler (corsMiddleware(mux)) can be exercised directly
-// from tests via httptest without binding a TCP socket — the OPTIONS preflight
-// is mux/middleware-level routing the handler-direct tests cannot reach. Pure
-// relocation: the POST/GET/DELETE routing and the default-405 arm are unchanged.
+// mux builds the ServeMux: the /mcp method-switch handler plus the two
+// PreToolUse hook delivery paths. Extracted from Run so the composed handler
+// (corsMiddleware(mux)) can be exercised directly from tests via httptest
+// without binding a TCP socket — the OPTIONS preflight is mux/middleware-level
+// routing the handler-direct tests cannot reach.
 func (h *HTTPServer) mux() *http.ServeMux {
 	mux := http.NewServeMux()
+
+	// The harness PreToolUse hook delivery endpoints, on the SAME loopback port
+	// as /mcp so one --mcp-port names both. Each path binds its harness, which
+	// is how a stored delivery knows which harness sent it. Loopback-only and
+	// unauthenticated by design (mcp_http_hook.go).
+	mux.HandleFunc(hookPathClaude, h.handleHookDelivery(hookHarnessClaude))
+	mux.HandleFunc(hookPathCodex, h.handleHookDelivery(hookHarnessCodex))
 
 	// /mcp is served plainly — there is no bearer gate. Routing to cloud is
 	// decided by the keychain auth state (`knowledge login`), not by a per-request
@@ -222,6 +259,17 @@ func (h *HTTPServer) mux() *http.ServeMux {
 // contract — so the per-session cancel slot holds one in-flight call at a time
 // and a notifications/cancelled targets exactly it.
 func (h *HTTPServer) handlePOST(w http.ResponseWriter, r *http.Request) {
+	// THE ACCOUNT HEADER IS READ BEFORE THE BODY, because it says whose data
+	// this request is about and an unreadable one must reach nothing at all —
+	// not the session lookup, not the dispatch. A malformed value is a client
+	// error naming the header rather than a fall back to the selection: the
+	// caller asked for a specific account and got its spelling wrong.
+	account, err := AccountHeaderFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
@@ -267,6 +315,15 @@ func (h *HTTPServer) handlePOST(w http.ResponseWriter, r *http.Request) {
 	ctx := session.ContextWithSessionID(r.Context(), sess.id)
 	ctx = session.ContextWithWorkspaceCwd(ctx, sess.cwd)
 	ctx = contextWithHTTPSession(ctx, sess)
+	ctx = h.bindRequestAccount(ctx, account)
+
+	// Resolve WHICH HARNESS SESSION is calling and stamp it beside the two
+	// carriers above. It is a separate fact from both: sess.id is the daemon's
+	// own minted transport id and sess.cwd is the repo-routing carrier, and
+	// neither is ever consulted to derive a harness identity — an unresolved
+	// call carries `none` with the reason, not a substitute
+	// (mcp_http_harness_session.go).
+	ctx = session.ContextWithHarnessSession(ctx, h.resolveHarnessSession(r, req.Params, time.Now()))
 
 	resp := h.mc.handleMCPRequestCtx(ctx, req)
 	if resp == nil {
@@ -275,6 +332,35 @@ func (h *HTTPServer) handlePOST(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSONRPC(w, resp)
+}
+
+// bindRequestAccount carries a header-named account into the dispatch ctx: the
+// resolution itself always (so a refusal downstream can say the header was
+// sent), and the bound cloud DESTINATION only when this daemon is signed in.
+// Logged out, the header is recorded as ignored WITH ITS REASON rather than as
+// the request's account — see WithIgnoredAccountHeader.
+//
+// The split is requirement 5 and it is deliberate: a header names an account,
+// it cannot conjure a cloud session. A logged-out daemon therefore serves the
+// request locally exactly as it does today, and an explicit cloud call is
+// refused by BindStorage with the header named.
+//
+// An empty account is the absent header; the resolution then falls to the
+// session and global levels inside RequestAccount.
+func (h *HTTPServer) bindRequestAccount(ctx context.Context, account string) context.Context {
+	if account == "" {
+		return ctx
+	}
+	if h.mc == nil || h.mc.cfg.LoggedIn == nil || !h.mc.cfg.LoggedIn(ctx) {
+		// The header is recorded as IGNORED, with the reason, rather than as
+		// this request's account: the request is served locally, and reporting
+		// a cloud account over local data is a wrong-cause claim a web page
+		// would render as fact. BindStorage still names the header when the
+		// caller asks for cloud explicitly.
+		return WithIgnoredAccountHeader(ctx, account, AccountReasonLoggedOut)
+	}
+	ctx = WithRequestAccount(ctx, account, AccountSourceHeader)
+	return WithDestination(ctx, Destination{Storage: "cloud", AccountID: account})
 }
 
 // handleGET serves the server→client SSE leg of streamable-HTTP MCP. It

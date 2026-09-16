@@ -257,6 +257,19 @@ func shippedCompleteForUnifiedSearch(ctx context.Context, cdeps codeSearchDeps, 
 	_, err := cdeps.cov.ShippedSegmentDocCount(ctx, kgtypes.GraphCode, overlay)
 	complete := err == nil
 	if complete {
+		// THE LIVE READER HERE IS DELIBERATELY THE ROOT-SCOPED ONE, and this gate is
+		// now its only caller: the manage(status) cell reads the destination-resolved
+		// LiveResidentDocCountFor instead, so its live figure comes off the engine its
+		// shipped figure came off. This call is left as it is because the reading is a
+		// GATE OPERAND rather than a rendered number — the call above has already
+		// constructed and loaded the arm on this path, and a code review of the
+		// non-constructing change confirmed the destination-bound case answers 0 both
+		// before and after, which keeps the two-pool union rather than serving a
+		// partial corpus as whole. Whether this gate should resolve the destination,
+		// and what that would change about which branch searches take the union, is
+		// being settled by execution under its own research finding in the knowledge
+		// graph (search: the code-search branch-completeness gate's live reading). It
+		// is not decided here.
 		covered := cdeps.cov.LiveResidentDocCount(kgtypes.GraphCode, overlay)
 		target := graphsel.GraphSelectorFor(kgtypes.GraphCode, base, false)
 		target.Branch = branch

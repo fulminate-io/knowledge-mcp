@@ -15,12 +15,12 @@ import (
 // cannot be used — a store it handed back would be the developer's own
 // keychain.
 func TestNewStore_RefusesInsideTestBinary(t *testing.T) {
-	store, err := NewStore()
+	store, err := NewStore(ServiceName)
 	if !errors.Is(err, errRealStoreInTest) {
-		t.Fatalf("NewStore() inside a test binary returned err=%v, want errRealStoreInTest", err)
+		t.Fatalf("NewStore inside a test binary returned err=%v, want errRealStoreInTest", err)
 	}
 	if store != nil {
-		t.Errorf("NewStore() handed back a usable %T alongside the refusal", store)
+		t.Errorf("NewStore handed back a usable %T alongside the refusal", store)
 	}
 }
 
@@ -56,12 +56,12 @@ func TestNewFileStore_GuardIsScopedToTheRealHome(t *testing.T) {
 		// HOME is deliberately NOT redirected. The guard runs before
 		// newFileStore touches the filesystem, so reaching this line cannot
 		// create or modify anything under the real home.
-		store, err := newFileStore()
+		store, err := newFileStore("")
 		if !errors.Is(err, errRealStoreInTest) {
-			t.Fatalf("newFileStore() targeting the real home returned err=%v, want errRealStoreInTest", err)
+			t.Fatalf("newFileStore targeting the real home returned err=%v, want errRealStoreInTest", err)
 		}
 		if store != nil {
-			t.Errorf("newFileStore() handed back a usable %T alongside the refusal", store)
+			t.Errorf("newFileStore handed back a usable %T alongside the refusal", store)
 		}
 	})
 
@@ -69,13 +69,13 @@ func TestNewFileStore_GuardIsScopedToTheRealHome(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 
-		store, err := newFileStore()
+		store, err := newFileStore("")
 		if err != nil {
-			t.Fatalf("newFileStore() under a redirected HOME must be allowed, got %v", err)
+			t.Fatalf("newFileStore under a redirected HOME must be allowed, got %v", err)
 		}
 		fs, ok := store.(*fileStore)
 		if !ok {
-			t.Fatalf("newFileStore() returned %T, want *fileStore", store)
+			t.Fatalf("newFileStore returned %T, want *fileStore", store)
 		}
 		if want := filepath.Join(home, ".knowledge", credentialsFileName); fs.path != want {
 			t.Errorf("file store path = %q, want %q", fs.path, want)

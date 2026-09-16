@@ -231,6 +231,14 @@ func (m *distManager[Q, S]) evictResident() (freed int64, ok bool) {
 	// already walking them, so a search racing this swap returns the full old set).
 	m.engine.Unload(ids)
 
+	// THE RESIDENT-GROWTH BOUND'S CENSUS LATCH IS DELIBERATELY NOT CLEARED HERE, and
+	// the reason is the strict reload two steps below. An eviction is a MEMORY action
+	// whose reload replays the EXACT unloaded id set (evictedIDs, and load()'s
+	// L2-strict path), so the set the latch was armed over is RESTORED rather than
+	// replaced — unlike a layer or group swap, which publishes different segments. The
+	// empty window between them is under the budget by construction, where the bound
+	// returns at its crossing gate without reading the latch at all.
+	//
 	// 4. Record the EXACT unloaded set for the strict reload, and empty the resident
 	// tracking. 5. Clear the L2-first once-guard, or load() short-circuits forever
 	// over an empty engine. 6. Latch evicted.

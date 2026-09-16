@@ -23,6 +23,7 @@ import (
 	"sort"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/assets"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
 // installAssetsFlags holds the parsed flags for the subcommand.
@@ -34,6 +35,7 @@ type installAssetsFlags struct {
 	verbose            bool
 	diff               bool
 	noMCP              bool
+	mcpPort            int
 }
 
 // registerInstallClaudeFlags registers the `knowledge install-claude-assets`
@@ -49,6 +51,8 @@ func registerInstallClaudeFlags(fs *flag.FlagSet, f *installAssetsFlags) {
 	fs.BoolVar(&f.diff, "diff", false, "Print a unified diff of every file that differs (read-only; implies --dry-run)")
 	fs.BoolVar(&f.verbose, "verbose", false, "Print each file path written (default: summary only)")
 	fs.BoolVar(&f.noMCP, "no-mcp", false, "Skip registering the knowledge MCP server with the client (default: register at user scope)")
+	fs.IntVar(&f.mcpPort, "mcp-port", graphclient.DefaultMCPHTTPPort,
+		fmt.Sprintf("Port the knowledge daemon serves MCP on, named in the registered URL (%d..%d)", mcpPortMin, mcpPortMax))
 }
 
 // runInstallClaudeAssets walks the embedded FS and copies every
@@ -66,6 +70,9 @@ func registerInstallClaudeFlags(fs *flag.FlagSet, f *installAssetsFlags) {
 //     for changed files; lists new files inline). Implies
 //     --dry-run — never writes when --diff is set.
 //   - --verbose: per-file write line (otherwise just summary)
+//   - --mcp-port: the port the knowledge daemon serves MCP on, named in
+//     the registered URL. Defaults to graphclient.DefaultMCPHTTPPort;
+//     outside 1024..65534 the verb refuses without writing anything.
 //
 // Exit:
 //   - 0 on full success
@@ -75,6 +82,12 @@ func runInstallClaudeAssets(args []string) error {
 	var f installAssetsFlags
 	registerInstallClaudeFlags(fs, &f)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	// Range-check before anything is written or exec'd: a bad --mcp-port
+	// refuses the whole verb rather than installing assets and then
+	// registering a URL nothing serves.
+	if err := validateMCPPort(f.mcpPort); err != nil {
 		return err
 	}
 
@@ -102,7 +115,7 @@ func runInstallClaudeAssets(args []string) error {
 		if err := diffManagedFile(claudeMD, string(assets.KnowledgeTools), "CLAUDE.md"); err != nil {
 			return err
 		}
-		return diffClaudeSettings(claudeSettings)
+		return diffClaudeSettings(claudeSettings, f.mcpPort)
 	}
 
 	written, err := installAssets(dest, f.dryRun, f.verbose)
@@ -115,7 +128,14 @@ func runInstallClaudeAssets(args []string) error {
 		return err
 	}
 
-	settingsChanged, err := writeClaudeSettings(claudeSettings, assets.ClaudeHooks, f.dryRun)
+	// The hook asset is RENDERED at the resolved --mcp-port before it is
+	// merged: the session hook POSTs to the daemon, so its url names the same
+	// port the MCP registration below names.
+	hookEntries, err := renderClaudeHooks(assets.ClaudeHooks, f.mcpPort)
+	if err != nil {
+		return err
+	}
+	settingsChanged, err := writeClaudeSettings(claudeSettings, hookEntries, f.dryRun)
 	if err != nil {
 		return err
 	}
@@ -128,9 +148,10 @@ func runInstallClaudeAssets(args []string) error {
 	if mdChanged {
 		mdNote = fmt.Sprintf("%s CLAUDE.md managed block in %s", verb, claudeMD)
 	}
-	settingsNote := "settings.json hook in sync"
+	settingsNote := "settings.json hooks in sync"
 	if settingsChanged {
-		settingsNote = fmt.Sprintf("%s promote-guard hook in %s", verb, claudeSettings)
+		settingsNote = fmt.Sprintf("%s promote-guard + session hooks (daemon port %d) in %s",
+			verb, f.mcpPort, claudeSettings)
 	}
 	fmt.Fprintf(os.Stdout, "knowledge install-claude-assets: %s %d files under %s; %s; %s\n",
 		verb, written, dest, mdNote, settingsNote)
@@ -140,8 +161,8 @@ func runInstallClaudeAssets(args []string) error {
 		return nil
 	}
 	// Default-on, non-fatal MCP registration at user scope against the
-	// daemon's loopback streamable-HTTP MCP endpoint.
-	return registerKnowledgeMCP("claude", []string{"-s", "user"}, f.dryRun)
+	// daemon's loopback streamable-HTTP MCP endpoint on --mcp-port.
+	return registerKnowledgeMCP("claude", []string{"-s", "user"}, f.mcpPort, f.dryRun)
 }
 
 // runDiff walks the embedded FS, compares each file against the on-
@@ -236,27 +257,31 @@ func printUnifiedDiff(existingPath string, embedded []byte) error {
 }
 
 // diffClaudeSettings reports, in read-only --diff mode, whether the
-// knowledge-managed promote-guard hook at path would change if installed.
+// knowledge-managed hook entries at path would change if installed at mcpPort.
 // Because settings.json is a structured MERGE (not a verbatim copy), it
 // computes the merged bytes via mergeClaudeSettings and diffs them against
 // the on-disk file. It never writes. Mirrors diffManagedFile's three-outcome
 // reporting (managed_block.go:136): NEW (file absent) / a unified diff via
 // printUnifiedDiff (merge differs) / in-sync.
-func diffClaudeSettings(path string) error {
+func diffClaudeSettings(path string, mcpPort int) error {
+	hookEntries, err := renderClaudeHooks(assets.ClaudeHooks, mcpPort)
+	if err != nil {
+		return err
+	}
 	existing, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintf(os.Stdout, "NEW: %s (knowledge-managed promote-guard hook)\n", path)
+			fmt.Fprintf(os.Stdout, "NEW: %s (knowledge-managed promote-guard + session hooks)\n", path)
 			return nil
 		}
 		return fmt.Errorf("read %s: %w", path, err)
 	}
-	merged, err := mergeClaudeSettings(existing, assets.ClaudeHooks)
+	merged, err := mergeClaudeSettings(existing, hookEntries)
 	if err != nil {
 		return err
 	}
 	if bytes.Equal(merged, existing) {
-		fmt.Fprintf(os.Stdout, "settings.json hook in sync: %s\n", path)
+		fmt.Fprintf(os.Stdout, "settings.json hooks in sync: %s\n", path)
 		return nil
 	}
 	// Merge differs — render a real unified diff of the would-be result

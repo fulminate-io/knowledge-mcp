@@ -10,14 +10,19 @@ package tools
 // _collect / _erasure / _evicted siblings were split. The two helpers move
 // TOGETHER and stay adjacent deliberately: the second is an additive split of the
 // first, and separating them is how a third helper with its own Stats call and
-// its own field choice gets added without anyone noticing. GraphEmbeddedCount —
-// the exported (gt, name) form both consumers call — stays in
-// manage_status_coverage.go and delegates here.
+// its own field choice gets added without anyone noticing. GraphEmbeddedCount and
+// GraphCoverageCounts — the exported (gt, name) forms every consumer calls — MOVED
+// HERE from manage_status_coverage.go when that file reached the cap again, along
+// with statusGraphTarget, the selector rule they share. That paragraph used to say
+// they stayed there and delegated here; they now sit beside the halves they
+// delegate to, which is where a reader looking for either one goes.
 
 import (
 	"context"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // graphEmbeddedCountFor is the SELECTOR-ADDRESSED form of GraphEmbeddedCount,
@@ -122,4 +127,64 @@ func graphCoverageFor(
 		EmbedFailuresHoldingVector:         int(stats.GetEmbedFailureHoldingVectorCount()),
 		EmbedFailuresHoldingVectorMeasured: stats != nil && stats.EmbedFailureHoldingVectorCount != nil,
 	}, nil
+}
+
+// GraphEmbeddedCount is the SINGLE definition of a graph's "embedded count" — the
+// denominator BOTH the coverage-ratio auto-heal (lever 2, via bootstrap) and the
+// manage(status) segment-coverage column (lever 3) compare segment-covered docs
+// against, so the definition cannot drift between them. It issues ONE Stats RPC
+// with IncludeCoverage:true (the same seam renderLLMCoverage uses) and returns
+// GraphStats.BinaryVectorCount — the count of nodes with a stored binary vector.
+//
+// gc is deps.GraphCaller(); when it does not satisfy the Stats seam (a router-less
+// fixture / degraded headless mode) the helper returns (0, nil) — a zero embedded
+// count, which the heal probe reads as "no coverage signal" and the status column
+// renders as a placeholder. The DEFAULT knowledge graph (empty instance name) uses
+// the empty-name GraphSelector{Graph:""}, mirroring renderLLMCoverage's
+// knowledge-row handling.
+//
+// The selector-addressed graphEmbeddedCountFor it delegates to, and the
+// both-counts helper THAT now projects from, live in
+// manage_status_coverage_counts.go.
+func GraphEmbeddedCount(ctx context.Context, gc GraphCaller, gt kgtypes.GraphType, name string) (int, error) {
+	return graphEmbeddedCountFor(ctx, gc, statusGraphTarget(gt, name))
+}
+
+// statusGraphTarget builds the Stats target for ONE NAMED graph in the status
+// coverage table.
+//
+// ONE FAMILY NEEDS MORE THAN THE DERIVATION, and it is named here rather than
+// duplicated at the two call sites below: the DEFAULT knowledge graph (empty
+// instance name) addresses as an empty selector, mirroring renderLLMCoverage's
+// knowledge-row handling.
+//
+// PRACTICE USED TO NEED ONE TOO, through the legacy read selector, and no longer
+// does. The family became a singleton, so graphsel puts no instance field on its
+// selector — right for a write and for an unselected read, and wrong while this
+// table walked a catalog of eight practice graphs: a derived target would have
+// asked about the combined graph once per name and printed the same numbers down
+// every row, and a repeated number reads as a working table. The catalog holds
+// one practice graph now, so the derivation is right and the one row it produces
+// carries that graph's own counts.
+func statusGraphTarget(gt kgtypes.GraphType, name string) *knowledgev1.GraphSelector {
+	if gt == kgtypes.GraphKnowledge && name == "" {
+		return &knowledgev1.GraphSelector{Graph: ""}
+	}
+	return graphsel.GraphSelectorFor(gt, name, false)
+}
+
+// GraphCoverageCounts returns the FULL on-demand LLM-coverage set for one graph,
+// off the SAME single Stats RPC GraphEmbeddedCount uses.
+//
+// IT IS THE WIDER PROJECTION OF ONE READ, NOT A SECOND READ. GraphEmbeddedCount
+// takes one field off a response that already carries six; a caller needing the
+// failure counts alongside the embedded count therefore had to issue a second
+// Stats call, and two calls mean two snapshots that can disagree about the same
+// graph. This returns all of them from one, so a consumer comparing them is
+// comparing numbers taken at the same instant.
+//
+// It carries the same (gt, name) special case as GraphEmbeddedCount above: the
+// unnamed knowledge graph addresses as an empty selector rather than by name.
+func GraphCoverageCounts(ctx context.Context, gc GraphCaller, gt kgtypes.GraphType, name string) (GraphCoverage, error) {
+	return graphCoverageFor(ctx, gc, statusGraphTarget(gt, name))
 }

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
@@ -37,6 +38,13 @@ import (
 // rebuilt from its nodes, so the withdrawal is a loss to be reported and acted
 // on rather than a free repair. The log line at the end of Quarantine names that
 // rebuild, and names the impact.
+
+// ---------------------------------------------------------------------------
+// The WITHDRAWAL RECORD: its seeding at construction, the reading manage(status)
+// renders, and the cure that clears it. It lives beside Quarantine rather than in
+// cache.go because it is one subject — what this store has stopped serving and when
+// it starts again — and because cache.go is at the repository's 500-line cap.
+// ---------------------------------------------------------------------------
 
 // quarantineDirName is the subdirectory under a graph's segment root that holds
 // segments withdrawn from service. scanExisting skips directories and anything
@@ -103,6 +111,7 @@ func (c *diskSegmentCache) Quarantine(id searchengine.SegmentID, reason error) e
 		// succeeds.
 		if _, movedErr := os.Stat(filepath.Join(c.root, quarantineDirName, id+".seg")); movedErr == nil {
 			c.dropIndexLocked(id)
+			c.quarantined[id] = true
 			return nil
 		}
 		_, known := c.index[id]
@@ -112,13 +121,20 @@ func (c *diskSegmentCache) Quarantine(id searchengine.SegmentID, reason error) e
 					"so nothing was withdrawn — the reported id is not the name this store keys on, which happens when a file was damaged "+
 					"in place after a correct write and the raise named the bytes' true hash instead of the filename", id, reason)
 		}
+		// AND THIS ARM IS A WITHDRAWAL TOO. The id is one this cache indexed, its file
+		// is gone from the root and it is not under quarantine, so dropping the entry
+		// is this process ceasing to serve those documents — the same fact the three
+		// paths below record. Leaving it out reported the graph as whole while it was
+		// short, which is what the count exists to prevent.
 		c.dropIndexLocked(id)
+		c.quarantined[id] = true
 		return nil
 	}
 
 	dir := filepath.Join(c.root, quarantineDirName)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		c.dropIndexLocked(id)
+		c.quarantined[id] = true
 		slog.Error("segmentdist: CORRUPT SEGMENT withdrawn from service but could not be moved aside",
 			"segment", id, "file", src, "graph_dir", c.root, "invariant", reason, "error", err)
 		return fmt.Errorf("segmentdist: create quarantine dir for segment %s: %w", id, err)
@@ -127,11 +143,19 @@ func (c *diskSegmentCache) Quarantine(id searchengine.SegmentID, reason error) e
 	dst := filepath.Join(dir, id+".seg")
 	if err := os.Rename(src, dst); err != nil {
 		c.dropIndexLocked(id)
+		c.quarantined[id] = true
 		slog.Error("segmentdist: CORRUPT SEGMENT withdrawn from service but could not be moved aside",
 			"segment", id, "file", src, "graph_dir", c.root, "invariant", reason, "error", err)
 		return fmt.Errorf("segmentdist: quarantine segment %s: %w", id, err)
 	}
 	c.dropIndexLocked(id)
+	// THE WITHDRAWAL IS RECORDED HERE AND ON EVERY OTHER PATH THAT DROPS THE INDEX
+	// ENTRY — the repeat above, the known id whose file has vanished, and the two
+	// below where the file could not be moved aside: what the
+	// count reports is DOCUMENTS THIS PROCESS NO LONGER SERVES, and a segment whose
+	// entry was dropped is withdrawn whether or not the rename succeeded. Counting
+	// only the clean path would report a graph as whole while it was short.
+	c.quarantined[id] = true
 
 	// ERROR, not WARN. The store is content-addressed: a file whose bytes do not
 	// match its name means something wrote bytes it had already hashed, and that
@@ -148,7 +172,9 @@ func (c *diskSegmentCache) Quarantine(id searchengine.SegmentID, reason error) e
 	// graph's segments from its nodes.
 	slog.Error("segmentdist: CORRUPT SEGMENT quarantined and withdrawn from service",
 		"segment", id, "moved_to", dst, "graph_dir", c.root, "invariant", reason,
-		"recovery", "rebuild this graph's segments (manage rebuild_segments) — nothing re-fetches it; the file is kept as evidence",
+		"recovery", "rebuild this graph's segments (manage rebuild_segments WITH reset: true — a default rebuild scans only what "+
+			"changed since the last landed rebuild, and a quarantine changes nothing it scans) — nothing re-fetches it; "+
+			"the file is kept as evidence and moved aside once the rebuild lands",
 		"impact", "the documents this segment held are unreachable until that rebuild runs")
 	return nil
 }
@@ -168,4 +194,97 @@ func (c *diskSegmentCache) dropIndexLocked(id searchengine.SegmentID) {
 	}
 	c.ll.Remove(el)
 	delete(c.index, id)
+}
+
+// scanQuarantined recovers the withdrawn set from the quarantine subdirectory, so a
+// restart still reports the documents that are unreachable. An absent directory —
+// the normal case — leaves the set empty, which is the true reading.
+func (c *diskSegmentCache) scanQuarantined() {
+	entries, err := os.ReadDir(filepath.Join(c.root, quarantineDirName))
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || filepath.Ext(name) != ".seg" {
+			continue
+		}
+		c.quarantined[name[:len(name)-len(".seg")]] = true
+	}
+}
+
+// quarantinedCount reports how many distinct segments this cache has withdrawn from
+// service and NOT YET recovered. It is what manage(status) renders per graph and
+// format: nothing re-fetches or re-indexes a quarantined segment, so the number
+// stands until the rebuild it prescribes lands and cureQuarantined clears it.
+func (c *diskSegmentCache) quarantinedCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.quarantined)
+}
+
+// curedDirPrefix names the subdirectories a cured withdrawal's evidence is moved into.
+// The re-seed reads only the TOP LEVEL of the quarantine directory (scanQuarantined
+// skips directories), so a file under one of these is preserved and never counted
+// again — which is the whole mechanism by which the reading returns to zero and stays
+// there across restarts.
+const curedDirPrefix = "cured-"
+
+// cureQuarantined clears this store's withdrawal record because the rebuild that
+// restores those documents has LANDED, and reports how many withdrawals it cleared.
+//
+// THE FILES ARE MOVED, NOT DELETED, for the reason Quarantine moved them aside in the
+// first place: they are the only artifact that can explain how a content-addressed
+// store came to hold bytes that do not parse, and the incident this whole path exists
+// for was diagnosed from two preserved files. They go under
+// <root>/quarantine/cured-<stamp>/, stamped so two cures never collide and an operator
+// reading the directory can tell which rebuild retired which evidence.
+//
+// A MOVE THAT FAILS STILL CLEARS THE RECORD, and the direction is deliberate. The
+// documents ARE searchable again — the layer swap landed, which is the only thing this
+// call is told — so continuing to report them as unreachable would be false whatever
+// the filesystem did with the evidence. The failure is logged with the file named.
+//
+// IT IS CALLED ONLY FROM A LANDED RESET SWAP. A merge, an append or a delta re-emit
+// does not restore a withdrawn segment's documents: only the publish that replaces the
+// whole set rebuilds them from the graph's nodes.
+func (c *diskSegmentCache) cureQuarantined() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.quarantined) == 0 {
+		return 0
+	}
+
+	dir := filepath.Join(c.root, quarantineDirName)
+	cured := filepath.Join(dir, curedDirPrefix+time.Now().UTC().Format("20060102T150405.000000000Z"))
+	if err := os.MkdirAll(cured, 0o750); err != nil {
+		slog.Error("segmentdist: could not preserve cured quarantine evidence — the withdrawal record is cleared anyway",
+			"graph_dir", c.root, "cured_dir", cured, "error", err,
+			"impact", "the documents are searchable again; only the evidence file's location is affected")
+		n := len(c.quarantined)
+		clear(c.quarantined)
+		return n
+	}
+
+	n := 0
+	for id := range c.quarantined {
+		src := filepath.Join(dir, id+".seg")
+		if _, statErr := os.Stat(src); statErr != nil {
+			// The evidence is already gone — moved by an operator, or never written
+			// because the rename that would have created it failed. The withdrawal is
+			// still cured; there is simply nothing to preserve.
+			n++
+			continue
+		}
+		if err := os.Rename(src, filepath.Join(cured, id+".seg")); err != nil {
+			slog.Error("segmentdist: could not move cured quarantine evidence aside — the withdrawal record is cleared anyway",
+				"segment", id, "file", src, "cured_dir", cured, "error", err)
+		}
+		n++
+	}
+	clear(c.quarantined)
+
+	slog.Info("segmentdist: QUARANTINE CLEARED — a landed rebuild restored the withdrawn segments' documents",
+		"graph_dir", c.root, "cured", n, "evidence_kept_in", cured)
+	return n
 }

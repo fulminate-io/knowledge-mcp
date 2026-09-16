@@ -5,8 +5,11 @@ package bootstrap
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -74,8 +77,8 @@ func TestInstallClaudeAssets_Settings_Idempotent(t *testing.T) {
 	if !bytes.Equal(first, second) {
 		t.Errorf("installer not idempotent:\n--first--\n%s\n--second--\n%s", first, second)
 	}
-	if n := countManagedEntries(t, second); n != 1 {
-		t.Errorf("managed entry count = %d, want exactly 1:\n%s", n, second)
+	if n := countManagedEntries(t, second); n != wantManagedEntries() {
+		t.Errorf("managed entry count = %d, want exactly %d:\n%s", n, wantManagedEntries(), second)
 	}
 }
 
@@ -154,9 +157,9 @@ func TestInstallClaudeAssets_Settings_NonClobber(t *testing.T) {
 	assertHookField(t, outBash, "timeout", float64(42))
 	assertHookField(t, outBash, "statusMessage", "user msg")
 
-	// The managed promote-guard entry is present, exactly once.
-	if n := countManagedEntries(t, out); n != 1 {
-		t.Errorf("managed entry count = %d, want 1:\n%s", n, out)
+	// Every managed entry is present, exactly once each.
+	if n := countManagedEntries(t, out); n != wantManagedEntries() {
+		t.Errorf("managed entry count = %d, want %d:\n%s", n, wantManagedEntries(), out)
 	}
 }
 
@@ -194,5 +197,51 @@ func TestInstallClaudeAssets_DiffSettings(t *testing.T) {
 	}
 	if !bytes.Equal(after, orig) {
 		t.Errorf("--diff modified settings.json on disk:\nbefore=%s\nafter =%s", orig, after)
+	}
+}
+
+// TestInstallClaudeAssets_WritesSessionHookAtMCPPort is the R1 END-TO-END
+// observable, written against the installed FILE rather than any internal
+// helper: after the real subcommand runs with an explicit --mcp-port, the
+// settings.json carries a PreToolUse hook that POSTs to the daemon's Claude
+// hook endpoint on THAT port. --dry-run writes nothing, and --no-mcp (which
+// every one of these runs passes) does not suppress it.
+func TestInstallClaudeAssets_WritesSessionHookAtMCPPort(t *testing.T) {
+	dir := t.TempDir()
+	settings := filepath.Join(dir, "settings.json")
+	const port = 20003
+
+	args := append(installSettingsArgs(dir, settings), "--mcp-port", strconv.Itoa(port))
+	if err := runInstallClaudeAssets(args); err != nil {
+		t.Fatalf("install at --mcp-port %d: %v", port, err)
+	}
+	got := string(mustRead(t, settings))
+	want := "http://127.0.0.1:" + strconv.Itoa(port) + "/hook/claude"
+	if !strings.Contains(got, want) {
+		t.Errorf("settings.json does not carry the session hook url %q:\n%s", want, got)
+	}
+	if strings.Contains(got, "{{") {
+		t.Errorf("settings.json carries an unrendered placeholder:\n%s", got)
+	}
+}
+
+// TestInstallClaudeAssets_OutOfRangeMCPPortWritesNothing: an out-of-range
+// --mcp-port refuses the WHOLE verb with errMCPPortRange and leaves no
+// settings.json behind — both bounds, asserted on the sentinel rather than the
+// message text.
+func TestInstallClaudeAssets_OutOfRangeMCPPortWritesNothing(t *testing.T) {
+	for _, port := range []int{mcpPortMin - 1, mcpPortMax + 1} {
+		t.Run(strconv.Itoa(port), func(t *testing.T) {
+			dir := t.TempDir()
+			settings := filepath.Join(dir, "settings.json")
+			args := append(installSettingsArgs(dir, settings), "--mcp-port", strconv.Itoa(port))
+			err := runInstallClaudeAssets(args)
+			if !errors.Is(err, errMCPPortRange) {
+				t.Fatalf("install at --mcp-port %d error = %v, want errMCPPortRange", port, err)
+			}
+			if _, statErr := os.Stat(settings); !os.IsNotExist(statErr) {
+				t.Errorf("a refused --mcp-port still wrote settings.json")
+			}
+		})
 	}
 }

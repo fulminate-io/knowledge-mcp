@@ -86,7 +86,7 @@ func TestOpenStore_PrefersKeychainWhenAvailable(t *testing.T) {
 	}
 
 	keychain := newTestStore()
-	newKeychainStoreFn = func() (Store, error) { return keychain, nil }
+	newKeychainStoreFn = func(string) (Store, error) { return keychain, nil }
 	t.Cleanup(func() { newKeychainStoreFn = NewStore })
 
 	got, err := OpenStore()
@@ -114,7 +114,7 @@ func TestOpenStore_PrefersKeychainWhenAvailable(t *testing.T) {
 func TestOpenStore_FallsBackWhenBackendUnavailable(t *testing.T) {
 	path := credentialsPathInTempHome(t)
 
-	newKeychainStoreFn = func() (Store, error) {
+	newKeychainStoreFn = func(string) (Store, error) {
 		return errGetStore{testStore: newTestStore(), getErr: wrappedExecNotFound(t)}, nil
 	}
 	t.Cleanup(func() { newKeychainStoreFn = NewStore })
@@ -143,7 +143,7 @@ func TestOpenStore_KeychainDenialIsNotShadowed(t *testing.T) {
 	path := credentialsPathInTempHome(t)
 
 	denied := errGetStore{testStore: newTestStore(), getErr: wrappedExitError(t)}
-	newKeychainStoreFn = func() (Store, error) { return denied, nil }
+	newKeychainStoreFn = func(string) (Store, error) { return denied, nil }
 	t.Cleanup(func() { newKeychainStoreFn = NewStore })
 
 	got, err := OpenStore()
@@ -158,7 +158,7 @@ func TestOpenStore_KeychainDenialIsNotShadowed(t *testing.T) {
 	}
 	// Known-positive control: the absence above is only meaningful if this
 	// probe can see the file when one is written.
-	fs, err := newFileStore()
+	fs, err := newFileStore("")
 	if err != nil {
 		t.Fatalf("newFileStore: %v", err)
 	}

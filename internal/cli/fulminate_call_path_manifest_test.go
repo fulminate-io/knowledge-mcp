@@ -27,8 +27,15 @@ var fulminateCallPathManifest = []censusRow{
 	{File: "internal/cli/desktop_dashboard_http.go", Symbol: "client.DialContext#1", Disposition: dispExcluded},
 	{File: "internal/cli/desktop_dashboard_http.go", Symbol: "http.NewRequestWithContext#1", Disposition: dispExcluded},
 	// Native management uses the same stamped transport and AuthKit credential source.
+	{File: "internal/cli/desktop_auth.go", Symbol: "auth.NewSyncTransport#1", Disposition: dispReaches, Reaches: "internal/auth/sync_transport.go:http.NewRequestWithContext#1"},
+	{File: "internal/cli/desktop_auth.go", Symbol: "auth.NewOAuthTokenSource#1", Disposition: dispExcluded},
 	{File: "internal/cli/desktop_remote.go", Symbol: "auth.NewSyncTransport#1", Disposition: dispReaches, Reaches: "internal/auth/sync_transport.go:http.NewRequestWithContext#1"},
 	{File: "internal/cli/desktop_remote.go", Symbol: "auth.NewOAuthTokenSource#1", Disposition: dispExcluded},
+	// The Desktop platform proxy rides the same stamped transport: it forwards
+	// an allowlisted platform path with the bearer this process holds, so it is
+	// Fulminate-bound and reaches the sync transport's single stamping point.
+	{File: "internal/cli/desktop_platform.go", Symbol: "auth.NewSyncTransport#1", Disposition: dispReaches, Reaches: "internal/auth/sync_transport.go:http.NewRequestWithContext#1"},
+	{File: "internal/cli/desktop_platform.go", Symbol: "auth.NewOAuthTokenSource#1", Disposition: dispExcluded},
 	// ---------------------------------------------------------------------
 	// FULMINATE-BOUND. The population this gate exists to cover.
 	// ---------------------------------------------------------------------
@@ -125,6 +132,14 @@ var fulminateCallPathManifest = []censusRow{
 	{File: "internal/llm/gemini/gemini.go", Symbol: "http.NewRequestWithContext#1", Disposition: dispExcluded},
 	{File: "internal/llm/openai/service.go", Symbol: "http.NewRequestWithContext#1", Disposition: dispExcluded},
 	{File: "internal/rerank/voyage.go", Symbol: "http.NewRequestWithContext#1", Disposition: dispExcluded},
+	// The first-run guide's provider check. It reads the user's own
+	// provider's model list with the user's own key — the same third-party
+	// hosts the generate arms above call, reached through the same
+	// exported base-URL constants. It never touches a Fulminate service,
+	// and local use of the guide requires no Fulminate account at all, so
+	// a client-version header here would tell a third party something
+	// about our users for no benefit we can name.
+	{File: "internal/llm/providercheck/providercheck.go", Symbol: "http.NewRequestWithContext#1", Disposition: dispExcluded},
 	// The custom-collector http provider. It is a THIRD PARTY BY DEFINITION —
 	// somebody else's MCP server, named by an operator's own config entry — so
 	// a client-version header would tell an unrelated host something about our

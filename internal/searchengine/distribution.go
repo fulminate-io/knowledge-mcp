@@ -241,13 +241,29 @@ func (e *SegmentedIndex[Q, S]) entryFromDecoded(seg Segment[Q, S], blob SegmentB
 		members[extID] = ord
 	}
 	live := newLiveDocsFromTombstones(len(ids), tombstones, members)
+	// WHERE AN IMPORTED PAYLOAD'S BYTES LIVE, decided by the blob rather than guessed.
+	// The rule is total, and each arm is a fact the blob carries rather than a
+	// preference:
+	//   - Release non-nil: the blob OWNS a mapping (the L2 load path's GetMapped, the
+	//     remap), so its bytes are page cache and this entry holds no heap for them.
+	//   - keepAlive non-nil: the blob BORROWS memory another entry owns (Export hands
+	//     out a live entry's own bytes), and that owner already accounts for them —
+	//     counting them here would bill one allocation to two entries.
+	//   - neither: the bytes are an ordinary heap slice this entry now retains for its
+	//     whole life, which is what a blob pulled over the wire is. It is COUNTED,
+	//     because it is genuinely on the heap and the budget must see it.
+	var heapPayload int64
+	if blob.Release == nil && blob.keepAlive == nil {
+		heapPayload = int64(len(blob.Bytes))
+	}
 	// DISTINCT, exactly as newEntry counts it — this is the IMPORT path, and a
 	// blob built before the count was corrected carries duplicate ids, so it is
 	// precisely the path that would otherwise re-inflate the corpus size on load.
 	entry := &segmentEntry[Q, S]{
-		payload: seg,
-		live:    live,
-		members: members,
+		payload:     seg,
+		live:        live,
+		members:     members,
+		heapPayload: heapPayload,
 		meta: SegmentMeta{
 			ID:         blob.ID,
 			Format:     blob.Format,

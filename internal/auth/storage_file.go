@@ -36,15 +36,20 @@ type fileStore struct {
 	mu   sync.Mutex
 }
 
-// newFileStore returns a Store backed by ~/.knowledge/credentials, creating
-// the directory at 0700 if it does not exist.
+// newFileStore returns a Store backed by ~/.knowledge/credentials — or by the
+// namespaced sibling ~/.knowledge/credentials.<namespace> when a credential
+// namespace is selected — creating the directory at 0700 if it does not exist.
+//
+// The namespace keys the FILE and not just the keychain service, because a
+// process whose keychain is unavailable would otherwise fall back to exactly
+// the credentials the namespace exists to keep it away from.
 //
 // Inside a test binary it refuses when it would target the real home, since
 // tests must use in-memory fakes; the real credential store is off-limits to
 // test binaries. A test that points HOME at a temp directory first is
 // hermetic and still allowed. The refusal is checked before any filesystem
 // call, so a refused construction leaves nothing behind.
-func newFileStore() (Store, error) {
+func newFileStore(namespace string) (Store, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("auth: resolve home directory: %w", err)
@@ -56,7 +61,7 @@ func newFileStore() (Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("auth: create %q: %w", dir, err)
 	}
-	return &fileStore{path: filepath.Join(dir, credentialsFileName)}, nil
+	return &fileStore{path: filepath.Join(dir, credentialsFileNameFor(namespace))}, nil
 }
 
 // Get returns the value stored under key, or ErrNotFound if the key (or the

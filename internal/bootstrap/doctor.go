@@ -52,6 +52,7 @@ type checkResult struct {
 // doctorFlags holds the parsed flags for `knowledge doctor`.
 type doctorFlags struct {
 	port       int
+	mcpPort    int
 	configFile string
 	deep       bool
 }
@@ -63,6 +64,8 @@ type doctorFlags struct {
 // registerInstallFlags.
 func registerDoctorFlags(fs *flag.FlagSet, f *doctorFlags) {
 	fs.IntVar(&f.port, "port", graphclient.DefaultPort, "TCP port the graph server should be listening on")
+	fs.IntVar(&f.mcpPort, "mcp-port", graphclient.DefaultMCPHTTPPort,
+		"Loopback TCP port the daemon serves MCP on — the port the installed harness session hooks must post to")
 	fs.StringVar(&f.configFile, "config-file", "", "Path to the TOML config file (default ~/.knowledge/config)")
 	fs.BoolVar(&f.deep, "deep", false, "Exercise each configured provider's reachability/login (slower, makes network calls)")
 }
@@ -78,7 +81,25 @@ func runDoctor(args []string) error {
 		return err
 	}
 
-	checks := defaultChecks(f.port, f.configFile)
+	// A bad --mcp-port refuses the whole verb: a diagnostic that compared the
+	// installed hooks against a port nothing can serve would report a drift
+	// that is the flag's fault, not the install's.
+	if err := validateMCPPort(f.mcpPort); err != nil {
+		return err
+	}
+
+	// The port comparison is honored only when the OPERATOR named the port.
+	// An unset --mcp-port leaves the flag at its documented default, which is a
+	// guess about this machine, not knowledge of it — and a guess here produces
+	// a warning whose remediation would break a working non-default install.
+	mcpPortKnown := false
+	fs.Visit(func(fl *flag.Flag) {
+		if fl.Name == "mcp-port" {
+			mcpPortKnown = true
+		}
+	})
+
+	checks := defaultChecks(f.port, f.mcpPort, mcpPortKnown, f.configFile)
 	if f.deep {
 		checks = append(checks, checkProvidersDeep(f.configFile))
 	}
@@ -127,13 +148,13 @@ func runDoctor(args []string) error {
 // and checkCodeStaleness each dialed their own client, and on an install with
 // a remote backend (no local server by design) each probe slept through the
 // reconnect interceptor's retry ladder — ~13s of a ~14.5s manage(status).
-func defaultChecks(port int, configFile string) []checkResult {
-	return scopedChecks(port, configFile, false)
+func defaultChecks(port, mcpPort int, mcpPortKnown bool, configFile string) []checkResult {
+	return scopedChecks(port, mcpPort, mcpPortKnown, configFile, false)
 }
 
 // scopedChecks limits explicit installations to their own runtime and config.
 // Host integration diagnostics belong to the standalone installation.
-func scopedChecks(port int, configFile string, isolated bool) []checkResult {
+func scopedChecks(port, mcpPort int, mcpPortKnown bool, configFile string, isolated bool) []checkResult {
 	// routing: local by design — the local install is the subject. Liveness is
 	// only part of what this client does, and calling it the whole reason would
 	// under-describe the site: besides the HealthyCtx probe below, two of the
@@ -167,7 +188,8 @@ func scopedChecks(port int, configFile string, isolated bool) []checkResult {
 		checkFulminateAuth(),
 		checkClaudeAssets(),
 		checkClaudeMD(),
-		checkClaudeSettings(),
+		checkClaudeSettings(mcpPort, mcpPortKnown),
+		checkCodexHook(mcpPort, mcpPortKnown),
 	)
 	return checks
 }

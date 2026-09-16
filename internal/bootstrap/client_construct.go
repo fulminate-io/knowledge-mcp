@@ -66,29 +66,37 @@ var startKeepaliveFn = (*graphclient.GraphClient).StartKeepalive
 //   - no machine token: the interactive keychain OAuth source, machineAuth
 //     false. Cloud selection then follows the keychain login state.
 //
-// Store construction errors (ErrNotImplementedOS on Windows, or any transient
-// failure) are non-fatal: degrade to noopAuthStore{} so AuthState reports
-// IsLoggedIn==false and the Router falls through to local.
-func selectAuthSources(f Config) (auth.Store, auth.TokenSource, bool) {
+// A store-construction error is FATAL and is returned to the caller, which
+// fails `serve` startup. It is never degraded to noopAuthStore{}: the three
+// classes that can arrive here in production — an unresolvable home, an
+// ~/.knowledge that cannot be created, and a malformed
+// auth.CredentialNamespaceEnv — are all bad input or a broken environment, and
+// a daemon that swallowed them would report "not logged in" for a machine that
+// is logged in, or serve the operator's default credentials to a process that
+// asked for an isolated namespace. AGENTS.md's "bad input always errors" is the
+// rule; there is no per-class branch, so there is none to get wrong later.
+//
+// --no-auth is unaffected: it never opens the store at all.
+func selectAuthSources(f Config) (auth.Store, auth.TokenSource, bool, error) {
 	if f.NoAuth {
-		return noopAuthStore{}, auth.StaticTokenSource{}, false
+		return noopAuthStore{}, auth.StaticTokenSource{}, false, nil
 	}
 	authStore, storeErr := newAuthStoreFn()
 	if storeErr != nil {
-		authStore = noopAuthStore{}
+		return nil, nil, false, storeErr
 	}
 	if f.AuthToken != "" {
-		return authStore, auth.StaticTokenSource{AccessToken: f.AuthToken}, true
+		return authStore, auth.StaticTokenSource{AccessToken: f.AuthToken}, true, nil
 	}
 	if auth.CredentialStoreIsReadOnly() {
-		return authStore, auth.NewReadOnlyTokenSource(authStore), false
+		return authStore, auth.NewReadOnlyTokenSource(authStore), false, nil
 	}
 	tokenSource := auth.NewOAuthTokenSource(
 		authStore,
 		cli.CloudEndpoint,
 		cli.AllowedAuthHosts(),
 	)
-	return authStore, tokenSource, false
+	return authStore, tokenSource, false, nil
 }
 
 // constructClient builds the client state that proxies to the graph server.
@@ -104,25 +112,34 @@ func selectAuthSources(f Config) (auth.Store, auth.TokenSource, bool) {
 // for it. The unary reconnect interceptor redials transparently when the next
 // real request lands — keepalive is operator visibility, not recovery.
 //
+// Returns an error when the credential sources cannot be resolved — a broken
+// credential environment fails startup rather than degrading to a signed-out
+// daemon; see selectAuthSources.
+//
 // Router wiring: builds the auth.AuthState backed by the platform keychain
-// Store (or a no-op stub on platforms where the keychain is not implemented —
-// Windows) and the bare keychain OAuth TokenSource, then wraps the local
+// Store and the bare keychain OAuth TokenSource, then wraps the local
 // *GraphClient in a *graphclient.Router. Every routed GraphCaller() call
 // dispatches per-call on the keychain auth state: cached IsLoggedIn=true →
 // cloud; false → local; neither → ErrNoBackend.
-func constructClient(f Config) *client {
-	dialLocal := f.LocalDialer
-	if dialLocal == nil {
-		dialLocal = graphclient.NewGraphClient
-	}
-	tcp := dialLocal(f.Port)
-
+func constructClient(f Config) (*client, error) {
 	// Resolve the three Router.pick (router.go:173) inputs — auth Store,
 	// TokenSource, and the machineAuth cloud-selection bool. selectAuthSources
 	// is the single decision point; under --no-auth it returns the noop store +
 	// empty StaticTokenSource + machineAuth=false, forcing pick() local-only
 	// regardless of any credential present (fail-closed). See its doc-comment.
-	authStore, tokenSource, machineAuth := selectAuthSources(f)
+	//
+	// It runs BEFORE the local dial so a refused credential configuration
+	// constructs nothing at all — there is no half-built client to clean up.
+	authStore, tokenSource, machineAuth, err := selectAuthSources(f)
+	if err != nil {
+		return nil, err
+	}
+
+	dialLocal := f.LocalDialer
+	if dialLocal == nil {
+		dialLocal = graphclient.NewGraphClient
+	}
+	tcp := dialLocal(f.Port)
 	authState := auth.NewAuthState(authStore, 0)
 	// machineAuth forces cloud selection without keychain involvement: a
 	// machine-token client routes every op to cloud and runs with no local
@@ -156,7 +173,20 @@ func constructClient(f Config) *client {
 		// reason: it is the gate every background loop consults, and a
 		// consumer wired before it existed would read nil (EMPTY) forever.
 		workingSet: workingset.New(),
+		// The per-session account bindings live under the daemon's OWN data
+		// root, beside the segment cache — not a HOME-fixed path — so a second
+		// daemon under a second --graph-storage keeps its own bindings. An empty
+		// root yields a store that errors on use rather than one that picks a
+		// directory of its own.
+		sessionAccounts: tools.NewSessionAccountStore(f.GraphStorage),
 	}
+	// Install the bindings as the SESSION rung of the account ladder, here in the
+	// synchronous constructor rather than in background wiring: a request that
+	// beat the wiring would resolve its account from the machine-wide selection,
+	// which is precisely the silently-wrong-account outcome the binding exists to
+	// prevent.
+	// THE RESTORE CLOSURE IS KEPT, not discarded: see client.releaseSessionAccounts.
+	c.releaseSessionAccounts = auth.SelectedAccount().SetSessionAccountResolver(c.sessionAccounts)
 	// Record every direct user interaction with a concrete graph instance. The
 	// recorder sits on Router.Execute so every routed call is judged by the same
 	// (operation, instance) rule; the Router keeps returning c.router from
@@ -194,7 +224,7 @@ func constructClient(f Config) *client {
 	if !c.router.LoggedIn(context.Background()) {
 		startKeepaliveFn(tcp, context.Background())
 	}
-	return c
+	return c, nil
 }
 
 // buildCloudSyncTransport constructs the sync *auth.Transport over the SHARED

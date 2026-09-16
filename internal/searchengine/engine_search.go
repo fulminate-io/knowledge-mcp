@@ -16,6 +16,25 @@ import (
 // preallocated result slot (no shared-slice contention), then merges the global
 // top-k. The liveDocs accept filter excludes deleted ids. The only
 // synchronization is the atomic load + the fan-out WaitGroup/semaphore.
+// ResidentSegmentFanoutBudget is the resident segment count the search fan-out's
+// latency budget was measured at, and the count any resident-growth bound above
+// this engine must agree with.
+//
+// SearchAccepting below fans out ONE GOROUTINE PER RESIDENT SEGMENT, so the
+// resident count IS what a query pays while a graph is being indexed — and an
+// externally reported host reached 16,761 resident segments between drains. The
+// per-machine latency readings that count was chosen against are recorded in this
+// package's search benchmarks (engine_bench_test.go); the fan-out itself is
+// asserted as a count by TestSearchFansOutOncePerResidentSegment, because a
+// wall-clock ratio measures the runner more than it measures the code.
+//
+// IT IS EXPORTED SO THE BOUND AND THE MEASUREMENT CANNOT DRIFT APART. The cap that
+// keeps the resident set here lives in segmentdist, which imports this package;
+// its own test asserts equality with this constant, so moving either one alone
+// turns that test red instead of leaving a latency budget measured at a count
+// production no longer permits.
+const ResidentSegmentFanoutBudget = 4096
+
 func (e *SegmentedIndex[Q, S]) Search(q Q, k int) []Hit {
 	return e.SearchAccepting(q, k, nil)
 }

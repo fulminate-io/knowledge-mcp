@@ -30,7 +30,8 @@ import (
 // is the web page's 10-minute poll, so this is not a hot path (CEO cadence
 // decision) and needs no TTL cache in v1.
 func (c *client) DoctorChecks(_ context.Context) []tools.DoctorCheck {
-	results := scopedChecks(c.port, c.runtimeConfigFile, c.runtimeStateDir != "")
+	mcpPort, mcpPortKnown := c.mcpHTTPPort()
+	results := scopedChecks(c.port, mcpPort, mcpPortKnown, c.runtimeConfigFile, c.runtimeStateDir != "")
 	out := make([]tools.DoctorCheck, 0, len(results))
 	for _, r := range results {
 		out = append(out, tools.DoctorCheck{
@@ -41,6 +42,27 @@ func (c *client) DoctorChecks(_ context.Context) []tools.DoctorCheck {
 		})
 	}
 	return out
+}
+
+// mcpHTTPPort reports the loopback port this process serves MCP on, and whether
+// it KNOWS it. It is the ONE place that answer is resolved.
+//
+// TODAY IT KNOWS NOTHING, and says so. The serve entry point holds the real
+// value (`--http-port`) but does not record it on the client, and the file that
+// would carry that assignment is already at the repository's file-length limit,
+// so splitting it is separate work. Wiring this up afterwards is a one-line
+// change: return the recorded port and true.
+//
+// RETURNING A GUESS WOULD BE WORSE THAN RETURNING NOTHING, which is the whole
+// reason for the bool. The hook diagnostics compare the port an installed hook
+// NAMES against the port the daemon SERVES; handing them a hard-coded default
+// as if it were the served port makes every correctly-installed non-default
+// install read as a wrong-port warning whose remediation would reinstall the
+// hook at a port the daemon does not serve. Unknown means the checks report
+// SHAPE drift only and skip the port comparison entirely; `knowledge doctor
+// --mcp-port N`, where an operator names the port, keeps the real detection.
+func (c *client) mcpHTTPPort() (int, bool) {
+	return 0, false
 }
 
 // doctorStatusLabel maps the internal checkStatus enum onto the stable

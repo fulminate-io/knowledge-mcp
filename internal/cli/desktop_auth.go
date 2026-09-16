@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -34,11 +35,21 @@ var authConfigPath = config.DefaultPath
 type desktopAuth struct {
 	store      auth.Store
 	configPath string
+	transport  *auth.Transport // Optional fixture transport; production uses this store/config.
 }
 
 // DesktopAuthCmd is the fixed, machine-readable interface used by Desktop.
 // Its configuration path is supplied by the main process, never the renderer.
 func DesktopAuthCmd(args []string) error {
+	// A malformed credential-namespace selector is bad configuration, not a
+	// signed-out machine. It is refused HERE, before any work and before the
+	// store is opened, so the caller gets a hard error on stderr instead of a
+	// JSON result code it would read as "ask the user to sign in". The same
+	// predicate backs auth.OpenStore, so this is an ordering guarantee rather
+	// than a second gate.
+	if _, err := auth.CredentialNamespace(); err != nil {
+		return err
+	}
 	if len(args) == 0 {
 		return errors.New("desktop-auth requires an action")
 	}
@@ -68,6 +79,11 @@ func DesktopAuthCmd(args []string) error {
 	return json.NewEncoder(os.Stdout).Encode(d.perform(ctx, operation, *account))
 }
 func (d desktopAuth) status(ctx context.Context) desktopAuthResult {
+	return d.sessionStatus(ctx, false)
+}
+
+// sessionStatus dates a credential only after this operation authenticated it.
+func (d desktopAuth) sessionStatus(ctx context.Context, validated bool) desktopAuthResult {
 	result := desktopAuthResult{State: "signed_out"}
 	values := make(map[string]string, 4)
 	for _, key := range []string{auth.KeyAccessToken, auth.KeyAccessTokenExpiry, auth.KeyRefreshToken, auth.KeyClientID} {
@@ -86,7 +102,9 @@ func (d desktopAuth) status(ctx context.Context) desktopAuthResult {
 			result.State = "expired"
 		} else {
 			result.State = "signed_in"
-			result.Expiry = expiry.Format(time.RFC3339)
+			if validated {
+				result.Expiry = expiry.Format(time.RFC3339)
+			}
 		}
 	case values[auth.KeyRefreshToken] != "":
 		result.State = "unpublished"
@@ -99,93 +117,129 @@ func (d desktopAuth) status(ctx context.Context) desktopAuthResult {
 	}
 	return result
 }
+
+// perform owns a single operation's authenticated result. Stored-only status
+// never carries expiry: reading a timestamp does not validate a credential.
 func (d desktopAuth) perform(ctx context.Context, operation, account string) desktopAuthResult {
+	var accounts []accountEntry
 	var code string
+	var accountErr error
 	switch operation {
 	case "login":
-		code = d.login(ctx)
+		accounts, code, accountErr = d.login(ctx)
 	case "logout":
 		code = d.logout(ctx)
 	case "select":
-		code = d.selectAccount(ctx, account)
+		accounts, code, accountErr = d.selectAccount(ctx, account)
+	case "accounts":
+		accounts, accountErr = d.loadAccounts(ctx)
 	}
-	result := d.status(ctx)
+	result := d.sessionStatus(ctx, accounts != nil && accountErr == nil)
 	if code != "" {
 		result.Code = code
 	}
-	if operation == "accounts" || operation == "select" || operation == "login" {
-		accounts, err := fetchAccounts(ctx)
-		if err != nil {
-			result.AccountCode = "account_unavailable"
-		} else {
-			result.Accounts = &accounts
+	if accountErr != nil {
+		result.AccountCode = "account_unavailable"
+		if desktopSignInRequired(accountErr) {
+			result.State = "expired"
+			result.AccountCode = "sign_in_required"
 		}
+	} else if accounts != nil {
+		result.Accounts = &accounts
 	}
 	return result
 }
-func (d desktopAuth) login(ctx context.Context) string {
+
+func desktopSignInRequired(err error) bool {
+	if errors.Is(err, auth.ErrInvalidGrant) || errors.Is(err, auth.ErrNoSession) || errors.Is(err, auth.ErrSessionExpired) || errors.Is(err, auth.ErrNotFound) {
+		return true
+	}
+	var oauth *auth.OAuthError
+	var response *auth.SyncHTTPError
+	return (errors.As(err, &oauth) && oauth.StatusCode == http.StatusUnauthorized) || (errors.As(err, &response) && response.StatusCode == http.StatusUnauthorized)
+}
+
+var desktopAccountTransport = func(store auth.Store, configPath string) *auth.Transport {
+	return auth.NewSyncTransport(CloudEndpoint, auth.NewOAuthTokenSource(store, CloudEndpoint, AllowedAuthHosts()), syncTransportProof(), auth.WithAccountSelection(auth.NewAccountSelection(configPath, time.Second)))
+}
+
+func (d desktopAuth) loadAccounts(ctx context.Context) ([]accountEntry, error) {
+	tr := d.transport
+	if tr == nil {
+		tr = desktopAccountTransport(d.store, d.configPath)
+	}
+	return fetchAccountsWithTransport(ctx, tr)
+}
+
+// login reports non-membership failures through sanitized public codes.
+// The error return is reserved for membership authentication classification.
+//
+//nolint:nilerr // Public outcome code carries the handled store/browser/config failure.
+func (d desktopAuth) login(ctx context.Context) ([]accountEntry, string, error) {
 	endpoints, err := discoverFn(ctx, CloudEndpoint, allowedAuthHosts)
 	if err != nil {
-		return "authentication_failed"
+		return nil, "authentication_failed", nil
 	}
 	clientID, tr, err := desktopBrowserFlow(ctx, endpoints)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			return "cancelled"
+			return nil, "cancelled", nil
 		}
-		return "authentication_failed"
+		return nil, "authentication_failed", nil
 	}
 	if clientID == "" || tr.RefreshToken == "" || tr.AccessToken == "" {
-		return "session_incomplete"
+		return nil, "session_incomplete", nil
 	}
 	if err = d.store.Set(ctx, auth.KeyClientID, clientID); err != nil {
-		return "session_incomplete"
+		return nil, "session_incomplete", nil
 	}
 	if err = d.store.Set(ctx, auth.KeyRefreshToken, tr.RefreshToken); err != nil {
-		return "session_incomplete"
+		return nil, "session_incomplete", nil
 	}
 	if err = auth.PublishSessionToken(ctx, d.store, tr); err != nil {
-		return "session_incomplete"
+		return nil, "session_incomplete", nil
 	}
-	accounts, err := fetchAccounts(ctx)
+	accounts, err := d.loadAccounts(ctx)
 	if err != nil {
-		return "account_unavailable"
+		return nil, "", err
 	}
 	selected, err := config.ReadSelectedAccountID(d.configPath)
 	if err != nil {
-		return "account_unavailable"
+		return accounts, "account_unavailable", nil
 	}
 	if selected != "" {
 		a, ok := matchAccount(accounts, selected)
 		if !ok || !a.HasActiveSubscription {
-			return "account_ineligible"
+			return accounts, "account_ineligible", nil
 		}
-		return ""
+		return accounts, "", nil
 	}
 	if len(accounts) == 0 {
-		return "account_ineligible"
+		return accounts, "account_ineligible", nil
 	}
 	if err = config.WriteSelectedAccountID(d.configPath, accounts[0].ID); err != nil {
-		return "account_write_failed"
+		return accounts, "account_write_failed", nil
 	}
 	if !accounts[0].HasActiveSubscription {
-		return "account_ineligible"
+		return accounts, "account_ineligible", nil
 	}
-	return ""
+	return accounts, "", nil
 }
-func (d desktopAuth) selectAccount(ctx context.Context, id string) string {
-	accounts, err := fetchAccounts(ctx)
+
+//nolint:nilerr // Public account_write_failed reports the handled config error.
+func (d desktopAuth) selectAccount(ctx context.Context, id string) ([]accountEntry, string, error) {
+	accounts, err := d.loadAccounts(ctx)
 	if err != nil {
-		return "account_unavailable"
+		return nil, "", err
 	}
 	matched, ok := matchAccount(accounts, id)
 	if !ok || matched.ID != id || !matched.HasActiveSubscription {
-		return "account_ineligible"
+		return accounts, "account_ineligible", nil
 	}
 	if err = config.WriteSelectedAccountID(d.configPath, matched.ID); err != nil {
-		return "account_write_failed"
+		return accounts, "account_write_failed", nil
 	}
-	return ""
+	return accounts, "", nil
 }
 func (d desktopAuth) logout(ctx context.Context) string {
 	code := ""

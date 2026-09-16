@@ -52,7 +52,14 @@ func acceptLiveMembers[Q, S any](entry *segmentEntry[Q, S], bucket, bucketCount 
 // an error — a concurrent load may already have dropped it. An empty docs slice is
 // legal and consolidates the constituents alone, which is the delete-only shape.
 // A Build, Merge or entry-construction error returns WITHOUT publishing, leaving
-// the prior segments intact.
+// the prior segments intact — WITH ONE DISPOSITION THAT IS NOT NOTHING. A failure
+// that was a CORRUPTION withdraws the constituent it names from the published set
+// before returning, and hands it to the owner's corrupt-segment hook, which in this
+// product quarantines the stored file. The resident set after such a failure is
+// therefore the prior one MINUS that segment and the documents it held. That is
+// deliberate — re-offering it fails the same swap forever, which a release candidate
+// measured 19 consecutive times on one partition — but a caller reading this as
+// "nothing changed" would be wrong about the count, the coverage and the file.
 //
 // It REPORTS the id it published, empty when there was nothing to consolidate and
 // it published nothing. A caller must not infer that id by diffing the segment set
@@ -86,7 +93,7 @@ func (e *SegmentedIndex[Q, S]) ReplaceBucket(
 		if err != nil {
 			return "", err
 		}
-		fresh, err = e.newEntry(seg, nil)
+		fresh, err = e.newEntry(seg, nil, payloadBuilt)
 		if err != nil {
 			return "", err
 		}
@@ -122,8 +129,16 @@ func (e *SegmentedIndex[Q, S]) ReplaceBucket(
 		return "", nil
 	}
 
-	entry, err := e.mergeEntry(segs, accept)
+	entry, err := e.mergeEntry(segs, accept, removed)
 	if err != nil {
+		// A CORRUPT CONSTITUENT IS WITHDRAWN HERE, on the same seam the background
+		// merger uses, because the alternative is a swap that fails on the same
+		// segment forever. The caller of this one is a convergence action — the
+		// resident-count bound re-offers the same partition on every crossing — so a
+		// corruption reported to nobody is a partition that can never be consolidated
+		// and a count that only grows. The error is still RETURNED; unlike the merger's
+		// error, which vanishes, this caller gets to log it with the partition it names.
+		e.reportCorruptFrom(err)
 		return "", err
 	}
 	// THE DURABLE SUPERSESSION RECORD, stamped BEFORE the publish below because a
@@ -193,7 +208,7 @@ func (e *SegmentedIndex[Q, S]) harvestPartition(
 		if err != nil {
 			return nil, "", err
 		}
-		fresh, err = e.newEntry(seg, nil)
+		fresh, err = e.newEntry(seg, nil, payloadBuilt)
 		if err != nil {
 			return nil, "", err
 		}
@@ -215,7 +230,13 @@ func (e *SegmentedIndex[Q, S]) harvestPartition(
 		return nil, freshID, nil
 	}
 
-	entry, err := e.mergeEntry(segs, accept)
+	// The spanning constituents are what a refusal names; a fresh segment built in
+	// this call was never published and has no id worth reporting.
+	constituents := make([]SegmentID, 0, len(spanning))
+	for _, entry := range spanning {
+		constituents = append(constituents, entry.meta.ID)
+	}
+	entry, err := e.mergeEntry(segs, accept, constituents)
 	if err != nil {
 		return nil, "", err
 	}

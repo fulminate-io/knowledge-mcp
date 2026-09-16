@@ -54,6 +54,12 @@ func fetchAccounts(ctx context.Context) ([]accountEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listing accounts requires login — run `knowledge login`: %w", err)
 	}
+	return fetchAccountsWithTransport(ctx, tr)
+}
+
+// fetchAccountsWithTransport keeps the membership decoder shared while allowing
+// Desktop to supply its own credential store and configuration.
+func fetchAccountsWithTransport(ctx context.Context, tr *auth.Transport) ([]accountEntry, error) {
 	raw, err := tr.ListAccounts(ctx)
 	if err != nil {
 		var se *auth.SyncHTTPError

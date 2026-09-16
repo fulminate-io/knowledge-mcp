@@ -43,7 +43,7 @@ type client struct {
 	runtimeStateDir   string // explicit installation-local metadata; empty keeps standalone defaults
 	rootDir           string // project root (--root); the ast intercept walks source files under it locally
 	rootDirSet        bool   // whether --root was explicitly set (vs the "." default) — gates the ast walk-root fail-loud guard
-	port              int    // TCP port the server listens on
+	port              int    // TCP port the graph server listens on
 	version           string // binary version (reported in MCP initialize)
 	// local is the connect-go client to the LOCAL graph server (127.0.0.1).
 	// Replaces the prior `client` field as part of the routing rework. The
@@ -127,9 +127,22 @@ type client struct {
 	// pipeline is the client-side LLM pipeline (summary + embed worker
 	// pools + per-graph collectors + background graph-refresh goroutine)
 	// constructed by wirePipelineRuntime. nil when --no-llm-pipeline is
-	// set OR config provides neither summarizer nor embedder. The deferred
-	// p.Stop call in buildClient's cleanup closure (daemon.go) handles nil safely.
+	// set OR config provides neither summarizer nor embedder. Every reader
+	// nil-guards it; the shutdown closure stops it through pipelineStop below
+	// rather than through this field.
 	pipeline *pipeline.Pipeline
+
+	// pipelineStop is how the shutdown closure STOPS that pipeline, defaulted to
+	// the pipeline's own Stop where the pipeline is wired (pipeline.go) and read
+	// only by drainOnShutdown.
+	//
+	// IT IS AN INDIRECTION SO THE DRAIN'S REPORTING IS TESTABLE. Stop returns a
+	// context error naming which of its three bounded waits did not finish, and
+	// the drain logs it; through the concrete *Pipeline there is no way to make
+	// that happen — the wait groups are unexported — so the log line that tells an
+	// operator the embed workers were still running at exit had no test, and the
+	// mutation that removes it reddened nothing.
+	pipelineStop func(context.Context) error
 
 	// serverSegmentStamp reads the per-graph SERVER change stamp the bulk gen poll
 	// last sampled — the maximum of the server's vector-write and erasure-append
@@ -283,6 +296,25 @@ type client struct {
 	// fixtures.
 	collectRuntime *tools.CollectRuntime
 
+	// sessionAccounts is the per-harness-session account binding store, rooted at
+	// the daemon's own --graph-storage data root. Constructed EARLY and
+	// unconditionally in constructClient, and installed on the process account
+	// selection there in the same breath: a request that arrived before a
+	// background wiring step would otherwise resolve its account from the
+	// machine-wide selection and silently write into the wrong account. Nil for a
+	// directly-built test fixture, where the manage arm reports it unavailable
+	// rather than binding something nobody can read back.
+	sessionAccounts *tools.SessionAccountStore
+
+	// releaseSessionAccounts un-installs this client's store from the process
+	// account ladder, and drainOnShutdown calls it. The install is PROCESS-WIDE
+	// — the ladder is a property of the process, not of a client — so a second
+	// client built in the same process (a test binary does this routinely)
+	// would otherwise leave the ladder pointed at a torn-down store over a
+	// deleted temp directory, and every session-carrying read in that process
+	// would answer from it. Nil for a client built without the constructor.
+	releaseSessionAccounts func()
+
 	// workingSet is the set of graphs a direct user interaction has admitted in
 	// THIS process, and the gate every background loop consults before touching
 	// a graph. Constructed EARLY and unconditionally in constructClient (it has
@@ -344,13 +376,13 @@ type client struct {
 	updateHealth *updateHealthTracker
 }
 
-// noopAuthStore is a fallback Store implementation used when auth.NewStore()
-// returns ErrNotImplementedOS (Windows) or any other transient construction
-// failure. Get always returns ErrNotFound so AuthState reports
-// IsLoggedIn=false; Set/Delete are silent no-ops. The router falls through
-// to the local *GraphClient unconditionally when this store backs the
-// AuthState, preserving the prior unauthenticated behavior on those
-// platforms.
+// noopAuthStore is the Store the daemon runs with under --no-auth, where no
+// credential is consulted at all. Get always returns ErrNotFound so AuthState
+// reports IsLoggedIn=false; Set/Delete are silent no-ops. The router falls
+// through to the local *GraphClient unconditionally when this store backs the
+// AuthState, which is what makes --no-auth fail closed. It is NOT a fallback
+// for a store-construction failure: such an error is fatal to `serve` (see
+// selectAuthSources).
 type noopAuthStore struct{}
 
 func (noopAuthStore) Get(context.Context, string) (string, error) {

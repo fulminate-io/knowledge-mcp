@@ -118,8 +118,31 @@ type Pipeline struct {
 	collectorMu      sync.Mutex
 	collectorCancels map[graphKey]context.CancelFunc
 
-	// collectorWakes holds each live collector's two wake channels
-	// (summary[0] + embed[1]). The central bulk gen-poll loop (genpoll.go) pokes a
+	// collectorsStopped latches TRUE inside stopSequence's cancel-and-clear step,
+	// under collectorMu, and is what makes Stop's contract independent of which ctx
+	// the caller cancelled first.
+	//
+	// THE RACE IT CLOSES, because a bare flag reads like belt-and-braces and this
+	// one is not. stopSequence cancels every collector from a SNAPSHOT of
+	// collectorCancels, replaces the map, releases the lock, and only then waits on
+	// collectorWG. A RegisterGraph taking the same mutex after that release used to
+	// store its cancel func in the FRESH map — which nothing reads again — and
+	// enlist its goroutine on the WaitGroup Stop was about to wait on. Stop then
+	// waited for a goroutine it had no way to cancel, and the waiter goroutine
+	// waitWithCtx spawns stayed blocked on wg.Wait for the life of the process. It
+	// reached this repository's own push gate as a one-in-eight `collectors did not
+	// drain: context deadline exceeded`.
+	//
+	// RegisterGraph reads it under the SAME mutex and refuses rather than
+	// registering, so the register decision and the teardown decision are made
+	// against one piece of state instead of against two snapshots of it. Guarded by
+	// collectorMu.
+	collectorsStopped bool
+
+	// collectorWakes holds each live collector's three wake channels
+	// (summary[0] + embed[1] + bm25[2]). Every entry is a real buffered channel for
+	// every collector, including index 2 for a graph whose BM25 arm is disabled, so
+	// the slice is nil-free. The central bulk gen-poll loop (genpoll.go) pokes a
 	// specific (graph,axis) wake via pokeAxisWake when that pair's dirty-gen
 	// advances, cutting the collector's idle-backoff sleep short so it issues its
 	// Phase-2 detail PipelineScan within one base tick. (Previously WakeAll fanned

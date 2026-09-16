@@ -376,7 +376,7 @@ func TestDeleteRebuildErrorIsNotRetried(t *testing.T) {
 		fail.Store(true)
 
 		err := replaceBucketAndPublish(
-			dm, []searchengine.ExternalID{docs[0].ID}, nil, len(docs),
+			t.Context(), dm, []searchengine.ExternalID{docs[0].ID}, nil, len(docs),
 			l2WriteAttemptsOnDelete, surfaceAbortedReclaim)
 		require.ErrorIs(t, err, errInjectedRebuildFailure,
 			"a rebuild error is a code bug and must reach the caller unchanged")
@@ -394,7 +394,7 @@ func TestDeleteRebuildErrorIsNotRetried(t *testing.T) {
 		before := ic.putCallCount()
 
 		require.NoError(t, replaceBucketAndPublish(
-			dm, []searchengine.ExternalID{docs[0].ID}, nil, len(docs),
+			t.Context(), dm, []searchengine.ExternalID{docs[0].ID}, nil, len(docs),
 			l2WriteAttemptsOnDelete, surfaceAbortedReclaim))
 		require.Zero(t, failed.Load(),
 			"CONTROL: nothing was injected here, so the failure counter the leg above reads must be "+

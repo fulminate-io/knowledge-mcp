@@ -131,7 +131,7 @@ func runGroupHarvest(t *testing.T, byBucket map[int][]string, flat []string) gro
 		t.Fatalf("fixture built %d work items — a one-partition group parallelizes to nothing and this test would pass forever while checking nothing", len(work))
 	}
 
-	published, _, err := eng.ReplaceBucketGroup(parallelBucketCount, []searchengine.SegmentID{consumed}, work)
+	published, _, err := eng.ReplaceBucketGroup(t.Context(), parallelBucketCount, []searchengine.SegmentID{consumed}, work)
 	if err != nil {
 		t.Fatalf("ReplaceBucketGroup: %v", err)
 	}

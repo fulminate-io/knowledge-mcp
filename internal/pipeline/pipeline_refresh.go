@@ -183,7 +183,26 @@ func (p *Pipeline) refreshOnce(ctx context.Context) {
 			if k.Destination.Storage != "" {
 				bound = graphclient.WithDestination(ctx, k.Destination)
 			}
-			p.RegisterGraph(bound, k.GraphType, k.GraphName)
+			// A REFUSAL ENDS THE PASS RATHER THAN BEING COUNTED OR RETRIED. The only
+			// refusal RegisterGraph issues is ErrPipelineStopped, which is a fact about
+			// the PIPELINE and not about this graph: every remaining member would be
+			// refused for the same reason, and a wake that arrives during shutdown is
+			// exactly how this loop used to enlist a collector Stop could no longer
+			// cancel.
+			//
+			// IT IS ANNOUNCED AT INFO, NOT DEBUG, and the level is the point rather
+			// than a preference. This is the one path on which a graph the working set
+			// wants ends the pass UNREGISTERED, so an operator reading why a graph was
+			// never drained has exactly one line to find. The break bounds it to one
+			// line per pass, and a pass only reaches it while the pipeline is going
+			// away. An error branch whose only report is Debug is the swallow this
+			// repository's own corpus check exists to catch, and it caught this one.
+			if err := p.RegisterGraph(bound, k.GraphType, k.GraphName); err != nil {
+				slog.Info("pipeline.refresh: stopping registration — the pipeline is shutting down",
+					"graph_type", k.GraphType, "name", k.GraphName, "registered_before_stop", registered,
+					"error", err)
+				break
+			}
 			registered++
 		}
 	}

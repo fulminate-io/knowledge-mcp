@@ -54,6 +54,17 @@ type segmentL2Cache interface {
 	// disk-read storm AND perturb the very recency ordering the budget sorts on.
 	// sizeOf reads the in-memory index only and is recency-neutral.
 	sizeOf(id searchengine.SegmentID) (int64, bool)
+	// quarantinedCount reports how many distinct segments this store has withdrawn
+	// from service for corruption and not recovered. It is a LOSS reading rather
+	// than a cache statistic: every one of them is documents this client cannot
+	// search until the graph's segments are rebuilt, which is why manage(status)
+	// renders it per graph and format.
+	quarantinedCount() int
+	// cureQuarantined clears that record because the rebuild it prescribes has
+	// landed, preserving the evidence under a cured- subdirectory, and reports how
+	// many withdrawals it cleared. Only the publish that replaces a graph's whole
+	// set restores a withdrawn segment's documents, so only that path calls it.
+	cureQuarantined() int
 }
 
 // distManager ties one graph's searchengine.SegmentedIndex to its L2 DISK CACHE:
@@ -155,6 +166,50 @@ type distManager[Q, S any] struct {
 	// counting them as touches would keep every pool permanently hot and defeat
 	// eviction entirely. A never-searched pool reads 0 and is therefore the coldest.
 	lastSearchNanos atomic.Int64
+	// residentPeak is the HIGH-WATER resident segment count this engine has been
+	// observed at, sampled on the SEAL PATH immediately before the resident-growth
+	// bound acts (manager_bucket_bound.go). It is the only reading that sees the
+	// excursion a write batch's own seals make: every other reader in this package
+	// samples after the bound has already brought the count back down, so a maximum
+	// taken from one of those is a maximum of the SUSTAINED count.
+	residentPeak atomic.Int64
+	// lastCensusCount is the resident count the last SegmentSpans census LEFT when
+	// that census bought nothing — it consolidated nothing at all, or it consolidated
+	// and gave back no more than had arrived since the census before it — and zero
+	// when the last one bought something. It is what stops a stuck engine re-paying an
+	// O(live members) walk, and the merges behind it, on every write batch to learn
+	// the same thing; a census that reduced the count by enough lowered what the next
+	// crossing is compared against, so it is not rate-limited whatever count it ended
+	// at (settleCensusLatch in manager_bucket_bound_latch.go).
+	lastCensusCount atomic.Int64
+	// lastCensusFloor is the resident count the last SegmentSpans census left, whatever
+	// the latch made of it, and zero before the first one. It is the comparison that
+	// tells a census which made PROGRESS from one which merely kept up with the write
+	// rate: a consolidation landing back on this number removed exactly the tails that
+	// had arrived since it was written, so re-paying it at the next crossing re-merges
+	// the whole consolidated corpus to land in the same place (minCensusReduction in
+	// manager_bucket_bound_latch.go).
+	lastCensusFloor atomic.Int64
+	// replacementGen counts the REPLACEMENTS of this engine's resident set — the layer
+	// and group swaps clearCensusLatchOnReplacement names — and it exists so that a
+	// census which began before one of them cannot settle the latch after it.
+	//
+	// THE WINDOW IS REAL AND WAS OBSERVED, not a theoretical interleaving. The bound
+	// reads its `after` count and settles the latch a few instructions later
+	// (manager_bucket_bound.go), while a reset's swap runs on another goroutine: the
+	// corpus benchmark's own log carries a clear at 10:48:39.380 and a seal-path census
+	// landing 12 ms later, so a census whose `after` predates the swap can store the
+	// RETIRED floor over the set the swap has just published and re-open the deferral
+	// for one rebuild. A census snapshots this counter when it begins and
+	// settleCensusLatch stores nothing when that snapshot is stale — the clear wins,
+	// which is the safe direction: a latch left clear where it could have been armed
+	// costs one census walk, and the reverse costs the bound a whole re-drain.
+	replacementGen atomic.Int64
+	// censusCount counts SegmentSpans censuses this engine has paid for. Pure
+	// observability — the bound never reads it — and the observable the census-rate
+	// gate is asserted on, because a walk that got cheaper is a COUNT rather than a
+	// clock.
+	censusCount atomic.Int64
 
 	// evicted latches true while this pool's segments have been unloaded to reclaim
 	// memory and have not yet been re-materialized. It is what makes an evicted pool

@@ -21,29 +21,35 @@ var nativeManagementTransport = func(store auth.Store) *auth.Transport {
 }
 
 type desktopEnvironment struct {
-	ID         string  `json:"env_id"`
-	Name       string  `json:"name"`
-	State      string  `json:"state"`
-	Power      string  `json:"power_state"`
-	Created    string  `json:"created_at,omitempty"`
-	Updated    string  `json:"updated_at,omitempty"`
-	Agent      string  `json:"agent,omitempty"`
-	AgentState string  `json:"agent_state,omitempty"`
-	Task       string  `json:"current_task,omitempty"`
-	Health     string  `json:"health,omitempty"`
-	VCPU       float64 `json:"vcpu,omitempty"`
-	RAM        float64 `json:"ram_gb,omitempty"`
-	Arch       string  `json:"arch,omitempty"`
+	ID            string                    `json:"env_id"`
+	Name          string                    `json:"name"`
+	State         string                    `json:"state"`
+	Power         string                    `json:"power_state"`
+	Created       string                    `json:"created_at,omitempty"`
+	Updated       string                    `json:"updated_at,omitempty"`
+	Agent         string                    `json:"agent,omitempty"`
+	AgentState    string                    `json:"agent_state,omitempty"`
+	Task          string                    `json:"current_task,omitempty"`
+	Health        string                    `json:"health,omitempty"`
+	VCPU          float64                   `json:"vcpu,omitempty"`
+	RAM           float64                   `json:"ram_gb,omitempty"`
+	Arch          string                    `json:"arch,omitempty"`
+	Configuration *environmentConfiguration `json:"configuration,omitempty"`
 }
 type desktopRemoteResult struct {
-	Account      string                `json:"account,omitempty"`
-	Environments *[]desktopEnvironment `json:"environments,omitempty"`
-	Code         string                `json:"code,omitempty"`
+	Account         string                `json:"account,omitempty"`
+	Environments    *[]desktopEnvironment `json:"environments,omitempty"`
+	Environment     string                `json:"environment,omitempty"`
+	ReadbackPending bool                  `json:"readback_pending,omitempty"`
+	Accepted        bool                  `json:"accepted,omitempty"`
+	Code            string                `json:"code,omitempty"`
 }
 
-// environmentWire reads only the public fleet subset of the existing API.
-// Custom environment values, process commands and provider credentials are never decoded.
+// environmentWire reads fleet facts and editable configuration from the existing API.
+// Configuration is projected only for detail/create/update; process commands and
+// provider credential values are never decoded.
 type environmentWire struct {
+	environmentConfiguration
 	ID      string `json:"env_id"`
 	Name    string `json:"name"`
 	State   string `json:"state"`
@@ -67,10 +73,23 @@ type environmentWire struct {
 
 // DesktopRemoteCmd is a fixed native-management interface, not an HTTP proxy.
 func DesktopRemoteCmd(args []string) error {
+	// Bad configuration, refused before any work — see DesktopAuthCmd for why
+	// this is a hard error rather than a JSON result code. The three delegated
+	// sub-verbs below repeat the check because each is also an entry point in
+	// its own right.
+	if _, err := auth.CredentialNamespace(); err != nil {
+		return err
+	}
 	if len(args) == 0 {
 		return errors.New("remote operation required")
 	}
 	operation := args[0]
+	if operation == "terminal" {
+		return desktopTerminalCmd(args[1:])
+	}
+	if operation == "environment" {
+		return desktopEnvironmentCmd(args[1:])
+	}
 	if operation == "dashboard" {
 		return desktopDashboardCmd(args[1:])
 	}
@@ -118,6 +137,10 @@ func performDesktopRemote(ctx context.Context, account, operation, id string) de
 			return desktopRemoteResult{Account: account, Code: remoteErrorCode(err, "get")}
 		}
 	}
+	return projectDesktopEnvironments(account, operation, id, raw)
+}
+func projectDesktopEnvironments(account, operation, id string, raw []byte) desktopRemoteResult {
+	var err error
 	var wire []environmentWire
 	if operation == "list" {
 		err = json.Unmarshal(raw, &wire)
@@ -135,6 +158,12 @@ func performDesktopRemote(ctx context.Context, account, operation, id string) de
 	result := make([]desktopEnvironment, 0, len(wire))
 	for _, env := range wire {
 		out := desktopEnvironment{ID: env.ID, Name: env.Name, State: env.State, Power: env.Power, Created: env.Created, Updated: env.Updated, VCPU: env.Machine.VCPU, RAM: env.Machine.RAM, Arch: env.Machine.Arch}
+		if operation == "get" || operation == "create" || operation == "update" {
+			out.Configuration = &env.environmentConfiguration
+		}
+		if operation != "list" && id != "" && env.ID != id {
+			return desktopRemoteResult{Account: account, Code: "invalid_response"}
+		}
 		if env.Harness != nil {
 			out.Agent = env.Harness.Name
 			out.AgentState = env.Harness.State
@@ -158,6 +187,10 @@ func performDesktopRemote(ctx context.Context, account, operation, id string) de
 func remoteErrorCode(err error, operation string) string {
 	if status, ok := errors.AsType[*auth.ManagementHTTPError](err); ok {
 		switch status.Status {
+		case http.StatusBadRequest:
+			return "invalid_request"
+		case http.StatusConflict:
+			return "conflict"
 		case http.StatusUnauthorized:
 			return "sign_in_required"
 		case http.StatusForbidden:

@@ -23,6 +23,8 @@ import "slices"
 // TestUnknownOperationLists_MatchDeclaredSchemas keep it set-equal to the
 // operation enum ManageToolDef() publishes.
 var manageOperations = []string{
+	"account_for_session",
+	"account_use",
 	"clear_llm_failures",
 	"delete_branch",
 	"drop_graph",

@@ -97,17 +97,25 @@ func TestSegCoverageDisposition_StuckAndUnmanagedBands(t *testing.T) {
 	})
 }
 
-// TestCoverageRow_WireShapeStaysTenKeys is the WIRE-SHAPE guard for the two fields
-// this row gained for the stuck and unmanaged bands. TestCoverageRowJSONKeysUnchanged
-// pins the same ten keys against the row as a whole; this one exists to fail
-// specifically when StalledSinceNanos or InWorkingSet loses its json:"-" — so the
-// failure names the cause instead of leaving a reader to work out which of eleven
-// keys is new.
+// TestCoverageRow_WireShapeStaysFourteenKeys is the WIRE-SHAPE guard for the two
+// fields this row gained for the stuck and unmanaged bands.
+// TestCoverageRowJSONKeysUnchanged pins the same fourteen keys against the row as a
+// whole; this one exists to fail specifically when StalledSinceNanos or InWorkingSet
+// loses its json:"-" — so the failure names the cause instead of leaving a reader to
+// work out which of fifteen keys is new.
 //
-// It asserts SET EQUALITY against a literal ten-element list rather than a count, for
-// the reason its sibling states: a count of ten survives dropping one key and adding
-// another, which is exactly the shape a careless rename produces.
-func TestCoverageRow_WireShapeStaysTenKeys(t *testing.T) {
+// THE PINNED SET WENT FROM TEN TO TWELVE with resident_segments and
+// resident_segments_peak, the per-format resident SEGMENT count and its seal-path
+// high-water, and then to FOURTEEN with quarantined_segments and
+// quarantined_impact, the per-format count of segments withdrawn from service for
+// corruption and the sentence saying what that costs. This sibling widened with them
+// each time: two pins over one shape that disagree about its size would leave the
+// smaller one red against correct code forever.
+//
+// It asserts SET EQUALITY against a literal list rather than a count, for the reason
+// its sibling states: a count survives dropping one key and adding another, which is
+// exactly the shape a careless rename produces.
+func TestCoverageRow_WireShapeStaysFourteenKeys(t *testing.T) {
 	row := CoverageRow{
 		Graph: "code/knowledge", Total: 10, Summarized: 9, Embedded: 8,
 		SegCovered: 7, LiveResident: 6, HasSegments: true,
@@ -116,6 +124,13 @@ func TestCoverageRow_WireShapeStaysTenKeys(t *testing.T) {
 		// ship an eleventh key to a ten-key consumer, and a zero value could hide
 		// behind an omitempty.
 		RepairVerified: true, StalledSinceNanos: time.Now().UnixNano(), InWorkingSet: true,
+		// The eleventh key's own value, non-zero for the reason the off-wire inputs
+		// above are: an empty map could hide behind an omitempty.
+		ResidentSegments:     map[string]int{"bm25v2": 12, "hnswv3": 3},
+		ResidentSegmentsPeak: map[string]int{"bm25v2": 40, "hnswv3": 9},
+		// The thirteenth and fourteenth, on the same terms.
+		QuarantinedSegments: map[string]int{"bm25v2": 2},
+		QuarantinedImpact:   "2 segment(s) withdrawn",
 	}
 
 	raw, err := json.Marshal(row)
@@ -131,7 +146,9 @@ func TestCoverageRow_WireShapeStaysTenKeys(t *testing.T) {
 	require.ElementsMatch(t, []string{
 		"graph", "total", "summarized", "embedded", "seg_covered",
 		"live_resident", "has_segments", "summary_fail", "embed_fail", "seg_disposition",
-	}, got, "the ten pinned keys, and no eleventh")
+		"resident_segments", "resident_segments_peak",
+		"quarantined_segments", "quarantined_impact",
+	}, got, "the fourteen pinned keys, and no fifteenth")
 	require.NotContains(t, decoded, "stalled_since_nanos",
 		"the stall stamp is json:\"-\" — it feeds the band, it does not ship")
 	require.NotContains(t, decoded, "in_working_set",

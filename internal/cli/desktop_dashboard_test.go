@@ -66,6 +66,7 @@ func TestDesktopDashboardSavedEndpointSSH(t *testing.T) {
 	oldRelay := dashboardRelayURL
 	dashboardRelayURL = func() (string, error) { return strings.Replace(peer.URL, "http://", "ws://", 1) + wsProxyPath, nil }
 	t.Cleanup(func() { dashboardRelayURL = oldRelay })
+	draftPath, draftMethod := "/draft-must-not-run", "POST"
 	endpointPath, method, envID, port := "/stats", "GET", "env-native", 8080
 	corruptCA := false
 	badCA := "wrong"
@@ -77,7 +78,7 @@ func TestDesktopDashboardSavedEndpointSSH(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/accounts/account-A/ui-documents/doc-1":
 			envelope := map[string]any{"version": 1, "puck": map[string]any{"content": []any{}, "root": map[string]any{}}, "endpoints": []any{map[string]any{"id": "e1", "method": method, "path": endpointPath}}}
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": "doc-1", "name": "Live", "env_id": envID, "published_doc": envelope, "draft_doc": map[string]any{"version": 1, "puck": map[string]any{"content": []any{}}, "endpoints": []any{map[string]any{"id": "e1", "method": "POST", "path": "/draft-must-not-run"}}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "doc-1", "name": "Live", "env_id": envID, "published_doc": envelope, "draft_doc": map[string]any{"version": 1, "puck": map[string]any{"content": []any{}}, "endpoints": []any{map[string]any{"id": "e1", "method": draftMethod, "path": draftPath}}}})
 		case "/v1/accounts/account-A/dev-vm/env-native":
 			_ = json.NewEncoder(w).Encode(map[string]any{"env_id": "env-native", "name": "saved-name", "state": "running", "hosted_port": port})
 		case "/v1/dev-vm/connect":
@@ -88,7 +89,9 @@ func TestDesktopDashboardSavedEndpointSSH(t *testing.T) {
 			}
 			defer response.Body.Close()
 			var capability connectResponse
-			if json.NewDecoder(response.Body).Decode(&capability) != nil {
+			decoder := json.NewDecoder(response.Body)
+			decoder.DisallowUnknownFields()
+			if decoder.Decode(&capability) != nil {
 				t.Error("decode capability")
 				return
 			}
@@ -123,6 +126,30 @@ func TestDesktopDashboardSavedEndpointSSH(t *testing.T) {
 		}
 	}
 
+	// Authoring preview explicitly reads the saved draft; published runtime stays separate.
+	endpointPath, method = "/write", "POST"
+	draftPath, draftMethod = "/stats", "GET"
+	preview := request
+	preview.Operation = "read"
+	preview.Draft = true
+	beforePreview := count.Load()
+	if got := performDashboard(t.Context(), preview); got.Code != "" || got.Response == nil || got.Response.Status != 200 || count.Load() != beforePreview+1 {
+		t.Fatalf("saved draft preview: %+v", got)
+	}
+	preview.Draft = false
+	if got := performDashboard(t.Context(), preview); got.Code != "dashboard_changed" || count.Load() != beforePreview+1 {
+		t.Fatalf("runtime read must retain published POST refusal: %+v", got)
+	}
+	preview.Draft = true
+	preview.Operation = "request"
+	if got := performDashboard(t.Context(), preview); got.Code != "invalid_request" || count.Load() != beforePreview+1 {
+		t.Fatalf("draft writes must be refused: %+v", got)
+	}
+	draftMethod = "POST"
+	preview.Operation = "read"
+	if got := performDashboard(t.Context(), preview); got.Code != "dashboard_changed" || count.Load() != beforePreview+1 {
+		t.Fatalf("draft read must refuse POST: %+v", got)
+	}
 	method = "OPTIONS"
 	beforeInvalid := count.Load()
 	if got := performDashboard(t.Context(), request); got.Code != "invalid_endpoint" || count.Load() != beforeInvalid {
@@ -188,7 +215,8 @@ func TestDesktopDashboardSavedEndpointSSH(t *testing.T) {
 	for _, mode := range []string{"wrong-principal", "expired", "wrong-ca", "raw"} {
 		response, err := http.Get(peer.URL + "/fixture/host?mode=" + mode)
 		if err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			continue
 		}
 		_ = response.Body.Close()
 		before := count.Load()

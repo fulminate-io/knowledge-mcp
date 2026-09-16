@@ -46,20 +46,40 @@ type axisGens struct {
 	// gated on it would wake on embedding activity — the coupling this decoupling removes —
 	// and would still miss deletes, which move neither the embed gen nor that stamp.
 	//
-	// UNLIKE segmentStamp IT IS NOT NUDGE-DEBOUNCED HERE. The BM25 arm compares it
-	// against its OWN durable cursor position on its own tick rather than being poked
-	// by this loop, so the snapshot records the served value and the arm decides. See
-	// corpusStampFor.
+	// IT IS POKE-DEBOUNCED HERE, on this loop's OWN poke watermark, exactly as the
+	// two gens and segmentStamp are. THIS REVERSES WHAT THIS COMMENT USED TO SAY —
+	// "it is NOT nudge-debounced here … rather than being poked by this loop, the
+	// snapshot records the served value and the arm decides" — and the reversal is
+	// the point rather than an oversight. The arm still compares the stamp against
+	// its own durable cursor on its own tick; what changed is that it no longer has
+	// to WAIT for that tick. On a signed-in client the arm's interval doubles from
+	// 5s toward the one-hour idle ceiling and nothing short of a restart shortens
+	// it, so a write followed by ordinary activity could go an hour unindexed. A
+	// poke on corpus-stamp movement cuts that sleep short; the arm's own cursor
+	// comparison still decides whether there is anything to drain, so a poke for a
+	// graph whose cursor is already past the stamp costs one gate check. See
+	// corpusStampFor and the "segment" case in applyStorageGenPollResponse.
 	corpusStamp int64
 }
 
 // wake-channel index → axis mapping. collectorWakes[key] is built as
-// []chan struct{}{c.summaryWake, c.embedWake} (pipeline_collectors.go), so index 0
-// is the summary wake and index 1 is the embed wake. These named constants keep
-// the index→axis mapping explicit and resilient to reordering.
+// []chan struct{}{c.summaryWake, c.embedWake, c.bm25.wake} (pipeline_collectors.go),
+// so index 0 is the summary wake, index 1 the embed wake and index 2 the BM25
+// arm's. These named constants keep the index→axis mapping explicit and resilient
+// to reordering.
+//
+// THE SLICE AND THE CONSTANTS MUST MOVE TOGETHER OR THE CHANGE IS SILENTLY INERT:
+// pokeAxisWake returns without a word when the index is past the end of the
+// slice, so a registration with no poker and a poker with no registration are
+// both no-ops that break no build and turn no test red. Every entry is a real
+// buffered channel for EVERY collector — index 2 included, even for a graph whose
+// BM25 arm is disabled (bm25ArmEnabledFor declines linkage) — so a caller that
+// iterates the slice never meets a nil, and a poke to a disabled arm simply sits
+// in a channel nobody reads.
 const (
 	summaryWakeIdx = 0
 	embedWakeIdx   = 1
+	bm25WakeIdx    = 2
 )
 
 // RunGenPollLoop is the central two-phase bulk gen-poll loop. It issues ONE
@@ -306,13 +326,30 @@ func (p *Pipeline) applyStorageGenPollResponse(destination graphclient.Destinati
 				poked.segmentStamp = e.GetSegmentDeltaStampNanos()
 				segmentNudges = append(segmentNudges, key)
 			}
-			// The corpus stamp rides the same entry and is RECORDED WITHOUT A NUDGE,
-			// deliberately. Its consumer (the BM25 arm) holds a durable per-graph
-			// cursor and compares against it on its own tick, so a poke here would be
-			// a second, weaker trigger for a decision the arm already makes correctly —
-			// and one that could fire for a graph whose cursor is already past the
-			// stamp. Recording is all this loop owes it.
+			// The corpus stamp rides the same entry and is the BM25 arm's OWN axis —
+			// not the summary gen, not the embed gen, and not segmentStamp above,
+			// which folds vector-write and erasure-append times and would therefore
+			// wake the arm on embedding activity while still missing deletes.
+			//
+			// IT IS POKED, AND IT USED TO BE ONLY RECORDED. The argument for recording
+			// alone was that the arm holds a durable cursor and decides on its own
+			// tick, so a poke would be a second, weaker trigger. What that argument
+			// left out is WHEN the arm's own tick comes: on a signed-in client the
+			// interval doubles 5s → 10 → 20 → … to the one-hour idle ceiling, and no
+			// knob shortens it. The arm still makes the decision — a poke only ends
+			// the sleep, and the cursor comparison at the top of its loop still gates
+			// the drain, so a poke for a graph whose cursor is already past the stamp
+			// costs one gate check and issues no request.
+			//
+			// THE DEBOUNCE IS THIS LOOP'S OWN POKE WATERMARK, `>` and not `!=`, for
+			// the same reasons the segment stamp's comparison gives immediately above:
+			// this is a monotonic per-graph MAXIMUM, so a backward move is noise, and
+			// a zero is the server's never-recorded value and must produce no poke.
 			cur.corpusStamp = e.GetCorpusDeltaStampNanos()
+			if e.GetCorpusDeltaStampNanos() > poked.corpusStamp {
+				poked.corpusStamp = e.GetCorpusDeltaStampNanos()
+				pokes = append(pokes, genPoke{key: key, wakeIdx: bm25WakeIdx})
+			}
 		}
 		p.genSnapshot[key] = cur
 		p.lastPokedGen[key] = poked
@@ -343,9 +380,10 @@ func (p *Pipeline) applyStorageGenPollResponse(destination graphclient.Destinati
 }
 
 // pokeAxisWake delivers a single non-blocking coalescing wake to one collector's
-// per-axis wake channel (summaryWakeIdx / embedWakeIdx). Mirrors WakeAll's send
-// shape: a wake already queued is a no-op (coalesce), and the send never blocks.
-// A no-op when the collector is no longer registered or lacks the indexed channel.
+// per-axis wake channel (summaryWakeIdx / embedWakeIdx / bm25WakeIdx). Mirrors
+// WakeAll's send shape: a wake already queued is a no-op (coalesce), and the send
+// never blocks. A no-op when the collector is no longer registered or lacks the
+// indexed channel.
 func (p *Pipeline) pokeAxisWake(key graphKey, wakeIdx int) {
 	p.collectorMu.Lock()
 	defer p.collectorMu.Unlock()

@@ -4,6 +4,7 @@ package bm25
 
 import (
 	"fmt"
+	"maps"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
@@ -134,6 +135,17 @@ func (Format) MergeTo(dst searchengine.MergeSink, segs []searchengine.Segment[Qu
 	return streamMergeToFile(dst, ins, accept, defaultDictKind)
 }
 
+// ValidateSegment is the SegmentFormat method the engine calls on every merged
+// payload before it is published; the package function it forwards to is the same
+// one the store census walks stored files with (validate.go).
+//
+// IT IS A METHOD AS WELL AS A FUNCTION because the engine holds a format, not a
+// package: the interface method is what makes the publish gate reachable without
+// searchengine importing this package, which it cannot do.
+func (Format) ValidateSegment(id searchengine.SegmentID, payload []byte) error {
+	return ValidateSegment(id, payload)
+}
+
 // mergeSlot identifies the ONE copy of an external id that a merge keeps: which
 // input segment it came from and its doc id within that segment. Both halves are
 // needed — an id can repeat inside a single constituent as well as across two.
@@ -197,24 +209,51 @@ func winsSlot(winner map[searchengine.ExternalID]mergeSlot, extID searchengine.E
 // a term's frequency on first use by binary-searching those dictionaries.
 func (Format) AggregateStats(segs []searchengine.Segment[Query, *CorpusStats]) *CorpusStats {
 	stats := newCorpusStats()
-	fieldTokenTotals := make(map[string]int64)
-
 	for _, s := range segs {
 		ms, ok := s.(*mappedSegment)
 		if !ok {
 			continue
 		}
-		stats.TotalDocs += int64(ms.docCount)
-		stats.attach(ms)
-		for _, mf := range ms.fields {
-			fieldTokenTotals[mf.config.Name] += mf.totalTokens
-		}
+		stats.addSegmentCounts(ms)
 	}
-
-	if stats.TotalDocs > 0 {
-		for name, total := range fieldTokenTotals {
-			stats.FieldAvgLen[name] = float64(total) / float64(stats.TotalDocs)
-		}
-	}
+	stats.deriveAvgLen()
 	return stats
+}
+
+// AppendStats derives the stats for the snapshot formed by appending ONE segment to
+// a snapshot whose stats are prev, and it costs nothing in the number of segments
+// already resident.
+//
+// IT IS WHAT TOOK THE PER-PUBLISH FOLD OFF THE RESIDENT SET. AggregateStats above
+// walks every resident segment — one probe registration and one map assign per
+// field per segment — and the engine's append path called it on EVERY publish,
+// inside the CAS retry loop. On the RC capture that fold was 380.5 s, 49% of the
+// client's CPU, 345 s of it in mapassign_faststr, entered 99.87% from the append
+// path. Here the only per-call work is one document-count addition, one probe-chain
+// node, one pass over THIS segment's fields, and a division per field.
+//
+// IT RETURNS A FRESH OBJECT, NEVER A MUTATED prev, and the freshness is the memo's
+// whole correctness argument (see CorpusStats.memo): a memo lives exactly one
+// segment-set generation, so it cannot go stale. Mutating prev would also write an
+// object the receiver's still-published snapshot is serving searches from.
+//
+// THE PROBE LIST IS SHARED BY REFERENCE, never copied and never appended into. It
+// is a chain of write-once nodes for exactly that reason — see CorpusStats.probes.
+//
+// A SEGMENT THIS FORMAT DID NOT BUILD CONTRIBUTES NOTHING, the same silent skip
+// AggregateStats takes on a non-*mappedSegment. The two must agree: a snapshot
+// reached by appending and the same snapshot reached by a flatten are the same
+// corpus and owe the same statistics.
+func (Format) AppendStats(prev *CorpusStats, seg searchengine.Segment[Query, *CorpusStats]) *CorpusStats {
+	next := newCorpusStats()
+	if prev != nil {
+		next.TotalDocs = prev.TotalDocs
+		next.probes = prev.probes
+		maps.Copy(next.fieldTokens, prev.fieldTokens)
+	}
+	if ms, ok := seg.(*mappedSegment); ok {
+		next.addSegmentCounts(ms)
+	}
+	next.deriveAvgLen()
+	return next
 }

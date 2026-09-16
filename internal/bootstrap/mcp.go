@@ -80,7 +80,7 @@ func (c *client) handleToolsList(req kgtools.JSONRPCRequest) *kgtools.JSONRPCRes
 		if schema.Properties == nil {
 			schema.Properties = make(map[string]kgtools.Property)
 		}
-		schema.Properties["storage"] = kgtools.Property{Type: "string", Enum: []string{"local", "cloud"}, Description: "Optional duplicate disambiguation. Signed-in target operations default to cloud; account-free operations use local storage. Use local to address a local duplicate. Search without storage searches both configured stores. Returned kgref references can be reused as node IDs."}
+		schema.Properties["storage"] = kgtools.Property{Type: "string", Enum: []string{"local", "cloud"}, Description: "Optional duplicate disambiguation. Signed-in target operations default to cloud; account-free operations use local storage. Use local to address a local duplicate. Search without storage searches both configured stores, and the cloud store alone when no local server is running. Returned kgref references can be reused as node IDs."}
 		encoded, err := json.Marshal(schema)
 		if err != nil {
 			return &kgtools.JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &kgtools.RPCError{Code: -32603, Message: err.Error()}}

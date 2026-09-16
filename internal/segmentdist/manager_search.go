@@ -50,7 +50,8 @@ func (m *Manager) Search(
 	queryVec []byte,
 	k int,
 ) ([]searchengine.Hit, error) {
-	m = m.ForDestination(ctx)
+	m, releaseDestination := m.forRequest(ctx)
+	defer releaseDestination()
 	return m.SearchAccepting(ctx, gt, name, queryText, queryVec, k, nil)
 }
 
@@ -81,7 +82,8 @@ func (m *Manager) SearchAccepting(
 			return m.SearchAccepting(leg, gt, name, queryText, queryVec, k, accepts)
 		}, k)
 	}
-	m = m.ForDestination(ctx)
+	m, releaseDestination := m.forRequest(ctx)
+	defer releaseDestination()
 	if k <= 0 {
 		return nil, nil
 	}
@@ -171,7 +173,8 @@ func (m *Manager) searchPoolArms(
 	k int,
 	accepts func(searchengine.ExternalID) bool,
 ) ([]searchengine.Hit, []searchengine.Hit, error) {
-	m = m.ForDestination(ctx)
+	m, releaseDestination := m.forRequest(ctx)
+	defer releaseDestination()
 	// Fail closed on an in-session account switch: this Manager's cacheDir and
 	// per-graph sources belong to the account it was built under, so serving
 	// from them after the selection moved would hand account A's segments to a
@@ -189,8 +192,15 @@ func (m *Manager) searchPoolArms(
 	// direct interaction that admits a graph into this process's working set,
 	// which is what lets the background loops touch it at all. Both recorders
 	// sit behind the k<=0 guard because such a call is not a user search.
+	//
+	// ctx IS PASSED, AND IT IS THE DESTINATION-BOUND ONE this function resolved
+	// its own pool from at the top. The membership therefore names the pool that
+	// was just read, so the pipeline registers a member bound to that destination
+	// and its BM25 arm ships back into the SAME pool. Dropping the ctx here is the
+	// keyless-BM25 defect: it recorded a destination-less member, the registration
+	// bound nothing, and the producer shipped to the root pool no search reads.
 	if m.admitGraph != nil {
-		m.admitGraph(gt, name)
+		m.admitGraph(ctx, gt, name)
 	}
 
 	dm := m.managerFor(gt, name)
@@ -307,7 +317,8 @@ func (m *Manager) VectorByID(
 	gt kgtypes.GraphType,
 	name, externalID string,
 ) ([]byte, bool, error) {
-	m = m.ForDestination(ctx)
+	m, releaseDestination := m.forRequest(ctx)
+	defer releaseDestination()
 	dm := m.managerFor(gt, name)
 	dm.residencyMu.RLock()
 	defer dm.residencyMu.RUnlock()

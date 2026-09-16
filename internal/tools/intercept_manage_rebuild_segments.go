@@ -282,9 +282,21 @@ func rebuildScannedNothing(ctx context.Context, deps ClientDeps, a manageArgs) s
 			"nodes, so the scan axis itself returned nothing; that is a pipeline fault rather than "+
 			"an empty corpus.", prefix, embedded)
 	case nodes > 0:
-		return fmt.Sprintf("%s — nothing to do. This graph holds %d nodes but NONE are embedded yet, "+
-			"so there is nothing to build segments from. Check the LLM-coverage column of "+
-			`manage({"operation":"status"}).`, prefix, nodes)
+		// THE KEYLESS ARM, AND THE ONE THAT MUST NAME A PATH THAT WORKS. This axis
+		// rebuilds FROM vectors (the server's rebuild scan gates on vector
+		// possession), so a graph with none has nothing for it — but that is a fact
+		// about the VECTOR index, not about search. The text index is built by the
+		// pipeline's BM25 drain, which needs no credential at all, so an operator with
+		// no embed key is not stuck: their graph is text-searchable and this operation
+		// is simply not the thing that builds it. The sentence this replaces sent them
+		// to the LLM-coverage column, which on a keyless install reads "0 of N"
+		// forever — a dead end presented as a next step.
+		return fmt.Sprintf("%s — nothing to do. This graph holds %d nodes but NONE are embedded yet, so "+
+			"there are no vectors to build segments from. That is expected without an embed credential, and "+
+			"it does NOT mean the graph is unsearchable: the BM25 text index is built by the client "+
+			"pipeline's own drain, with no key and no rebuild, and text search serves this graph from it. "+
+			"Configure an embedder if you want vector search too; the LLM-coverage column of "+
+			`manage({"operation":"status"}) tracks that axis.`, prefix, nodes)
 	default:
 		return prefix + " — nothing to do. This graph is empty."
 	}

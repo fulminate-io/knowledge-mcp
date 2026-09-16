@@ -31,6 +31,12 @@ type mockFormat struct{}
 
 func (mockFormat) Name() string { return "mock" }
 
+// ValidateSegment is the format's structural self-check. A mock segment is a list of
+// rows with no internal offsets, so there is no reference that can point outside it
+// and nothing to refuse: the honest answer is nil, and the method exists because the
+// interface requires every format to say how its segments are validated.
+func (mockFormat) ValidateSegment(searchengine.SegmentID, []byte) error { return nil }
+
 func (mockFormat) Build(docs []searchengine.Document) (searchengine.Segment[mockQuery, mockStats], searchengine.BuildReport, error) {
 	rows := make([]mockRow, 0, len(docs))
 	for _, d := range docs {
@@ -92,6 +98,12 @@ func (mockFormat) AggregateStats(segs []searchengine.Segment[mockQuery, mockStat
 		total += len(s.(*mockSegment).rows)
 	}
 	return mockStats{totalDocs: total}
+}
+
+// AppendStats is the incremental counterpart, written to AGREE with the fold: the
+// total after appending one segment is the previous total plus that segment's rows.
+func (mockFormat) AppendStats(prev mockStats, seg searchengine.Segment[mockQuery, mockStats]) mockStats {
+	return mockStats{totalDocs: prev.totalDocs + len(seg.(*mockSegment).rows)}
 }
 
 func (m *mockSegment) Search(q mockQuery, _ mockStats, k int, accept func(searchengine.ExternalID) bool) []searchengine.Hit {

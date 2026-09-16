@@ -6,11 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
-	"time"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	clientlinker "github.com/fulminate-io/knowledge-mcp/internal/linker"
 	"github.com/fulminate-io/knowledge-mcp/internal/pipeline"
@@ -91,10 +87,10 @@ func InterceptManage(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 		return true, handleGraphInventory(ctx, deps)
 	case "status":
 		return true, handleServerStatus(ctx, deps, a.Format)
-	case "pprof_start":
-		return true, handlePprofStart()
-	case "pprof_stop":
-		return true, handlePprofStop()
+	case "account_for_session", "account_use":
+		return true, handleAccountManage(ctx, deps, a)
+	case "pprof_start", "pprof_stop":
+		return true, handlePprofManage(a.Operation)
 	case "link":
 		return true, handleClientLinker(ctx, deps, a)
 	case "migrate_embed_identity":
@@ -107,10 +103,8 @@ func InterceptManage(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 		return true, handlePipelineLifecycleManage(deps, a)
 	case "set_metadata_overrides":
 		return true, handleClientSetMetadataOverrides(ctx, deps, a)
-	case "delete_branch":
-		return true, handleClientDeleteBranch(ctx, deps, a)
-	case "list_branches":
-		return true, handleClientListBranches(ctx, deps, a)
+	case "delete_branch", "list_branches":
+		return true, handleBranchOverlayManage(ctx, deps, a)
 	case "prune":
 		return true, handleClientPrune(ctx, deps, a)
 	case "rebuild_cache":
@@ -201,6 +195,11 @@ type manageArgs struct {
 	Source string `json:"source"`
 	Path   string `json:"path"`
 	Format string `json:"format"`
+	// Account is the id or slug the two account operations name. There is
+	// deliberately no session field beside it: account_for_session binds the
+	// session the call arrived on, and a session id on the wire would let one
+	// caller retarget another's session.
+	Account string `json:"account"`
 	// Profile names the embedder profile migrate_embed_identity migrates a graph
 	// TO. It is a profile NAME rather than four inline identity fields so a
 	// migration cannot name an embedder no profile describes — the client that
@@ -281,12 +280,31 @@ func handleServerStatus(ctx context.Context, deps ClientDeps, format string) kgt
 		// line is available on this branch even though the daemon line is not.
 		serverBinVer, serverBinKnown := serverBinarySection(deps)
 		if format == "json" {
+			// THE ACCOUNT ROUTING IS A PER-REQUEST FACT, not a local-daemon one:
+			// it is resolved from the calling request's own context and holds
+			// whether or not a local graph server is up. It lands on THIS body
+			// too — the one branch that does not go through addLocalDaemonJSON —
+			// because a consumer reads account_source's presence to decide
+			// whether the daemon can answer the question at all, and a body that
+			// omitted it would read as "this daemon is too old to know".
 			m := map[string]any{"status": "not_running"}
+			// This arm builds its own map rather than going through
+			// addLocalDaemonJSON (there is no local daemon to describe), so it
+			// carries the harness-session keys explicitly — the resolution is a
+			// fact about THIS CALL and is known whether or not a graph server
+			// is up.
+			addHarnessSessionJSON(ctx, m)
 			addVersionJSON(m, clientVer, "", false, serverBinVer, serverBinKnown)
 			addClientVersionStateJSON(m)
+			// The request's account resolution is a fact about the CALLER, not
+			// about the local graph server, so this arm carries it too — see
+			// addRequestAccountJSON.
+			addRequestAccountJSON(ctx, deps, m)
 			return jsonResult(m)
 		}
-		return textResult("Graph server: NOT RUNNING" + renderVersionLines(clientVer, "", false, serverBinVer, serverBinKnown) + renderClientVersionStateLines())
+		return textResult("Graph server: NOT RUNNING" + renderHarnessSessionText(ctx) +
+			renderAccountStatusText(ctx, deps) +
+			renderVersionLines(clientVer, "", false, serverBinVer, serverBinKnown) + renderClientVersionStateLines())
 	}
 	clientVer, daemonVer, daemonKnown := versionSection(deps)
 	serverBinVer, serverBinKnown := serverBinarySection(deps)
@@ -332,139 +350,12 @@ func handleServerStatus(ctx context.Context, deps ClientDeps, format string) kgt
 		doctorBlock = renderDoctorText(checks)
 	}
 	return textResult(fmt.Sprintf(
-		"Graph server: RUNNING\n  PID: %.0f\n  Nodes: %.0f\n  Edges: %.0f\n  Vectors: %.0f\n  BM25 docs: %.0f\n  Path: %s\n%s%s%s%s%s%s",
+		"Graph server: RUNNING\n  PID: %.0f\n  Nodes: %.0f\n  Edges: %.0f\n  Vectors: %.0f\n  BM25 docs: %.0f\n  Path: %s%s\n%s%s%s%s%s%s%s",
 		status["pid"], status["nodes"], status["edges"], status["binary_vectors"], status["bm25_docs"], status["graph_path"],
+		renderHarnessSessionText(ctx),
 		pipelineLine, renderLLMCoverage(ctx, deps), transcriptBlock, collectRunSection(deps), doctorBlock,
+		renderAccountStatusText(ctx, deps),
 		renderVersionLines(clientVer, daemonVer, daemonKnown, serverBinVer, serverBinKnown)+renderClientVersionStateLines()))
-}
-
-// handleCloudStatus reports the CLOUD graph stats for a logged-in user via
-// the already-routed Stats RPC (deps.GraphCaller() is the *Router,
-// which satisfies the statsRPC seam). The TEXT body renders the shared
-// engine.RenderStatsBreakdown under a "Backend: cloud (<host>)" preamble and
-// omits the local-daemon-only fields (GraphStats carries none of them). The JSON
-// body, by contrast, LAYERS the local-daemon fields (pid, graph_path, pipeline
-// counters, coverage[], doctor[]) via addLocalDaemonJSON and then overwrites the
-// node/edge/vector totals with the CLOUD figures on top — so the Daemon Status
-// web page shows every card even when logged in (CEO: always show local-daemon
-// fields). The empty GraphSelector targets the default knowledge graph, identical
-// to intercept_query_stats.go.
-func handleCloudStatus(ctx context.Context, deps ClientDeps, host, format string) kgtools.ToolResult {
-	gc := deps.GraphCaller()
-	if gc == nil {
-		return errorResult("manage(status): graph client unavailable")
-	}
-	sc, ok := gc.(statsRPC)
-	if !ok {
-		return errorResult("manage(status): stats seam unavailable")
-	}
-	resp, err := sc.Stats(ctx, &knowledgev1.StatsRequest{
-		Target: &knowledgev1.GraphSelector{Graph: ""},
-	})
-	if err != nil {
-		return errorResult("manage(status): cloud stats failed: " + err.Error())
-	}
-	stats := resp.GetGraphStats()
-	clientVer, daemonVer, daemonKnown := versionSection(deps)
-	serverBinVer, serverBinKnown := serverBinarySection(deps)
-	if format == "json" {
-		// Local-daemon facts first (pid/graph_path/pipeline/coverage[]/doctor[]/
-		// transcript/collect_runs + any local node/edge counts) …
-		m := map[string]any{}
-		addLocalDaemonJSON(ctx, deps, m)
-		// … then the cloud identity + CLOUD graph totals layered ON TOP,
-		// overwriting any local node/edge/vector counts with the cloud figures.
-		m["status"] = "running"
-		m["backend"] = "cloud"
-		m["host"] = host
-		m["nodes"] = stats.GetNodeCount()
-		m["edges"] = stats.GetEdgeCount()
-		m["binary_vectors"] = stats.GetBinaryVectorCount()
-		addVersionJSON(m, clientVer, daemonVer, daemonKnown, serverBinVer, serverBinKnown)
-		addClientVersionStateJSON(m)
-		return jsonResult(m)
-	}
-	transcriptBlock := ""
-	if th, ok := transcriptUploadHealth(deps); ok {
-		transcriptBlock = renderTranscriptHealthText(th)
-	}
-	if uh, ok := updateCheckHealth(deps); ok {
-		transcriptBlock += renderUpdateHealthText(uh)
-	}
-	return textResult(fmt.Sprintf(
-		"## Graph server: cloud\n  Backend: cloud (%s)\n\n%s%s%s%s%s",
-		host, engine.RenderStatsBreakdown(stats), renderLLMCoverage(ctx, deps), transcriptBlock, collectRunSection(deps),
-		renderVersionLines(clientVer, daemonVer, daemonKnown, serverBinVer, serverBinKnown)+renderClientVersionStateLines()))
-}
-
-// transcriptUploadHealth reads the background transcript-upload loop's health snapshot.
-// Returns (snapshot, true) only when deps satisfy transcriptUploadHealther AND the
-// tracker was wired (a running daemon that reached the loop-spawn stage); (zero, false)
-// otherwise — the render sites emit nothing in that case, the SAME degrade contract as
-// the pipeline overlay.
-func transcriptUploadHealth(deps ClientDeps) (transcriptsync.UploadHealth, bool) {
-	th, ok := deps.(transcriptUploadHealther)
-	if !ok {
-		return transcriptsync.UploadHealth{}, false
-	}
-	return th.TranscriptUploadHealth()
-}
-
-// transcriptHealthTS formats a health timestamp as RFC3339 (UTC), or "never" for the
-// zero time.
-func transcriptHealthTS(ts time.Time) string {
-	if ts.IsZero() {
-		return "never"
-	}
-	return ts.UTC().Format(time.RFC3339)
-}
-
-// renderTranscriptHealthText renders the operator-facing transcript-upload health block.
-// It keeps the TWO failure axes SEPARATELY visible: a "degraded" line whenever one or
-// more files failed to ship on the last tick (regardless of whether the batch as a whole
-// shipped), and a "systemic" line for the consecutive-failed-tick streak that drives the
-// loop's log escalation. The last error is ALWAYS shown when non-empty — the status can
-// never read healthy with a hidden batch error. Consent-off reads as an advanced
-// transport clock with the ship clock left untouched, never as an upload success. A
-// persistently over-cap session (its watermark never advances, so it re-fails every
-// tick) is exactly what the files-failed counters make durably visible here.
-func renderTranscriptHealthText(h transcriptsync.UploadHealth) string {
-	var b strings.Builder
-	b.WriteString("\n\nTranscript upload:\n")
-	fmt.Fprintf(&b, "  Last transport OK: %s\n", transcriptHealthTS(h.LastTransportOK))
-	fmt.Fprintf(&b, "  Last ship: %s\n", transcriptHealthTS(h.LastShip))
-	fmt.Fprintf(&b, "  Lifetime: %d pass(es), %d failure(s); %d file(s) shipped, %d file(s) failed",
-		h.TotalPasses, h.TotalFailures, h.FilesShippedLifetime, h.FilesFailedLifetime)
-	if h.FilesFailedLastTick > 0 {
-		fmt.Fprintf(&b, "\n  degraded: %d file(s) failing to ship this tick; last error: %s",
-			h.FilesFailedLastTick, h.LastError)
-	}
-	if h.ConsecutiveFailures > 0 {
-		fmt.Fprintf(&b, "\n  systemic: %d consecutive failed tick(s) (last failure: %s)",
-			h.ConsecutiveFailures, transcriptHealthTS(h.LastFailure))
-	}
-	// Keep the error visible even when no per-file signal carried it (e.g. a consent-fetch
-	// or transport error that populated no per-file entries).
-	if h.LastError != "" && h.FilesFailedLastTick == 0 {
-		fmt.Fprintf(&b, "\n  last error: %s", h.LastError)
-	}
-	return b.String()
-}
-
-// addTranscriptHealthJSON merges the transcript-upload health fields into the status map
-// so format:json carries them too. Timestamps are RFC3339 (or "never" for the zero
-// time); the last error is the empty string when there is none.
-func addTranscriptHealthJSON(m map[string]any, h transcriptsync.UploadHealth) {
-	m["transcript_last_transport_ok"] = transcriptHealthTS(h.LastTransportOK)
-	m["transcript_last_ship"] = transcriptHealthTS(h.LastShip)
-	m["transcript_last_failure"] = transcriptHealthTS(h.LastFailure)
-	m["transcript_last_error"] = h.LastError
-	m["transcript_consecutive_failures"] = h.ConsecutiveFailures
-	m["transcript_files_failed_last_tick"] = h.FilesFailedLastTick
-	m["transcript_files_failed_lifetime"] = h.FilesFailedLifetime
-	m["transcript_files_shipped_lifetime"] = h.FilesShippedLifetime
-	m["transcript_total_passes"] = h.TotalPasses
-	m["transcript_total_failures"] = h.TotalFailures
 }
 
 // textResult and errorResult mirror the repo-root helpers byte-for-byte.

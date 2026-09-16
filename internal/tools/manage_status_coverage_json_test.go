@@ -20,9 +20,30 @@ import (
 // table and the fakes both render through.
 
 // TestCoverageRowJSONKeysUnchanged pins the WIRE CONTRACT the Daemon Status web
-// Coverage card types against: exactly ten snake_case keys, no eleventh.
+// Coverage card types against: exactly FOURTEEN snake_case keys, no fifteenth.
 //
-// It asserts SET EQUALITY rather than a count, deliberately — a count of ten is
+// THE ELEVENTH AND TWELFTH ARE resident_segments AND resident_segments_peak, a PAIR
+// rather than two separate widenings: the bound acts inside the write call, so the
+// current count can never show the excursion a batch's own seals made, and an
+// operator given only one of the two would read a bound holding perfectly through an
+// excursion it cannot see. They arrived by a decision rather than by drift: CoverageRow's own godoc calls widening this shape "a separate decision
+// from adding a column to the table", and that decision was taken for the
+// per-format resident SEGMENT count because it is the only observable outside the
+// process that says whether the resident-growth bound is holding. The web Coverage
+// card types against a structural TypeScript interface over parsed JSON with no
+// runtime validator, so an additive key is ignored there until it is rendered.
+//
+// THE THIRTEENTH AND FOURTEENTH ARE quarantined_segments AND quarantined_impact,
+// added by the same kind of decision and for the sharpest reason yet: every other
+// key on this row says how much a graph HAS, and these two say how much of it this
+// client CANNOT SERVE. A quarantined segment is withdrawn from service and never
+// re-fetched, so its documents are missing from every search of that graph until an
+// operator rebuilds the graph's segments — and until these keys existed the only
+// record of that loss was one log line at the moment it happened. They are a PAIR
+// for the reason the eleventh and twelfth are: a count with no consequence beside it
+// reads as a statistic, and the consequence is the fact.
+//
+// It asserts SET EQUALITY rather than a count, deliberately — a count of twelve is
 // satisfied by dropping one key and adding another, which is precisely the shape a
 // careless rename produces. The row is populated with non-zero values throughout so
 // no key can be omitted by an accidental omitempty.
@@ -38,6 +59,16 @@ func TestCoverageRowJSONKeysUnchanged(t *testing.T) {
 		// CELL renders, and widening a pinned wire shape is a separate decision from
 		// adding a column to the table.
 		SegProbed: true,
+		// And the eleventh key's own value, non-zero for the reason every other
+		// field here is: an omitempty that swallowed an empty map would make this
+		// pin green on a key that never reaches a populated row's wire.
+		ResidentSegments:     map[string]int{"bm25v2": 12, "hnswv3": 3},
+		ResidentSegmentsPeak: map[string]int{"bm25v2": 40, "hnswv3": 9},
+		// And the thirteenth and fourteenth, non-zero for the same reason: an
+		// omitempty that swallowed an empty map or an empty string would make this
+		// pin green on keys that never reach a populated row's wire.
+		QuarantinedSegments: map[string]int{"bm25v2": 2},
+		QuarantinedImpact:   "2 segment(s) withdrawn",
 	}
 
 	raw, err := json.Marshal(row)
@@ -53,7 +84,9 @@ func TestCoverageRowJSONKeysUnchanged(t *testing.T) {
 	require.ElementsMatch(t, []string{
 		"graph", "total", "summarized", "embedded", "seg_covered",
 		"live_resident", "has_segments", "summary_fail", "embed_fail", "seg_disposition",
-	}, got, "the ten pinned keys, and no eleventh")
+		"resident_segments", "resident_segments_peak",
+		"quarantined_segments", "quarantined_impact",
+	}, got, "the fourteen pinned keys, and no fifteenth")
 	require.NotContains(t, decoded, "repair_verified",
 		"the verified input is json:\"-\" — it must never reach the wire")
 	require.NotContains(t, decoded, "seg_probed",

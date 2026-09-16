@@ -215,9 +215,15 @@ func attachSegmentDependentHooks(p *pipeline.Pipeline, c *client) {
 
 // wirePipelineRuntime constructs the client-side LLM pipeline (summarize
 // + embed worker pools + per-graph collectors) and attaches it to *client.
-// Returns nil on success; nil + log-and-skip when --no-llm-pipeline is
-// set OR neither summarizer nor embedder is configured (graceful degrade —
-// the rest of the MCP loop continues to work without LLM features).
+//
+// ITS THREE EARLY EXITS NO LONGER LEAVE THE CLIENT WITH NOTHING WIRED. Each one
+// still names its reason in the log and still turns the two LLM axes OFF; what
+// changed is that each then hands off to wireBM25OnlyRuntime (pipeline_bm25_only.go)
+// instead of returning. The BM25 arm is deterministic — no summarizer, no
+// embedder, no vector — and gating it on an LLM axis is what made a keyless or
+// --headless daemon serve zero results for text search. The exits are
+// --no-llm-pipeline, a failed summarizer-chain build, and no summarizer AND no
+// embedder configured.
 //
 // The 5 long-lived background loops spawned here run under the passed ctx (the
 // caller's c.wireCtx — drainOnShutdown cancels it before pipeline.Stop), so a
@@ -228,8 +234,10 @@ func attachSegmentDependentHooks(p *pipeline.Pipeline, c *client) {
 // Start to wireCtx would double-cancel them.
 func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 	if f.NoLLMPipeline {
-		slog.Info("client pipeline: skipped (--no-llm-pipeline)")
-		return nil
+		// THE REASON STAYS, and it is now precise about WHAT is skipped: the two LLM
+		// axes, not the deterministic text-index arm. --headless sets this flag.
+		slog.Info("client pipeline: LLM axes skipped (--no-llm-pipeline); wiring the BM25 arm only")
+		return wireBM25OnlyRuntime(ctx, c, f)
 	}
 	// bootCtx backs the boot-synchronous calls that must survive a mid-boot
 	// shutdown (Start lifecycle owned by pipeline.Stop). The long-lived loops below
@@ -245,8 +253,20 @@ func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 		// Don't bubble — degrade-not-die. The client keeps serving
 		// non-LLM tools so a misconfigured summarizer doesn't take down
 		// the entire MCP loop.
-		slog.Warn("client pipeline: summarizer build failed; skipping pipeline wire", "error", err)
-		return nil
+		//
+		// THE REASON IS UNCHANGED AND STILL WARN-LEVEL: a misconfigured summarizer is
+		// still a thing an operator must be told about, and this is the FIRST exit a
+		// keyless client with an empty config takes ("consumer \"summarizer\" has no
+		// provider"). What changed is that the text-index arm no longer dies with it.
+		//
+		// THE EMBEDDER IS DELIBERATELY NOT BUILT ON THIS PATH. buildEmbedAxis sits
+		// below and is not reached, so a KEYED client whose summarizer chain fails
+		// keeps today's behaviour exactly — no vector arm — and this change adds only
+		// the BM25 arm. Continuing into the embed axis here would turn a summarizer
+		// misconfiguration into a newly-live embed worker, which is a different
+		// change and not this one.
+		slog.Warn("client pipeline: summarizer build failed; LLM axes skipped, wiring the BM25 arm only", "error", err)
+		return wireBM25OnlyRuntime(ctx, c, f)
 	}
 	sum, chained := selectSummarizer(fc)
 	// The embedder and the three facts this Config carries about it, built and
@@ -254,8 +274,11 @@ func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 	emb, embedProvider, embedDtype, embedIdentity := buildEmbedAxis(bootCtx)
 
 	if sum == nil && emb == nil {
-		slog.Info("client pipeline: no summarizer or embedder configured; skipping pipeline wire")
-		return nil
+		// The reason stays; only the consequence narrows. A client with neither LLM
+		// axis is precisely the keyless install whose ONE indexing path costs no LLM
+		// call, so it is the configuration that most needs the arm.
+		slog.Info("client pipeline: no summarizer or embedder configured; wiring the BM25 arm only")
+		return wireBM25OnlyRuntime(ctx, c, f)
 	}
 
 	pcfg := pipeline.Config{
@@ -328,6 +351,10 @@ func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 	}
 
 	c.pipeline = p
+	// The shutdown closure calls the pipeline through this field rather than
+	// through c.pipeline, so a test can stub the one thing it needs: a Stop that
+	// does not finish. Defaulted here, at the one site that wires a pipeline at all.
+	c.pipelineStop = p.Stop
 	// The per-graph SERVER change stamp reader is wired from the SAME pipeline, so
 	// the two are installed together or not at all and no half-wired state exists
 	// for fuseCaughtUp to have to distinguish.

@@ -15,6 +15,9 @@
 package segmentdist
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"sort"
@@ -85,11 +88,19 @@ import (
 // segments a concurrent publisher landed inside the reset's build window: those copies
 // are the fresher ones and the ticket's rule is that they win.
 func replaceBucketGroups[Q, S any](
-	dm *distManager[Q, S], superseded []searchengine.ExternalID, docs []searchengine.Document,
-	exclude []searchengine.SegmentID, corpusDocs int, priorityLast []searchengine.SegmentID,
+	ctx context.Context, dm *distManager[Q, S], superseded []searchengine.ExternalID,
+	docs []searchengine.Document, exclude []searchengine.SegmentID, corpusDocs int,
+	priorityLast []searchengine.SegmentID,
 ) ([]searchengine.SegmentID, map[int]searchengine.SegmentID, error) {
 	if len(docs) == 0 && len(superseded) == 0 && len(priorityLast) == 0 {
 		return nil, nil, nil
+	}
+	// CHECKED BEFORE THE GROUPING, not only inside the engine. Deriving the work
+	// inputs walks every resident segment's members, which on the segment counts a
+	// merge-disabled engine reaches between drains is itself seconds of work — and
+	// the caller that supplies a deadline here is a process on its way out.
+	if err := ctx.Err(); err != nil {
+		return nil, nil, abandonedAtDeadline(dm, 0, err)
 	}
 	bucketCount := searchengine.BucketCountFor(corpusDocs)
 	docsByBucket, supByBucket, constituentsByBucket, spans := groupWorkInputs(dm, superseded, docs, exclude, bucketCount)
@@ -175,10 +186,27 @@ func replaceBucketGroups[Q, S any](
 			"max_walked_segments", stats.MaxWalkedSegments)
 	}()
 
-	publishedBy, stats, err := dm.engine.ReplaceBucketGroup(bucketCount, union, work)
+	publishedBy, stats, err := dm.engine.ReplaceBucketGroup(ctx, bucketCount, union, work)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, nil, abandonedAtDeadline(dm, len(buckets), err)
+		}
 		return nil, nil, err
 	}
+	// THE GROUP SWAP REPLACED EVERY CONSTITUENT IT RESOLVED, so the resident-growth
+	// bound's census latch is discarded with them: an arming point and a floor taken
+	// over a set this swap has just rebuilt are statements about segments that are no
+	// longer resident, and deferring on them holds the bound off THE SET THIS CALL
+	// PUBLISHED. The callers are the drain's own consolidation — the one the bound's
+	// over-budget warning defers to by name — and the reset's build-window absorb, so
+	// the next crossing walks what the swap left rather than re-learning what it
+	// removed. THE COST ARGUMENT IS REASONED, NOT MEASURED, and it is written here as
+	// such: a group swap is a full rebuild of every partition in the closure and a
+	// census is one members walk, so at most one extra census per swap cannot dominate
+	// the swaps themselves. What the corpus benchmark actually measured is weaker and
+	// is the honest statement beside it — neither arm reached this line with the latch
+	// ARMED, so no measured run has yet paid a census it would not have paid before.
+	clearCensusLatchOnReplacement(dm, "bucket group swap")
 	// Report in ascending partition order so the caller's retirement diff is stable.
 	published := make([]searchengine.SegmentID, 0, len(publishedBy))
 	for _, b := range buckets {
@@ -192,6 +220,25 @@ func replaceBucketGroups[Q, S any](
 	// contributes nothing to publish and nothing to that decision — which is the
 	// conservative direction: an id in such a partition stays masked.
 	return published, publishedBy, nil
+}
+
+// abandonedAtDeadline names what a group rebuild did NOT do when its caller's
+// window closed, wrapping the context error rather than replacing it.
+//
+// IT NAMES THE WORK, NOT JUST THE FAILURE. A bare "context deadline exceeded" in a
+// shutdown log tells an operator that something was dropped and nothing about
+// what; the graph, the format and the number of partitions left unrebuilt are what
+// the reader lacks and what the caller cannot recover. The all-or-nothing contract
+// is why the count is the whole group: an abandoned group publishes no partition
+// at all.
+//
+// partitions is zero when the abandon happened before the partition set was even
+// derived, which the message reports as the truthful zero rather than a guess.
+func abandonedAtDeadline[Q, S any](dm *distManager[Q, S], partitions int, err error) error {
+	return fmt.Errorf(
+		"segmentdist: bucket group rebuild abandoned before the deadline, nothing published: "+
+			"graph=%s name=%s repo=%s format=%s partitions_not_rebuilt=%d: %w",
+		dm.target.GetGraph(), dm.target.GetName(), dm.target.GetRepo(), dm.format, partitions, err)
 }
 
 // mergeUnion builds the union of the group's constituents — what the engine

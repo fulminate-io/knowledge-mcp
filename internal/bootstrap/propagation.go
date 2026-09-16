@@ -93,7 +93,7 @@ func wirePropagationRuntime(c *client, f Config) {
 	// served. See loop() in thought/loop_lifecycle.go. The manual force_full lever
 	// stays ungated — it is a user interaction, not a background process.
 	loop.WithWorkingSetGate(
-		func() bool { return c.workingSet.Has(kgtypes.GraphKnowledge, "default") },
+		c.propagationWorkingSetGate,
 		c.workingSet.WakeFor(kgtypes.GraphKnowledge, "default"))
 	c.propLoop = loop
 	loop.Start()
@@ -283,4 +283,19 @@ func (c *client) TensionsProvider() tools.TensionsProvider {
 		return nil
 	}
 	return c.propLoop
+}
+
+// propagationWorkingSetGate is the predicate wirePropagationRuntime hands the
+// propagation loop: has a direct user interaction admitted knowledge/default.
+//
+// IT IS A NAMED METHOD RATHER THAN THE INLINE CLOSURE IT USED TO BE, so the gate
+// the loop is actually handed can be driven by a test. That matters more than it
+// looks: the predicate underneath it (workingset.Set.Has) answered false for every
+// destination-bearing member until it was widened, which gated this loop shut on a
+// graph the client really maintains, and nothing observed the gate itself. The
+// graph type and name are spelled here exactly as the WakeFor registration spells
+// them at the call site, so the gate and the wake cannot disagree about which graph
+// this loop serves.
+func (c *client) propagationWorkingSetGate() bool {
+	return c.workingSet.Has(kgtypes.GraphKnowledge, "default")
 }

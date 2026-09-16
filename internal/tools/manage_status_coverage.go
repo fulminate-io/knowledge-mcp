@@ -8,8 +8,6 @@ import (
 	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // renderLLMCoverage renders the per-graph durable LLM-coverage table surfaced by
@@ -73,6 +71,85 @@ type CoverageRow struct {
 	// SegDisposition is the coverage band this row sits in — see
 	// segCoverageDisposition. Additive: no pre-existing tag is renamed.
 	SegDisposition string `json:"seg_disposition"`
+	// ResidentSegments is how many sealed SEGMENTS each of this graph's engines
+	// holds, keyed by format name (bm25v2, hnswv3). It is the ELEVENTH pinned wire
+	// key, and widening that shape was a decision taken deliberately rather than a
+	// field that drifted in.
+	//
+	// IT IS A FOURTH INDEPENDENT MEASUREMENT, not a refinement of the three above.
+	// Total, SegCovered and LiveResident are all DOCUMENT counts; this is a SEGMENT
+	// count, it bounds none of them and none of them bounds it. What it answers is
+	// the one question the others cannot: a search fans out one goroutine per
+	// resident segment, so this number IS interactive query latency while a graph is
+	// being indexed, and it is the only observable outside the process that says
+	// whether the resident-growth bound is holding.
+	//
+	// PER FORMAT, BECAUSE THE TWO ENGINES SEAL AND PUBLISH INDEPENDENTLY and the
+	// budget is per format per graph. A format with no constructed engine is ABSENT
+	// from the map rather than present as zero — see
+	// segmentdist.Manager.ResidentSegmentCounts for why a fabricated zero would state
+	// a measurement nobody took. The map is nil for a row whose pool was never
+	// probed, which renders as no count at all.
+	ResidentSegments map[string]int `json:"resident_segments"`
+	// ResidentSegmentsPeak is the HIGH-WATER of that same count, per format: the
+	// twelfth pinned wire key.
+	//
+	// IT IS NOT DERIVABLE FROM THE FIELD ABOVE, which is why it ships beside it. The
+	// resident-growth bound acts INSIDE the write call, so the current count is
+	// always the count after it acted and can never show the excursion a batch's own
+	// seals made. An operator watching only the current number would see a bound
+	// holding perfectly while a lease briefly fanned a search out over far more
+	// segments; this is that excursion, sampled where it happens. Same per-format
+	// keys and the same omission rule as ResidentSegments — a format with no
+	// constructed engine is absent rather than zero.
+	ResidentSegmentsPeak map[string]int `json:"resident_segments_peak"`
+	// QuarantinedSegments is how many segments each of this graph's engines has
+	// WITHDRAWN FROM SERVICE for corruption, keyed by format name. It is the
+	// THIRTEENTH pinned wire key, and QuarantinedImpact below is the fourteenth;
+	// widening the shape by two was taken deliberately rather than drifted into.
+	//
+	// IT IS A LOSS, NOT A CAPACITY READING, which is what earns it a key of its own
+	// beside the three counts above. Those say how much this graph HAS; this says how
+	// much of it this client cannot serve. A quarantined segment's file is moved aside
+	// and its index entry dropped, nothing re-fetches or re-indexes it, and the
+	// documents it held are unsearchable until an operator runs manage
+	// rebuild_segments — so a non-zero value here is a graph that is silently short,
+	// and before this key the only record of it was one log line at the moment it
+	// happened.
+	//
+	// SAME PER-FORMAT KEYS AND THE SAME OMISSION RULE AS ITS NEIGHBORS: a format with
+	// no constructed engine is ABSENT rather than present as zero, and the map is nil
+	// for a row whose pool was never probed. A constructed engine that has lost nothing
+	// reports zero, which is a measurement and reads as one.
+	QuarantinedSegments map[string]int `json:"quarantined_segments"`
+	// QuarantinedImpact states, in one sentence, what the counts above cost — empty
+	// when nothing is quarantined.
+	//
+	// IT IS A WIRE KEY RATHER THAN A RENDERER'S SENTENCE because the JSON arm has
+	// readers of its own (the Daemon Status card, the release smoke) and a count
+	// without its consequence is the thing this row exists to stop: "bm25v2 2" reads
+	// as a statistic, and the fact it names is that some documents cannot be found at
+	// all until a rebuild runs. It is DERIVED FROM THIS ROW'S OWN COUNTS by ONE
+	// function (quarantineImpactFor, which sums them into the sentence), so every
+	// consumer meets one wording rather than re-deriving its own; it is the empty
+	// string when nothing is withdrawn.
+	QuarantinedImpact string `json:"quarantined_impact"`
+	// ResidentSegmentDestinations is how many DESTINATIONS contributed to each
+	// format's two readings above — the {storage,account} children a daemon holds
+	// engines for, plus its root, counted per format.
+	//
+	// IT CARRIES json:"-" DELIBERATELY: the twelve-key wire shape above is PINNED,
+	// and this is a QUALIFIER on those two values rather than a thirteenth value of
+	// its own. Widening a pinned shape is a separate decision from telling a reader
+	// of the table how many engines a number was folded from.
+	//
+	// WHY IT EXISTS AT ALL. Each of the two readings above is a MAXIMUM across the
+	// destinations this client holds an engine for, because the fan-out budget is
+	// per engine; a maximum of two is not the same fact as a reading of one, and an
+	// operator sizing a pool against it needs to know which they have. The text
+	// render names it only above one, so the single-destination cell — every
+	// single-account daemon's — is byte-identical to what it was before.
+	ResidentSegmentDestinations map[string]int `json:"-"`
 	// RepairVerified reports whether the coverage BACKSTOP has verified this row's
 	// band within its interval. It carries `json:"-"` deliberately: the ten-key wire
 	// shape above is pinned, and this is an input to SegDisposition rather than a
@@ -327,110 +404,6 @@ const (
 	// disagree about how long a verification is good for.
 	SegmentRepairBackstopInterval = 24 * time.Hour
 )
-
-// GraphEmbeddedCount is the SINGLE definition of a graph's "embedded count" — the
-// denominator BOTH the coverage-ratio auto-heal (lever 2, via bootstrap) and the
-// manage(status) segment-coverage column (lever 3) compare segment-covered docs
-// against, so the definition cannot drift between them. It issues ONE Stats RPC
-// with IncludeCoverage:true (the same seam renderLLMCoverage uses) and returns
-// GraphStats.BinaryVectorCount — the count of nodes with a stored binary vector.
-//
-// gc is deps.GraphCaller(); when it does not satisfy the Stats seam (a router-less
-// fixture / degraded headless mode) the helper returns (0, nil) — a zero embedded
-// count, which the heal probe reads as "no coverage signal" and the status column
-// renders as a placeholder. The DEFAULT knowledge graph (empty instance name) uses
-// the empty-name GraphSelector{Graph:""}, mirroring renderLLMCoverage's
-// knowledge-row handling.
-//
-// The selector-addressed graphEmbeddedCountFor it delegates to, and the
-// both-counts helper THAT now projects from, live in
-// manage_status_coverage_counts.go.
-func GraphEmbeddedCount(ctx context.Context, gc GraphCaller, gt kgtypes.GraphType, name string) (int, error) {
-	return graphEmbeddedCountFor(ctx, gc, statusGraphTarget(gt, name))
-}
-
-// statusGraphTarget builds the Stats target for ONE NAMED graph in the status
-// coverage table.
-//
-// ONE FAMILY NEEDS MORE THAN THE DERIVATION, and it is named here rather than
-// duplicated at the two call sites below: the DEFAULT knowledge graph (empty
-// instance name) addresses as an empty selector, mirroring renderLLMCoverage's
-// knowledge-row handling.
-//
-// PRACTICE USED TO NEED ONE TOO, through the legacy read selector, and no longer
-// does. The family became a singleton, so graphsel puts no instance field on its
-// selector — right for a write and for an unselected read, and wrong while this
-// table walked a catalog of eight practice graphs: a derived target would have
-// asked about the combined graph once per name and printed the same numbers down
-// every row, and a repeated number reads as a working table. The catalog holds
-// one practice graph now, so the derivation is right and the one row it produces
-// carries that graph's own counts.
-func statusGraphTarget(gt kgtypes.GraphType, name string) *knowledgev1.GraphSelector {
-	if gt == kgtypes.GraphKnowledge && name == "" {
-		return &knowledgev1.GraphSelector{Graph: ""}
-	}
-	return graphsel.GraphSelectorFor(gt, name, false)
-}
-
-// GraphCoverageCounts returns the FULL on-demand LLM-coverage set for one graph,
-// off the SAME single Stats RPC GraphEmbeddedCount uses.
-//
-// IT IS THE WIDER PROJECTION OF ONE READ, NOT A SECOND READ. GraphEmbeddedCount
-// takes one field off a response that already carries six; a caller needing the
-// failure counts alongside the embedded count therefore had to issue a second
-// Stats call, and two calls mean two snapshots that can disagree about the same
-// graph. This returns all of them from one, so a consumer comparing them is
-// comparing numbers taken at the same instant.
-//
-// It carries the same (gt, name) special case as GraphEmbeddedCount above: the
-// unnamed knowledge graph addresses as an empty selector rather than by name.
-func GraphCoverageCounts(ctx context.Context, gc GraphCaller, gt kgtypes.GraphType, name string) (GraphCoverage, error) {
-	return graphCoverageFor(ctx, gc, statusGraphTarget(gt, name))
-}
-
-// segCoveredFor reads the SERVER-shipped HNSW-segment-covered doc count AND the
-// LIVE in-memory engine resident doc count for a row's graph via the nil-safe
-// SegmentCoverage seam. Segments exist for every graph kgtypes.HasRebuildableSegments
-// admits, which is every builtin except linkage — read that predicate rather
-// than a list here, because a list of families is what rots when one is added or
-// retired. It is the SAME gate buildHealFactory and the manual rebuild_segments
-// op use, so the status column reports coverage for exactly the graph set the
-// auto-heal arm services. Reporting coverage for a raw graph is what makes
-// manage(status) answerable for one, which is how an operator confirms a
-// collected document is searchable. A graph with no rebuildable segments
-// returns (0, 0, false) and the column renders "—". When the seam is unwired
-// (degraded headless mode) or the shipped probe errs, it also returns (0, 0, false)
-// — a placeholder, not a hard failure of the status table. The live resident read is
-// a single snapshot walk (no RPC and no load); it is surfaced so a live-pool
-// collapse (live 0 while covered is N) is detectable instead of masked behind the
-// shipped figure.
-//
-// IT IS ONLY EVER CALLED FOR A GRAPH IN THE WORKING SET, and that fence is the
-// CALLER'S (collectSegProbes). It has to be, because BOTH reads below interact:
-// ShippedSegmentDocCount routes to Manager.LoadResidentDocCount and imports the
-// graph's whole L2 pool, and LiveResidentDocCount reaches Manager.managerFor, which
-// lazily constructs the per-graph engine and its cache directory. Neither is
-// permitted for a graph no direct interaction has admitted, so the gate cannot live
-// inside this function's existing fences — poolEvictedFor and the type/wiring
-// checks are about whether a probe would be MEANINGFUL, not about whether it is
-// ALLOWED.
-func segCoveredFor(ctx context.Context, deps ClientDeps, gt kgtypes.GraphType, name string) (covered, liveResident int, hasSeg bool) {
-	if !kgtypes.HasRebuildableSegments(gt) {
-		return 0, 0, false
-	}
-	sr := deps.SegmentCoverage()
-	if sr == nil {
-		return 0, 0, false
-	}
-	if poolEvictedFor(deps, gt, name) {
-		return segCoveredForEvicted()
-	}
-	c, err := sr.ShippedSegmentDocCount(ctx, gt, name)
-	if err != nil {
-		return 0, 0, false
-	}
-	return c, sr.LiveResidentDocCount(gt, name), true
-}
 
 // newCoverageRow projects a per-graph GraphStats + segment-coverage triple into
 // the shared CoverageRow. The embedded count is GraphStats.BinaryVectorCount —

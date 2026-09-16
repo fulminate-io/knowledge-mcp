@@ -27,9 +27,14 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/llm"
 )
 
-// defaultBaseURL is the public Anthropic API endpoint. Callers point at a
+// DefaultBaseURL is the public Anthropic API endpoint. Callers point at a
 // proxy or regional override via Config.BaseURL.
-const defaultBaseURL = "https://api.anthropic.com"
+//
+// It is exported, as openai.DefaultBaseURL and gemini.DefaultBaseURL
+// already are, so a caller outside this package that needs the host this
+// provider would call — llm/providercheck, which reads the same account's
+// model list — names it rather than restating the literal.
+const DefaultBaseURL = "https://api.anthropic.com"
 
 // messagesPath is appended to BaseURL for every request. Keeping the /v1
 // prefix here (rather than baking it into the BaseURL default) lets a
@@ -89,6 +94,13 @@ var _ llm.Client = (*Service)(nil)
 // newClientFromConfig is the [llm.ProviderFactory] entry point. The
 // substrate's Validate has already been called by the registry, so APIKey is
 // guaranteed non-empty.
+//
+// THE ERROR RESULT IS SIGNATURE PARITY, not a failure this body can produce:
+// it is nil on the one return path here. The shape is fixed by the
+// llm.ProviderFactory contract (llm/registry.go:17), whose sibling
+// implementations do fail — openai.NewService (llm/openai/service.go:60) and
+// claudecli.NewService (llm/claudecli/claudecli.go:82) both refuse a nil
+// config — so the result stays to keep the contract satisfiable.
 func newClientFromConfig(_ context.Context, cfg *llm.Config) (llm.Client, error) {
 	return New(cfg.APIKey, cfg.BaseURL, cfg.Model, nil), nil
 }
@@ -98,7 +110,7 @@ func newClientFromConfig(_ context.Context, cfg *llm.Config) (llm.Client, error)
 // client to intercept requests.
 func New(apiKey, baseURL string, defaultModel llm.Model, httpClient *http.Client) *Service {
 	if baseURL == "" {
-		baseURL = defaultBaseURL
+		baseURL = DefaultBaseURL
 	}
 	if httpClient == nil {
 		httpClient = llm.DefaultHTTPClient()

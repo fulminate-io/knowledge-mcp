@@ -46,7 +46,8 @@ import (
 func (m *Manager) ShippedSegmentDocCount(
 	ctx context.Context, gt kgtypes.GraphType, name string,
 ) (covered int, err error) {
-	m = m.ForDestination(ctx)
+	m, releaseDestination := m.forRequest(ctx)
+	defer releaseDestination()
 	return m.LoadResidentDocCount(ctx, gt, name)
 }
 
@@ -95,7 +96,8 @@ func (m *Manager) ResidentDocCount(gt kgtypes.GraphType, name string) int {
 // read that lands in the window reports a graph with a full L2 pool as having no
 // resident corpus at all.
 func (m *Manager) LoadResidentDocCount(ctx context.Context, gt kgtypes.GraphType, name string) (int, error) {
-	m = m.ForDestination(ctx)
+	m, releaseDestination := m.forRequest(ctx)
+	defer releaseDestination()
 	dm := m.managerFor(gt, name)
 	dm.residencyMu.RLock()
 	defer dm.residencyMu.RUnlock()
@@ -115,8 +117,60 @@ func (m *Manager) LoadResidentDocCount(ctx context.Context, gt kgtypes.GraphType
 // It differs from ResidentDocCount in BOTH directions and that is the point:
 // ResidentDocCount sums per-segment counts, so it over-reports an id resident in
 // two segments, and it counts deleted-but-unpurged ids that no search will return.
+//
+// IT CONSTRUCTS NOTHING EITHER, and that is a correction rather than an
+// optimization. It used to resolve the arm through managerFor, which builds a
+// per-graph engine and its cache directory for whatever key it is handed — so this
+// no-load reader CREATED the pool it was asked about, and the per-format resident
+// SEGMENT readings taken in the same statement group of the status assembly then
+// reported that fresh arm as an engine holding zero. That empty vector arm was the
+// only non-null resident-segment reading a keyless client ever produced. The NUMBER
+// is unchanged in every case: an arm that does not exist holds nothing, which is the
+// same 0 an arm built to answer the question would have reported.
+//
+// IT IS DELIBERATELY ROOT-SCOPED, AND IT HAS ONE CALLER LEFT. It takes no ctx, so on
+// a client whose writes bind a destination it reads an arm nothing writes to. The
+// manage(status) cell no longer reads it: that cell resolves the destination through
+// LiveResidentDocCountFor below, so its `live` figure and the `shipped` figure
+// beside it come off one engine. What still reads this is the code-search
+// branch-completeness gate (tools/code_search_pools.go), where the reading is a GATE
+// OPERAND rather than a rendered number and the bound case answers 0 either way;
+// whether that gate should resolve the destination is being settled by execution
+// under its own research finding, and is not decided here.
 func (m *Manager) LiveResidentDocCount(gt kgtypes.GraphType, name string) int {
-	return m.managerFor(gt, name).engine.LiveResidentCount()
+	dm, constructed := m.constructedHNSWArm(gt, name)
+	if !constructed {
+		return 0
+	}
+	return dm.engine.LiveResidentCount()
+}
+
+// LiveResidentDocCountFor is LiveResidentDocCount for the destination THIS CALL IS
+// BOUND TO: the same distinct live-searchable count, off the {storage,account}
+// child that actually serves the caller.
+//
+// IT EXISTS BECAUSE THE PAIR IT IS HALF OF MUST COME FROM ONE ENGINE. The status
+// segment cell renders `shipped N · live M` from this and ShippedSegmentDocCount,
+// documents their DIFFERENCE as a duplication meter, and documents `live 0 while
+// shipped is N` as the live-pool-collapse signal. The sibling resolves the
+// destination through forRequest, so a root-scoped live reading beside it fired that
+// collapse signal permanently on every destination-bound client — the ordinary
+// wiring — while the segment terms in the same cell reported the child.
+//
+// IT RESOLVES THE DESTINATION AND CONSTRUCTS NO ARM, which is what
+// constructedHNSWArm is for: a graph with no engine on this destination reads 0
+// rather than having one built to say so. The resolution is the SAME forRequest the
+// cell's sibling reader already performs on the same ctx a few statements earlier,
+// so the cell binds no child it was not already binding, and the hold that comes
+// with it keeps an eviction from closing the arm under this read.
+func (m *Manager) LiveResidentDocCountFor(ctx context.Context, gt kgtypes.GraphType, name string) int {
+	m, releaseDestination := m.forRequest(ctx)
+	defer releaseDestination()
+	dm, constructed := m.constructedHNSWArm(gt, name)
+	if !constructed {
+		return 0
+	}
+	return dm.engine.LiveResidentCount()
 }
 
 // LoadLiveResidentDocCount is the DECIDER half: it loads the graph's HNSW engine
@@ -136,7 +190,8 @@ func (m *Manager) LiveResidentDocCount(gt kgtypes.GraphType, name string) int {
 // healNeedsRebuildLocal (bootstrap client_segment_heal_need.go) is the caller that
 // does.
 func (m *Manager) LoadLiveResidentDocCount(ctx context.Context, gt kgtypes.GraphType, name string) (int, error) {
-	m = m.ForDestination(ctx)
+	m, releaseDestination := m.forRequest(ctx)
+	defer releaseDestination()
 	dm := m.managerFor(gt, name)
 	skipped, err := dm.loadIfResident(ctx)
 	if err != nil {
@@ -171,8 +226,45 @@ func (m *Manager) LoadLiveResidentDocCount(ctx context.Context, gt kgtypes.Graph
 func (m *Manager) LoadSegmentDocCounts(
 	ctx context.Context, gt kgtypes.GraphType, name string,
 ) (shipped, live int, skipped bool, err error) {
-	m = m.ForDestination(ctx)
+	m, releaseDestination := m.forRequest(ctx)
+	defer releaseDestination()
 	dm := m.managerFor(gt, name)
+	dm.residencyMu.RLock()
+	defer dm.residencyMu.RUnlock()
+	evicted, err := dm.loadIfResident(ctx)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	if evicted {
+		return 0, 0, true, nil
+	}
+	return dm.engine.ResidentDocCount(), dm.engine.LiveResidentCount(), false, nil
+}
+
+// BM25SegmentDocCounts answers the (shipped, live) pair for one graph's BM25 text
+// pool, the way LoadSegmentDocCounts answers it for the HNSW one: both counts off
+// ONE observation of ONE engine, under the residency read lock, resolved per
+// DESTINATION exactly as a search of that graph is.
+//
+// IT EXISTS BECAUSE manage(status)'s segment-coverage cell HAD NO WAY TO SEE THE
+// TEXT INDEX. Its two readers — ShippedSegmentDocCount and LiveResidentDocCount —
+// both count the HNSW engine, so on a keyless install, which has no vector engine
+// at all, the cell read `shipped 0 · live 0` however many documents the BM25 pool
+// held and however well text search served them. The cell is the operator's
+// instrument for "is search working", so that zero was the same false negative the
+// search itself used to give.
+//
+// IT IS THE DECIDER FORM, on LoadSegmentDocCounts's terms and for its reasons: an
+// EVICTED pool reports skipped=true rather than a fabricated pair of zeros, and the
+// residency read lock spans the load and BOTH counts so nothing can move one
+// operand and not the other between them. Their difference is the duplication
+// signal, and a caller has zero tolerance for a skew introduced by the reader.
+func (m *Manager) BM25SegmentDocCounts(
+	ctx context.Context, gt kgtypes.GraphType, name string,
+) (shipped, live int, skipped bool, err error) {
+	m, releaseDestination := m.forRequest(ctx)
+	defer releaseDestination()
+	dm := m.bm25ManagerFor(gt, name)
 	dm.residencyMu.RLock()
 	defer dm.residencyMu.RUnlock()
 	evicted, err := dm.loadIfResident(ctx)
@@ -207,7 +299,8 @@ func (m *Manager) LoadSegmentDocCounts(
 func (m *Manager) UncoveredMembers(
 	ctx context.Context, gt kgtypes.GraphType, name string, ids []searchengine.ExternalID,
 ) (missingHNSW, missingBM25 []searchengine.ExternalID, err error) {
-	m = m.ForDestination(ctx)
+	m, releaseDestination := m.forRequest(ctx)
+	defer releaseDestination()
 	hdm := m.managerFor(gt, name)
 	hnswSkipped, err := hdm.loadIfResident(ctx)
 	if err != nil {

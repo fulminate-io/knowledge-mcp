@@ -85,16 +85,52 @@ type ContentBlock struct {
 }
 
 // CallToolParams holds the parameters for a tools/call JSON-RPC request.
+//
+// It deliberately models NO session argument. A session identity is something
+// the HARNESS passes, never something a tool call names for itself, so there is
+// no `session_id` field here for a caller to set — see CallToolMeta for the
+// carriers that are real.
 type CallToolParams struct {
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
 	Meta      *CallToolMeta   `json:"_meta,omitempty"`
-	SessionID string          `json:"session_id,omitempty"`
 }
 
-// CallToolMeta holds optional metadata for a tool call (e.g., progress token).
+// CallToolMeta holds the `_meta` sidecar an MCP client sends on a tools/call.
+// Beyond the spec's progress token, both harnesses put a per-call identity here,
+// and the daemon resolves the calling harness session from them:
+//
+//   - Claude Code 2.1.272 sends "claudecode/toolUseId", which equals the
+//     tool_use_id its PreToolUse hook delivered moments earlier — that equality
+//     is what lets the hook's session_id be correlated to this call.
+//   - Codex 0.154.0 sends "callId", which equals its own hook's tool_use_id, and
+//     "x-codex-turn-metadata", whose session_id is readable with no hook at all.
+//
+// BOTH KEYS ARE UNDOCUMENTED by their vendors. A missing key is therefore an
+// expected shape, not an error: resolution degrades to `none` with a reason and
+// never crashes, and never invents an identity in their absence.
 type CallToolMeta struct {
 	ProgressToken json.RawMessage `json:"progressToken,omitempty"`
+
+	// ClaudeToolUseID is Claude Code's per-call id, the correlation key for a
+	// Claude PreToolUse hook delivery.
+	ClaudeToolUseID string `json:"claudecode/toolUseId,omitempty"`
+
+	// CallID is Codex's per-call id, the correlation key for a Codex PreToolUse
+	// hook delivery.
+	CallID string `json:"callId,omitempty"`
+
+	// CodexTurn is Codex's turn metadata, whose session_id identifies the
+	// calling Codex session directly.
+	CodexTurn *CodexTurnMetadata `json:"x-codex-turn-metadata,omitempty"`
+}
+
+// CodexTurnMetadata models the ONE field of Codex's x-codex-turn-metadata the
+// daemon reads. The object carries more (thread_id, turn_id, model, sandbox,
+// codex_version, ...); they are deliberately unmodeled because nothing reads
+// them, and a partial model cannot go stale on fields it does not name.
+type CodexTurnMetadata struct {
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // TextResult returns a successful tool result with the given text content.

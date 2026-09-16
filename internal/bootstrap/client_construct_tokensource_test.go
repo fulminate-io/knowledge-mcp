@@ -39,7 +39,8 @@ func TestConstructClient_SharedCloudTokenSource(t *testing.T) {
 		t.Cleanup(func() { startKeepaliveFn = origKeepalive })
 
 		cfg.LocalDialer = dialer
-		c := constructClient(cfg)
+		c, err := constructClient(cfg)
+		require.NoError(t, err)
 		require.NotNil(t, c)
 		return c
 	}

@@ -120,7 +120,7 @@ func measureConsolidationMerge(t *testing.T, docs []searchengine.Document) (allo
 	require.NotEmpty(t, firstResident, "the first seed published nothing")
 
 	// SEED TWO, unmeasured, and EXCLUDED so it builds without consolidating.
-	_, _, err := replaceBucketGroups(dm, nil, docs[half:], firstResident,
+	_, _, err := replaceBucketGroups(t.Context(), dm, nil, docs[half:], firstResident,
 		dm.engine.DistinctResidentDocCount()+len(docs[half:]), nil)
 	require.NoError(t, err)
 	_, err = dm.persistResident()
@@ -138,7 +138,7 @@ func measureConsolidationMerge(t *testing.T, docs []searchengine.Document) (allo
 	var msBefore, msAfter runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&msBefore)
-	_, _, mergeErr := replaceBucketGroups(dm, nil, nil, nil, dm.engine.DistinctResidentDocCount(), resident)
+	_, _, mergeErr := replaceBucketGroups(t.Context(), dm, nil, nil, nil, dm.engine.DistinctResidentDocCount(), resident)
 	runtime.ReadMemStats(&msAfter)
 	require.NoError(t, mergeErr)
 

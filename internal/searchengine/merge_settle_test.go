@@ -237,6 +237,12 @@ func (f encodeFailAfterMergeFormat) AggregateStats(segs []Segment[mockQuery, moc
 	return f.mockFormat.AggregateStats(unwrapEncodeFail(segs))
 }
 
+// AppendStats unwraps for the same reason, and delegates so this double stays a
+// change to ONE behaviour.
+func (f encodeFailAfterMergeFormat) AppendStats(prev mockStats, seg Segment[mockQuery, mockStats]) mockStats {
+	return f.mockFormat.AppendStats(prev, unwrapEncodeFail([]Segment[mockQuery, mockStats]{seg})[0])
+}
+
 func unwrapEncodeFail(segs []Segment[mockQuery, mockStats]) []Segment[mockQuery, mockStats] {
 	out := make([]Segment[mockQuery, mockStats], len(segs))
 	for i, s := range segs {

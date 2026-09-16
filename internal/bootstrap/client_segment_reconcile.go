@@ -4,6 +4,7 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -249,8 +250,23 @@ func (c *client) drainSegmentBacklog(ctx context.Context) {
 			continue
 		}
 		if err := c.segmentMgr.ReEmitDirtyBuckets(g.bind(ctx), g.gt, g.name); err != nil {
-			slog.Warn("bootstrap: shutdown backlog drain failed for a graph (continuing; the repair arm picks it up next boot)",
-				"graph_type", g.gt, "name", g.name, "error", err)
+			// A DEADLINE ABANDON IS REPORTED AS ONE, separately from a failure,
+			// because the two are different facts about the shutdown. A failed
+			// drain is a graph whose work could not be done; an abandoned one is a
+			// graph whose work RAN OUT OF WINDOW, which is the condition the stop
+			// budget exists to produce and the one an operator reads when a
+			// restart comes up with a backlog. The error carries what was not
+			// rebuilt (segmentdist wraps the context error with the graph, the
+			// format and the partition count); it is not swallowed into a silent
+			// skip.
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				slog.Warn("bootstrap: shutdown segment backlog drain abandoned work at the shutdown deadline "+
+					"(nothing was published and nothing was consumed; the backlog survives for the next boot)",
+					"graph_type", g.gt, "name", g.name, "deadline", daemonStopDeadline, "error", err)
+			} else {
+				slog.Warn("bootstrap: shutdown backlog drain failed for a graph (continuing; the repair arm picks it up next boot)",
+					"graph_type", g.gt, "name", g.name, "error", err)
+			}
 			skipped = append(skipped, label)
 			continue
 		}

@@ -15,10 +15,7 @@
 
 package searchengine
 
-import (
-	"errors"
-	"fmt"
-)
+import "errors"
 
 // BuiltLayer is a complete replacement layer that has been BUILT but not yet
 // published. It is produced by BuildLayer and consumed by ReplaceLayer, and the split
@@ -48,6 +45,17 @@ type BuiltLayer[Q, S any] struct {
 	// are never re-derived.
 	capturedOldIDs []SegmentID
 	capturedOldSet map[SegmentID]bool
+
+	// unreleased names the partitions whose payload is STILL the encoder's heap
+	// output when the build finishes: the persist hook declined to map them, or the
+	// bytes it handed back would not decode. It is empty when no hook was supplied,
+	// because a build with no hook releases nothing and owes nothing.
+	unreleased []SegmentID
+	// releaseErr joins the decode failures behind unreleased. It is deliberately NOT
+	// returned from the build: a partition that could not be re-backed by its mapping
+	// is CORRECT and durable and only costs memory, so it must not fail a rebuild —
+	// the same disposition releaseHeapBackedResident takes for the seal path.
+	releaseErr error
 }
 
 // Blobs returns the built layer's shippable blobs. The slice is a copy, so a caller
@@ -81,60 +89,7 @@ func (b *BuiltLayer[Q, S]) Len() int { return len(b.entries) }
 // AN ERROR LEAVES NOTHING BEHIND. Build and encode failures return before any handle
 // escapes, so a partial layer cannot be published later by mistake.
 func (e *SegmentedIndex[Q, S]) BuildLayer(work []BucketWork) (*BuiltLayer[Q, S], error) {
-	// CAPTURE BEFORE BUILDING. The removal set must name what was resident when this
-	// rebuild BEGAN, not what is resident when it finishes — see ReplaceLayer.
-	old := e.set.Load()
-	built := &BuiltLayer[Q, S]{
-		engine:         e,
-		capturedOldIDs: make([]SegmentID, 0, len(old.entries)),
-		capturedOldSet: make(map[SegmentID]bool, len(old.entries)),
-	}
-	for _, entry := range old.entries {
-		built.capturedOldIDs = append(built.capturedOldIDs, entry.meta.ID)
-		built.capturedOldSet[entry.meta.ID] = true
-	}
-
-	for _, w := range work {
-		docs := dedupeDocsByID(w.Docs)
-		if len(docs) == 0 {
-			// A partition with no documents contributes no segment. It is not an error:
-			// a corpus simply may not populate every partition of its derived count.
-			continue
-		}
-		seg, rep, err := e.format.Build(docs)
-		e.reportDegrade(rep)
-		if err != nil {
-			return nil, fmt.Errorf("searchengine: building partition %d of the replacement layer: %w", w.Bucket, err)
-		}
-		entry, err := e.newEntry(seg, nil)
-		if err != nil {
-			return nil, fmt.Errorf("searchengine: sealing partition %d of the replacement layer: %w", w.Bucket, err)
-		}
-		// blobParts rather than payload.Encode, so this site obeys the same rule as
-		// every other place an entry becomes bytes: what is stored is the payload plus
-		// whatever supersession record the entry holds. A freshly built partition holds
-		// none — a from-scratch build supersedes nothing by construction, and
-		// ReplaceLayer deliberately stamps none either (see the paragraph there) — so
-		// today this is byte-for-byte what payload.Encode returned.
-		envelope, payload, err := entry.blobParts()
-		if err != nil {
-			return nil, fmt.Errorf("searchengine: encoding partition %d of the replacement layer: %w", w.Bucket, err)
-		}
-		built.entries = append(built.entries, entry)
-		built.blobs = append(built.blobs, SegmentBlob{
-			ID:       entry.meta.ID,
-			Format:   e.format.Name(),
-			DocCount: entry.meta.DocCount,
-			Bytes:    payload,
-			Envelope: envelope,
-			// Bytes come from a resident entry's payload. BuiltLayer happens to
-			// hold the entries alongside the blobs today, but that is a
-			// coincidence of this struct's shape rather than a guarantee, and
-			// Blobs() hands out a copied slice that shares these bytes.
-			keepAlive: entry,
-		})
-	}
-	return built, nil
+	return e.BuildLayerReleasing(work, nil)
 }
 
 // ReplaceLayer publishes a built layer as the engine's ENTIRE resident set in one CAS

@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
 // writeRecordingFake writes an executable shell script named client into
@@ -61,7 +63,7 @@ func TestRegisterKnowledgeMCP_ClaudeArgv(t *testing.T) {
 	writeRecordingFake(t, dir, "claude", log)
 	withPATH(t, dir)
 
-	if err := registerKnowledgeMCP("claude", []string{"-s", "user"}, false); err != nil {
+	if err := registerKnowledgeMCP("claude", []string{"-s", "user"}, graphclient.DefaultMCPHTTPPort, false); err != nil {
 		t.Fatalf("registerKnowledgeMCP: %v", err)
 	}
 	lines := recordedLines(t, log)
@@ -82,7 +84,7 @@ func TestRegisterKnowledgeMCP_ClaudeArgv(t *testing.T) {
 	if strings.Contains(add, "--transport") {
 		t.Errorf("second argv still uses --transport: %q", add)
 	}
-	wantJSON, err := claudeServerJSON(daemonMCPURL())
+	wantJSON, err := claudeServerJSON(daemonMCPURL(graphclient.DefaultMCPHTTPPort))
 	if err != nil {
 		t.Fatalf("claudeServerJSON: %v", err)
 	}
@@ -107,7 +109,7 @@ func TestRegisterKnowledgeMCP_CodexArgv(t *testing.T) {
 	// throwaway dir, never the developer's real ~/.codex/config.toml.
 	withHOME(t, t.TempDir())
 
-	if err := registerKnowledgeMCP("codex", nil, false); err != nil {
+	if err := registerKnowledgeMCP("codex", nil, graphclient.DefaultMCPHTTPPort, false); err != nil {
 		t.Fatalf("registerKnowledgeMCP: %v", err)
 	}
 	lines := recordedLines(t, log)
@@ -117,7 +119,7 @@ func TestRegisterKnowledgeMCP_CodexArgv(t *testing.T) {
 	if lines[0] != "mcp remove knowledge" {
 		t.Errorf("first argv = %q, want remove", lines[0])
 	}
-	want := "mcp add knowledge --url " + daemonMCPURL()
+	want := "mcp add knowledge --url " + daemonMCPURL(graphclient.DefaultMCPHTTPPort)
 	if lines[1] != want {
 		t.Errorf("second argv = %q, want %q", lines[1], want)
 	}
@@ -127,7 +129,7 @@ func TestRegisterKnowledgeMCP_CodexArgv(t *testing.T) {
 // registration returns nil (non-fatal) and records no argv.
 func TestRegisterKnowledgeMCP_MissingCLI(t *testing.T) {
 	withPATH(t, t.TempDir()) // empty dir → claude not found
-	if err := registerKnowledgeMCP("claude", []string{"-s", "user"}, false); err != nil {
+	if err := registerKnowledgeMCP("claude", []string{"-s", "user"}, graphclient.DefaultMCPHTTPPort, false); err != nil {
 		t.Errorf("missing CLI should be non-fatal, got err: %v", err)
 	}
 }
@@ -140,7 +142,7 @@ func TestRegisterKnowledgeMCP_DryRun(t *testing.T) {
 	writeRecordingFake(t, dir, "claude", log)
 	withPATH(t, dir)
 
-	if err := registerKnowledgeMCP("claude", []string{"-s", "user"}, true); err != nil {
+	if err := registerKnowledgeMCP("claude", []string{"-s", "user"}, graphclient.DefaultMCPHTTPPort, true); err != nil {
 		t.Fatalf("dry-run: %v", err)
 	}
 	if lines := recordedLines(t, log); len(lines) != 0 {

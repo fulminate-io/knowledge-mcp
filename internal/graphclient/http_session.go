@@ -189,20 +189,29 @@ func (h *HTTPServer) reapIdle(now time.Time) int {
 	return len(stale)
 }
 
-// runReaper sweeps idle sessions on a ticker until ctx is cancelled. The tick
-// interval is idleTTL (a session can survive at most ~2 ticks of idleness),
-// which is plenty granular for the 30-minute default while staying cheap.
+// runReaper sweeps idle sessions AND expired hook deliveries on a ticker until
+// ctx is cancelled, at which point it returns — its lifetime is exactly ctx's.
+// The tick interval is h.sweepInterval — hookCorrelationTTL in production, the
+// SHORTER of the two windows — so
+// the hook map (whose entries live seconds) is swept at its own granularity; a
+// session is swept within ONE TICK of its own idle window rather than within
+// one window of it, which is strictly sooner than before and costs one extra
+// map walk a minute.
+//
+// ONE GOROUTINE FOR BOTH SWEEPS on purpose: a second would be a second lifetime
+// to reason about and to prove stops, for two cheap map walks.
 func (h *HTTPServer) runReaper(ctx context.Context) {
-	t := time.NewTicker(h.idleTTL)
+	t := time.NewTicker(h.sweepInterval)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
-			if n := h.reapIdle(time.Now()); n > 0 {
+		case now := <-t.C:
+			if n := h.reapIdle(now); n > 0 {
 				slog.Info("knowledge serve: reaped idle sessions", "count", n)
 			}
+			h.reapHookDeliveries(now)
 		}
 	}
 }

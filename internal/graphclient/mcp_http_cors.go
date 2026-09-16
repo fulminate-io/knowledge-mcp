@@ -2,7 +2,11 @@
 
 package graphclient
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/auth"
+)
 
 // CORS + Private-Network-Access header names and the fixed preflight response
 // values. Hoisted to package consts so corsMiddleware sets them without
@@ -31,9 +35,27 @@ const (
 // corsAllowHeaders is the request-header allow-list advertised on a successful
 // preflight: Content-Type (JSON-RPC body), Mcp-Session-Id (the stateful session
 // header the daemon mints + requires), Mcp-Protocol-Version (a valid MCP-spec
-// header browser clients may send — kept deliberately, NOT dead), and Accept.
-// mcpSessionHeader is reused for the session header name (no re-literal).
-var corsAllowHeaders = "Content-Type, " + mcpSessionHeader + ", Mcp-Protocol-Version, Accept"
+// header browser clients may send — kept deliberately, NOT dead), Accept, and
+// Knowledge-Session-Id (the explicit harness-session header the daemon resolves
+// first — a browser client cannot send it unless it is advertised here) and
+// Knowledge-Account-Id (the per-request account binding a browser page sends to
+// have ONE request answered for another of its accounts).
+//
+// A custom request header is never CORS-safelisted, so a browser page cannot
+// send either of them at all until this list names it — the advertisement is
+// the whole of the browser-side admission. Every name is a const reused rather
+// than re-literalled: mcpSessionHeader and knowledgeSessionHeader (mcp_http.go)
+// and auth.AccountHeaderName, which is also what the outbound stampers write.
+//
+// NEITHER HEADER CARRIES AUTHORITY, which is the owner's ruling on advertising
+// Knowledge-Session-Id to a browser: "the server knowledge connects to asserts
+// the account". A browser-asserted session id only SELECTS among the accounts
+// the gateway already admits for that user; membership and subscription are
+// asserted server-side on every cloud call, so both headers select and neither
+// grants. The hook ENDPOINT still refuses browser-originated requests outright
+// (mcp_http_hook.go), which is a separate door.
+var corsAllowHeaders = "Content-Type, " + mcpSessionHeader + ", " + knowledgeSessionHeader +
+	", Mcp-Protocol-Version, Accept, " + auth.AccountHeaderName
 
 // corsMiddleware wraps the /mcp handler with restricted CORS + Chrome
 // Private-Network-Access handling so a browser page served from an allowed

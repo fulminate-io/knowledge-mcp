@@ -11,11 +11,14 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/bm25"
 )
 
-// manager_remap.go carries the MAPPING REPUBLICATION half of a completed merge:
-// swapping a resident merged entry's payload for a mapping of its stored file,
-// remembering the swaps that failed, and draining them on a later consumer touch
-// under a bound. The reclaim itself — persisting the merged blob and removing the
-// constituents it superseded — is in manager_reclaim.go.
+// manager_remap.go carries MAPPING REPUBLICATION: swapping a resident entry's
+// heap-backed payload for a mapping of its stored file, remembering the swaps that
+// failed, and draining them on a later consumer touch under a bound. It serves both
+// producers of a heap-backed payload — a completed MERGE (remapMerged, fired by the
+// merge hook) and a SEAL or REBUILD whose bytes the durability path has just written
+// (releaseHeapBackedResident, called from persistResident). The reclaim itself —
+// persisting the merged blob and removing the constituents it superseded — is in
+// manager_reclaim.go.
 
 // remapMaxAttempts bounds the drain's re-arm on a cause a retry cannot clear on its
 // own, and it does TWO things at that bound: it STOPS re-arming, and it escalates to
@@ -87,29 +90,27 @@ var (
 	_ remapArm = (*distManager[bm25.Query, *bm25.CorpusStats])(nil)
 )
 
-// remapOnce attempts the mapping swap once. It returns an empty cause on
-// success, and on failure the cause plus any underlying error.
+// mapBlobForRemap maps one cached blob and splits it into the shape
+// RemapResident takes. It returns an empty cause on success, and on failure the
+// cause plus any underlying error.
 //
-// A SEGMENT THAT IS NO LONGER RESIDENT IS A SUCCESS HERE, not a failure:
-// RemapResident already returns nil and releases the mapping when the segment was
-// superseded, evicted or pruned before the remap reached it. There is no longer a
-// degraded entry to repair, so the drain drops the id — a legitimate terminus
-// rather than a silent drop.
-func (m *distManager[Q, S]) remapOnce(id searchengine.SegmentID) (string, error) {
+// THE CALLER OWNS THE RETURNED BLOB'S Release FROM HERE, exactly as RemapResident
+// does: on every failure arm this function has already released whatever it held,
+// so a caller adds a second owner only by releasing a blob it successfully
+// received. It is shared by the merge path's one-segment remap and the seal path's
+// batch so both obey one ownership story rather than two.
+//
+// THE MAPPED FILE IS SPLIT INTO TWO ZERO-COPY SUBSLICES of the same mapping, so the
+// blob satisfies SegmentBlob's invariant — Bytes is the payload alone — without
+// copying either half off the mapping.
+func (m *distManager[Q, S]) mapBlobForRemap(id searchengine.SegmentID) (searchengine.SegmentBlob, string, error) {
 	data, release, ok, err := m.cache.GetMapped(id)
 	switch {
 	case err != nil:
-		return remapCauseMapFailed, err
+		return searchengine.SegmentBlob{}, remapCauseMapFailed, err
 	case !ok:
-		return remapCauseNotCached, nil
+		return searchengine.SegmentBlob{}, remapCauseNotCached, nil
 	}
-	// RemapResident TAKES the blob: it either hands the release to the new
-	// entry's cleanup or calls it itself, including when it declines because the
-	// segment is no longer resident. Releasing here as well would be a second
-	// owner for one mapping.
-	// THE MAPPED FILE IS SPLIT INTO TWO ZERO-COPY SUBSLICES of the same mapping,
-	// so the blob satisfies SegmentBlob's invariant — Bytes is the payload alone —
-	// without copying either half off the mapping.
 	envelope, payload, err := searchengine.SplitStoredBlob(data)
 	if err != nil {
 		// The blob never reaches RemapResident, so nothing else will ever own this
@@ -117,18 +118,36 @@ func (m *distManager[Q, S]) remapOnce(id searchengine.SegmentID) (string, error)
 		if release != nil {
 			release()
 		}
-		return remapCauseRepublish, err
+		return searchengine.SegmentBlob{}, remapCauseRepublish, err
 	}
-	if err := m.engine.RemapResident(id, searchengine.SegmentBlob{
-		ID: id, Bytes: payload, Envelope: envelope, Release: release,
-	}); err != nil {
+	return searchengine.SegmentBlob{ID: id, Bytes: payload, Envelope: envelope, Release: release}, "", nil
+}
+
+// remapOnce attempts the mapping swap once. It returns an empty cause on
+// success, and on failure the cause plus any underlying error.
+//
+// A SEGMENT THAT IS NO LONGER RESIDENT IS A SUCCESS HERE, not a failure:
+// RemapResident already reports nil and releases the mapping when the segment was
+// superseded, evicted or pruned before the remap reached it. There is no longer a
+// degraded entry to repair, so the drain drops the id — a legitimate terminus
+// rather than a silent drop.
+func (m *distManager[Q, S]) remapOnce(id searchengine.SegmentID) (string, error) {
+	blob, cause, err := m.mapBlobForRemap(id)
+	if cause != "" {
+		return cause, err
+	}
+	// RemapResident TAKES the blob: it either hands the release to the new
+	// entry's cleanup or calls it itself, including when it declines because the
+	// segment is no longer resident. Releasing here as well would be a second
+	// owner for one mapping.
+	if err := m.engine.RemapResident(id, blob); err != nil {
 		return remapCauseRepublish, err
 	}
 	return "", nil
 }
 
 // remapMerged swaps the resident merged entry's payload for a mapping of the
-// cached file.
+// cached file. It is the MERGE path's caller: one output, one announcement.
 //
 // A FAILURE IS RECORDED AS PENDING, NEVER LOGGED AND FORGOTTEN. The earlier shape
 // warned and returned on each of the three arms below, which left a degraded
@@ -137,37 +156,44 @@ func (m *distManager[Q, S]) remapOnce(id searchengine.SegmentID) (string, error)
 // marks the id pending so a later consumer touch can repair it.
 func (m *distManager[Q, S]) remapMerged(merged searchengine.SegmentBlob) {
 	cause, err := m.remapOnce(merged.ID)
-	switch cause {
-	case "":
+	if cause == "" {
 		m.clearRemapPending(merged.ID)
-	case remapCauseMapFailed:
-		m.markRemapPending(merged, cause, err)
-	case remapCauseNotCached:
-		m.markRemapPending(merged, cause, err)
-	default:
-		m.markRemapPending(merged, cause, err)
+		return
 	}
+	m.markRemapPending(merged, cause, err)
 }
 
-// markRemapPending records a segment whose mapping republication failed, so a
-// later drain can retry it.
-//
-// THIS IS THE FILE'S ONLY slog.Warn SITE, deliberately. The cause rides as a
-// structured attribute rather than as three near-duplicate messages.
-func (m *distManager[Q, S]) markRemapPending(blob searchengine.SegmentBlob, cause string, err error) {
-	id := blob.ID
+// recordRemapPending records a segment whose mapping republication failed, so a
+// later drain can retry it, and reports how many are pending afterwards. It does
+// NOT log: a caller that fails one segment announces it per segment
+// (markRemapPending), and a caller that can fail a whole resident set announces it
+// once (releaseHeapBackedResident). Splitting the record from the announcement is
+// what lets the same pending state carry both.
+func (m *distManager[Q, S]) recordRemapPending(blob searchengine.SegmentBlob) int {
 	m.resMu.Lock()
-	a := m.remapPending[id]
+	defer m.resMu.Unlock()
+	a := m.remapPending[blob.ID]
 	if a.blob.Bytes == nil {
 		a.blob = blob
 	}
-	m.remapPending[id] = a
-	pending := len(m.remapPending)
-	m.resMu.Unlock()
+	m.remapPending[blob.ID] = a
+	return len(m.remapPending)
+}
 
+// markRemapPending records ONE segment whose mapping republication failed and
+// announces it.
+//
+// IT IS THE PER-SEGMENT ANNOUNCEMENT, and the merge path is its caller: a merge
+// republishes one output, so one line names one segment and the cause rides as a
+// structured attribute rather than as three near-duplicate messages. A caller that
+// can fail thousands of segments in one pass must NOT reach for this — see
+// releaseHeapBackedResident, which records through recordRemapPending and emits a
+// single line carrying a cause histogram.
+func (m *distManager[Q, S]) markRemapPending(blob searchengine.SegmentBlob, cause string, err error) {
+	pending := m.recordRemapPending(blob)
 	slog.Warn("segmentdist: segment mapping not republished — retained for repair on the next consumer touch",
 		"graph", m.target.GetGraph(), "name", m.target.GetName(), "repo", m.target.GetRepo(),
-		"format", m.format, "segment", id, "cause", cause, "err", err, "pending", pending)
+		"format", m.format, "segment", blob.ID, "cause", cause, "err", err, "pending", pending)
 }
 
 // clearRemapPending drops a segment from the pending set after a successful

@@ -39,7 +39,7 @@ func RunSubcommand() (handled bool, exitCode int) {
 	}
 	sub := os.Args[1]
 	rest := os.Args[2:]
-	err, recognized := dispatchSubcommand(sub, rest)
+	recognized, err := dispatchSubcommand(sub, rest)
 	if !recognized {
 		return false, 0
 	}
@@ -57,9 +57,13 @@ func RunSubcommand() (handled bool, exitCode int) {
 // reports whether it recognized it at all. Split out of RunSubcommand so the
 // dispatch table can grow without the entry point outgrowing the function-length
 // gate; RunSubcommand keeps the argv read and the exit-code translation.
-func dispatchSubcommand(sub string, rest []string) (err error, recognized bool) {
+//
+// The error is the LAST result, as Go requires; recognized comes first. The
+// results were the other way round until a corpus check flagged the file,
+// and the swap is behavior-neutral: there is one caller.
+func dispatchSubcommand(sub string, rest []string) (recognized bool, err error) {
 	switch sub {
-	case "desktop-settings", "desktop-auth", "desktop-remote":
+	case "desktop-settings", "desktop-auth", "desktop-remote", "desktop-platform", "desktop-check":
 		err = dispatchDesktopSettings(sub, rest)
 	case "login":
 		err = withSelectionRestart(func() error { return cli.LoginCmd(rest) })
@@ -117,9 +121,9 @@ func dispatchSubcommand(sub string, rest []string) (err error, recognized bool) 
 			err = runRestartDaemon(rest, storage)
 		}
 	default:
-		return nil, false
+		return false, nil
 	}
-	return err, true
+	return true, err
 }
 
 // withSelectionRestart runs a command that can MOVE the stored account
@@ -213,11 +217,16 @@ func expandTilde(path string) string {
 }
 
 func dispatchDesktopSettings(sub string, rest []string) error {
-	if sub == "desktop-remote" {
+	switch sub {
+	case "desktop-remote":
 		return cli.DesktopRemoteCmd(rest)
-	}
-	if sub == "desktop-settings" {
+	case "desktop-settings":
 		return cli.DesktopSettingsCmd(rest)
+	case "desktop-check":
+		return cli.DesktopCheckCmd(rest)
+	case "desktop-platform":
+		return cli.DesktopPlatformCmd(rest)
+	default:
+		return cli.DesktopAuthCmd(rest)
 	}
-	return cli.DesktopAuthCmd(rest)
 }

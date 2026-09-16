@@ -176,3 +176,39 @@ func TestValidateSegment_WalkCoversFrontCodingDamageNotOnlyPostingOffsets(t *tes
 	require.Contains(t, searchRaised.Detail, "front-coded term shares",
 		"the search path must raise the same front-coding invariant the walk did")
 }
+
+// BenchmarkValidateSegment measures what the publish gate costs, because the gate is
+// on the merge path of every graph and a number nobody measured is not a budget.
+//
+// IT IS A FULL WALK BY DESIGN — every term of every field, every member id, every
+// docFreq row — so its cost is proportional to the segment, not to its header. The
+// two sizes are the ones worth knowing: a small merged blob of the kind a quiet
+// graph produces, and a multi-megabyte one from a heavy consolidation.
+func BenchmarkValidateSegment(b *testing.B) {
+	for _, docs := range []int{8, 3600} {
+		blob := benchBlob(b, docs)
+		b.Run(fmt.Sprintf("bytes=%d", len(blob)), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if err := ValidateSegment("bench", blob); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// benchBlob seals one segment over the package's own heavy-document fixture and
+// returns its encoded bytes.
+func benchBlob(b *testing.B, docs int) []byte {
+	b.Helper()
+	seg, _, err := Format{}.Build(mergeHeavyDocs(docs, 120))
+	if err != nil {
+		b.Fatal(err)
+	}
+	blob, err := seg.Encode()
+	if err != nil {
+		b.Fatal(err)
+	}
+	return blob
+}

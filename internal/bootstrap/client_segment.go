@@ -60,9 +60,19 @@ func (c *client) ensureSegmentManager(graphStorage string, residencyBudgetBytes 
 		// WithGraphAdmitter records the search side of the working set: a user
 		// search IS the direct interaction that admits a graph, and it is the
 		// one admission that does not pass through Router.Execute.
+		//
+		// IT RECORDS THE DESTINATION, through the ctx the search was bound to, and
+		// that is what makes the producer pool the consumer pool. AdmitGraph — the
+		// destination-less sibling this used to call — recorded a Ref with Storage
+		// "", so refreshOnce bound nothing when it registered the collector and the
+		// BM25 arm shipped into the ROOT pool while the search read the child at
+		// storage-<sha256(storage\0account)>. That asymmetry is the keyless-BM25 defect:
+		// a keyless, logged-out client drained into a pool nothing ever searched.
+		// This is the THIRD destination-aware admission wiring, beside the Router
+		// recorder and the collect sink in client_construct.go.
 		c.segmentMgr = segmentdist.NewManager(segmentCacheDirFor(graphStorage), 0,
-			segmentdist.WithGraphAdmitter(func(gt kgtypes.GraphType, name string) {
-				c.AdmitGraph(gt, name, "search")
+			segmentdist.WithGraphAdmitter(func(ctx context.Context, gt kgtypes.GraphType, name string) {
+				c.AdmitDestinationGraph(ctx, gt, name, "search")
 			}),
 			// WithResidencyBudget bounds the RESIDENT HEAP BYTES every per-graph pool
 			// occupies together; crossing it unloads the coldest pools, which reload

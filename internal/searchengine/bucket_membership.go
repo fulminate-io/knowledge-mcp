@@ -20,11 +20,7 @@ import "sort"
 // performs, applied across the whole set rather than within any one segment.
 func killSuperseded[Q, S any](set *segmentSet[Q, S], superseded []ExternalID) {
 	for _, id := range superseded {
-		sid, ok := set.route[id]
-		if !ok {
-			continue
-		}
-		entry := set.entryByID(sid)
+		entry := set.entryOf(id)
 		if entry == nil {
 			continue
 		}
@@ -117,16 +113,12 @@ func (e *SegmentedIndex[Q, S]) AddSealAndSupersede(docs []Document) (SealResult,
 	snap := e.set.Load()
 	victims := make([]victim, 0, len(docs))
 	for _, d := range docs {
-		sid, ok := snap.route[d.ID]
-		if !ok {
-			continue
-		}
-		entry := snap.entryByID(sid)
+		entry := snap.entryOf(d.ID)
 		if entry == nil {
 			continue
 		}
 		if ord, ok := entry.members[d.ID]; ok {
-			victims = append(victims, victim{entry: entry, seg: sid, ord: ord})
+			victims = append(victims, victim{entry: entry, seg: entry.meta.ID, ord: ord})
 		}
 	}
 

@@ -28,6 +28,42 @@ import (
 // memory if a reconcile tick stops arriving.
 const pendingReEmitByteCap = 64 << 20
 
+// pendingReEmitTailCap bounds the backlog by the number of SEALED TAIL SEGMENTS it
+// has accumulated, and it is the second emergency valve beside the byte one.
+//
+// WHAT IT COUNTS, EXACTLY. formatDirtyState.tails holds the segments THIS WINDOW
+// sealed: appended by recordDirty, recorded only for a seal that actually CREATED
+// a segment (manager_bucket_backlog.go, sealOne), and cleared by clearDirty at the
+// end of every successful drain. Resident segment count is that plus the last
+// rebuild's published partitions — at most one per bucket — plus any tail the
+// drain kept because it still held an uncovered live member. So capping this caps
+// the resident set to within one partition count.
+//
+// WHY IT IS NEEDED AT ALL. Both engines are built with SegmentCountTarget =
+// MergeDisabledCountTarget (manager_factory.go), deliberately, so the engine's own
+// count-triggered merge never fires; the resident count then falls only when a
+// re-emit runs. A write lease seals one segment per partition it touches, so
+// between reconcile ticks the resident set grows without bound — a reported host
+// reached 16,761 resident segments on a 113,228-node corpus.
+//
+// WHAT THE BOUND BUYS, measured rather than assumed: a search fans out one
+// goroutine per resident segment (searchengine/engine_search.go), so segment count
+// IS interactive query latency during indexing. On a fixed 104,448-document
+// corpus, p50 of 40 searches read 1.67 ms at 256 resident segments, 2.51 ms at
+// 1,024, 8.16 ms at 4,096 and 27.12 ms at 16,384.
+//
+// WHY 4,096 AND NOT LESS. Every trigger of this cap is a FULL corpus re-emit, for
+// the reason pendingReEmitByteCap's own comment gives above. At the observed 128
+// seals per lease, a 1,024 cap fires a drain every 8 leases and a 256 cap every 2
+// — roughly a hundred extra full rebuilds over a hundred thousand documents — to
+// buy about 25 ms of search latency. That is the opposite of the trade this cap
+// exists to make.
+//
+// WHAT IT DOES NOT BOUND: the DURATION of the rebuild it triggers. That tracks the
+// documents re-harvested, not the segment count, so no segment cap can promise it
+// and this one does not claim to.
+const pendingReEmitTailCap = 4096
+
 // pendingDoc is one queued write plus the SEQUENCE the backlog stamped it with, and
 // the sequence is what makes a queued write IDENTIFIABLE.
 //
@@ -74,9 +110,17 @@ type formatDirtyState struct {
 
 // recordDirty appends one drain's documents and sealed tail ids to the graph's
 // backlog, stamping every document with the sequence the CALLER already allocated.
-// When the backlog crosses the byte cap it flags the graph for an earlier reconcile
-// rather than re-emitting inline — the caller is a write path and must not block on
-// a rebuild.
+// When the backlog crosses EITHER cap — accumulated bytes, or accumulated sealed
+// tails — it flags the graph for an earlier reconcile rather than re-emitting
+// inline: the caller is a write path and must not block on a rebuild.
+//
+// THE TAIL CROSSING IS LAZY, like the byte one. It flags the existing reconcile
+// nudge and nothing else — no sweep, no timer, no second drain path — so the work
+// still happens at the next touch rather than in an eager pass.
+//
+// BOTH CROSSINGS ARE READ AFTER THIS BATCH IS APPENDED, which is what makes the
+// cap a cap: read before, the state that crosses it would be recorded and left
+// unflagged until some later batch happened to arrive.
 //
 // IT DOES NOT ALLOCATE THE SEQUENCE, and that is a correctness requirement rather
 // than a division of labor. The write entry points seal OUTSIDE mu and call this
@@ -108,7 +152,7 @@ func (m *Manager) recordDirty(
 		fs.bytes += documentBytes(d)
 	}
 	fs.tails = append(fs.tails, sealed...)
-	over := fs.bytes >= pendingReEmitByteCap
+	over := fs.bytes >= pendingReEmitByteCap || len(fs.tails) >= pendingReEmitTailCap
 	m.mu.Unlock()
 
 	if over {

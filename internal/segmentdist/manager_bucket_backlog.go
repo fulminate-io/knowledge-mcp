@@ -55,11 +55,25 @@ import (
 func sealPerPartition[Q, S any](
 	dm *distManager[Q, S], docs []searchengine.Document,
 ) ([]searchengine.SegmentID, error) {
+	// count-provenance: resident-required. The count below is derived from a
+	// RESIDENT-count read, which answers 0 on an evicted or unloaded engine —
+	// BucketCountFor(0) is 1 and every id would collapse into partition 0. The
+	// assumption that makes it right is the CALLERS' re-materialization contract:
+	// both write entry points load an evicted pool before calling here, and each
+	// states why (see AddAndMarkDirty's paragraph on a written-to evicted pool).
+	// The declaration names which of the three in-tree guard idioms this site
+	// rides; whether the guarantee holds is a review duty, not something a pattern
+	// can see.
 	bucketCount := searchengine.BucketCountFor(dm.engine.DistinctResidentDocCount() + len(docs))
 	if bucketCount <= 1 {
 		// The whole corpus is one partition, so the split has nothing to split and a
 		// small graph pays none of the per-seal fixed cost.
-		return sealOne(dm, docs)
+		tails, err := sealOne(dm, docs)
+		if err != nil {
+			return nil, err
+		}
+		boundResidentSegments(dm, bucketCount)
+		return tails, nil
 	}
 
 	byBucket := make(map[int][]searchengine.Document)
@@ -105,6 +119,23 @@ func sealPerPartition[Q, S any](
 		}
 		tails = append(tails, sealed...)
 	}
+
+	// AND THE NEXT TOUCH OF THESE PARTITIONS IS WHERE THE RESIDENT COUNT IS BOUND.
+	// This call is that touch: the seals above have just grown the resident set by one
+	// segment per partition this batch reached, and boundResidentSegments consolidates
+	// over-full partitions back inside the search fan-out budget when — and only when
+	// — the engine is over it. It runs HERE rather than in recordDirty because this is
+	// where the engine handle and the partition count the seals ran under both are,
+	// and BEFORE recordDirty because that is the point every sealed tail passes and
+	// therefore the point a high-water reading of the count is taken at.
+	//
+	// IT REPORTS NOTHING AND CANNOT FAIL THIS WRITE. The seals above have already
+	// succeeded and their documents are searchable, so a consolidation that could not
+	// run is a bound that has not converged YET — not a write to undo. Returning an
+	// error here would skip the caller's recordDirty and strand this batch outside
+	// every backlog, where nothing would ever drain it to L2. boundResidentSegments
+	// logs at ERROR instead and the count converges at the next touch.
+	boundResidentSegments(dm, bucketCount)
 	return tails, nil
 }
 
@@ -164,7 +195,8 @@ func sealOne[Q, S any](
 // skips a graph with a non-empty write backlog, which stops an eviction landing
 // while writes are queued; this stops the damage from writes arriving AFTER one.
 func (m *Manager) AddAndMarkDirty(ctx context.Context, gt kgtypes.GraphType, name string, docs []searchengine.Document) error {
-	m = m.ForDestination(ctx)
+	m, releaseDestination := m.forRequest(ctx)
+	defer releaseDestination()
 	if len(docs) == 0 {
 		return nil
 	}
@@ -205,7 +237,8 @@ func (m *Manager) AddAndMarkDirty(ctx context.Context, gt kgtypes.GraphType, nam
 // tail spanning many partitions closes a delete's constituency over all of them, and
 // there is no longer a second inline leg for that cost to be measured against.
 func (m *Manager) AddAndMarkDirtyFields(ctx context.Context, gt kgtypes.GraphType, name string, docs []searchengine.Document) error {
-	m = m.ForDestination(ctx)
+	m, releaseDestination := m.forRequest(ctx)
+	defer releaseDestination()
 	if len(docs) == 0 {
 		return nil
 	}
@@ -264,7 +297,8 @@ func (m *Manager) AddAndMarkDirtyFields(ctx context.Context, gt kgtypes.GraphTyp
 // which recorded no tail — finishes with its entries discharged rather than queued
 // forever against the byte cap.
 func (m *Manager) ReEmitDirtyBuckets(ctx context.Context, gt kgtypes.GraphType, name string) error {
-	m = m.ForDestination(ctx)
+	m, releaseDestination := m.forRequest(ctx)
+	defer releaseDestination()
 	// Fail closed on an in-session account switch, for the same reason Flush
 	// does: this manager's sources belong to the account it was built under.
 	if err := m.checkAccountBinding(ctx); err != nil {
@@ -322,13 +356,13 @@ func (m *Manager) ReEmitDirtyBuckets(ctx context.Context, gt kgtypes.GraphType, 
 	)
 	if hnswWork || hnswRetry {
 		var err error
-		if hnswPublished, hnswCount, err = drainFormat(hnswDM, hnswDrain, tombstoned, deferred, hnswWork); err != nil {
+		if hnswPublished, hnswCount, err = drainFormat(ctx, hnswDM, hnswDrain, tombstoned, deferred, hnswWork); err != nil {
 			return err
 		}
 	}
 	if bm25Work || bm25Retry {
 		var err error
-		if bm25Published, bm25Count, err = drainFormat(bm25DM, bm25Drain, tombstoned, deferred, bm25Work); err != nil {
+		if bm25Published, bm25Count, err = drainFormat(ctx, bm25DM, bm25Drain, tombstoned, deferred, bm25Work); err != nil {
 			return err
 		}
 	}
@@ -382,8 +416,12 @@ func (m *Manager) ReEmitDirtyBuckets(ctx context.Context, gt kgtypes.GraphType, 
 // BOTH formats' blobs have dropped the id, so the drain must hold PUBLISHED evidence for
 // both; offering only the vector format would leave half the predicate unwitnessed while
 // the trim asserted it anyway.
+// THE CONTEXT IS OBSERVED, NOT MERELY CARRIED. It bounds the group rebuild below,
+// which is the long call on the clean-shutdown path; an abandoned rebuild publishes
+// nothing and returns a context error, and this function returns it unchanged so
+// the caller leaves the backlog queued and records the graph as skipped.
 func drainFormat[Q, S any](
-	dm *distManager[Q, S], snap formatDirtyState,
+	ctx context.Context, dm *distManager[Q, S], snap formatDirtyState,
 	tombstoned, deferred []searchengine.ExternalID, work bool,
 ) (map[int]bool, int, error) {
 	publishedBuckets := map[int]bool{}
@@ -415,7 +453,7 @@ func drainFormat[Q, S any](
 		corpusDocs := dm.engine.DistinctResidentDocCount()
 		bucketCount = searchengine.BucketCountFor(corpusDocs)
 		published, publishedBy, err := replaceBucketGroups(
-			dm, ids, docs, snap.tails, corpusDocs, nil)
+			ctx, dm, ids, docs, snap.tails, corpusDocs, nil)
 		if err != nil {
 			return nil, 0, err
 		}

@@ -158,9 +158,22 @@ func composeKnowledgeSearch(
 	engineText, engineVec := segmentSearchEngineArms(mode, a.Query, a.QueryVector)
 	if mode == "vector" && len(engineVec) == 0 {
 		// Serving this renders zero rows, which a caller reads as "no matches"
-		// when the truth is "this install has no semantic index".
+		// when the truth is "there is nothing to compare a query vector against".
+		//
+		// THE CONDITION THIS ARM NAMES IS THE GRAPH'S RECORD, not this machine's
+		// config, and the two are not interchangeable. The vector above came from
+		// the TARGET GRAPH'S recorded embed identity (query_embed_identity.go), so
+		// an empty one means the graph records none — an identity this client
+		// could not CONSTRUCT is an error raised upstream and never reaches here.
+		// The sibling arms in intercept_search_registered_graph.go and
+		// raw_graph_segment_search.go embed from deps.Embedder() and so name the
+		// opposite condition; the shape is shared, the sentence deliberately is
+		// not. Naming a local server as the remedy would be wrong on every
+		// backend: a cloud-backed client resolves this from the catalog.
 		return errorResult("knowledge search: mode:vector needs a query embedding, " +
-			"but no embedder is configured — use mode:hybrid or mode:text instead")
+			"but the graph " + string(kgtypes.GraphKnowledge) + "/" + knowledgeDefaultName +
+			" records no embed identity — use mode:text, or collect or push the graph again " +
+			"so its embed identity is recorded")
 	}
 
 	hits, err := mgr.Search(ctx, kgtypes.GraphKnowledge, knowledgeDefaultName, engineText, engineVec, k)

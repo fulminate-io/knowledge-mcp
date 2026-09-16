@@ -44,10 +44,32 @@ func newFullDaemonDeps(loggedIn bool) *fullDaemonDeps {
 
 // assertLocalDaemonFields checks the always-present local-daemon contract: the
 // header facts (pid, graph_path), pipeline_enabled + the runtime counters, the
-// coverage[] table, and the doctor[] block are ALL present.
+// coverage[] table, the doctor[] block, and the calling request's account
+// routing are ALL present.
+//
+// THE FOUR ACCOUNT KEYS JOIN THE LIST RATHER THAN GETTING A SECOND HELPER: a
+// consumer reads them by name off the same body, so "present on both branches"
+// is the same claim for them as for pid and doctor[], and asserting it somewhere
+// else is how one branch ends up carrying a field the other does not.
 func assertLocalDaemonFields(t *testing.T, got map[string]any) {
 	t.Helper()
-	for _, k := range []string{"pid", "graph_path", "pipeline_enabled", "summary_queued", "embed_queued", "coverage", "doctor"} {
+	// account/account_source ride the SAME always-emitted contract as the
+	// harness-session keys, on every json arm including the one with no local
+	// daemon at all: both describe the calling REQUEST's resolution, and a web
+	// page reads an absent account_source as a daemon that predates per-request
+	// accounts.
+	for _, k := range []string{
+		"pid", "graph_path", "pipeline_enabled", "summary_queued", "embed_queued", "coverage", "doctor",
+		// The harness-session resolution for THIS call. Present on every path:
+		// an absent key and an unresolved session are different facts.
+		"session", "session_source", "session_reason",
+		// The account resolution for THIS call, on the same terms, with the
+		// reason a header-carrying request on a logged-out daemon needs and the
+		// machine-wide selection beside it — requirement 6 names the effective
+		// account AND the global default, because only the pair tells a bound
+		// caller whether its binding took.
+		"account", "account_source", "account_reason", "account_global",
+	} {
 		assert.Contains(t, got, k, "local-daemon field %q must be present", k)
 	}
 	assert.Equal(t, true, got["pipeline_enabled"])
@@ -55,6 +77,25 @@ func assertLocalDaemonFields(t *testing.T, got map[string]any) {
 	assert.NotEmpty(t, got["doctor"].([]any), "doctor[] must be non-empty")
 	require.IsType(t, []any{}, got["coverage"])
 	assert.NotEmpty(t, got["coverage"].([]any), "coverage[] must be non-empty")
+
+	// AND EVERY COVERAGE ROW CARRIES THE PER-FORMAT RESIDENT SEGMENT COUNT. It is
+	// the eleventh pinned key and the only observable outside the process that says
+	// whether the resident-growth bound is holding, so a row that stopped emitting
+	// it would take the release smoke's assertion with it silently. Asserted HERE,
+	// in the helper both arms call, so the logged-in and logged-out paths cannot
+	// drift apart on it.
+	for i, raw := range got["coverage"].([]any) {
+		row, isObj := raw.(map[string]any)
+		require.True(t, isObj, "coverage[%d] must be a JSON object", i)
+		assert.Contains(t, row, "resident_segments",
+			"coverage[%d] must carry the per-format resident segment count", i)
+		assert.Contains(t, row, "resident_segments_peak",
+			"coverage[%d] must carry its seal-path high-water too: the current count is always the count AFTER "+
+				"the bound acted, so a row shipping only that one hides every excursion", i)
+	}
+	// THE VALUE ITSELF IS ASSERTED WHERE A PROBE ACTUALLY RUNS — this fixture's rows
+	// are unmanaged, so their segment probe is declined by design and the honest
+	// value here is the absent one. See TestCoverageRows_ResidentSegmentsPerFormat.
 }
 
 // TestHandleServerStatus_AlwaysEmitsLocalDaemonFields is the T2-2 criterion (CEO:

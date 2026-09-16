@@ -31,18 +31,22 @@
 //
 // CLI mode, not MCP mode: writing to stdout is legitimate here.
 //
-// SCOPE NOTE — no permission hooks here (deliberate): the Claude installer
-// merges a promote-guard PreToolUse hook into ~/.claude/settings.json that
-// gates `collect promote:true` behind a confirmation prompt (see
-// settings_merge.go). The codex installer intentionally installs NO
-// equivalent: codex per-tool permission-hook support (a hook that can
-// inspect a tool's input params, the way Claude Code's PreToolUse can read
-// .tool_input.promote) is unverified, so the promote-guard is Claude-only.
-// The codex config touch points are MCP-server registration and the
-// tool_timeout_sec patch (mcp_register.go) — neither is a permission gate.
-// This is a deferred follow-up, not an omission; if codex gains a verified
-// per-tool permission-hook mechanism, wiring the promote-guard for codex is
-// a separate ticket.
+// SCOPE NOTE — ONE hook here, and it is not a permission gate. This installer
+// writes the knowledge SESSION hook (codex_hook.go): a PreToolUse `command`
+// handler in ~/.codex/config.toml that delivers the hook JSON to the daemon so
+// the daemon knows which Codex session is calling. It does NOT write the
+// promote-guard the Claude installer merges into ~/.claude/settings.json:
+// whether a codex hook can inspect a tool's input params and render a
+// permission decision the way Claude Code's PreToolUse can read
+// .tool_input.promote is still unverified, so the promote-guard stays
+// Claude-only and is a separate ticket.
+//
+// THE SESSION HOOK IS INSURANCE, and it is inert until the user trusts it.
+// Codex resolves its own session from the tools/call `_meta` with no hook at
+// all; the hook is a second, independent carrier. Codex skips an untrusted hook
+// SILENTLY and no installer-side write grants trust, so this installer prints
+// the one manual step (`/hooks`) and the daemon reports the untrusted state
+// rather than presenting a clean install. See codex_hook.go for the evidence.
 
 package bootstrap
 
@@ -59,6 +63,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/assets"
 	"github.com/fulminate-io/knowledge-mcp/internal/codexassets"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
 // installCodexFlags holds the parsed flags for the subcommand.
@@ -70,6 +75,7 @@ type installCodexFlags struct {
 	verbose      bool
 	diff         bool
 	noMCP        bool
+	mcpPort      int
 }
 
 // registerInstallCodexFlags registers the `knowledge install-codex-assets`
@@ -85,6 +91,8 @@ func registerInstallCodexFlags(fs *flag.FlagSet, f *installCodexFlags) {
 	fs.BoolVar(&f.diff, "diff", false, "Print a unified diff of every file that differs (read-only; implies --dry-run)")
 	fs.BoolVar(&f.verbose, "verbose", false, "Print each file path written (default: summary only)")
 	fs.BoolVar(&f.noMCP, "no-mcp", false, "Skip registering the knowledge MCP server with the client (default: register)")
+	fs.IntVar(&f.mcpPort, "mcp-port", graphclient.DefaultMCPHTTPPort,
+		fmt.Sprintf("Port the knowledge daemon serves MCP on, named in the registered URL (%d..%d)", mcpPortMin, mcpPortMax))
 }
 
 // codexDest pairs the resolved split roots.
@@ -106,11 +114,20 @@ type codexDest struct {
 //     Implies --dry-run.
 //   - --verbose: per-file write line (otherwise just a summary)
 //   - --skills-dest / --agents-dest: override the split roots (tests)
+//   - --mcp-port: the port the knowledge daemon serves MCP on, named in
+//     the registered URL. Defaults to graphclient.DefaultMCPHTTPPort;
+//     outside 1024..65534 the verb refuses without writing anything.
 func runInstallCodexAssets(args []string) error {
 	fs := flag.NewFlagSet("knowledge install-codex-assets", flag.ContinueOnError)
 	var f installCodexFlags
 	registerInstallCodexFlags(fs, &f)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	// Range-check before anything is written or exec'd: a bad --mcp-port
+	// refuses the whole verb rather than installing assets and then
+	// registering a URL nothing serves.
+	if err := validateMCPPort(f.mcpPort); err != nil {
 		return err
 	}
 
@@ -151,14 +168,19 @@ func runInstallCodexAssets(args []string) error {
 	fmt.Fprintf(os.Stdout, "knowledge install-codex-assets: %s %d files (skills→%s, agents→%s); %s\n",
 		verb, written, dest.skills, dest.agents, mdNote)
 
+	// The session hook is written whatever --no-mcp says: it is how the daemon
+	// learns which Codex session is calling, which is orthogonal to whether the
+	// MCP server is (re-)registered here.
+	patchCodexSessionHook(f.mcpPort, f.dryRun)
+
 	if f.noMCP {
 		fmt.Fprintln(os.Stdout, "  --no-mcp: skipped MCP registration")
 		return nil
 	}
 	// Default-on, non-fatal MCP registration against the daemon's
-	// loopback streamable-HTTP MCP endpoint. Codex has no -s user scope
-	// flag, so scopeArgs is nil.
-	return registerKnowledgeMCP("codex", nil, f.dryRun)
+	// loopback streamable-HTTP MCP endpoint on --mcp-port. Codex has no
+	// -s user scope flag, so scopeArgs is nil.
+	return registerKnowledgeMCP("codex", nil, f.mcpPort, f.dryRun)
 }
 
 // resolveCodexDest returns the split destination roots. Empty flags

@@ -31,7 +31,7 @@ func TestSelectAuthSources_ReadOnlyLeverSelectsTheReadOnlySource(t *testing.T) {
 		withFakeStore(t)
 		t.Setenv(auth.CredentialStoreReadOnlyEnv, "1")
 
-		_, src, machineAuth := selectAuthSources(Config{})
+		_, src, machineAuth, _ := selectAuthSources(Config{})
 		if _, ok := src.(*auth.ReadOnlyTokenSource); !ok {
 			t.Fatalf("token source = %T, want *auth.ReadOnlyTokenSource", src)
 		}
@@ -52,7 +52,7 @@ func TestSelectAuthSources_ReadOnlyLeverSelectsTheReadOnlySource(t *testing.T) {
 	t.Run("control: without the lever the refreshing source is selected", func(t *testing.T) {
 		withFakeStore(t)
 
-		_, src, machineAuth := selectAuthSources(Config{})
+		_, src, machineAuth, _ := selectAuthSources(Config{})
 		if _, ok := src.(*auth.OAuthTokenSource); !ok {
 			t.Fatalf("token source = %T, want *auth.OAuthTokenSource", src)
 		}
@@ -67,7 +67,7 @@ func TestSelectAuthSources_ReadOnlyLeverSelectsTheReadOnlySource(t *testing.T) {
 		withFakeStore(t)
 		t.Setenv(auth.CredentialStoreReadOnlyEnv, "1")
 
-		_, src, machineAuth := selectAuthSources(Config{AuthToken: "machine-bearer"})
+		_, src, machineAuth, _ := selectAuthSources(Config{AuthToken: "machine-bearer"})
 		if _, ok := src.(auth.StaticTokenSource); !ok {
 			t.Fatalf("token source = %T, want auth.StaticTokenSource", src)
 		}
@@ -82,7 +82,7 @@ func TestSelectAuthSources_ReadOnlyLeverSelectsTheReadOnlySource(t *testing.T) {
 		withFakeStore(t)
 		t.Setenv(auth.CredentialStoreReadOnlyEnv, "1")
 
-		store, src, machineAuth := selectAuthSources(Config{NoAuth: true})
+		store, src, machineAuth, _ := selectAuthSources(Config{NoAuth: true})
 		if _, ok := src.(auth.StaticTokenSource); !ok {
 			t.Fatalf("token source = %T, want the zero-IO auth.StaticTokenSource", src)
 		}

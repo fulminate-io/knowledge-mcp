@@ -32,9 +32,18 @@ type Manager struct {
 	destination     *graphclient.Destination
 	storageRoot     *Manager
 	storageManagers map[graphclient.Destination]*Manager
-	storageOptions  []ManagerOption
-	cacheDir        string
-	maxBytes        int64
+	// storageUse records the last-use tick per destination and storageTick
+	// issues them: the recency order eviction reads. storageRefs counts the
+	// requests currently holding each destination's child — forRequest takes a
+	// reference and the caller's defer releases it — and a held child is never
+	// an eviction victim, because eviction closes its engines and deletes its
+	// cache directory. All three guarded by mu.
+	storageUse     map[graphclient.Destination]uint64
+	storageTick    uint64
+	storageRefs    map[graphclient.Destination]int
+	storageOptions []ManagerOption
+	cacheDir       string
+	maxBytes       int64
 	// residencyBudgetBytes is the ceiling, in RESIDENT HEAP BYTES, that every
 	// constructed pool's imported segments may occupy together. Crossing it evicts
 	// the coldest pools until the total is back under (manager_residency.go).
@@ -94,7 +103,15 @@ type Manager struct {
 	// client's working set. nil when no admitter was supplied, in which case a
 	// search records nothing — the same default-deny direction the working set
 	// itself takes. Set via WithGraphAdmitter.
-	admitGraph func(gt kgtypes.GraphType, name string)
+	//
+	// IT TAKES THE SEARCH'S OWN ctx, AND THAT IS THE WHOLE POINT OF THE PARAMETER.
+	// The ctx carries the storage destination this search was bound to, which is
+	// the destination whose pool it just read (searchPoolArms resolves
+	// ForDestination from the same ctx three lines above the call). Recording a
+	// destination-less membership from here is what made the pipeline register the
+	// member unbound and ship into the ROOT pool while every search of that graph
+	// read the child — the producer/consumer split the keyless-BM25 fix repairs.
+	admitGraph func(ctx context.Context, gt kgtypes.GraphType, name string)
 
 	nudges nudgeState // publish-suppression record + coalescing wake — manager_nudge.go.
 
@@ -307,7 +324,11 @@ type ManagerOption func(*Manager)
 // client's working set. A search IS the direct interaction the working-set rule
 // names, so the Manager reports it at the same instant it nudges the reconcile
 // loop. Without this option a Manager records nothing.
-func WithGraphAdmitter(admit func(gt kgtypes.GraphType, name string)) ManagerOption {
+//
+// THE RECORDER TAKES THE SEARCH'S ctx so the membership it records carries the
+// destination the search was bound to. See the admitGraph field's doc for why a
+// destination-less membership is a defect rather than a simplification.
+func WithGraphAdmitter(admit func(ctx context.Context, gt kgtypes.GraphType, name string)) ManagerOption {
 	return func(m *Manager) { m.admitGraph = admit }
 }
 

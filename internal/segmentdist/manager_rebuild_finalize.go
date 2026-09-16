@@ -36,20 +36,30 @@ import (
 //
 //	BUILD ASIDE   — nothing resident is read, so the layer is from-scratch by
 //	                construction and the serving engine is untouched if anything fails.
-//	CACHE-WRITE   — before the swap, so "every resident blob is already durable" holds
-//	                at EVERY instant. Swapping first would leave a window in which the
-//	                engine serves blobs that exist only in memory, and a crash inside
-//	                that window loses them outright.
+//	CACHE-WRITE   — PER PARTITION, inside the build, and therefore before the swap, so
+//	                "every resident blob is already durable" holds at EVERY instant.
+//	                Swapping first would leave a window in which the engine serves blobs
+//	                that exist only in memory, and a crash inside that window loses them
+//	                outright.
+//	RELEASE       — PER PARTITION, immediately after that partition's write, swapping
+//	                its payload for a mapping of the copy just written. It is inside the
+//	                build for the one reason that matters: the quantity being bounded is
+//	                how many encoded partitions the layer holds AT ONCE, and every
+//	                partition is already allocated by the time the build returns.
 //	GATE          — against the PROSPECTIVE layer, because after the swap it is too
 //	                late: the degenerate layer would already be serving reads.
-//	SWAP          — one CAS, retiring the whole prior layer.
+//	SWAP          — one CAS, retiring the whole prior layer. Still ONE: the release
+//	                re-backs an UNPUBLISHED entry, which no reader can see, so it needs
+//	                no swap of its own and the layer is published whole.
 //	SUPERSEDED    — the ids the prior layer held and the new one does not, read from
 //	                the engine's own Export either side of the swap.
 //
-// THE CACHE-WRITE STILL APPLIES A DIFF. Force-writing the built set would be simpler
-// and would break the property that a re-run over an unchanged corpus is a
-// content-hash no-op — the second reset must write nothing and report nothing
-// superseded.
+// THE CACHE-WRITE STILL APPLIES A DIFF, per partition rather than per layer. Force-
+// writing the built set would be simpler and would break the property that a re-run
+// over an unchanged corpus is a content-hash no-op — the second reset must write
+// nothing and report nothing superseded. The release is deliberately NOT gated on that
+// diff: a partition whose blob was skipped as present is still holding the encoder
+// output this build just produced.
 //
 // A REFUSAL LEAVES BLOBS ON DISK that no layer references, and they STAY there. This
 // used to call them orphans reaped by PruneCache; they are not reaped, because the
@@ -81,18 +91,20 @@ func finalizeResetLayer[Q, S any](
 		return nil, wrote > 0, nil
 	}
 
-	built, err := bm.engine.BuildLayer(work)
+	// THE CACHE-WRITE AND THE RELEASE RIDE THE BUILD, one partition at a time. The
+	// write still happens before the swap — strictly earlier now — and the release is
+	// what keeps the layer under construction from holding every partition's encoder
+	// output at once. See manager_rebuild_release.go.
+	rel := newLayerRelease(bm)
+	built, err := bm.engine.BuildLayerReleasing(work, rel.persist)
 	if err != nil {
 		return nil, false, err
 	}
 	if built.Len() == 0 {
 		return nil, false, nil
 	}
+	rel.reportWriteDiff()
 	blobs := built.Blobs()
-
-	if err := writeBuiltLayerToL2(bm, blobs); err != nil {
-		return nil, false, err
-	}
 
 	ok, reason := bm.prospectiveLayerOK(blobs)
 	if !ok {
@@ -111,6 +123,29 @@ func finalizeResetLayer[Q, S any](
 		return nil, false, err
 	}
 
+	// THE RESIDENT SET IS NOW A DIFFERENT SET, so the resident-growth bound's census
+	// latch is discarded with the layer it described. The swap retires every prior
+	// segment, and a latch armed over those segments would defer the first census on
+	// this layer by a whole slack of growth ABOVE an arming point the new set never
+	// reached — which is how the reproduced excursion happened: swap to 128 segments,
+	// re-drain the corpus, and no census until the old floor plus the current bucket
+	// count's slack. It is AFTER the swap rather than before it because a swap that
+	// fails or is refused above leaves the prior set serving, and the latch is a true
+	// statement about that set for as long as it is.
+	clearCensusLatchOnReplacement(bm, "reset layer swap")
+
+	// THE RELEASE IS ANNOUNCED AND ITS REMAINDER REMEMBERED, now that the layer is
+	// resident and a repair owed to one of its partitions is a repair that can happen.
+	// A decode failure behind an unreleased partition is LOGGED rather than returned:
+	// the partition is correct and durable and only its memory property was lost, so a
+	// caller's rebuild verdict must not turn on whether a mapping could be made.
+	unreleased, releaseErr := built.Unreleased()
+	if releaseErr != nil {
+		slog.Warn("segmentdist: a rebuilt partition could not be re-backed by its stored copy",
+			"graph", gt, "name", name, "format", bm.format, "error", releaseErr)
+	}
+	rel.reportRelease(len(unreleased), rel.recordUnreleased(unreleased, blobs))
+
 	// ABSORB WHAT A CONCURRENT PUBLISHER LANDED INSIDE THE BUILD WINDOW, before the
 	// superseded set is computed below.
 	//
@@ -118,7 +153,7 @@ func finalizeResetLayer[Q, S any](
 	// the corpus is correct-but-duplicated; a swallowed failure would be a lane hiding
 	// its own failure. The caller treats a finalize error as fatal for the run and does
 	// not advance the watermark, which is the right disposition for this state.
-	if _, aErr := absorbBuildWindowSurvivors(bm, published); aErr != nil {
+	if _, aErr := absorbBuildWindowSurvivors(ctx, bm, published); aErr != nil {
 		return nil, false, aErr
 	}
 
@@ -137,29 +172,20 @@ func finalizeResetLayer[Q, S any](
 			superseded = append(superseded, id)
 		}
 	}
+	// THE CURE FOR THIS FORMAT'S QUARANTINE, AND THIS IS THE ONE MOMENT IT IS TRUE.
+	// A withdrawn segment's documents come back only when the graph's segments are
+	// rebuilt from its nodes, which is exactly the swap that just landed — so the
+	// withdrawal record is cleared here and its evidence moved aside, and
+	// manage(status) stops reporting a loss the operator has already repaired. It is
+	// deliberately NOT on the merge, append or delta paths: none of those rebuilds a
+	// segment that is no longer being served.
+	if cured := bm.cureQuarantinedSegments(); cured > 0 {
+		slog.Info("segmentdist: reset rebuild cleared this format's quarantine",
+			"graph_type", gt, "name", name, "format", bm.format, "cured", cured)
+	}
+
 	// The swap is the swap: ReplaceLayer returned nil, so it landed. There is no
 	// separate publish that could skip with a nil error, which is the only reason a
 	// completion counter ever existed.
 	return superseded, true, nil
-}
-
-// writeBuiltLayerToL2 writes the built layer's blobs into the L2 cache, applying a
-// cache-presence diff so a content-hash-unchanged rebuild writes nothing.
-func writeBuiltLayerToL2[Q, S any](
-	bm *distManager[Q, S], blobs []searchengine.SegmentBlob,
-) error {
-	var diff []searchengine.SegmentBlob
-	for _, b := range blobs {
-		if _, present := bm.cache.sizeOf(b.ID); present {
-			continue
-		}
-		diff = append(diff, b)
-	}
-
-	slog.Info("segmentdist: L2 write diff resolved",
-		"graph", bm.target.GetGraph(), "name", bm.target.GetName(), "repo", bm.target.GetRepo(),
-		"format", bm.format, "resident", len(blobs), "written", len(diff),
-		"skipped_as_present", len(blobs)-len(diff))
-
-	return bm.writeNewBlobsToL2(diff)
 }

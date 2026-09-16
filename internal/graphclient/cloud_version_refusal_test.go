@@ -189,7 +189,7 @@ func TestClassifyGatewayRejection_DrainsAndClosesTheBody(t *testing.T) {
 	resp := &http.Response{StatusCode: http.StatusUpgradeRequired, Body: body, Request: req}
 
 	b := &bearerRoundTripper{}
-	refusal := b.classifyGatewayRejection(t.Context(), resp)
+	refusal := b.classifyGatewayRejection(resp)
 
 	require.Error(t, refusal, "a 426 must surface as an error even with no account selection installed")
 	assert.True(t, body.atEOF, "the original body must be drained to EOF or the connection is never released")

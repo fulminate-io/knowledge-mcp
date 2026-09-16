@@ -36,7 +36,7 @@ type dashboardHTTPResponse struct {
 func requestDashboardEndpoint(ctx context.Context, t *auth.Transport, r dashboardRequest, doc dashboardDocument) (dashboardHTTPResponse, string) {
 	var zero dashboardHTTPResponse
 	raw := doc.Published
-	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+	if r.Draft || len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
 		raw = doc.Draft
 	}
 	var envelope dashboardEnvelope

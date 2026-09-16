@@ -1,11 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // settings_merge.go — the idempotent, NON-CLOBBERING JSON deep-merge that
-// installs the knowledge-managed promote-guard PreToolUse hook into the
-// user's GLOBAL ~/.claude/settings.json. It is the JSON analog of
-// managed_block.go's marker-based merger: where that splices a body between
-// HTML-comment markers in a markdown file, this finds-or-replaces a single
-// hook entry inside a structured JSON document.
+// installs the knowledge-managed PreToolUse hook entries into the user's
+// GLOBAL ~/.claude/settings.json. It is the JSON analog of managed_block.go's
+// marker-based merger: where that splices a body between HTML-comment markers
+// in a markdown file, this finds-or-replaces a SET of hook entries inside a
+// structured JSON document.
+//
+// THE SET IS TWO ENTRIES, and that is why the sentinel is what it is. The
+// promote-guard is a `command` hook carrying its marker in the command string;
+// the session hook is an `http` hook, and an http hook object HAS NO command
+// field at all — it carries `url` and `headers`. So an entry is classified as
+// ours by the MARKER ALONE (knowledgeHookMarkerPrefix, found in a command or in
+// any header value), never by its matcher. Classifying by matcher would (a)
+// miss the http entry entirely, which would be written once and thereafter read
+// as user content — never refreshed, invisible to the doctor drift check — and
+// (b) strand a RETIRED managed entry in the file forever, because a matcher we
+// no longer ship would read as something the user wrote.
 //
 // The merge writes the user's own global config, so losslessness is the
 // hard requirement: every top-level key, every other hook event, and every
@@ -24,35 +35,103 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/assets"
 )
 
 const (
-	// knowledgeHookMatcher is the PreToolUse matcher value of the single
-	// knowledge-managed hook entry — the MCP tool name whose calls the
-	// promote-guard inspects. Together with knowledgeHookMarker it forms
-	// the structured sentinel that lets the merge find+replace the managed
-	// entry idempotently — the JSON analog of managed_block.go's
-	// managedBlockBegin/managedBlockEnd markers (managed_block.go:26-27).
+	// knowledgeHookMatcher is the PreToolUse matcher of the promote-guard
+	// entry — the MCP tool name whose calls it inspects.
 	knowledgeHookMatcher = "mcp__knowledge__collect"
 
-	// knowledgeHookMarker is a stable substring embedded in the managed
-	// hook's command (a leading shell no-op comment in claude_hooks.json).
-	// An entry is classified as knowledge-managed iff its matcher equals
-	// knowledgeHookMatcher AND one of its hook commands contains this
-	// marker — see mergeClaudeSettings.
-	knowledgeHookMarker = "knowledge-managed:promote-guard"
+	// knowledgeSessionHookMatcher is the PreToolUse matcher of the session
+	// hook: every knowledge MCP tool, in Claude Code's mcp__<server>__<tool>
+	// matcher grammar, because the session must be resolvable on ANY call.
+	knowledgeSessionHookMatcher = "mcp__knowledge__.*"
+
+	// knowledgeHookMarkerPrefix is the shared lead of every marker we author.
+	// It is NOT the classifier — see knowledgeHookMarkers for why a prefix
+	// match was too wide — but it keeps the marker values spelled from one
+	// place.
+	knowledgeHookMarkerPrefix = "knowledge-managed:"
+
+	// knowledgePromoteHookMarker is the promote-guard's marker value, carried
+	// as a leading shell no-op comment in its command.
+	knowledgePromoteHookMarker = knowledgeHookMarkerPrefix + "promote-guard"
+
+	// knowledgeSessionHookMarker is the session hook's marker value, carried
+	// as the value of the knowledgeManagedHeader request header the hook sends
+	// to the daemon. The daemon ignores the header; it exists so the entry
+	// carries its own provenance where a reader of settings.json can see it.
+	knowledgeSessionHookMarker = knowledgeHookMarkerPrefix + "session-hook"
+
+	// knowledgeManagedHeader is the header name whose value carries the
+	// session hook's marker.
+	knowledgeManagedHeader = "X-Knowledge-Managed"
 )
+
+// knowledgeHookMarkers is THE sentinel: every marker value this installer has
+// EVER shipped, matched exactly. It is the JSON analog of managed_block.go's
+// managedBlockBegin/End markers (managed_block.go:26-27).
+//
+// EXACT VALUES, NOT THE PREFIX. A prefix match classified anything containing
+// "knowledge-managed:" as ours — including a hook a USER wrote with their own
+// marker under that lead. Combined with the splice's drop of a managed entry we
+// no longer ship, that silently DELETED the user's hook from their own global
+// settings.json. An exact list can only ever claim strings we authored.
+//
+// RETIRING A HOOK MEANS LEAVING ITS MARKER HERE, deliberately. A marker in this
+// list but absent from the asset is how the splice recognizes an entry of ours
+// to remove; drop the marker from the list instead and the retired entry is
+// reclassified as user content and stranded in the file forever.
+var knowledgeHookMarkers = []string{
+	knowledgePromoteHookMarker,
+	knowledgeSessionHookMarker,
+}
 
 // settingsHook models the subset of a single Claude Code hook-command object
 // (.claude/settings.json hooks[]) needed to classify it: its type and
-// command. It is used FOR INSPECTION ONLY — the merge reads Command to test
-// for knowledgeHookMarker and never re-marshals this struct back into the
+// command. It is used FOR INSPECTION ONLY — the merge reads Command and
+// Headers to test for knowledgeHookMarkerPrefix and never re-marshals this
+// struct back into the
 // output. It deliberately does NOT model every field a hook object may carry
 // (e.g. `timeout`, `statusMessage`); those survive because non-managed
 // entries are passed through as raw bytes, not via this struct.
 type settingsHook struct {
-	Type    string `json:"type"`
-	Command string `json:"command"`
+	Type    string            `json:"type"`
+	Command string            `json:"command"`
+	URL     string            `json:"url"`
+	Headers map[string]string `json:"headers"`
+}
+
+// managedMarker returns the knowledge-managed marker this hook object carries,
+// and whether it carries one. The two places a hook object can hold a string we
+// authored are the `command` of a command hook and a header VALUE of an http
+// hook; the url is deliberately NOT a carrier, since it holds a user-chosen
+// port and could not hold a stable literal.
+//
+// Only the EXACT values in knowledgeHookMarkers count. A hook carrying a marker
+// of the user's own invention under our prefix is theirs.
+func (h settingsHook) managedMarker() (string, bool) {
+	for _, m := range knowledgeHookMarkers {
+		if strings.Contains(h.Command, m) {
+			return m, true
+		}
+		for _, v := range h.Headers {
+			if strings.Contains(v, m) {
+				return m, true
+			}
+		}
+	}
+	return "", false
+}
+
+// carriesManagedMarker reports whether this hook object carries one of our
+// exact markers.
+func (h settingsHook) carriesManagedMarker() bool {
+	_, ok := h.managedMarker()
+	return ok
 }
 
 // preToolUseEntry models the subset of a single PreToolUse matcher entry
@@ -122,33 +201,16 @@ func mergeClaudeSettings(existing []byte, hookEntryJSON []byte) ([]byte, error) 
 		}
 	}
 
-	// (4)+(5) Build the managed entry from the canonical asset bytes, then
-	// walk the existing entries: re-emit every NON-managed entry as its
-	// ORIGINAL bytes verbatim, and REPLACE a pre-existing managed entry in
-	// place (preserve position). The decoded preToolUseEntry is used ONLY
-	// to classify — it is discarded, never re-marshaled into the output.
-	managedEntry, err := canonicalManagedEntry(hookEntryJSON)
+	// (4)+(5) Build the managed entries from the canonical asset bytes, then
+	// walk the existing entries, re-emitting every NON-managed entry as its
+	// ORIGINAL bytes verbatim and replacing each managed one in place. The
+	// decoded preToolUseEntry is used ONLY to classify — it is discarded,
+	// never re-marshaled into the output.
+	managed, err := canonicalManagedEntries(hookEntryJSON)
 	if err != nil {
 		return nil, err
 	}
-
-	out := make([]json.RawMessage, 0, len(preEntries)+1)
-	replaced := false
-	for _, raw := range preEntries {
-		if isManagedEntry(raw) {
-			// Replace in place (first managed entry wins its slot); drop
-			// any further managed duplicates so the result has exactly one.
-			if !replaced {
-				out = append(out, managedEntry)
-				replaced = true
-			}
-			continue
-		}
-		out = append(out, raw) // user entry, verbatim bytes
-	}
-	if !replaced {
-		out = append(out, managedEntry) // none existed — append
-	}
+	out := spliceManagedEntries(preEntries, managed)
 
 	// (6) Re-marshal bottom-up: PreToolUse slice → hooks map → top map,
 	// then MarshalIndent the whole document at the file's 2-space style.
@@ -171,42 +233,147 @@ func mergeClaudeSettings(existing []byte, hookEntryJSON []byte) ([]byte, error) 
 	return append(pretty, '\n'), nil
 }
 
-// canonicalManagedEntry normalizes the embedded asset bytes into the exact
-// json.RawMessage that will be spliced into hooks.PreToolUse. It round-trips
-// the KNOWLEDGE-OWNED asset (not user content) through json.Marshal so the
-// managed entry is byte-stable across runs regardless of the asset file's
-// own whitespace — the determinism the idempotency check relies on.
-func canonicalManagedEntry(hookEntryJSON []byte) (json.RawMessage, error) {
-	var entry map[string]json.RawMessage
-	if err := json.Unmarshal(hookEntryJSON, &entry); err != nil {
-		return nil, fmt.Errorf("parse embedded hook asset: %w", err)
-	}
-	raw, err := json.Marshal(entry)
-	if err != nil {
-		return nil, fmt.Errorf("marshal managed hook entry: %w", err)
-	}
-	return raw, nil
+// managedEntry pairs a canonical knowledge-managed PreToolUse entry with its
+// matcher, which is the key the splice uses to put a refreshed entry back in
+// the slot its predecessor occupied.
+type managedEntry struct {
+	matcher string
+	marker  string
+	raw     json.RawMessage
 }
 
-// isManagedEntry classifies a raw PreToolUse entry as the knowledge-managed
-// one: matcher==knowledgeHookMatcher AND some hooks[].command contains
-// knowledgeHookMarker. It decodes into preToolUseEntry FOR INSPECTION ONLY;
-// the struct is discarded. A raw entry that does not parse as a hook entry
-// (malformed user content we should not touch) is treated as non-managed.
-func isManagedEntry(raw json.RawMessage) bool {
-	var entry preToolUseEntry
-	if err := json.Unmarshal(raw, &entry); err != nil {
-		return false
-	}
-	if entry.Matcher != knowledgeHookMatcher {
-		return false
-	}
-	for _, h := range entry.Hooks {
-		if bytes.Contains([]byte(h.Command), []byte(knowledgeHookMarker)) {
-			return true
+// spliceManagedEntries walks the existing PreToolUse entries and returns the
+// merged slice: every user entry re-emitted as its ORIGINAL bytes, every
+// managed entry replaced IN PLACE by its canonical twin (first occurrence of a
+// matcher wins the slot, further duplicates are dropped), and every canonical
+// entry that had no predecessor appended in asset order.
+//
+// A managed entry whose MARKER we no longer ship is dropped, not preserved: it
+// is ours by a marker only we have ever written, so leaving it behind would
+// strand a retired hook in the user's settings forever with nothing left to
+// refresh or remove it.
+func spliceManagedEntries(existing []json.RawMessage, managed []managedEntry) []json.RawMessage {
+	placed := make(map[string]bool, len(managed))
+	out := make([]json.RawMessage, 0, len(existing)+len(managed))
+	for _, raw := range existing {
+		matcher, ours := managedEntryMatcher(raw, managed)
+		if !ours {
+			out = append(out, raw) // user entry, verbatim bytes
+			continue
+		}
+		if placed[matcher] {
+			continue // a duplicate of one already placed — drop it
+		}
+		for _, m := range managed {
+			if m.matcher == matcher {
+				out = append(out, m.raw)
+				placed[matcher] = true
+			}
 		}
 	}
-	return false
+	for _, m := range managed {
+		if !placed[m.matcher] {
+			out = append(out, m.raw) // none existed — append
+		}
+	}
+	return out
+}
+
+// canonicalManagedEntries normalizes the embedded asset bytes into the exact
+// json.RawMessages that will be spliced into hooks.PreToolUse, each paired with
+// its matcher. It round-trips the KNOWLEDGE-OWNED asset (not user content)
+// through json.Marshal so the managed entries are byte-stable across runs
+// regardless of the asset file's own whitespace — the determinism the
+// idempotency check relies on.
+func canonicalManagedEntries(hookEntriesJSON []byte) ([]managedEntry, error) {
+	var entries []map[string]json.RawMessage
+	if err := json.Unmarshal(hookEntriesJSON, &entries); err != nil {
+		return nil, fmt.Errorf("parse embedded hook asset: %w", err)
+	}
+	out := make([]managedEntry, 0, len(entries))
+	for _, entry := range entries {
+		raw, err := json.Marshal(entry)
+		if err != nil {
+			return nil, fmt.Errorf("marshal managed hook entry: %w", err)
+		}
+		var head struct {
+			Matcher string `json:"matcher"`
+		}
+		if err := json.Unmarshal(raw, &head); err != nil {
+			return nil, fmt.Errorf("read managed hook entry matcher: %w", err)
+		}
+		var decoded preToolUseEntry
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			return nil, fmt.Errorf("read managed hook entry marker: %w", err)
+		}
+		marker := ""
+		for _, hk := range decoded.Hooks {
+			if m, ok := hk.managedMarker(); ok {
+				marker = m
+				break
+			}
+		}
+		if marker == "" {
+			return nil, fmt.Errorf("embedded hook entry %q carries no known knowledge-managed marker", head.Matcher)
+		}
+		out = append(out, managedEntry{matcher: head.Matcher, marker: marker, raw: raw})
+	}
+	return out, nil
+}
+
+// managedEntryMatcher classifies a raw PreToolUse entry and returns its matcher
+// when the entry is knowledge-managed. It decodes into preToolUseEntry FOR
+// INSPECTION ONLY; the struct is discarded. A raw entry that does not parse as
+// a hook entry (malformed user content we should not touch) is non-managed.
+//
+// CLASSIFICATION IS THE MARKER **AND**, FOR A MARKER WE STILL SHIP, ITS OWN
+// MATCHER. That second half is what keeps a user's copy of our hook theirs: a
+// user who lifted the promote-guard and re-pointed it at another tool has our
+// exact marker on a matcher we do not ship, and the marker alone would classify
+// that as ours and the splice would DELETE it from their global settings. A
+// marker we have RETIRED — in knowledgeHookMarkers, absent from the asset —
+// carries no such ambiguity: only we ever wrote it and there is no current
+// entry it could be a copy of, so it is ours on any matcher and is removed.
+func managedEntryMatcher(raw json.RawMessage, managed []managedEntry) (string, bool) {
+	var entry preToolUseEntry
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		return "", false
+	}
+	for _, h := range entry.Hooks {
+		marker, ok := h.managedMarker()
+		if !ok {
+			continue
+		}
+		shipped, shippedMatcher := shippedMarkerMatcher(marker, managed)
+		if shipped && shippedMatcher != entry.Matcher {
+			continue // our marker, someone else's matcher: a user's copy
+		}
+		return entry.Matcher, true
+	}
+	return "", false
+}
+
+// shippedMarkerMatcher reports the matcher the asset currently ships for
+// marker, and whether the asset ships it at all. A marker the asset no longer
+// carries is retired.
+func shippedMarkerMatcher(marker string, managed []managedEntry) (bool, string) {
+	for _, m := range managed {
+		if m.marker == marker {
+			return true, m.matcher
+		}
+	}
+	return false, ""
+}
+
+// isManagedEntry reports whether a raw PreToolUse entry is knowledge-managed,
+// classified against the entries the CURRENT asset ships.
+func isManagedEntry(raw json.RawMessage) bool {
+	managed, err := canonicalManagedEntries(assets.ClaudeHooks)
+	if err != nil {
+		return false
+	}
+	_, ok := managedEntryMatcher(raw, managed)
+	return ok
 }
 
 // writeClaudeSettings merges the knowledge-managed promote-guard hook

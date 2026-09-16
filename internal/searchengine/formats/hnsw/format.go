@@ -173,6 +173,17 @@ func (Format) MergeTo(dst searchengine.MergeSink, segs []searchengine.Segment[[]
 	return encodeGraphV3To(dst, merged)
 }
 
+// ValidateSegment is the SegmentFormat method the engine calls on every merged
+// payload before it is published; the package function it forwards to is the same
+// one the store census walks stored files with (validate.go).
+//
+// IT IS A METHOD AS WELL AS A FUNCTION because the engine holds a format, not a
+// package: the interface method is what makes the publish gate reachable without
+// searchengine importing this package, which it cannot do.
+func (Format) ValidateSegment(id searchengine.SegmentID, payload []byte) error {
+	return ValidateSegment(id, payload)
+}
+
 // mergeToGraph is the consolidation MergeTo runs: collect the survivors, derive
 // width and dtype as a pair, check the per-dtype seal target, and build one graph
 // through the byte-reproducible serial builder.
@@ -273,6 +284,12 @@ func dedupeItemsByID(items []binaryBuildItem) []binaryBuildItem {
 
 // AggregateStats is a no-op for HNSW — binary search needs no corpus-wide stats.
 func (Format) AggregateStats([]searchengine.Segment[[]byte, struct{}]) struct{} {
+	return struct{}{}
+}
+
+// AppendStats is the incremental counterpart, and it is a no-op for the same
+// reason: there are no corpus-wide statistics to carry forward.
+func (Format) AppendStats(struct{}, searchengine.Segment[[]byte, struct{}]) struct{} {
 	return struct{}{}
 }
 

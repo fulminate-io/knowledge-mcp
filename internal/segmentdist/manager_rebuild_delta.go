@@ -61,7 +61,8 @@ import (
 func (m *Manager) ReEmitRebuiltDelta(
 	ctx context.Context, gt kgtypes.GraphType, name string, hnswDocs, bm25Docs []searchengine.Document,
 ) (swapped, applicable bool, derivedBucketCount int, err error) {
-	m = m.ForDestination(ctx)
+	m, releaseDestination := m.forRequest(ctx)
+	defer releaseDestination()
 	dm := m.managerFor(gt, name)
 	bm := m.bm25ManagerFor(gt, name)
 	// BOTH RESIDENCY READ LOCKS, HELD ACROSS load() AND EVERY ENGINE READ, AND RELEASED
@@ -129,11 +130,11 @@ func (m *Manager) ReEmitRebuiltDelta(
 	// Surfacing it here would turn an aborted reclaim into swapped=false, which the
 	// rebuild driver reads as a failed finalize.
 	if rerr := replaceBucketAndPublish(
-		dm, docIDs(hnswDocs), hnswDocs, hnswCorpus, singleL2WriteAttempt, logAbortedReclaimOnly); rerr != nil {
+		ctx, dm, docIDs(hnswDocs), hnswDocs, hnswCorpus, singleL2WriteAttempt, logAbortedReclaimOnly); rerr != nil {
 		return false, true, derivedBucketCount, rerr
 	}
 	if rerr := replaceBucketAndPublish(
-		bm, docIDs(bm25Docs), bm25Docs, bm25Corpus, singleL2WriteAttempt, logAbortedReclaimOnly); rerr != nil {
+		ctx, bm, docIDs(bm25Docs), bm25Docs, bm25Corpus, singleL2WriteAttempt, logAbortedReclaimOnly); rerr != nil {
 		return false, true, derivedBucketCount, rerr
 	}
 

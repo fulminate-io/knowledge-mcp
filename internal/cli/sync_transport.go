@@ -44,6 +44,21 @@ import (
 // machine-bearer path is exactly the population LEAST likely to have a daemon
 // running, and therefore the one most in need of proving for itself.
 func BuildSyncTransport() (*auth.Transport, error) {
+	prove := syncTransportProof()
+
+	if tok := os.Getenv("KNOWLEDGE_AUTH_TOKEN"); tok != "" {
+		return auth.NewSyncTransport(CloudEndpoint, auth.StaticTokenSource{AccessToken: tok}, prove), nil
+	}
+	store, err := auth.OpenStore()
+	if err != nil {
+		return nil, fmt.Errorf("sync requires login — credential store unavailable: %w", err)
+	}
+	ts := auth.NewOAuthTokenSource(store, CloudEndpoint, AllowedAuthHosts())
+	return auth.NewSyncTransport(CloudEndpoint, ts, prove), nil
+}
+
+// syncTransportProof shares possession-proof wiring across native transports.
+func syncTransportProof() auth.TransportOption {
 	// Open the executable handle the possession proof reads from. It is
 	// idempotent, so a process that also runs the daemon wiring opens nothing
 	// twice, and taking it at construction keeps ONE discipline across the
@@ -64,15 +79,5 @@ func BuildSyncTransport() (*auth.Transport, error) {
 			Err: err.Error(),
 		})
 	}
-	prove := auth.WithProveOnRefusal(clientver.AnswerChallenge)
-
-	if tok := os.Getenv("KNOWLEDGE_AUTH_TOKEN"); tok != "" {
-		return auth.NewSyncTransport(CloudEndpoint, auth.StaticTokenSource{AccessToken: tok}, prove), nil
-	}
-	store, err := auth.OpenStore()
-	if err != nil {
-		return nil, fmt.Errorf("sync requires login — credential store unavailable: %w", err)
-	}
-	ts := auth.NewOAuthTokenSource(store, CloudEndpoint, AllowedAuthHosts())
-	return auth.NewSyncTransport(CloudEndpoint, ts, prove), nil
+	return auth.WithProveOnRefusal(clientver.AnswerChallenge)
 }

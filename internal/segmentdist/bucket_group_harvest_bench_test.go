@@ -91,7 +91,7 @@ func BenchmarkBucketGroupHarvest(b *testing.B) {
 			eng := harvestBenchEngine()
 			b.StartTimer()
 
-			published, _, err := eng.ReplaceBucketGroup(benchPartitions, nil, work)
+			published, _, err := eng.ReplaceBucketGroup(b.Context(), benchPartitions, nil, work)
 
 			b.StopTimer()
 			if err != nil {

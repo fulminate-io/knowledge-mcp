@@ -15,6 +15,7 @@ import (
 
 type dashboardRequest struct {
 	Operation   string          `json:"operation"`
+	Draft       bool            `json:"draft,omitempty"`
 	Account     string          `json:"account"`
 	Document    string          `json:"document,omitempty"`
 	Environment string          `json:"environment,omitempty"`
@@ -27,12 +28,14 @@ type dashboardDocument struct {
 	Environment string          `json:"env_id"`
 	Draft       json.RawMessage `json:"draft_doc,omitempty"`
 	Published   json.RawMessage `json:"published_doc,omitempty"`
+	Version     int             `json:"doc_version"`
 }
 type dashboardResult struct {
 	Account   string                 `json:"account,omitempty"`
 	Documents []dashboardDocument    `json:"documents"`
 	Document  *dashboardDocument     `json:"document,omitempty"`
 	Response  *dashboardHTTPResponse `json:"response,omitempty"`
+	Deleted   bool                   `json:"deleted,omitempty"`
 	Code      string                 `json:"code,omitempty"`
 }
 type dashboardEndpoint struct {
@@ -48,6 +51,11 @@ type dashboardEnvelope struct {
 }
 
 func desktopDashboardCmd(args []string) error {
+	// Bad configuration, refused before any work — see DesktopAuthCmd for why
+	// this is a hard error rather than a JSON result code.
+	if _, err := auth.CredentialNamespace(); err != nil {
+		return err
+	}
 	var raw []byte
 	var err error
 	if len(args) == 0 {
@@ -77,12 +85,16 @@ func desktopDashboardCmd(args []string) error {
 	return json.NewEncoder(os.Stdout).Encode(performDashboard(ctx, request))
 }
 func validDashboardRequest(r dashboardRequest) bool {
-	if !remoteID.MatchString(r.Account) {
+	if !remoteID.MatchString(r.Account) || (r.Draft && r.Operation != "read") {
 		return false
 	}
 	switch r.Operation {
 	case "list":
 		return r.Document == "" && r.Environment == "" && r.Endpoint == "" && len(r.Payload) == 0
+	case "create", "update":
+		return validDashboardWrite(r)
+	case "publish", "delete":
+		return remoteID.MatchString(r.Document) && r.Environment == "" && r.Endpoint == "" && len(r.Payload) == 0
 	case "get":
 		return remoteID.MatchString(r.Document) && r.Environment == "" && r.Endpoint == "" && len(r.Payload) == 0
 	case "read":
@@ -122,11 +134,20 @@ func performDashboard(ctx context.Context, r dashboardRequest) dashboardResult {
 		return dashboardResult{Code: "sign_in_required"}
 	}
 	transport := nativeManagementTransport(store)
-	raw, err := transport.Dashboard(ctx, r.Account, r.Document)
+	var raw []byte
+	if r.Operation == "create" || r.Operation == "update" || r.Operation == "publish" || r.Operation == "delete" {
+		raw, err = transport.DashboardWrite(ctx, r.Account, r.Operation, r.Document, r.Payload)
+	} else {
+		raw, err = transport.Dashboard(ctx, r.Account, r.Document)
+	}
 	if err != nil {
-		return dashboardResult{Code: remoteErrorCode(err, "get")}
+		return dashboardResult{Code: remoteErrorCode(err, r.Operation)}
 	}
 	out := dashboardResult{Account: r.Account}
+	if r.Operation == "delete" {
+		out.Deleted = true
+		return out
+	}
 	if r.Operation == "list" {
 		var list struct {
 			Documents []dashboardDocument `json:"documents"`
@@ -143,10 +164,10 @@ func performDashboard(ctx context.Context, r dashboardRequest) dashboardResult {
 		return out
 	}
 	var doc dashboardDocument
-	if json.Unmarshal(raw, &doc) != nil || doc.ID != r.Document || !validDashboardDocument(doc) {
+	if json.Unmarshal(raw, &doc) != nil || (r.Operation != "create" && doc.ID != r.Document) || !validDashboardDocument(doc) {
 		return dashboardResult{Code: "invalid_response"}
 	}
-	if r.Operation == "get" {
+	if r.Operation == "get" || r.Operation == "create" || r.Operation == "update" || r.Operation == "publish" {
 		out.Document = &doc
 		return out
 	}
@@ -159,4 +180,21 @@ func performDashboard(ctx context.Context, r dashboardRequest) dashboardResult {
 	}
 	out.Response = &response
 	return out
+}
+
+// Dashboard mutation payload is the existing web UIDocumentInput wire contract.
+func validDashboardWrite(r dashboardRequest) bool {
+	if r.Environment != "" || r.Endpoint != "" || (r.Operation == "create" && r.Document != "") || (r.Operation == "update" && !remoteID.MatchString(r.Document)) {
+		return false
+	}
+	var in struct {
+		Name        string          `json:"name"`
+		Environment string          `json:"env_id"`
+		Draft       json.RawMessage `json:"draft_doc"`
+		Version     int             `json:"doc_version"`
+	}
+	if decodeManagementInput(r.Payload, &in) != nil || in.Version != 1 {
+		return false
+	}
+	return validDashboardDocument(dashboardDocument{ID: "input", Name: in.Name, Environment: in.Environment, Draft: in.Draft})
 }

@@ -7,6 +7,33 @@ const helpManage = `# manage — Server operations
 ## Server status
   manage({ "operation": "status" })  — pipeline metrics (summary/embed queued/running/succeeded/failed) per graph
 
+## Fulminate account routing
+  manage({ "operation": "account_for_session", "account": "acme" })            — route THIS session to one account
+  manage({ "operation": "account_use", "account": "acme" })                    — set the machine-wide default
+
+  account_for_session binds the harness session the call arrived on, and takes no
+  session argument: it can only ever point the CALLING session somewhere, never
+  another one. When no harness session can be resolved for the call it FAILS and
+  binds nothing, naming the carrier that is missing — the Claude PreToolUse hook
+  not installed or not firing, no Codex turn metadata, no session header — because
+  a binding made for an unidentified session would route your writes into an
+  account you did not choose. The binding lasts until you overwrite it, clear it,
+  or leave it idle for seven days, and it survives a daemon restart.
+
+  Membership is checked against your live account list before anything is written.
+  An account with no active subscription CAN be bound per session; its cloud calls
+  are then refused by the gateway, which is the authority on subscription.
+
+  account_use writes the same machine-wide default "knowledge account use" writes,
+  refusals included (a non-member and an unsubscribed account are both refused,
+  and nothing is written). No restart follows: the daemon picks the new default up
+  within its selection cache window, and sessions carrying their own binding keep
+  theirs.
+
+  manage({ "operation": "status", "format": "json" }) reports, for the CALLING
+  session: account, account_source (header / session / global), session and
+  session_source.
+
 ## Graph inventory
   manage({ "operation": "graph_inventory", "format": "json" })
 

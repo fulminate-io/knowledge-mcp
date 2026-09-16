@@ -64,6 +64,29 @@ func (e *SegmentedIndex[Q, S]) maybeMerge() {
 	e.doMerge(chosen)
 }
 
+// deadRatioReachable reports whether this engine's dead-ratio trigger can fire at
+// all, and it is a pure function of construction-time Options.
+//
+// A DEAD RATIO IS dead/total AND THEREFORE NEVER EXCEEDS 1.0, so a threshold above
+// 1.0 is unreachable by arithmetic rather than by policy — which is exactly how
+// MergeDisabledDeadRatio (2.0, options.go) disarms the trigger without adding a
+// switch. The per-entry walk that computes those ratios is then dead work: it
+// visits every resident segment and calls liveDocs.DeadCount on each, every 50 ms,
+// to reach a comparison whose answer is already known.
+//
+// THAT WAS 15% OF A CLIENT'S CPU. Both production engines are constructed with this
+// value (segmentdist/manager_factory.go), and an instrumented copy measured 164,512
+// entry visits and zero merges over two idle seconds at 4,096 resident segments.
+//
+// IT DOES NOT TOUCH THE COUNT ARM, and it must not: SegmentCountTarget is disarmed
+// by a value no real set reaches rather than by an unreachable comparison, so an
+// owner that drives the count target down at runtime still gets its count-triggered
+// merge. Nor does either value disable format.Merge — an owner driving a merge
+// explicitly still gets one (options.go).
+func (e *SegmentedIndex[Q, S]) deadRatioReachable() bool {
+	return e.opts.DeletesPctAllowed <= 1.0
+}
+
 // pickMergeTargets returns the entries to consolidate, or nil if no trigger
 // fires. Trigger: any segment whose dead ratio >= DeletesPctAllowed, OR the
 // segment count exceeds SegmentCountTarget (in which case all entries merge down).
@@ -76,6 +99,21 @@ func (e *SegmentedIndex[Q, S]) pickMergeTargets(set *segmentSet[Q, S]) []*segmen
 		return set.entries
 	}
 
+	// THE WALK BELOW IS SKIPPED WHOLE when the ratio it computes can never clear the
+	// threshold. This is the ONLY early return the disarmed engines take, and it is
+	// what makes their tick cost O(1) instead of O(resident) — see deadRatioReachable.
+	// MergeEligible reaches this same predicate because it asks pickMergeTargets
+	// rather than restating the policy, so the two cannot drift apart.
+	if !e.deadRatioReachable() {
+		return nil
+	}
+
+	// THE COUNTER IS ARMED WHERE THE WALK BEGINS, one add for the entries this loop
+	// is about to visit rather than one per entry, so the instrument costs a single
+	// atomic add instead of an atomic per segment on the merge path. It is pure
+	// observability in the same vein as mergeCnt and settleCnt; nothing in the merge
+	// path reads it.
+	e.mergeScanCnt.Add(int64(len(set.entries)))
 	var dirty []*segmentEntry[Q, S]
 	for _, entry := range set.entries {
 		if entry.meta.DocCount == 0 {
@@ -122,8 +160,25 @@ func (e *SegmentedIndex[Q, S]) doMerge(chosen []*segmentEntry[Q, S]) {
 	default:
 	}
 
-	entry, err := e.mergeEntry(segs, accept)
+	// The constituent id list is resolved BEFORE the merge because both the refusal
+	// below and the supersession record after it name the same set.
+	removed := sortedSegmentIDs(remove)
+	entry, err := e.mergeEntry(segs, accept, removed)
 	if err != nil {
+		// THE OUTPUT-REFUSAL ARM IS TESTED FIRST, AND THE ORDER IS LOAD-BEARING. A
+		// refused merge output WRAPS the validator's *CorruptSegmentError, so the
+		// constituent arm below would match it through Unwrap and hand the owner an
+		// unattributed corruption to quarantine — for a segment that was never
+		// published and does not exist on disk. The constituents are healthy here;
+		// the defect is in the producer, it is already logged with them named
+		// (merge_validate.go), and the merge is simply not published.
+		if invalid, ok := errors.AsType[*MergeOutputInvalidError](err); ok {
+			slog.Error("segment merge produced an unreadable segment and published nothing",
+				"error", invalid,
+				"constituents", len(segs),
+				"note", "the constituents are unchanged and still searchable; nothing is quarantined")
+			return
+		}
 		// A FAILED MERGE USED TO VANISH HERE, and a CONTAINED corruption vanishing
 		// is worse than one that crashed: the merge loop re-selects the same
 		// constituents on its next tick, re-reads the same bad bytes, and repeats
@@ -136,12 +191,11 @@ func (e *SegmentedIndex[Q, S]) doMerge(chosen []*segmentEntry[Q, S]) {
 		// failed for any other reason — a full disk, a mapping refusal — is logged
 		// and left alone, because it is not a segment defect and there is nothing
 		// to quarantine.
-		if corrupt, ok := errors.AsType[*CorruptSegmentError](err); ok {
+		if e.reportCorruptFrom(err) {
 			slog.Error("segment merge aborted by a corrupt constituent",
 				"error", err,
 				"constituents", len(segs),
 				"note", "these segments cannot consolidate until the corrupt one is quarantined and rebuilt")
-			e.reportCorrupt(corrupt)
 			return
 		}
 		slog.Warn("segment merge failed", "error", err, "constituents", len(segs))
@@ -155,7 +209,6 @@ func (e *SegmentedIndex[Q, S]) doMerge(chosen []*segmentEntry[Q, S]) {
 	// ITS COHORT IS ITSELF. A background merge publishes ONE output and that output
 	// carries every live member of every constituent it consumed, so its presence alone
 	// is proof enough to decline them.
-	removed := sortedSegmentIDs(remove)
 	stampSupersession(entry, removed, []SegmentID{entry.meta.ID})
 
 	// And again before publishing: a merge that finished after the close was
@@ -270,6 +323,16 @@ func (e *SegmentedIndex[Q, S]) Close() {
 func (e *SegmentedIndex[Q, S]) MergeCount() uint64 {
 	return e.mergeCnt.Load()
 }
+
+// mergeScanCount reports how many resident entries pickMergeTargets' dead-ratio
+// loop has walked over this engine's life.
+//
+// IT IS THE OBSERVABLE THE TICK BOUND IS ASSERTED ON, and it is a COUNT rather
+// than a clock deliberately: a wall-clock bound on a loaded machine measures the
+// machine. Unexported because the only consumer is this package's own gate — the
+// merge path never reads it, and no owner outside the engine has a decision to
+// take on it.
+func (e *SegmentedIndex[Q, S]) mergeScanCount() int64 { return e.mergeScanCnt.Load() }
 
 // HasMergeHook reports whether a merge-completion callback is installed on this
 // engine. It is pure observability over construction-time Options, in the same

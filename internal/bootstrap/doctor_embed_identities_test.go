@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/config"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
 // TestDoctorEmbedIdentities_Branches pins the three outcomes of the config half,
@@ -66,7 +67,7 @@ func TestDoctorEmbedIdentities_IsWiredIn(t *testing.T) {
 	// A port nothing is listening on: the liveness probe fails, the check returns
 	// its no-server INFO, and it is still present in the slice. That is what is
 	// being asserted — presence, not outcome — so the test needs no live server.
-	checks := defaultChecks(1, t.TempDir()+"/no-such-config")
+	checks := defaultChecks(1, graphclient.DefaultMCPHTTPPort, true, t.TempDir()+"/no-such-config")
 
 	var found *checkResult
 	for i := range checks {

@@ -258,6 +258,11 @@ func collectCoverageRows(ctx context.Context, deps ClientDeps) ([]CoverageRow, e
 		// newCoverageRow already takes eleven positional parameters and three of its
 		// four callers cannot supply a twelfth.
 		row.Degraded = probes[i].degraded
+		row.ResidentSegments = probes[i].residentSegments
+		row.ResidentSegmentsPeak = probes[i].residentSegmentsPeak
+		row.ResidentSegmentDestinations = probes[i].residentSegmentsDestinations
+		row.QuarantinedSegments = probes[i].quarantinedSegments
+		row.QuarantinedImpact = quarantineImpactFor(probes[i].quarantinedSegments)
 		rows = append(rows, row)
 	}
 	return rows, walkErr
@@ -275,6 +280,21 @@ type segProbe struct {
 	// degraded is read on the SAME bounded worker as the two counts above, so the
 	// serial assembly loop stays free of it.
 	degraded map[string]int
+	// residentSegments is the per-format resident SEGMENT count, read on that same
+	// worker and for the same reason. A row the wave skipped keeps the nil map, which
+	// is the honest rendering of "this row's pool was never probed".
+	residentSegments map[string]int
+	// residentSegmentsPeak is the seal-path high-water of that same count, read on
+	// the same worker and carried on the same terms.
+	residentSegmentsPeak map[string]int
+	// residentSegmentsDestinations is how many destinations each of those two
+	// readings was folded from, read on the same worker and carried the same way.
+	residentSegmentsDestinations map[string]int
+	// quarantinedSegments is the per-format count of segments this graph's engines
+	// have WITHDRAWN FROM SERVICE for corruption, read on that same worker. A row the
+	// wave skipped keeps the nil map, which renders as no quarantine reading at all
+	// rather than as a graph that has lost nothing.
+	quarantinedSegments map[string]int
 }
 
 // collectSegProbes runs the per-row segment-coverage probes CONCURRENTLY, bounded
@@ -316,10 +336,25 @@ func collectSegProbes(
 		wg.Go(func() {
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			covered, liveResident, hasSeg := segCoveredFor(ctx, deps, t.gt, t.name)
+			// THE EMBEDDED COUNT IS THE PROBE'''S OWN OPERAND, threaded from the
+			// stats slot this row already holds: it is what tells segCoveredFor
+			// whether this graph has a vector engine to count at all. stats[i] is
+			// non-nil here — the guard above declines a nil one.
+			covered, liveResident, hasSeg := segCoveredFor(ctx, deps, t.gt, t.name, int(stats[i].GetBinaryVectorCount()))
+			// ONE CALL FOR THE THREE RESIDENT-SEGMENT READINGS, because this row
+			// renders them side by side: three calls would assemble one cell out of
+			// three independent walks of the destinations, and a child binding or
+			// being evicted between them yields a destination count for a format
+			// whose count came off another set of arms, or a peak read off arms the
+			// count it qualifies was not read from.
+			counts, peaks, destinations := residentSegmentReadingsFor(deps, t.gt, t.name)
 			probes[i] = segProbe{
 				covered: covered, liveResident: liveResident, hasSeg: hasSeg,
-				degraded: bm25DegradeFor(deps, t.gt, t.name),
+				degraded:                     bm25DegradeFor(deps, t.gt, t.name),
+				residentSegments:             counts,
+				residentSegmentsPeak:         peaks,
+				residentSegmentsDestinations: destinations,
+				quarantinedSegments:          quarantinedSegmentsFor(deps, t.gt, t.name),
 			}
 		})
 	}
@@ -336,6 +371,36 @@ func bm25DegradeFor(deps ClientDeps, gt kgtypes.GraphType, name string) map[stri
 		return nil
 	}
 	return sr.BM25DegradeCounts(gt, name)
+}
+
+// residentSegmentCountsReader is the OPTIONAL deps capability the per-format
+// resident SEGMENT count is read through.
+//
+// TYPE-ASSERTED for the reason bm25TextCoverageReader, poolEvictedReader and
+// loadLiveResidentReader state: a required method on SegmentCoverageReader would
+// have to be implemented by every fake that already implements SegmentCoverage(),
+// none of which holds an engine to answer from.
+// IT IS ONE METHOD RETURNING THE TRIPLE, not three. The row renders the three
+// readings side by side, so taking them in three calls would assemble one cell out
+// of three independent walks of the destination children — and the cheapest way to
+// keep a cell's numbers commensurable is to make three walks unexpressible.
+type residentSegmentCountsReader interface {
+	ResidentSegmentReadings(gt kgtypes.GraphType, name string) (counts, peaks, destinations map[string]int)
+}
+
+// residentSegmentReadingsFor reads one graph's per-format resident SEGMENT count,
+// its seal-path high-water and the number of destinations each was folded from,
+// through that seam and in ONE call. An unwired seam reports NOTHING — nil maps,
+// which render as no count — rather than a fabricated zero per format: a reader with
+// no way to look has not measured an empty engine, it has not measured at all.
+func residentSegmentReadingsFor(
+	deps ClientDeps, gt kgtypes.GraphType, name string,
+) (counts, peaks, destinations map[string]int) {
+	sr, ok := deps.SegmentCoverage().(residentSegmentCountsReader)
+	if !ok {
+		return nil, nil, nil
+	}
+	return sr.ResidentSegmentReadings(gt, name)
 }
 
 // repairVerifiedFor answers whether the backstop has verified this graph's band,

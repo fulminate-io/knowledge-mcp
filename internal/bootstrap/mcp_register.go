@@ -43,8 +43,6 @@ import (
 	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
-
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
 // mcpServerName is the registered name of the knowledge MCP server,
@@ -63,14 +61,55 @@ const mcpToolTimeoutMs = 180000
 // so the two clients stay consistent (180000 ms == 180 s).
 const mcpToolTimeoutSec = mcpToolTimeoutMs / 1000
 
+// mcpPortMin / mcpPortMax bound the port --mcp-port accepts. The range is
+// the one the Desktop launcher validates its own target against, so a port
+// it will not serve on cannot be registered here either. Compare
+// parseServiceOptions (service_command.go), which applies the same
+// post-Parse shape to the daemon's own --port / --http-port.
+const (
+	mcpPortMin = 1024
+	mcpPortMax = 65534
+)
+
+// errMCPPortRange is the sentinel every out-of-range --mcp-port refusal
+// wraps, so a caller (and a test) can recognize the condition with errors.Is
+// instead of matching the message text. The message names the flag and both
+// bounds because it is read by whoever typed the flag.
+var errMCPPortRange = fmt.Errorf("--mcp-port must be a number between %d and %d", mcpPortMin, mcpPortMax)
+
+// validateMCPPort refuses a --mcp-port outside the accepted range, naming
+// the flag, both bounds and the value seen. No value is coerced or
+// defaulted: an installer asked for a port it cannot register must say so
+// rather than register a different one.
+func validateMCPPort(port int) error {
+	if port < mcpPortMin || port > mcpPortMax {
+		return fmt.Errorf("%w, got %d", errMCPPortRange, port)
+	}
+	return nil
+}
+
 // daemonMCPURL returns the loopback streamable-HTTP MCP endpoint the
-// `knowledge serve` daemon mounts (/mcp) on its default port. Editors
-// register against this URL instead of spawning a per-session stdio
-// `knowledge` child. The port is graphclient.DefaultMCPHTTPPort — the
-// daemon's default --http-port — and must match the path A's daemon mounts
-// (graphclient.HTTPServer serves /mcp on 127.0.0.1:<port>).
-func daemonMCPURL() string {
-	return fmt.Sprintf("http://127.0.0.1:%d/mcp", graphclient.DefaultMCPHTTPPort)
+// `knowledge serve` daemon mounts (/mcp) on port. Editors register against
+// this URL instead of spawning a per-session stdio `knowledge` child. The
+// port is the daemon's --http-port — graphclient.DefaultMCPHTTPPort unless
+// the caller was told otherwise by --mcp-port — and must match the port the
+// daemon actually serves on (graphclient.HTTPServer serves /mcp on
+// 127.0.0.1:<port>). The port arrives as an argument and ONLY as an
+// argument: no environment variable is consulted here, so a launcher that
+// serves on a non-default port passes it explicitly.
+func daemonMCPURL(port int) string {
+	return fmt.Sprintf("http://127.0.0.1:%d/mcp", port)
+}
+
+// daemonHookURL returns the loopback PreToolUse hook delivery endpoint the
+// `knowledge serve` daemon mounts for harness ("claude" / "codex") — a sibling
+// path of /mcp on the SAME port, so one --mcp-port names both the MCP
+// registration and the hook target. The path spelling is a contract with
+// graphclient's hookPathClaude / hookPathCodex; changing one without the other
+// silently stops session correlation. Like daemonMCPURL the port arrives as an
+// argument and ONLY as an argument: no environment variable is consulted.
+func daemonHookURL(port int, harness string) string {
+	return fmt.Sprintf("http://127.0.0.1:%d/hook/%s", port, harness)
 }
 
 // execCommand is a stubbable alias for exec.Command. Production uses the
@@ -204,9 +243,12 @@ func patchCodexToolTimeout(dryRun bool) error {
 // client-specific scope flags inserted before the add tail (claude:
 // []string{"-s", "user"}; codex: nil — codex has no -s user flag). The
 // registered server is the `knowledge serve` daemon's loopback
-// streamable-HTTP endpoint (daemonMCPURL) — no stdio child, no
-// own-executable resolution. Both registrations set a generous per-server
-// tool-call timeout so long ops are not cut off by the client default:
+// streamable-HTTP endpoint on mcpPort (daemonMCPURL) — no stdio child, no
+// own-executable resolution. mcpPort is the port the daemon this install
+// serves actually listens on: the verb's --mcp-port, defaulting to
+// graphclient.DefaultMCPHTTPPort, already range-checked by its caller. Both
+// registrations set a generous per-server tool-call timeout so long ops are
+// not cut off by the client default:
 // claude carries it in the add-json "timeout" field (ms), codex applies
 // it via the config.toml tool_timeout_sec patch (sec). See addArgvFor and
 // patchCodexToolTimeout.
@@ -218,7 +260,7 @@ func patchCodexToolTimeout(dryRun bool) error {
 //   - else → best-effort `mcp remove knowledge` (ignore failure), then
 //     the client-specific `mcp add...`; an add failure logs a warn and
 //     returns nil. For codex, also patch ~/.codex/config.toml.
-func registerKnowledgeMCP(clientBin string, scopeArgs []string, dryRun bool) error {
+func registerKnowledgeMCP(clientBin string, scopeArgs []string, mcpPort int, dryRun bool) error {
 	if _, err := exec.LookPath(clientBin); err != nil {
 		// NON-FATAL by contract: a missing client CLI must not abort the
 		// asset install — warn and return nil so the caller continues.
@@ -228,7 +270,7 @@ func registerKnowledgeMCP(clientBin string, scopeArgs []string, dryRun bool) err
 		return nil //nolint:nilerr // missing-CLI is a deliberate non-fatal skip, not an error to propagate
 	}
 
-	url := daemonMCPURL()
+	url := daemonMCPURL(mcpPort)
 	removeArgs := []string{"mcp", "remove", mcpServerName}
 	addArgs, err := addArgvFor(clientBin, scopeArgs, url)
 	if err != nil {

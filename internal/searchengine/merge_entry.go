@@ -35,7 +35,15 @@ import (
 // on failure. The three engine call sites each remembering that would be three
 // chances to forget it, which is precisely how the mapping leak this package
 // already documents came back the first time.
-func (e *SegmentedIndex[Q, S]) mergeEntry(segs []Segment[Q, S], accept []func(ExternalID) bool) (*segmentEntry[Q, S], error) {
+// THE CONSTITUENT IDS ARE CARRIED FOR ONE PURPOSE: naming them in the refusal when
+// the merged output does not validate. A Segment does not know its own id — the id
+// is the content hash its owner assigned — so the ids have to arrive from the caller
+// that resolved the entries. They are used for the message and nothing else; the
+// merge itself reads the segments, never the ids. A caller with no ids (a freshly
+// built segment that was never published) passes what it has.
+func (e *SegmentedIndex[Q, S]) mergeEntry(
+	segs []Segment[Q, S], accept []func(ExternalID) bool, constituents []SegmentID,
+) (*segmentEntry[Q, S], error) {
 	f, err := e.openMergeScratch()
 	if err != nil {
 		return nil, err
@@ -93,6 +101,27 @@ func (e *SegmentedIndex[Q, S]) mergeEntry(segs []Segment[Q, S], accept []func(Ex
 		return nil, fmt.Errorf("searchengine: unlinking merge scratch %s: %w", path, err)
 	}
 
+	// THE STRUCTURAL GATE ON THE OUTPUT, AND IT RUNS BEFORE ANYTHING ELSE READS IT.
+	// The mapping is exactly the bytes the merge wrote, so this is the last moment
+	// at which "the segment this process just produced" and "the file that will be
+	// published" are the same object and neither has been acted on. A failure here
+	// returns without publishing; the deferred cleanup above removes the scratch
+	// file, the constituents are untouched, and the caller is told which segments
+	// stayed put. See merge_validate.go for why this is not the writer's own check.
+	//
+	// THE FAILURE IS CONTAINED INSIDE runFormatValidation AND CLASSIFIED OUTSIDE IT,
+	// rather than run under the engine's reporting boundary. containCorrupt would keep
+	// the goroutine alive too, and would also REPORT what it caught to the owner and
+	// hand the caller a bare stored-corruption error — for a segment that was never
+	// published, has no id and does not exist on disk. Every corruption arm downstream
+	// would then match it and blame a healthy constituent. So a validator that raises
+	// and one that returns reach refuseMergeOutput the same way and carry the same
+	// type.
+	if verr := e.runFormatValidation(data); verr != nil {
+		releaseUnattached(release)
+		return nil, e.refuseMergeOutput(data, constituents, verr)
+	}
+
 	// THE OUTPUT IS READ BACK UNDER THE SAME BOUNDARY THE INPUTS WERE. Decode and
 	// newEntry resolve the merged artifact's own per-document data — newEntry
 	// calls IDs(), which walks the member table — so an artifact this merge just
@@ -107,7 +136,9 @@ func (e *SegmentedIndex[Q, S]) mergeEntry(segs []Segment[Q, S], accept []func(Ex
 		if decErr != nil {
 			return fmt.Errorf("searchengine: decoding merged segment: %w", decErr)
 		}
-		built, entErr := e.newEntry(seg, nil)
+		// MAPPED, not built: seg was decoded over the mapping made above, so its
+		// bytes are page cache and the entry retains no encoder output at all.
+		built, entErr := e.newEntry(seg, nil, payloadMapped)
 		if entErr != nil {
 			return entErr
 		}

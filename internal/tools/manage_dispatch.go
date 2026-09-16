@@ -3,6 +3,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -81,4 +82,30 @@ func handlePipelineLifecycleManage(deps ClientDeps, a manageArgs) kgtools.ToolRe
 	default:
 		return handlePipelineStatus(deps, a.Format)
 	}
+}
+
+// handlePprofManage serves the two profiling operations, which share one latch
+// and take no parameters at all.
+//
+// THEY ARE ONE ARM RATHER THAN TWO CASES for the reason stated on
+// handlePipelineLifecycleManage below: InterceptManage's dispatch is bounded by a
+// statement count, and start and stop are the two ends of one profile. Grouping
+// them keeps the routing visible in the switch and buys the budget a new
+// operation needs.
+func handlePprofManage(operation string) kgtools.ToolResult {
+	if operation == "pprof_start" {
+		return handlePprofStart()
+	}
+	return handlePprofStop()
+}
+
+// handleBranchOverlayManage serves the two branch-overlay operations, grouped on
+// the same argument as handlePprofManage: they are the list and the delete of one
+// thing, and the switch spends its budget better on the distinction between
+// families than on the distinction between these two.
+func handleBranchOverlayManage(ctx context.Context, deps ClientDeps, a manageArgs) kgtools.ToolResult {
+	if a.Operation == "delete_branch" {
+		return handleClientDeleteBranch(ctx, deps, a)
+	}
+	return handleClientListBranches(ctx, deps, a)
 }

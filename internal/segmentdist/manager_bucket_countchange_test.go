@@ -244,7 +244,7 @@ func TestClosureRebuildSetStaysBounded(t *testing.T) {
 	// so exactly one partition is rebuilt however large the corpus is.
 	window := docsInBucket(t, 0, stable, 100, "closure-win-")
 	dm := mgr.managerFor(gt, name)
-	published, _, err := replaceBucketGroups(dm, nil, window, nil, dm.engine.ResidentDocCount()+len(window), nil)
+	published, _, err := replaceBucketGroups(t.Context(), dm, nil, window, nil, dm.engine.ResidentDocCount()+len(window), nil)
 	require.NoError(t, err)
 	require.Len(t, published, 1,
 		"on a stable count a window confined to one partition must rebuild exactly that partition — the delta stays a delta")

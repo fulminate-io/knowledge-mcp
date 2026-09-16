@@ -103,8 +103,14 @@ func composeSegmentGraphSearch(ctx context.Context, deps ClientDeps, mgr Segment
 	}
 	engineText, engineVec := segmentSearchEngineArms(mode, a.Query, queryVec)
 	if mode == "vector" && len(engineVec) == 0 {
+		// THE CONDITION HERE IS THIS CLIENT'S CONFIG, and that is why the sentence
+		// differs from the knowledge arm's. The vector above came from
+		// deps.Embedder() a few lines up, never from a graph record, so a refusal
+		// claiming the graph records no embed identity would name a fact this arm
+		// never consulted and send an operator to re-collect a graph that is fine.
 		return errorResult(string(gt) + " search: mode:vector needs a query embedding, " +
-			"but no embedder is configured — use mode:hybrid or mode:text instead")
+			"but this client has no embedder configured — use mode:text, " +
+			"or add the embedder credential to ~/.knowledge/config")
 	}
 	// Honor the caller's limit with the same <=0 default the knowledge arm uses
 	// (intercept_search_knowledge.go). Boundedness is unchanged: the hydrate below

@@ -65,6 +65,14 @@ func (c *fakeSelectionClock) advancePastTTL() {
 	c.now = c.now.Add(2 * ttlTestWindow)
 }
 
+// advance moves the clock by exactly d, for the rejection-record TTL, whose
+// window is a different quantity from the selection cache's.
+func (c *fakeSelectionClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
 // newClockedSelection builds a selection over path whose TTL is measured
 // against a fake clock the caller advances.
 func newClockedSelection(t *testing.T, path string) (*AccountSelection, *fakeSelectionClock) {

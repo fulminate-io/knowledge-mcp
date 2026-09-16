@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
@@ -20,6 +21,55 @@ func stubAccountSelection(t *testing.T, initial string) *string {
 	accountSelectionID = func(context.Context) string { return live }
 	t.Cleanup(func() { accountSelectionID = prev })
 	return &live
+}
+
+// TestSegmentManagerServesTheRequestBoundAccount is requirement 4's segment
+// leg: a request that names its own account is served by that account's own
+// child manager, rather than refused because the PROCESS selection is somebody
+// else. The child's cache is already partitioned per account, so the refusal
+// protected nothing here — it compared the wrong two things.
+func TestSegmentManagerServesTheRequestBoundAccount(t *testing.T) {
+	live := stubAccountSelection(t, "11111111-1111-4111-8111-111111111111")
+
+	root := closeOnCleanup(t, NewManager(t.TempDir(), 0))
+
+	// A request bound to ANOTHER account: its own child serves it.
+	bound := graphclient.WithDestination(context.Background(),
+		graphclient.Destination{Storage: "cloud", AccountID: "22222222-2222-4222-8222-222222222222"})
+	child := root.ForDestination(bound)
+	if child == root {
+		t.Fatal("a bound destination must get its own child manager")
+	}
+	if _, err := child.Search(bound, kgtypes.GraphKnowledge, "default", "alpha", nil, 5); err != nil {
+		t.Fatalf("search on the request's own account: %v", err)
+	}
+	if err := child.Flush(bound, kgtypes.GraphKnowledge, "default"); err != nil {
+		t.Fatalf("flush on the request's own account: %v", err)
+	}
+
+	// A local binding is exempt exactly as it was.
+	local := graphclient.WithDestination(context.Background(), graphclient.Destination{Storage: "local"})
+	if _, err := root.ForDestination(local).Search(local, kgtypes.GraphKnowledge, "default", "alpha", nil, 5); err != nil {
+		t.Fatalf("search on a local binding: %v", err)
+	}
+
+	// THE GUARD STILL FIRES for the case it exists for: an UNBOUND call whose
+	// process selection has moved off the account this manager was built under.
+	*live = "33333333-3333-4333-8333-333333333333"
+	if _, err := root.Search(context.Background(), kgtypes.GraphKnowledge, "default", "alpha", nil, 5); !errors.Is(err, ErrAccountChanged) {
+		t.Fatalf("unbound search after the switch: err = %v, want ErrAccountChanged", err)
+	}
+
+	// ...and the guard itself refuses a binding that disagrees with the manager
+	// it is asked about: a child serves ITS account, never another's. (A real
+	// serving call never gets that far — Search re-resolves ForDestination from
+	// the same ctx and lands on the right child — so the guard is asserted
+	// directly, which is where the fail-closed property lives.)
+	other := graphclient.WithDestination(context.Background(),
+		graphclient.Destination{Storage: "cloud", AccountID: "44444444-4444-4444-8444-444444444444"})
+	if err := child.checkAccountBinding(other); !errors.Is(err, ErrAccountChanged) {
+		t.Fatalf("a child asked about another account's binding: err = %v, want ErrAccountChanged", err)
+	}
 }
 
 // TestSegmentManagerRefusesAfterAccountFlip proves the fail-closed backstop: a

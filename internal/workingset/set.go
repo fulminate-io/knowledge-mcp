@@ -173,9 +173,23 @@ func (s *Set) RemoveRef(ref Ref) bool {
 	return true
 }
 
-// Has reports whether (gt, name) is a member. This is the predicate every
-// background loop is gated on. A nil *Set reports false for everything — EMPTY,
-// never unrestricted.
+// Has reports whether ANY storage copy of (gt, name) is a member. This is the
+// predicate every background loop is gated on. A nil *Set reports false for
+// everything — EMPTY, never unrestricted.
+//
+// IT IS DESTINATION-INSENSITIVE, AND IT USED TO NOT BE. It looked up a Ref with
+// an EMPTY storage field, so it answered false for a member admitted by any
+// destination-aware route — which, since the per-destination pools landed, is
+// every route: the routed-call recorder, the collect sink and now the segment
+// search all record the destination they were bound to. Its two production
+// callers ask a GRAPH-LEVEL question — the thought-propagation loop's
+// working-set gate and the manage(status) coverage table's membership cell,
+// neither of which has a destination in hand to offer — so the exact-copy
+// reading silently gated them shut on a graph the client really does maintain.
+//
+// HasRef IS THE EXACT-COPY PREDICATE and stays one: the per-destination pools
+// exist so two copies of one graph can be maintained independently, and the
+// callers that own a destination use that.
 func (s *Set) Has(gt kgtypes.GraphType, name string) bool {
 	if s == nil {
 		return false
@@ -184,7 +198,14 @@ func (s *Set) Has(gt kgtypes.GraphType, name string) bool {
 	if !ok {
 		return false
 	}
-	return s.HasRef(ref)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for member := range s.members {
+		if member.GraphType == ref.GraphType && member.Name == ref.Name {
+			return true
+		}
+	}
+	return false
 }
 
 // HasRef tests membership for one storage copy.

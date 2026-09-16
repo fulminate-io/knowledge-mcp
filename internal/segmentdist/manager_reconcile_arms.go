@@ -153,7 +153,8 @@ type ArmObservation struct {
 func (m *Manager) ResidentObservationsByFormat(
 	ctx context.Context, gt kgtypes.GraphType, name string,
 ) ([]ArmObservation, error) {
-	m = m.ForDestination(ctx)
+	m, releaseDestination := m.forRequest(ctx)
+	defer releaseDestination()
 	arms := []coverageArm{m.managerFor(gt, name), m.bm25ManagerFor(gt, name)}
 
 	verdicts := make([]ArmObservation, 0, len(arms))

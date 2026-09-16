@@ -136,6 +136,23 @@ func (m *distManager[Q, S]) persistResidentWithWriteAttempts(writeAttempts int) 
 	if err := m.writeNewBlobsToL2WithAttempts(diff, writeAttempts); err != nil {
 		return 0, err
 	}
+
+	// EVERY RESIDENT ID IS NOW IN L2, which is the precondition the mapping
+	// republication needs — the ones skipped as present were already there and the
+	// rest were just written. A segment sealed by this engine holds its whole encoder
+	// output on the heap until something maps it over the stored copy, so this is
+	// where a built payload becomes page cache. It is deliberately AFTER the write
+	// and deliberately NOT gated on len(diff): a resident set whose every blob was
+	// skipped as present can still be heap-backed, which is exactly what a re-seal of
+	// an unchanged group produces.
+	//
+	// IT DOES NOT AFFECT THIS FUNCTION'S RESULT. The count returned is what was
+	// WRITTEN, the release is a memory property of segments that are already correct
+	// and already durable, and its failures are recorded as pending for the next
+	// consumer touch rather than surfaced here — a caller's durability verdict must
+	// not turn on whether a mapping could be made.
+	m.releaseHeapBackedResident(all)
+
 	return len(diff), nil
 }
 

@@ -117,7 +117,7 @@ func TestEveryEngineBuildPathDeliversTheCensus(t *testing.T) {
 			require.NoError(t, err)
 		}},
 		{"ReplaceBucketGroup reaches harvestPartition", func(t *testing.T, e *SegmentedIndex[mockQuery, mockStats]) {
-			_, _, err := e.ReplaceBucketGroup(1, nil, []BucketWork{{Bucket: 0, Docs: docs}})
+			_, _, err := e.ReplaceBucketGroup(t.Context(), 1, nil, []BucketWork{{Bucket: 0, Docs: docs}})
 			require.NoError(t, err)
 		}},
 		{"BuildLayer", func(t *testing.T, e *SegmentedIndex[mockQuery, mockStats]) {

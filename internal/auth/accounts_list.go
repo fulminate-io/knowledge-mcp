@@ -44,7 +44,7 @@ func (t *Transport) ListAccounts(ctx context.Context) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, t.readHTTPError(ctx, resp, mePathPrefix+"accounts")
+		return nil, t.readHTTPError(resp, mePathPrefix+"accounts")
 	}
 	out, err := io.ReadAll(resp.Body)
 	if err != nil {

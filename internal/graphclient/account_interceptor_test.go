@@ -141,6 +141,117 @@ func TestAccountHeader_AbsentWhenUnsetAndOnLocalClient(t *testing.T) {
 	})
 }
 
+// TestAccountInterceptor_StampsTheBoundDestination is requirement 4: when the
+// request carries a BOUND cloud destination, that destination is what the
+// interceptor stamps — a request bound to an account other than the process
+// selection is SERVED for its own account rather than refused as "bound cloud
+// account changed", which is what made a per-request account impossible.
+func TestAccountInterceptor_StampsTheBoundDestination(t *testing.T) {
+	const selected = "11111111-1111-4111-8111-111111111111"
+	const bound = "22222222-2222-4222-8222-222222222222"
+	installSelection(t, selected)
+
+	capt := newAccountCapture(t)
+	srv := httptest.NewServer(capt)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
+
+	gc := closeIdleOnCleanup(t, newCloudGraphClient(srv.URL,
+		auth.StaticTokenSource{AccessToken: "tok-bound"}, &Destination{Storage: "cloud", AccountID: bound}))
+	req := &knowledgev1.ExecuteRequest{
+		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{ById: "x"}},
+	}
+
+	_, err := gc.Execute(opCtx(), req)
+	require.NoError(t, err, "a request bound to another account must be served, not refused locally")
+	seen, present := capt.observed()
+	assert.True(t, present, "the bound request must carry an account header")
+	assert.Equal(t, bound, seen, "the stamped account must be the request's BOUND account, not the selection")
+
+	// A rejection latched against the SELECTION does not refuse a request bound
+	// to a different account: the latch is a fact about one account.
+	auth.SelectedAccount().MarkInvalid(selected, "account_forbidden: not a member")
+	_, err = gc.Execute(opCtx(), req)
+	require.NoError(t, err, "a latch on the selection must not refuse a request bound elsewhere")
+
+	// A rejection latched against the BOUND account does refuse it — fail
+	// closed, locally, without a round trip.
+	auth.SelectedAccount().MarkInvalid(bound, "account_forbidden: not a member")
+	_, err = gc.Execute(opCtx(), req)
+	require.Error(t, err, "a latch on the bound account must refuse the call")
+	require.ErrorIs(t, err, auth.ErrAccountSelectionRejected)
+}
+
+// TestAccountInterceptor_RefusesAnUnusableBinding keeps the fail-closed arm the
+// relaxation could silently eat: a cloud RPC bound to a LOCAL destination names
+// no cloud account at all and is still refused before dispatch.
+func TestAccountInterceptor_RefusesAnUnusableBinding(t *testing.T) {
+	installSelection(t, "11111111-1111-4111-8111-111111111111")
+
+	capt := newAccountCapture(t)
+	srv := httptest.NewServer(capt)
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
+
+	d := Destination{Storage: "local"}
+	gc := closeIdleOnCleanup(t, newCloudGraphClient(srv.URL,
+		auth.StaticTokenSource{AccessToken: "tok-unusable"}, &d))
+	_, err := gc.Execute(opCtx(), &knowledgev1.ExecuteRequest{
+		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{ById: "x"}},
+	})
+	require.Error(t, err, "a cloud RPC bound to %+v must be refused", d)
+	assert.Contains(t, err.Error(), "cloud RPC bound to a local destination, which names no cloud account",
+		"the refusal must say what is actually wrong: the binding names no cloud account, and there is no account to re-select")
+}
+
+// TestAccountInterceptor_AccountlessCloudBindingUsesTheSelection is the
+// daemon's OWN work: background maintenance binds a cloud destination that
+// names no account (a machine-auth client with no selection stored), and it
+// must go on being served exactly as it was before per-request accounts —
+// stamping the selection when there is one and NO header at all when there is
+// not, which is what lets the gateway resolve the caller's primary account.
+//
+// A binding that names no account is not an account this client was asked
+// about, so there is nothing here to fail closed over; the empty cloud account
+// is refused where a USER's call raises it (prepareStorageCall, BindSearch).
+// Written after refusing it here broke the segment-coverage reconcile pass in
+// bootstrap, whose fixture is exactly this shape.
+func TestAccountInterceptor_AccountlessCloudBindingUsesTheSelection(t *testing.T) {
+	req := &knowledgev1.ExecuteRequest{
+		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{ById: "x"}},
+	}
+
+	t.Run("with a selection, the selection is stamped", func(t *testing.T) {
+		const selected = "11111111-1111-4111-8111-111111111111"
+		installSelection(t, selected)
+		capt := newAccountCapture(t)
+		srv := httptest.NewServer(capt)
+		t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
+
+		d := Destination{Storage: "cloud"}
+		gc := closeIdleOnCleanup(t, newCloudGraphClient(srv.URL,
+			auth.StaticTokenSource{AccessToken: "tok-accountless"}, &d))
+		_, err := gc.Execute(opCtx(), req)
+		require.NoError(t, err, "the daemon's own accountless cloud work must be served")
+		seen, present := capt.observed()
+		assert.True(t, present)
+		assert.Equal(t, selected, seen)
+	})
+
+	t.Run("with no selection, no header at all", func(t *testing.T) {
+		installSelection(t, "")
+		capt := newAccountCapture(t)
+		srv := httptest.NewServer(capt)
+		t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
+
+		d := Destination{Storage: "cloud"}
+		gc := closeIdleOnCleanup(t, newCloudGraphClient(srv.URL,
+			auth.StaticTokenSource{AccessToken: "tok-accountless"}, &d))
+		_, err := gc.Execute(opCtx(), req)
+		require.NoError(t, err)
+		seen, present := capt.observed()
+		assert.False(t, present, "no selection must mean no header at all, got %q", seen)
+	})
+}
+
 // TestAccountInterceptor_RefusesRejectedSelection proves the refusal half of the
 // interceptor: once a rejection has been observed for the stored selection, the
 // cloud RPC fails locally as permission-denied and the server is never reached.

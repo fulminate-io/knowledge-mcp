@@ -74,6 +74,18 @@ func APIKeyForProvider(p Provider) string {
 	return apiKeyForCredentials(credentials(), p)
 }
 
+// APIKeyFor resolves p's key from THESE credentials, with the same
+// file-then-environment precedence APIKeyForProvider applies to the
+// process-global ones. A nil receiver resolves the environment alone.
+//
+// It exists for a caller holding a configuration it parsed itself rather
+// than the process-global one: the Desktop's provider check reads the file
+// it was pointed at with --config-file, and must not answer from whatever
+// configuration happens to be loaded in the process.
+func (cr *Credentials) APIKeyFor(p Provider) string {
+	return apiKeyForCredentials(cr, p)
+}
+
 func apiKeyForCredentials(cr *Credentials, p Provider) string {
 	switch p {
 	case ProviderAnthropic:

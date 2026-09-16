@@ -109,6 +109,12 @@ const corruptibleIDsMarker = "RAISE-CORRUPTION-ON-IDS"
 
 func (corruptibleFormat) Name() string { return "corruptible" }
 
+// ValidateSegment is the format's structural self-check. A corruptible segment is a list of
+// rows with no internal offsets, so there is no reference that can point outside it
+// and nothing to refuse: the honest answer is nil, and the method exists because the
+// interface requires every format to say how its segments are validated.
+func (corruptibleFormat) ValidateSegment(SegmentID, []byte) error { return nil }
+
 func (corruptibleFormat) Build(docs []Document) (Segment[mockQuery, mockStats], BuildReport, error) {
 	seg := &corruptibleSegment{}
 	for _, d := range docs {
@@ -144,6 +150,10 @@ func (corruptibleFormat) MergeTo(MergeSink, []Segment[mockQuery, mockStats], []f
 }
 
 func (corruptibleFormat) AggregateStats([]Segment[mockQuery, mockStats]) mockStats {
+	return mockStats{}
+}
+
+func (corruptibleFormat) AppendStats(mockStats, Segment[mockQuery, mockStats]) mockStats {
 	return mockStats{}
 }
 
@@ -444,7 +454,7 @@ func TestMergeEntry_ContainsACorruptMergedOutput(t *testing.T) {
 		segs = append(segs, entry.payload)
 	}
 
-	entry, err := e.mergeEntry(segs, nil)
+	entry, err := e.mergeEntry(segs, nil, []SegmentID{"in-1", "in-2"})
 	require.Error(t, err,
 		"a merged artifact whose member walk raises must come back as an ERROR from the merge, not as a panic on the merger goroutine")
 	require.Nil(t, entry)

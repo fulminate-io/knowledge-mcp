@@ -59,9 +59,56 @@ type SegmentFormat[Q, S any] interface {
 	// each concurrent call is given its OWN dst, so an implementation must not
 	// retain dst on its receiver any more than it may retain other per-call state.
 	MergeTo(dst MergeSink, segs []Segment[Q, S], accept []func(ExternalID) bool) (n int64, err error)
+	// ValidateSegment reports whether payload is a structurally consistent segment
+	// of this format: every offset it addresses resolves inside it. It returns nil
+	// for a segment a reader can walk, a *CorruptSegmentError for one whose own
+	// internal references are wrong, and any other error for bytes that are not a
+	// segment of this format at all. The id is stamped onto a corruption error and
+	// may be empty when the caller has none yet.
+	//
+	// IT IS ON THE INTERFACE, NOT BEHIND A TYPE ASSERTION, for the reason HeapBytes
+	// states below: the engine calls it on the output of EVERY merge before that
+	// output is published, so a format that did not declare a validator would have
+	// its merges published unchecked — and an unchecked publish is invisible until a
+	// reader trips over the bytes in another process, days later. The compiler
+	// refuses a format that has not said how its segments are validated. A format
+	// whose payload carries no internal offsets answers nil and says so.
+	//
+	// WHAT IT COSTS AND WHY THAT IS AFFORDABLE. It is a FULL WALK — every term of
+	// every field, every member id, every docFreq row — because the damage class it
+	// exists for is entirely below the header: the incident's segment opened
+	// cleanly, reported a plausible document count and failed only when a term's
+	// posting run was resolved. Measured on this tree's bm25 implementation
+	// (BenchmarkValidateSegment, Apple M2 Ultra): 71 us for a 92,530-byte blob and
+	// 2.38 ms for a 5,480,376-byte one — 18 allocations either way, because the walk
+	// resolves and discards. That is against a merge that has just read every
+	// constituent and written the whole output, so the gate is well under a percent
+	// of the work it guards.
+	ValidateSegment(id SegmentID, payload []byte) error
 	// AggregateStats computes the corpus-wide stats over the current segment set.
 	// BM25 sums document frequencies for IDF; HNSW returns struct{}{}.
 	AggregateStats(segs []Segment[Q, S]) S
+	// AppendStats computes the corpus-wide stats for the set formed by appending
+	// ONE segment to a set whose stats are prev. It is the incremental
+	// counterpart of AggregateStats and the two MUST agree: the same corpus
+	// reached by appending and by folding owes the same statistics, and a
+	// snapshot that crosses the engine's route-tail limit flattens through
+	// AggregateStats mid-sequence, so the two shapes alternate over one engine's
+	// life.
+	//
+	// IT IS ON THE INTERFACE BECAUSE THE ENGINE'S PUBLISH PATH CANNOT AFFORD THE
+	// FOLD. The engine appends one segment per sealed partition per write lease
+	// onto a set its owner deliberately leaves unmerged, so a fold over the whole
+	// resident set on every publish is work proportional to the ENGINE rather
+	// than to the segment being published — 49% of a measured client's CPU. A
+	// format whose stats genuinely need the whole set can still call its own
+	// AggregateStats here; it then pays that cost explicitly rather than having
+	// the engine pay it on every format's behalf.
+	//
+	// IT MUST NOT MUTATE prev. prev belongs to a PUBLISHED snapshot that readers
+	// are serving from, and the engine calls this inside a CAS retry loop where a
+	// losing publisher's work is discarded.
+	AppendStats(prev S, seg Segment[Q, S]) S
 }
 
 // BuildReport is what a format tells the engine about a build BESIDES the

@@ -37,7 +37,8 @@ func (m *Manager) ReplaceBucket(
 	ctx context.Context, gt kgtypes.GraphType, name string,
 	superseded []searchengine.ExternalID, docs []searchengine.Document,
 ) error {
-	m = m.ForDestination(ctx)
+	m, releaseDestination := m.forRequest(ctx)
+	defer releaseDestination()
 	dm := m.managerFor(gt, name)
 	// The incoming documents are NOT yet resident on this path, so the corpus they
 	// will form is the resident set plus them.
@@ -47,7 +48,7 @@ func (m *Manager) ReplaceBucket(
 	// the delete re-emit could arm them without arming them here; the delete no longer
 	// re-emits this format at all, leaving that form a single-caller indirection over
 	// constant arguments, so it is gone and the policies are stated at the one call.
-	return replaceBucketAndPublish(dm, superseded, docs, corpusDocs, singleL2WriteAttempt, logAbortedReclaimOnly)
+	return replaceBucketAndPublish(ctx, dm, superseded, docs, corpusDocs, singleL2WriteAttempt, logAbortedReclaimOnly)
 }
 
 // replaceBucketAndPublish is the shared body of every partition re-emit: rebuild the
@@ -89,7 +90,7 @@ func (m *Manager) ReplaceBucket(
 // different type arguments (HNSW is [[]byte, struct{}], BM25 is
 // [bm25.Query, *bm25.CorpusStats]); a non-generic helper cannot take both.
 func replaceBucketAndPublish[Q, S any](
-	dm *distManager[Q, S],
+	ctx context.Context, dm *distManager[Q, S],
 	superseded []searchengine.ExternalID, docs []searchengine.Document,
 	corpusDocs int, writeAttempts int, surfaceAborted bool,
 ) error {
@@ -99,7 +100,7 @@ func replaceBucketAndPublish[Q, S any](
 	// by construction; a bare read of the record afterwards would instead report any
 	// abort this pool has ever seen.
 	mark := dm.reclaimAbortMark()
-	if _, _, err := replaceBucketGroups(dm, superseded, docs, nil, corpusDocs, nil); err != nil {
+	if _, _, err := replaceBucketGroups(ctx, dm, superseded, docs, nil, corpusDocs, nil); err != nil {
 		return err
 	}
 	// Make the post-replace resident set durable. There is no reconcile set to diff
@@ -130,8 +131,9 @@ func (m *Manager) ReplaceBucketFields(
 	ctx context.Context, gt kgtypes.GraphType, name string,
 	superseded []searchengine.ExternalID, docs []searchengine.Document,
 ) error {
-	m = m.ForDestination(ctx)
-	return m.replaceBucketFields(gt, name, superseded, docs, singleL2WriteAttempt, logAbortedReclaimOnly)
+	m, releaseDestination := m.forRequest(ctx)
+	defer releaseDestination()
+	return m.replaceBucketFields(ctx, gt, name, superseded, docs, singleL2WriteAttempt, logAbortedReclaimOnly)
 }
 
 // replaceBucketFields is ReplaceBucketFields' body with the two per-caller re-emit
@@ -147,13 +149,13 @@ func (m *Manager) ReplaceBucketFields(
 // failure model was never examined. The vector format had the same split until its
 // delete leg became a live-bit kill, which left nothing to scope.
 func (m *Manager) replaceBucketFields(
-	gt kgtypes.GraphType, name string,
+	ctx context.Context, gt kgtypes.GraphType, name string,
 	superseded []searchengine.ExternalID, docs []searchengine.Document,
 	writeAttempts int, surfaceAborted bool,
 ) error {
 	dm := m.bm25ManagerFor(gt, name)
 	corpusDocs := dm.engine.DistinctResidentDocCount() + len(docs)
-	return replaceBucketAndPublish(dm, superseded, docs, corpusDocs, writeAttempts, surfaceAborted)
+	return replaceBucketAndPublish(ctx, dm, superseded, docs, corpusDocs, writeAttempts, surfaceAborted)
 }
 
 // DeleteFromBuckets makes a client-originated delete DURABLE, and it now does so on
@@ -260,7 +262,8 @@ func (m *Manager) replaceBucketFields(
 func (m *Manager) DeleteFromBuckets(
 	ctx context.Context, gt kgtypes.GraphType, name string, ids []searchengine.ExternalID,
 ) error {
-	m = m.ForDestination(ctx)
+	m, releaseDestination := m.forRequest(ctx)
+	defer releaseDestination()
 	if len(ids) == 0 {
 		return nil
 	}
@@ -352,7 +355,7 @@ func (m *Manager) DeleteFromBuckets(
 	// process undoes with nothing having said so.
 
 	bm25Start := time.Now()
-	err := m.replaceBucketFields(gt, name, ids, nil, l2WriteAttemptsOnDelete, surfaceAbortedReclaim)
+	err := m.replaceBucketFields(ctx, gt, name, ids, nil, l2WriteAttemptsOnDelete, surfaceAbortedReclaim)
 	bm25MS = time.Since(bm25Start).Milliseconds()
 	// JOINED, NOT PREFERRED. An unsealed import window and a failed re-emit are
 	// different states with different remedies — one resurrects the document on the next

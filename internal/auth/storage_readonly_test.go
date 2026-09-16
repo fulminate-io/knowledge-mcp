@@ -16,7 +16,7 @@ func openStoreOverFake(t *testing.T) (Store, *writeRecorderStore) {
 	credentialsPathInTempHome(t)
 
 	rec := &writeRecorderStore{testStore: newTestStore()}
-	newKeychainStoreFn = func() (Store, error) { return rec, nil }
+	newKeychainStoreFn = func(string) (Store, error) { return rec, nil }
 	t.Cleanup(func() { newKeychainStoreFn = NewStore })
 
 	store, err := OpenStore()

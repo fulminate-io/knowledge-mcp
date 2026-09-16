@@ -295,7 +295,17 @@ func coalesceEmbedProvider(override, fallback EmbedProvider) EmbedProvider {
 // running Voyage embeddings and Cohere rerank supplies two keys and neither
 // axis reads the other's.
 func APIKeyForEmbedProvider(p EmbedProvider) string {
-	cr := credentials()
+	return credentials().EmbedAPIKeyFor(p)
+}
+
+// EmbedAPIKeyFor resolves p's key from THESE credentials, with the same
+// file-then-environment precedence APIKeyForEmbedProvider applies to the
+// process-global ones. A nil receiver resolves the environment alone.
+//
+// It is the embed axis's counterpart to Credentials.APIKeyFor, and exists
+// for the same caller: the Desktop's provider check holds the
+// configuration it parsed from --config-file, never the process-global one.
+func (cr *Credentials) EmbedAPIKeyFor(p EmbedProvider) string {
 	switch p {
 	case EmbedProviderVoyage:
 		var c string

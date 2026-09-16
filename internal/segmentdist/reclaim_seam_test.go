@@ -59,6 +59,14 @@ type instrumentedCache struct {
 	// on exactly the platform CI never runs.
 	failMapping bool
 
+	// corruptMapping, when true, makes GetMapped SUCCEED and hand back bytes the
+	// format cannot decode. It is a DIFFERENT failure from failMapping and reaches a
+	// different arm: a mapping failure is caught before the engine is asked to swap
+	// anything, while these bytes map cleanly and are refused at Decode, which is the
+	// only way to produce RemapFailed for a whole batch. A release pass whose every
+	// segment failed that way is reachable from a torn or truncated cache file.
+	corruptMapping bool
+
 	// failPut makes Put report a WRITE FAILURE — distinct from blockPut, which
 	// models a crash and reports nothing. failPutFrom selects which call starts
 	// failing (1-based, zero means from the first), so a test can let an initial
@@ -117,9 +125,16 @@ func (c *instrumentedCache) GetMapped(id searchengine.SegmentID) ([]byte, func()
 	c.mu.Lock()
 	c.ops = append(c.ops, cacheOp{kind: "getmapped", id: id})
 	fail := c.failMapping
+	corrupt := c.corruptMapping
 	c.mu.Unlock()
 	if fail {
 		return nil, nil, false, errInjectedMappingFailure
+	}
+	if corrupt {
+		// A NON-NIL RELEASE, because the arm under test is what the engine does with a
+		// mapping it was handed and could not use: one that arrived with no release to
+		// give back would not exercise the ownership rule at all.
+		return []byte("injected: not a decodable segment"), func() {}, true, nil
 	}
 	return c.inner.GetMapped(id)
 }
@@ -209,6 +224,14 @@ func (c *instrumentedCache) Keys() []searchengine.SegmentID {
 func (c *instrumentedCache) sizeOf(id searchengine.SegmentID) (int64, bool) {
 	return c.inner.sizeOf(id)
 }
+
+// quarantinedCount forwards the wrapped cache's withdrawal count. The instrument
+// records operations rather than substituting for them, so the reading is the real
+// cache's.
+func (c *instrumentedCache) quarantinedCount() int { return c.inner.quarantinedCount() }
+
+// cureQuarantined forwards the cure on the same terms.
+func (c *instrumentedCache) cureQuarantined() int { return c.inner.cureQuarantined() }
 
 // putCallCount reports how many Put calls the cache has served, FAILED ONES
 // INCLUDED. Counting ATTEMPTS rather than successes is the point: a retry is a

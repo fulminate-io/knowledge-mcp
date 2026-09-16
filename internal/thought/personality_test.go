@@ -5,6 +5,7 @@ package thought
 import (
 	"context"
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -94,7 +95,13 @@ func TestPersonalityScalars_RerinforcerSemantics(t *testing.T) {
 		// cA2 no-subsequent fallback) → accuracy 1.0 → scalar 1.8, != 1.000.
 		sAB, ok := profile.Scalar("A", "B")
 		require.True(t, ok, "the A→B pair must be present in the profile")
-		assert.NotEqual(t, 1.0, sAB,
+		// NOT-EQUAL OVER A FLOAT IS THE WRONG SHAPE FOR THIS CLAIM, and the corpus
+		// check for the float-compare class is what surfaced it: a scalar that moved
+		// by one ulp would satisfy an inequality while being indistinguishable from
+		// the default this row says it left. The claim is that it moved OFF 1.000, so
+		// the assertion carries the floor that makes "moved" mean something — the
+		// expected value here is 1.8, so the margin is not a tuning knob.
+		assert.Greater(t, math.Abs(sAB-1.0), 1e-9,
 			"non-evidenced charges must shift A's scalar off the 1.000 default via the charged-by leg")
 	})
 

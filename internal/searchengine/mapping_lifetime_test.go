@@ -250,3 +250,111 @@ func TestExportedBlobKeepsMappingAlive(t *testing.T) {
 			"the zero above proves nothing, because the cleanup does not fire in this environment")
 	}
 }
+
+// TestAReplacementsStatsDoNotOutliveADepartedPayloadsMapping is the LIFETIME half
+// of the statistics re-fold, and the half no equality assertion can reach.
+//
+// A FORMAT'S STATISTICS OBJECT RETAINS THE PAYLOADS IT ANSWERS FROM — bm25's
+// CorpusStats holds a probe chain of them, and mockStats mirrors that on purpose —
+// while the cleanup that frees a mapping observes the ENTRY's reachability, which
+// holding a payload does not extend. So a snapshot that carried its predecessor's
+// statistics across a consolidation would go on probing a payload whose owning
+// entry has left the set, been collected, and had its mapping released underneath
+// it: a read of freed memory inside a search, at whatever later moment the address
+// range is reused.
+//
+// THE RELEASE IS WHAT MAKES THIS A LIFETIME ROW RATHER THAN BOOKKEEPING. The row
+// waits for the departed segment's mapping to actually be released before asserting
+// what the published statistics probe, so a chain still naming that payload is
+// naming memory that is already gone rather than merely stale. The surviving
+// segment's release staying at zero in the same run is the control: it proves the
+// cleanup fires for the departed one because its entry became unreachable, not
+// because this environment releases everything.
+//
+// It deliberately never READS a possibly-released payload, for the reason
+// TestExportedBlobKeepsMappingAlive gives: under the broken shape that is a fault,
+// and a crash is a worse gate than an assertion.
+func TestAReplacementsStatsDoNotOutliveADepartedPayloadsMapping(t *testing.T) {
+	e := newTestEngine(t, 1<<20) // nothing seals or merges on its own
+	f := mockFormat{}
+
+	blobFor := func(t *testing.T, id SegmentID, ids []ExternalID, released *atomic.Int64) SegmentBlob {
+		t.Helper()
+		docs := make([]Document, 0, len(ids))
+		for _, d := range ids {
+			docs = append(docs, doc(d, "probe"))
+		}
+		built, _, err := f.Build(docs)
+		if err != nil {
+			t.Fatalf("build %s: %v", id, err)
+		}
+		bytes, err := built.Encode()
+		if err != nil {
+			t.Fatalf("encode %s: %v", id, err)
+		}
+		return SegmentBlob{ID: id, Format: "mock", Bytes: bytes, Release: func() { released.Add(1) }}
+	}
+
+	var departedReleased, survivorReleased atomic.Int64
+	departing := blobFor(t, "lifetime-departing", []ExternalID{"gone-a", "gone-b"}, &departedReleased)
+	surviving := blobFor(t, "lifetime-surviving", []ExternalID{"stay-a"}, &survivorReleased)
+	if err := e.Import([]SegmentBlob{departing, surviving}, nil); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	// The departed PAYLOAD is held by identity only. That keeps the *mockSegment
+	// reachable, which is what lets the assertions below name it — and it does NOT
+	// keep its ENTRY reachable, which is what the cleanup is keyed on, so the release
+	// still fires.
+	departedEntry := e.set.Load().entryByID("lifetime-departing")
+	if departedEntry == nil {
+		t.Fatal("PRECONDITION: the departing segment must be resident")
+	}
+	departedPayload := departedEntry.payload
+	departedEntry = nil
+	_ = departedEntry
+
+	if _, err := e.ReplaceBucket(0, 1, []SegmentID{"lifetime-departing"}, nil, nil); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+
+	published := e.set.Load()
+	if published.entryByID("lifetime-departing") != nil {
+		t.Fatal("PRECONDITION: the departing segment must have left the published set")
+	}
+
+	// THE MAPPING IS GONE. Nothing but this test's payload handle refers to the
+	// departed entry now, so its cleanup is free to run; waiting for it is what turns
+	// every assertion below into a statement about freed memory.
+	if !waitForRelease(&departedReleased) {
+		t.Fatal("the departed segment's mapping was never released — the cleanup does not fire in this " +
+			"environment, so the assertions below would prove nothing about lifetime")
+	}
+	if n := survivorReleased.Load(); n != 0 {
+		t.Fatalf("CONTROL: the surviving segment's mapping was released %d time(s) while it is still resident — "+
+			"the release above is then not evidence that the DEPARTED entry became unreachable", n)
+	}
+
+	// And the published statistics probe exactly the payloads the published snapshot
+	// still holds: not the departed one, whose mapping is now released, and not a set
+	// missing the consolidated output, whose documents every score is derived from.
+	probed := map[Segment[mockQuery, mockStats]]bool{}
+	for _, seg := range published.stats.probedSegments() {
+		probed[seg] = true
+	}
+	if probed[departedPayload] {
+		t.Error("the published snapshot's statistics still probe the payload of a segment that left the set, " +
+			"and that segment's mapping has already been released — the fold was carried across the " +
+			"replacement instead of re-taken over the entries that survived")
+	}
+	for _, entry := range published.entries {
+		if !probed[entry.payload] {
+			t.Errorf("the published snapshot's statistics do not probe resident segment %s, so they were "+
+				"folded over some other set of entries than this snapshot's", entry.meta.ID)
+		}
+	}
+	if len(probed) != len(published.entries) {
+		t.Errorf("the statistics probe %d payload(s) for a snapshot of %d entries", len(probed), len(published.entries))
+	}
+	runtime.KeepAlive(departedPayload)
+}

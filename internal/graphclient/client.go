@@ -169,16 +169,17 @@ func NewGraphClientForURL(baseURL string) *GraphClient {
 		// No global timeout — reindex operations on large repos can take
 		// hours. Per-request timeouts are handled via context.
 	}
-	// Both stampers run BEFORE the reconnect retry loop so a retried attempt
-	// re-sends the already-stamped request rather than re-deriving per attempt.
-	// They write to different places: the operation stamper writes a MESSAGE
-	// FIELD (client_context.operation), the session stamper writes a HEADER
-	// (the harness session-id). The health client gets both and is unaffected by
-	// either: its request messages carry no client_context field, so the
-	// operation stamper no-ops, and a health probe carries the harness header
-	// harmlessly when one is in context. The health client gets the freshness
-	// observer too, and no-ops the same way: its response messages declare no
-	// freshness_gen field.
+	// The operation stamper runs BEFORE the reconnect retry loop so a retried
+	// attempt re-sends the already-stamped request rather than re-deriving per
+	// attempt; it writes a MESSAGE FIELD (client_context.operation). THERE IS NO
+	// SESSION STAMPER on this chain: the harness session identity is resolved
+	// and stamped at the DAEMON'S OWN HTTP EDGE onto the request context
+	// (graphclient/mcp_http_harness_session.go) and read from context by the
+	// tools that need it — it never travels to the graph server as a header.
+	// The health client gets the operation stamper and is unaffected: its
+	// request messages carry no client_context field, so it no-ops. The health
+	// client gets the freshness observer too, and no-ops the same way: its
+	// response messages declare no freshness_gen field.
 	//
 	// The freshness observer is PREPENDED, and the position is load-bearing:
 	// connect composes interceptors first-in-slice OUTERMOST, so an outermost

@@ -14,10 +14,54 @@ import (
 	"testing"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/assets"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
-// hookAsset is the canonical managed promote-guard entry the merge installs.
-func hookAsset() []byte { return assets.ClaudeHooks }
+// hookAsset is the canonical managed entry SET the merge installs — the
+// promote-guard command hook and the http session hook — rendered at the
+// default daemon port. The asset carries a port placeholder, so an unrendered
+// asset is never what the installer writes and never what a test should merge.
+func hookAsset() []byte {
+	rendered, err := renderClaudeHooks(assets.ClaudeHooks, graphclient.DefaultMCPHTTPPort)
+	if err != nil {
+		panic("render the embedded claude hook asset: " + err.Error())
+	}
+	return rendered
+}
+
+// wantManagedEntries is how many knowledge-managed PreToolUse entries the asset
+// ships, READ OFF THE ASSET rather than spelled: a test pinning the count must
+// not have to be edited when the set changes, only when the MERGE stops
+// installing what the asset holds.
+func wantManagedEntries() int {
+	entries, err := canonicalManagedEntries(hookAsset())
+	if err != nil {
+		panic("decode the embedded claude hook asset: " + err.Error())
+	}
+	return len(entries)
+}
+
+// promoteGuardEntry returns the promote-guard entry out of the asset set, for
+// the tests that exercise its command.
+func promoteGuardEntry(t *testing.T) []byte {
+	t.Helper()
+	for _, e := range mustCanonicalEntries(t) {
+		if e.matcher == knowledgeHookMatcher {
+			return e.raw
+		}
+	}
+	t.Fatalf("no promote-guard entry (matcher %q) in the hook asset", knowledgeHookMatcher)
+	return nil
+}
+
+func mustCanonicalEntries(t *testing.T) []managedEntry {
+	t.Helper()
+	entries, err := canonicalManagedEntries(hookAsset())
+	if err != nil {
+		t.Fatalf("canonicalManagedEntries: %v", err)
+	}
+	return entries
+}
 
 // decodePreToolUse decodes a settings.json document into its hooks.PreToolUse
 // slice of RAW entries, for assertions that inspect individual entries.
@@ -62,11 +106,13 @@ func TestMergeClaudeSettings_Fresh(t *testing.T) {
 		t.Fatalf("output is not valid JSON:\n%s", out)
 	}
 	pre := decodePreToolUse(t, out)
-	if len(pre) != 1 {
-		t.Fatalf("fresh PreToolUse has %d entries, want 1:\n%s", len(pre), out)
+	if len(pre) != wantManagedEntries() {
+		t.Fatalf("fresh PreToolUse has %d entries, want %d:\n%s", len(pre), wantManagedEntries(), out)
 	}
-	if !isManagedEntry(pre[0]) {
-		t.Errorf("the sole fresh entry is not the managed entry:\n%s", pre[0])
+	for i, e := range pre {
+		if !isManagedEntry(e) {
+			t.Errorf("fresh entry %d is not a managed entry:\n%s", i, e)
+		}
 	}
 }
 
@@ -147,9 +193,9 @@ func TestMergeClaudeSettings_NonClobber(t *testing.T) {
 	assertHookField(t, outBash, "timeout", float64(60))
 	assertHookField(t, outBash, "statusMessage", "running bash guard")
 
-	// The managed promote-guard entry is present, exactly once.
-	if n := countManagedEntries(t, out); n != 1 {
-		t.Errorf("managed entry count = %d, want 1:\n%s", n, out)
+	// Every managed entry is present, exactly once each.
+	if n := countManagedEntries(t, out); n != wantManagedEntries() {
+		t.Errorf("managed entry count = %d, want %d:\n%s", n, wantManagedEntries(), out)
 	}
 }
 
@@ -170,8 +216,8 @@ func TestMergeClaudeSettings_Idempotent(t *testing.T) {
 	if !bytes.Equal(once, twice) {
 		t.Errorf("not idempotent from 2nd application:\n--once--\n%s\n--twice--\n%s", once, twice)
 	}
-	if n := countManagedEntries(t, twice); n != 1 {
-		t.Errorf("managed entry count = %d, want 1", n)
+	if n := countManagedEntries(t, twice); n != wantManagedEntries() {
+		t.Errorf("managed entry count = %d, want %d", n, wantManagedEntries())
 	}
 }
 
@@ -190,11 +236,11 @@ func TestMergeClaudeSettings_ReplacesStale(t *testing.T) {
 	if bytes.Contains(out, []byte("STALE OLD REASON")) {
 		t.Errorf("stale managed command survived:\n%s", out)
 	}
-	if n := countManagedEntries(t, out); n != 1 {
-		t.Errorf("managed entry count = %d, want 1 (in-place replace):\n%s", n, out)
+	if n := countManagedEntries(t, out); n != wantManagedEntries() {
+		t.Errorf("managed entry count = %d, want %d (in-place replace):\n%s", n, wantManagedEntries(), out)
 	}
-	// The managed entry's command equals the current asset's command.
-	wantCmd := assetCommand(t, hookAsset())
+	// The promote-guard entry's command equals the current asset's command.
+	wantCmd := assetCommand(t, promoteGuardEntry(t))
 	gotCmd := assetCommand(t, findManagedEntry(t, out))
 	if gotCmd != wantCmd {
 		t.Errorf("managed command not refreshed to current asset:\nwant %q\ngot  %q", wantCmd, gotCmd)
@@ -218,7 +264,7 @@ func TestPromoteGuardCommand_ParamConditional(t *testing.T) {
 		t.Skip("jq not on PATH; skipping param-conditional exec test")
 	}
 
-	command := assetCommand(t, hookAsset())
+	command := assetCommand(t, promoteGuardEntry(t))
 
 	run := func(stdin string) (string, int) {
 		t.Helper()
@@ -278,7 +324,7 @@ func TestCheckClaudeSettings(t *testing.T) {
 	setBootstrapHome(t, home)
 
 	// Missing settings.json → warn.
-	if got := checkClaudeSettings(); got.status != statusWarn {
+	if got := checkClaudeSettings(graphclient.DefaultMCPHTTPPort, true); got.status != statusWarn {
 		t.Errorf("missing settings.json: status=%v, want warn", got.status)
 	}
 
@@ -287,7 +333,7 @@ func TestCheckClaudeSettings(t *testing.T) {
 	if _, err := writeClaudeSettings(path, hookAsset(), false); err != nil {
 		t.Fatalf("seed settings.json: %v", err)
 	}
-	if got := checkClaudeSettings(); got.status != statusOK {
+	if got := checkClaudeSettings(graphclient.DefaultMCPHTTPPort, true); got.status != statusOK {
 		t.Errorf("in-sync settings.json: status=%v, want ok (msg=%q)", got.status, got.msg)
 	}
 
@@ -296,7 +342,7 @@ func TestCheckClaudeSettings(t *testing.T) {
 	if err := os.WriteFile(path, drift, 0o600); err != nil {
 		t.Fatalf("drift settings.json: %v", err)
 	}
-	if got := checkClaudeSettings(); got.status != statusWarn {
+	if got := checkClaudeSettings(graphclient.DefaultMCPHTTPPort, true); got.status != statusWarn {
 		t.Errorf("drifted settings.json: status=%v, want warn", got.status)
 	}
 }
@@ -336,15 +382,17 @@ func findBashEntry(t *testing.T, doc []byte) json.RawMessage {
 	return nil
 }
 
-// findManagedEntry returns the raw managed PreToolUse entry from doc.
+// findManagedEntry returns the raw PROMOTE-GUARD managed PreToolUse entry from
+// doc. The managed set holds more than one entry now, so the lookup is
+// by-matcher rather than first-managed-wins.
 func findManagedEntry(t *testing.T, doc []byte) json.RawMessage {
 	t.Helper()
 	for _, e := range decodePreToolUse(t, doc) {
-		if isManagedEntry(e) {
+		if m, ok := managedEntryMatcher(e, mustCanonicalEntries(t)); ok && m == knowledgeHookMatcher {
 			return e
 		}
 	}
-	t.Fatalf("no managed entry in:\n%s", doc)
+	t.Fatalf("no promote-guard managed entry in:\n%s", doc)
 	return nil
 }
 

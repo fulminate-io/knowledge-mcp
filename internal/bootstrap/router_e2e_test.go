@@ -406,7 +406,8 @@ func TestConstructClient_Coexistence(t *testing.T) {
 		origKeepalive := startKeepaliveFn
 		startKeepaliveFn = func(_ *graphclient.GraphClient, _ context.Context) {}
 		t.Cleanup(func() { startKeepaliveFn = origKeepalive })
-		c := constructClient(cfg)
+		c, err := constructClient(cfg)
+		require.NoError(t, err)
 		require.NotNil(t, c)
 		return c
 	}
