@@ -1,12 +1,14 @@
 # Knowledge
 
-knowledge is a local MCP server. It indexes your code, cloud
-infrastructure, logs, and docs into cross-linked graphs, and any LLM
-that speaks MCP queries those instead of grepping and re-reading files
-every session. Hybrid code search, call-graph traversal, structural AST
-search and replace across 31 languages, and a reasoning graph where
-hypotheses carry their evidence. Thoughts, decisions, tickets, and plans
-persist across sessions, machines, and teammates.
+knowledge is a set of MCP tools and skills for producing better code
+with fewer tokens. The tools index your code, cloud, logs, and docs into
+cross-linked graphs and answer questions sized to the question: hybrid
+code search, call-graph traversal, structural AST search and replace
+across 31 languages, best-practice patterns with runnable checks, and a
+graph that keeps thoughts, decisions, tickets, and plans across
+sessions. The skills run the engineering workflow over those tools,
+from research through plan, implement, and review. It runs as a local
+MCP server, so any LLM that speaks MCP can use it.
 
 The retrieval argument is simple. A whole-file read puts text in the
 context that is not the answer; a fragment read leaves gaps. The index
